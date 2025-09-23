@@ -10,7 +10,7 @@ from enum import StrEnum
 import json
 import sys
 from dateutil import parser, relativedelta
-from typing import Dict, List, NamedTuple, Tuple, Any
+from typing import Dict, List, NamedTuple, OrderedDict, Tuple, Any
 
 from ci_status import CIStatus
 from classify_pr_state import (PRState, PRStatus,
@@ -147,18 +147,30 @@ PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(
     "unknown", "unknown title", "unknown description", [], [], -1, -1, [], -1, [], [], (DataStatus.Missing, []), None, None, None, None,
 )
 
-class CustomJSONEncoder(json.JSONEncoder):
-    """Custom JSON encoder that handles our special types"""
+class CustomJSONEncoder:
+    """Handles serialization of custom objects to JSON-serializable format"""
 
-    def default(self, obj):
-        """Override default to handle custom types"""
+    @staticmethod
+    def serialize_obj(obj):
+        """Convert custom objects to JSON-serializable format with type information"""
 
-        # Handle NamedTuple objects FIRST (before they can be treated as tuples)
-        if hasattr(obj, '_fields') and hasattr(obj, '_asdict'):
+        # Handle NamedTuples (including your custom ones)
+        if hasattr(obj, "_asdict") and hasattr(obj, "_fields"):
             return {
-                "__type__": "namedtuple",
-                "__class__": obj.__class__.__name__,
-                "__value__": obj._asdict()
+                "__type__": obj.__class__.__name__,
+                "__module__": obj.__class__.__module__,
+                "__data__": OrderedDict(
+                    (field, CustomJSONEncoder.serialize_obj(getattr(obj, field)))
+                    for field in obj._fields
+                )
+            }
+
+        # Handle StrEnum and other enums
+        elif isinstance(obj, StrEnum):
+            return {
+                "__type__": obj.__class__.__name__,
+                "__module__": obj.__class__.__module__,
+                "__value__": obj.value
             }
 
         # Handle datetime objects
@@ -172,133 +184,196 @@ class CustomJSONEncoder(json.JSONEncoder):
         elif isinstance(obj, timedelta):
             return {
                 "__type__": "timedelta",
-                "__value__": obj.total_seconds()
+                "__days__": obj.days,
+                "__seconds__": obj.seconds,
+                "__microseconds__": obj.microseconds
             }
 
         # Handle relativedelta objects
         elif isinstance(obj, relativedelta.relativedelta):
             return {
                 "__type__": "relativedelta",
-                "__value__": {
-                    "years": obj.years,
-                    "months": obj.months,
-                    "days": obj.days,
-                    "hours": obj.hours,
-                    "minutes": obj.minutes,
-                    "seconds": obj.seconds,
-                    "microseconds": obj.microseconds
-                }
+                "__years__": obj.years,
+                "__months__": obj.months,
+                "__days__": obj.days,
+                "__hours__": obj.hours,
+                "__minutes__": obj.minutes,
+                "__seconds__": obj.seconds,
+                "__microseconds__": obj.microseconds,
+                "__leapdays__": obj.leapdays,
+                "__year__": obj.year,
+                "__month__": obj.month,
+                "__day__": obj.day,
+                "__hour__": obj.hour,
+                "__minute__": obj.minute,
+                "__second__": obj.second,
+                "__microsecond__": obj.microsecond,
+                "__weekday__": obj.weekday,
+                "__yearday__": obj.yearday,
+                "__nlyearday__": obj.nlyearday
             }
 
-        # Handle StrEnum objects
-        elif isinstance(obj, StrEnum):
-            return {
-                "__type__": "enum",
-                "__enum_class__": obj.__class__.__name__,
-                "__value__": obj.value
-            }
+        # Handle strings (don't iterate over them)
+        elif isinstance(obj, str):
+            return obj
 
-        # Handle regular tuples (after checking for NamedTuples)
+        # Handle dictionaries
+        elif hasattr(obj, "keys"):
+            return OrderedDict(
+                (key, CustomJSONEncoder.serialize_obj(value))
+                for key, value in obj.items()
+            )
+
+        # Handle tuples (preserve as tuples with type info)
         elif isinstance(obj, tuple):
             return {
                 "__type__": "tuple",
-                "__value__": list(obj)
+                "__data__": [CustomJSONEncoder.serialize_obj(item) for item in obj]
             }
 
-        # If we can't handle it, let the base class handle it (will raise TypeError)
-        return super().default(obj)
+        # Handle other iterables (lists, sets, etc.)
+        elif hasattr(obj, "__iter__"):
+            return type(obj)(CustomJSONEncoder.serialize_obj(item) for item in obj)
 
-
-def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
-    """Custom deserializer for json.load/loads"""
-
-    # Check if this is one of our special serialized objects
-    if not isinstance(dct, dict) or "__type__" not in dct:
-        return dct
-
-    obj_type = dct["__type__"]
-
-    # Handle datetime
-    if obj_type == "datetime":
-        return datetime.fromisoformat(dct["__value__"])
-
-    # Handle timedelta
-    elif obj_type == "timedelta":
-        return timedelta(seconds=dct["__value__"])
-
-    # Handle relativedelta
-    elif obj_type == "relativedelta":
-        value = dct["__value__"]
-        return relativedelta.relativedelta(
-            years=value.get("years", 0),
-            months=value.get("months", 0),
-            days=value.get("days", 0),
-            hours=value.get("hours", 0),
-            minutes=value.get("minutes", 0),
-            seconds=value.get("seconds", 0),
-            microseconds=value.get("microseconds", 0)
-        )
-
-    # Handle StrEnum
-    elif obj_type == "enum":
-        enum_class_name = dct["__enum_class__"]
-        enum_value = dct["__value__"]
-
-        # Map class names to actual classes
-        # You'll need to add your enum classes here
-        enum_classes = {
-            "CIStatus": CIStatus,
-            "DataStatus": DataStatus,
-            "PRStatus": PRStatus,
-            "Dashboard": Dashboard
-        }
-
-        if enum_class_name in enum_classes:
-            return enum_classes[enum_class_name](enum_value) if enum_value is not None else None
+        # Handle None and basic types (int, float, bool)
         else:
-            # Fallback - return the raw value
-            return enum_value
+            return obj
 
-    # Handle NamedTuple
-    elif obj_type == "namedtuple":
-        class_name = dct["__class__"]
-        value_dict = dct["__value__"]
 
-        # Map class names to actual classes
-        namedtuple_classes = {
-            "Label": Label,
-            "LastStatusChange": LastStatusChange,
-            "TotalQueueTime": TotalQueueTime,
-            "AggregatePRInfo": AggregatePRInfo,
-            "BasicPRInformation": BasicPRInformation
-        }
+class CustomJSONDecoder:
+    """Handles deserialization from JSON format back to custom objects"""
 
-        if class_name in namedtuple_classes:
-            cls = namedtuple_classes[class_name]
-            return cls(**value_dict)
+    def __init__(self, class_registry: Dict[str, type] = None):
+        """
+        Initialize with a registry of classes that can be reconstructed
+
+        Args:
+            class_registry: Dictionary mapping class names to class objects
+        """
+        self.class_registry = class_registry or {}
+
+        # Add built-in types
+        self.class_registry.update({
+            'datetime': datetime,
+            'timedelta': timedelta,
+            'relativedelta': relativedelta.relativedelta,
+            'tuple': tuple
+        })
+
+    def deserialize_obj(self, obj):
+        """Convert JSON data back to custom objects"""
+
+        # Handle dictionaries that might represent custom objects
+        if isinstance(obj, dict):
+            # Check if this is a serialized custom object
+            if "__type__" in obj:
+                type_name = obj["__type__"]
+
+                # Handle datetime
+                if type_name == "datetime":
+                    return datetime.fromisoformat(obj["__value__"])
+
+                # Handle timedelta
+                elif type_name == "timedelta":
+                    return timedelta(
+                        days=obj["__days__"],
+                        seconds=obj["__seconds__"],
+                        microseconds=obj["__microseconds__"]
+                    )
+
+                # Handle relativedelta
+                elif type_name == "relativedelta":
+                    return relativedelta.relativedelta(
+                        years=obj.get("__years__"),
+                        months=obj.get("__months__"),
+                        days=obj.get("__days__"),
+                        hours=obj.get("__hours__"),
+                        minutes=obj.get("__minutes__"),
+                        seconds=obj.get("__seconds__"),
+                        microseconds=obj.get("__microseconds__"),
+                        leapdays=obj.get("__leapdays__"),
+                        year=obj.get("__year__"),
+                        month=obj.get("__month__"),
+                        day=obj.get("__day__"),
+                        hour=obj.get("__hour__"),
+                        minute=obj.get("__minute__"),
+                        second=obj.get("__second__"),
+                        microsecond=obj.get("__microsecond__"),
+                        weekday=obj.get("__weekday__"),
+                        yearday=obj.get("__yearday__"),
+                        nlyearday=obj.get("__nlyearday__")
+                    )
+
+                # Handle tuples
+                elif type_name == "tuple":
+                    return tuple(self.deserialize_obj(item) for item in obj["__data__"])
+
+                # Handle StrEnum and other custom enums
+                elif type_name in self.class_registry and hasattr(self.class_registry[type_name], '_value_'):
+                    enum_class = self.class_registry[type_name]
+                    return enum_class(obj["__value__"])
+
+                # Handle NamedTuples
+                elif type_name in self.class_registry:
+                    target_class = self.class_registry[type_name]
+                    # Recursively deserialize the data
+                    deserialized_data = {
+                        key: self.deserialize_obj(value)
+                        for key, value in obj["__data__"].items()
+                    }
+                    return target_class(**deserialized_data)
+
+                else:
+                    # Unknown type, return as-is or raise an error
+                    print(f"Warning: Unknown type '{type_name}', returning raw data")
+                    return obj
+
+            # Regular dictionary
+            else:
+                return {
+                    key: self.deserialize_obj(value)
+                    for key, value in obj.items()
+                }
+
+        # Handle lists
+        elif isinstance(obj, list):
+            return [self.deserialize_obj(item) for item in obj]
+
+        # Handle other basic types
         else:
-            # Fallback - return the dict
-            return value_dict
-
-    # Handle regular tuples
-    elif obj_type == "tuple":
-        return tuple(dct["__value__"])
-
-    # If we don't recognize the type, return the dict as-is
-    return dct
+            return obj
 
 
-# Convenience functions that wrap the standard json module
-def dump_to_json_file(obj: Any, filepath: str, **kwargs) -> None:
-    """Save object to JSON file with custom serialization"""
+def save_to_json(data: Any, filepath: str, indent: int = 2):
+    """Save data to JSON file with custom serialization"""
+    serialized_data = CustomJSONEncoder.serialize_obj(data)
     with open(filepath, 'w') as f:
-        json.dump(obj, f, cls=CustomJSONEncoder, **kwargs)
+        json.dump(serialized_data, f, indent=indent)
 
 
-def load_from_json_file(filepath: str, **kwargs) -> Any:
-    """Load object from JSON file with custom deserialization"""
+def load_from_json(filepath: str, class_registry: Dict[str, type] = None):
+    """Load data from JSON file with custom deserialization"""
     with open(filepath, 'r') as f:
-        return json.load(f, object_hook=custom_json_deserializer, **kwargs)
+        json_data = json.load(f)
+
+    decoder = CustomJSONDecoder(class_registry)
+    return decoder.deserialize_obj(json_data)
+
+
+# Example usage and registry setup
+def create_class_registry():
+    """Create a registry of all your custom classes for deserialization"""
+    return {
+        'AggregatePRInfo': AggregatePRInfo,
+        'CIStatus': CIStatus,
+        'Label': Label,
+        'DataStatus': DataStatus,
+        'LastStatusChange': LastStatusChange,
+        'TotalQueueTime': TotalQueueTime,
+        'PRStatus': PRStatus,
+        'Dashboard': Dashboard,
+        'BasicPRInformation': BasicPRInformation,
+    }
 
 
 # Parse the contents |data| of an aggregate json file into a dictionary pr number -> AggregatePRInfo.
