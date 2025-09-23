@@ -12,7 +12,7 @@ class CIStatus(StrEnum):
     # CI is currently running
     Running = "running"
     # Missing data.
-    Missing = None
+    Missing = "missing"
 
     @staticmethod
     def from_string(s: str):
