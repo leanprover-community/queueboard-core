@@ -124,13 +124,13 @@ def main() -> None:
         if pr.number not in input_data.aggregate_info:
             print(f"warning: found no aggregate information for PR {pr.number}; filling in defaults", file=sys.stderr)
             aggregate_info[pr.number] = PLACEHOLDER_AGGREGATE_INFO
-    dump_to_json_file(path.join("api", "aggregate_info.json"), aggregate_info)
+    dump_to_json_file(aggregate_info, path.join("api", "aggregate_info.json"))
 
     draft_PRs = [pr for pr in input_data.all_open_prs if aggregate_info[pr.number].is_draft]
-    dump_to_json_file(path.join("api", "draft_PRs.json"), draft_PRs)
+    dump_to_json_file(draft_PRs, path.join("api", "draft_PRs.json"))
 
     nondraft_PRs = [pr for pr in input_data.all_open_prs if not aggregate_info[pr.number].is_draft]
-    dump_to_json_file(path.join("api", "nondraft_PRs.json"), nondraft_PRs)
+    dump_to_json_file(nondraft_PRs, path.join("api", "nondraft_PRs.json"))
 
     # The only exception is for the "on the queue" page,
     # which points out missing information explicitly, hence is passed the non-filled in data.
@@ -140,22 +140,22 @@ def main() -> None:
             CI_status[pr.number] = input_data.aggregate_info[pr.number].CI_status
         else:
             CI_status[pr.number] = CIStatus.Missing
-    dump_to_json_file(path.join("api", "CI_status.json"), CI_status)
+    dump_to_json_file(CI_status, path.join("api", "CI_status.json"))
 
     base_branch: dict[int, str] = dict()
     for pr in nondraft_PRs:
         base_branch[pr.number] = aggregate_info[pr.number].base_branch
-    dump_to_json_file(path.join("api", "base_branch.json"), base_branch)
+    dump_to_json_file(base_branch, path.join("api", "base_branch.json"))
 
     # TODO(August/September): re-instate this check and invert it
     # prs_from_fork = [pr for pr in nondraft_PRs if aggregate_info[pr.number].head_repo != "leanprover-community"]
     all_pr_status = compute_pr_statusses(aggregate_info, input_data.all_open_prs)
-    dump_to_json_file(path.join("api", "all_pr_status.json"), all_pr_status)
+    dump_to_json_file(all_pr_status, path.join("api", "all_pr_status.json"))
 
     # TODO: try to enable |use_aggregate_queue| 'queue_prs' again, once all the root causes
     # for PRs getting 'dropped' by 'gather_stats.sh' are found and fixed.
     prs_to_list = determine_pr_dashboards(input_data.all_open_prs, nondraft_PRs, base_branch, CI_status, aggregate_info, False)
-    dump_to_json_file(path.join("api", "prs_to_list.json"), prs_to_list)
+    dump_to_json_file(prs_to_list, path.join("api", "prs_to_list.json"))
 
     # As a final feature, we propose a reviewer for 50 (randomly drawn) stale unassigned pull requests,
     # and write this information to "automatic_assignments.json".
