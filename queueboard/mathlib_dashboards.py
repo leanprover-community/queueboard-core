@@ -8,60 +8,60 @@ This makes it very mathlib-specific by definition.
 FUTURE: make this even more declarative, e.g. specified by a configuration file?
 """
 
-from enum import Enum, auto, unique
+from enum import StrEnum, unique
 from typing import Tuple
 
 
 @unique
-class Dashboard(Enum):
+class Dashboard(StrEnum):
     """The different kind of dashboards on the created triage webpage"""
 
     # Note: the tables on the generated page are listed in the order of these variants.
-    Queue = 0
-    QueueNewContributor = auto()
-    QueueEasy = auto()
+    Queue = "Queue"
+    QueueNewContributor = "QueueNewContributor"
+    QueueEasy = "QueueEasy"
     # All PRs on the queue which are unassigned and have not been updated in the past week.
     # We use the real last update, not github's date.
-    QueueStaleUnassigned = auto()
+    QueueStaleUnassigned = "QueueStaleUnassigned"
     # All assigned PRs on the review queue without any update in the past two weeks.
     # TODO: use a more refined measure of activity, such as "no comment/review comment by anybody but the author"
-    QueueStaleAssigned = auto()
+    QueueStaleAssigned = "QueueStaleAssigned"
     # All PRs labelled "tech-debt" or "longest-pole"
-    QueueTechDebt = auto()
+    QueueTechDebt = "QueueTechDebt"
     # All PRs labelled ready-to-merge or auto-merge-after-CI, not just the stale ones
-    AllReadyToMerge = auto()
-    StaleReadyToMerge = auto()
-    StaleDelegated = auto()
-    StaleMaintainerMerge = auto()
+    AllReadyToMerge = "AllReadyToMerge"
+    StaleReadyToMerge = "StaleReadyToMerge"
+    StaleDelegated = "StaleDelegated"
+    StaleMaintainerMerge = "StaleMaintainerMerge"
     # All PRs labelled maintainer-merge, not the stale ones.
-    AllMaintainerMerge = auto()
+    AllMaintainerMerge = "AllMaintainerMerge"
     # All ready PRs (not draft, not labelled WIP) labelled with "tech debt" or "longest-pole".
-    TechDebt = auto()
+    TechDebt = "TechDebt"
     # This PR is blocked on a zulip discussion or similar.
-    NeedsDecision = auto()
+    NeedsDecision = "NeedsDecision"
     # PRs passes, but just has a merge conflict: same labels as for review, except we do require a merge conflict
-    NeedsMerge = auto()
+    NeedsMerge = "NeedsMerge"
     # PR would be ready for review, except for a failure of some infrastructure-related CI job:
     # unless this CI modifies some mathlib infrastructure, this is not this PRs fault.
-    InessentialCIFails = auto()
-    StaleNewContributor = auto()
+    InessentialCIFails = "InessentialCIFails"
+    StaleNewContributor = "StaleNewContributor"
     # Labelled please-adopt or help-wanted
-    NeedsHelp = auto()
+    NeedsHelp = "NeedsHelp"
     # Non-draft PRs into some branch other than mathlib's master branch
-    OtherBase = auto()
+    OtherBase = "OtherBase"
     # TODO: in August, invert and re-instate this dashboard (i.e., showing all non-draft PRs opened from the mathlib repo itself)
     # # Non-draft PRs opened from a fork
     # FromFork = auto()
     # "Ready" PRs whose title does not start with an abbreviation like 'feat' or 'style'
-    BadTitle = auto()
+    BadTitle = "BadTitle"
     # "Ready" PRs without the CI or a t-something label.
-    Unlabelled = auto()
+    Unlabelled = "Unlabelled"
     # This PR carries inconsistent labels, such as "WIP" and "ready-to-merge".
-    ContradictoryLabels = auto()
+    ContradictoryLabels = "ContradictoryLabels"
     # PRs with at least one "approved" review by a community member.
-    Approved = auto()
+    Approved = "Approved"
     # Every open PR in mathlib.
-    All = auto()
+    All = "All"
 
 
 def short_description(kind: Dashboard) -> str:

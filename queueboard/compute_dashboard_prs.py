@@ -239,7 +239,8 @@ def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
         enum_classes = {
             "CIStatus": CIStatus,
             "DataStatus": DataStatus,
-            "PRStatus": PRStatus
+            "PRStatus": PRStatus,
+            "Dashboard": Dashboard
         }
 
         if enum_class_name in enum_classes:
@@ -258,7 +259,8 @@ def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
             "Label": Label,
             "LastStatusChange": LastStatusChange,
             "TotalQueueTime": TotalQueueTime,
-            "AggregatePRInfo": AggregatePRInfo
+            "AggregatePRInfo": AggregatePRInfo,
+            "BasicPRInformation": BasicPRInformation
         }
 
         if class_name in namedtuple_classes:
