@@ -150,19 +150,15 @@ PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder that handles our special types"""
 
-    def encode(self, obj):
-        """Override encode to handle our types before default processing"""
-        return super().encode(self._transform_object(obj))
+    def default(self, obj):
+        """Override default to handle custom types"""
 
-    def _transform_object(self, obj):
-        """Recursively transform objects to JSON-serializable format"""
-
-        # Handle NamedTuple objects FIRST
+        # Handle NamedTuple objects FIRST (before they can be treated as tuples)
         if hasattr(obj, '_fields') and hasattr(obj, '_asdict'):
             return {
                 "__type__": "namedtuple",
                 "__class__": obj.__class__.__name__,
-                "__value__": self._transform_object(obj._asdict())
+                "__value__": obj._asdict()
             }
 
         # Handle datetime objects
@@ -206,20 +202,11 @@ class CustomJSONEncoder(json.JSONEncoder):
         elif isinstance(obj, tuple):
             return {
                 "__type__": "tuple",
-                "__value__": [self._transform_object(item) for item in obj]
+                "__value__": list(obj)
             }
 
-        # Handle lists
-        elif isinstance(obj, list):
-            return [self._transform_object(item) for item in obj]
-
-        # Handle dictionaries
-        elif isinstance(obj, dict):
-            return {key: self._transform_object(value) for key, value in obj.items()}
-
-        # For everything else, return as-is
-        else:
-            return obj
+        # If we can't handle it, let the base class handle it (will raise TypeError)
+        return super().default(obj)
 
 
 def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
