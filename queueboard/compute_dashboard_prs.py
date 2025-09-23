@@ -184,33 +184,22 @@ class CustomJSONEncoder:
         elif isinstance(obj, timedelta):
             return {
                 "__type__": "timedelta",
-                "__days__": obj.days,
-                "__seconds__": obj.seconds,
-                "__microseconds__": obj.microseconds
+                "__total_seconds__": obj.total_seconds()
             }
 
         # Handle relativedelta objects
         elif isinstance(obj, relativedelta.relativedelta):
+            # Only serialize non-None/non-zero attributes
+            data = {}
+            for attr in ['years', 'months', 'days', 'hours', 'minutes', 'seconds', 'microseconds', 'leapdays',
+                        'year', 'month', 'day', 'hour', 'minute', 'second', 'microsecond', 'weekday']:
+                value = getattr(obj, attr, None)
+                if value is not None and value != 0:
+                    data[attr] = value
+
             return {
                 "__type__": "relativedelta",
-                "__years__": obj.years,
-                "__months__": obj.months,
-                "__days__": obj.days,
-                "__hours__": obj.hours,
-                "__minutes__": obj.minutes,
-                "__seconds__": obj.seconds,
-                "__microseconds__": obj.microseconds,
-                "__leapdays__": obj.leapdays,
-                "__year__": obj.year,
-                "__month__": obj.month,
-                "__day__": obj.day,
-                "__hour__": obj.hour,
-                "__minute__": obj.minute,
-                "__second__": obj.second,
-                "__microsecond__": obj.microsecond,
-                "__weekday__": obj.weekday,
-                "__yearday__": obj.yearday,
-                "__nlyearday__": obj.nlyearday
+                "__data__": data
             }
 
         # Handle strings (don't iterate over them)
@@ -275,34 +264,11 @@ class CustomJSONDecoder:
 
                 # Handle timedelta
                 elif type_name == "timedelta":
-                    return timedelta(
-                        days=obj["__days__"],
-                        seconds=obj["__seconds__"],
-                        microseconds=obj["__microseconds__"]
-                    )
+                    return timedelta(seconds=obj["__total_seconds__"])
 
                 # Handle relativedelta
                 elif type_name == "relativedelta":
-                    return relativedelta.relativedelta(
-                        years=obj.get("__years__"),
-                        months=obj.get("__months__"),
-                        days=obj.get("__days__"),
-                        hours=obj.get("__hours__"),
-                        minutes=obj.get("__minutes__"),
-                        seconds=obj.get("__seconds__"),
-                        microseconds=obj.get("__microseconds__"),
-                        leapdays=obj.get("__leapdays__"),
-                        year=obj.get("__year__"),
-                        month=obj.get("__month__"),
-                        day=obj.get("__day__"),
-                        hour=obj.get("__hour__"),
-                        minute=obj.get("__minute__"),
-                        second=obj.get("__second__"),
-                        microsecond=obj.get("__microsecond__"),
-                        weekday=obj.get("__weekday__"),
-                        yearday=obj.get("__yearday__"),
-                        nlyearday=obj.get("__nlyearday__")
-                    )
+                    return relativedelta.relativedelta(**obj["__data__"])
 
                 # Handle tuples
                 elif type_name == "tuple":
