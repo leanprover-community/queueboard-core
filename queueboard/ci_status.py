@@ -1,6 +1,6 @@
-from enum import StrEnum, auto
+from enum import Enum, auto
 
-class CIStatus(StrEnum):
+class CIStatus(Enum):
     # All build jobs pass (or are skipped).
     Pass = auto()
     # Some build job fails which is not "inessential" (see below).

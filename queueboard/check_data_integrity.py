@@ -19,7 +19,7 @@ from dateutil import parser
 
 from ci_status import CIStatus
 from compute_dashboard_prs import AggregatePRInfo, infer_pr_url, Label
-from dashboard_data import parse_aggregate_file
+from dashboard import parse_aggregate_file
 from util import eprint, parse_json_file
 
 # Read the input JSON files, return a dictionary mapping each PR number
@@ -363,30 +363,30 @@ def compare_data_aggressive() -> List[int]:
 def ensure_file(filename):
     """
     Ensure the file exists by joining split parts if necessary.
-
+    
     Args:
         filename (str): Path to the file (e.g., 'processed_data/all_pr_data.json')
-
+    
     Returns:
         str: Path to the complete file
     """
     if os.path.exists(filename):
         return filename
-
+    
     # Look for split parts (e.g., processed_data/all_pr_data.json.aa, processed_data/all_pr_data.json.ab, etc.)
     parts = sorted(glob.glob(f"{filename}.*"))
     # Filter out directories or other non-file matches if any
     parts = [p for p in parts if os.path.isfile(p)]
-
+    
     if not parts:
         raise FileNotFoundError(f"Neither {filename} nor its split parts were found")
-
+    
     # Join the parts into the original file
     with open(filename, 'wb') as outfile:
         for part in parts:
             with open(part, 'rb') as infile:
                 outfile.write(infile.read())
-
+    
     return filename
 
 
