@@ -6,11 +6,11 @@ This file contains the code for computing the PRs on each dashboard in |mathlib_
 """
 
 from datetime import datetime, timedelta, timezone
-from enum import StrEnum, auto
+from enum import StrEnum
 import json
 import sys
 from dateutil import parser, relativedelta
-from typing import Dict, List, NamedTuple, Tuple
+from typing import Dict, List, NamedTuple, Tuple, Any
 
 from ci_status import CIStatus
 from classify_pr_state import (PRState, PRStatus,
@@ -83,22 +83,10 @@ class LastStatusChange(NamedTuple):
     delta: relativedelta.relativedelta
     current_status: PRStatus
 
-class SerializableLastStatusChange(NamedTuple):
-    status: DataStatus
-    time: str # datetime
-    delta: str # relativedelta.relativedelta
-    current_status: PRStatus
-
 class TotalQueueTime(NamedTuple):
     status: DataStatus
     value_td: timedelta
     value_rd: relativedelta.relativedelta
-    explanation: str
-
-class SerializableTotalQueueTime(NamedTuple):
-    status: DataStatus
-    value_td: str # timedelta
-    value_rd: str # relativedelta.relativedelta
     explanation: str
 
 # All information about a single PR contained in `open_pr_info.json`.
@@ -151,62 +139,6 @@ class AggregatePRInfo(NamedTuple):
     first_on_queue: Tuple[DataStatus, datetime | None] | None
     total_queue_time: TotalQueueTime | None
 
-# A JSON-serializable version of AggregatePRInfo
-# Keep this in sync with the actual file, extending this once new data is added!
-class SerializableAggregatePRInfo(NamedTuple):
-    is_draft: bool
-    CI_status: CIStatus
-    # The branch this PR is opened against: should be 'master' (for most PRs)
-    base_branch: str
-    # The name of this PR's branch.
-    branch_name: str
-    # The repository this PR was opened from: should not be 'leanprover-community',
-    # i.e. a PR opened from a fork of mathlib
-    head_repo: str
-    # 'open' for open PRs, 'closed' for closed PRs
-    state: str
-    # Github's time when the PR was "last updated"
-    last_updated: str # datetime
-    # The PR author's github handle
-    author: str
-    title: str
-    # The full body of the PR description. For mathlib PRs,
-    # everything before the first "---" line becomes the final commit message.
-    # Information about dependent PRs is noted after the fold.
-    description: str
-    # The numbers of all PRs which this one directly depends on
-    # (as parsed from the PR description).
-    direct_dependencies: List[int]
-    # All labels assigned to this PR.
-    labels: List[Label]
-    additions: int
-    deletions: int
-    # The first 100 modified files.
-    modified_files: List[str]
-    number_modified_files: int
-    # Github handles of all users (if any) approving this
-    approvals: List[str]
-    # The github handles of all users (if any) assigned to this PR
-    assignees: List[str]
-    # All users who left a standard or review comment on this PR: could include
-    # bots posting, and the PR author (aside from the description).
-    users_commented: Tuple[DataStatus, List[str]]
-    # This field is *not* present if there is only "basic" information about this PR.
-    # (Basic PRs contain have the number of standard comments, but of review comments.)
-    number_total_comments: int | None
-    # The following fields are not present when there is only basic information about this PR.
-    # They are also missing if a PR's events data is invalid (because github returned bogus results).
-    # Otherwise, they include their validity status ("missing", "incomplete", "valid").
-    last_status_change: LastStatusChange | None
-    first_on_queue: Tuple[DataStatus, datetime | None] | None
-    total_queue_time: TotalQueueTime | None
-
-def serialize_aggregate_info(aggregate_info: Dict[int, AggregatePRInfo]) -> Dict[int, SerializableAggregatePRInfo]:
-    return
-
-def deserialize_aggregate_info(serialized_aggregate_info: Dict[int, SerializableAggregatePRInfo]) -> Dict[int, AggregatePRInfo]:
-    return
-
 
 # Missing aggregate information will be replaced by this default item.
 PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(
@@ -214,6 +146,143 @@ PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(
     "open", datetime.now(timezone.utc),
     "unknown", "unknown title", "unknown description", [], [], -1, -1, [], -1, [], [], (DataStatus.Missing, []), None, None, None, None,
 )
+
+def custom_json_serializer(obj: Any) -> Any:
+    """Custom serializer for json.dump/dumps"""
+
+    # Handle datetime objects
+    if isinstance(obj, datetime):
+        return {
+            "__type__": "datetime",
+            "__value__": obj.isoformat()
+        }
+
+    # Handle timedelta objects
+    elif isinstance(obj, timedelta):
+        return {
+            "__type__": "timedelta",
+            "__value__": obj.total_seconds()
+        }
+
+    # Handle relativedelta objects
+    elif isinstance(obj, relativedelta.relativedelta):
+        return {
+            "__type__": "relativedelta",
+            "__value__": {
+                "years": obj.years,
+                "months": obj.months,
+                "days": obj.days,
+                "hours": obj.hours,
+                "minutes": obj.minutes,
+                "seconds": obj.seconds,
+                "microseconds": obj.microseconds
+            }
+        }
+
+    # Handle StrEnum objects
+    elif isinstance(obj, StrEnum):
+        return {
+            "__type__": "enum",
+            "__enum_class__": obj.__class__.__name__,
+            "__value__": obj.value
+        }
+
+    # Handle NamedTuple objects
+    elif hasattr(obj, '_fields') and hasattr(obj, '_asdict'):
+        return {
+            "__type__": "namedtuple",
+            "__class__": obj.__class__.__name__,
+            "__value__": obj._asdict()
+        }
+
+    # If we can't serialize it, let json.dumps handle it (will raise TypeError)
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+
+def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
+    """Custom deserializer for json.load/loads"""
+
+    # Check if this is one of our special serialized objects
+    if "__type__" not in dct:
+        return dct
+
+    obj_type = dct["__type__"]
+
+    # Handle datetime
+    if obj_type == "datetime":
+        return datetime.fromisoformat(dct["__value__"])
+
+    # Handle timedelta
+    elif obj_type == "timedelta":
+        return timedelta(seconds=dct["__value__"])
+
+    # Handle relativedelta
+    elif obj_type == "relativedelta":
+        value = dct["__value__"]
+        return relativedelta.relativedelta(
+            years=value.get("years", 0),
+            months=value.get("months", 0),
+            days=value.get("days", 0),
+            hours=value.get("hours", 0),
+            minutes=value.get("minutes", 0),
+            seconds=value.get("seconds", 0),
+            microseconds=value.get("microseconds", 0)
+        )
+
+    # Handle StrEnum
+    elif obj_type == "enum":
+        enum_class_name = dct["__enum_class__"]
+        enum_value = dct["__value__"]
+
+        # Map class names to actual classes
+        # You'll need to add your enum classes here
+        enum_classes = {
+            "CIStatus": CIStatus,
+            "DataStatus": DataStatus,
+            "PRStatus": PRStatus
+        }
+
+        if enum_class_name in enum_classes:
+            return enum_classes[enum_class_name](enum_value) if enum_value is not None else None
+        else:
+            # Fallback - return the raw value
+            return enum_value
+
+    # Handle NamedTuple
+    elif obj_type == "namedtuple":
+        class_name = dct["__class__"]
+        value_dict = dct["__value__"]
+
+        # Map class names to actual classes
+        namedtuple_classes = {
+            "Label": Label,
+            "LastStatusChange": LastStatusChange,
+            "TotalQueueTime": TotalQueueTime,
+            "AggregatePRInfo": AggregatePRInfo
+        }
+
+        if class_name in namedtuple_classes:
+            cls = namedtuple_classes[class_name]
+            return cls(**value_dict)
+        else:
+            # Fallback - return the dict
+            return value_dict
+
+    # If we don't recognize the type, return the dict as-is
+    return dct
+
+
+# Convenience functions that wrap the standard json module
+def dump_to_json_file(obj: Any, filepath: str, **kwargs) -> None:
+    """Save object to JSON file with custom serialization"""
+    with open(filepath, 'w') as f:
+        json.dump(obj, f, default=custom_json_serializer, **kwargs)
+
+
+def load_from_json_file(filepath: str, **kwargs) -> Any:
+    """Load object from JSON file with custom deserialization"""
+    with open(filepath, 'r') as f:
+        return json.load(f, object_hook=custom_json_deserializer, **kwargs)
 
 
 # Parse the contents |data| of an aggregate json file into a dictionary pr number -> AggregatePRInfo.

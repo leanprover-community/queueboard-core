@@ -5,8 +5,8 @@ from random import shuffle
 from typing import List, NamedTuple, Dict
 from ci_status import CIStatus
 from mathlib_dashboards import Dashboard
-from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation,
-    PLACEHOLDER_AGGREGATE_INFO, SerializableAggregatePRInfo, compute_pr_statusses, determine_pr_dashboards, parse_aggregate_file, _extract_prs, serialize_aggregate_info)
+from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, dump_to_json_file,
+    PLACEHOLDER_AGGREGATE_INFO, compute_pr_statusses, determine_pr_dashboards, parse_aggregate_file, _extract_prs)
 
 ### Reading the input files passed to this script ###
 
@@ -124,15 +124,13 @@ def main() -> None:
         if pr.number not in input_data.aggregate_info:
             print(f"warning: found no aggregate information for PR {pr.number}; filling in defaults", file=sys.stderr)
             aggregate_info[pr.number] = PLACEHOLDER_AGGREGATE_INFO
-    with open(path.join("api", "aggregate_info.json"), "w") as f:
-        json.dump(serialize_aggregate_info(aggregate_info), f)
+    dump_to_json_file(path.join("api", "aggregate_info.json"), aggregate_info)
 
     draft_PRs = [pr for pr in input_data.all_open_prs if aggregate_info[pr.number].is_draft]
-    with open(path.join("api", "draft_PRs.json"), "w") as f:
-        json.dump(serialize_aggregate_info(draft_PRs), f)
+    dump_to_json_file(path.join("api", "draft_PRs.json"), draft_PRs)
+
     nondraft_PRs = [pr for pr in input_data.all_open_prs if not aggregate_info[pr.number].is_draft]
-    with open(path.join("api", "nondraft_PRs.json"), "w") as f:
-        json.dump(serialize_aggregate_info(nondraft_PRs), f)
+    dump_to_json_file(path.join("api", "nondraft_PRs.json"), nondraft_PRs)
 
     # The only exception is for the "on the queue" page,
     # which points out missing information explicitly, hence is passed the non-filled in data.
@@ -142,26 +140,22 @@ def main() -> None:
             CI_status[pr.number] = input_data.aggregate_info[pr.number].CI_status
         else:
             CI_status[pr.number] = CIStatus.Missing
-    with open(path.join("api", "CI_status.json"), "w") as f:
-        json.dump(CI_status, f)
+    dump_to_json_file(path.join("api", "CI_status.json"), CI_status)
 
     base_branch: dict[int, str] = dict()
     for pr in nondraft_PRs:
         base_branch[pr.number] = aggregate_info[pr.number].base_branch
-    with open(path.join("api", "base_branch.json"), "w") as f:
-        json.dump(base_branch, f)
+    dump_to_json_file(path.join("api", "base_branch.json"), base_branch)
 
     # TODO(August/September): re-instate this check and invert it
     # prs_from_fork = [pr for pr in nondraft_PRs if aggregate_info[pr.number].head_repo != "leanprover-community"]
     all_pr_status = compute_pr_statusses(aggregate_info, input_data.all_open_prs)
-    with open(path.join("api", "all_pr_status.json"), "w") as f:
-        json.dump(all_pr_status, f)
+    dump_to_json_file(path.join("api", "all_pr_status.json"), all_pr_status)
 
     # TODO: try to enable |use_aggregate_queue| 'queue_prs' again, once all the root causes
     # for PRs getting 'dropped' by 'gather_stats.sh' are found and fixed.
     prs_to_list = determine_pr_dashboards(input_data.all_open_prs, nondraft_PRs, base_branch, CI_status, aggregate_info, False)
-    with open(path.join("api", "prs_to_list.json"), "w") as f:
-        json.dump(prs_to_list, f)
+    dump_to_json_file(path.join("api", "prs_to_list.json"), prs_to_list)
 
     # As a final feature, we propose a reviewer for 50 (randomly drawn) stale unassigned pull requests,
     # and write this information to "automatic_assignments.json".
@@ -190,7 +184,6 @@ def main() -> None:
         json.dump(dependency_graph_data, f, indent=2)
 
     print(f"Generated dependency graph with {dependency_graph_data['metadata']['dependency_links']} links between {dependency_graph_data['metadata']['total_prs']} PRs")
-
 
 
 if __name__ == "__main__":

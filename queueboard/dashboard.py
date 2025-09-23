@@ -14,8 +14,8 @@ from dateutil import parser, relativedelta, tz
 
 from ci_status import CIStatus
 from classify_pr_state import PRStatus
-from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus, deserialize_aggregate_info,
-    infer_pr_url, link_to, gather_pr_statistics, parse_aggregate_file)
+from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus, load_from_json_file,
+    infer_pr_url, link_to, gather_pr_statistics)
 from mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
 from util import format_delta
 
@@ -1078,20 +1078,13 @@ def write_triage_page(
 
 
 def main() -> None:
-    with open(path.join("api", "aggregate_info.json"), "r") as f:
-        aggregate_info = deserialize_aggregate_info(json.load(f))
-    with open(path.join("api", "draft_PRs.json"), "r") as f:
-        draft_PRs = json.load(f)
-    with open(path.join("api", "nondraft_PRs.json"), "r") as f:
-        nondraft_PRs = json.load(f)
-    with open(path.join("api", "CI_status.json"), "r") as f:
-        CI_status = json.load(f)
-    with open(path.join("api", "all_pr_status.json"), "r") as f:
-        all_pr_status = json.load(f)
-    with open(path.join("api", "base_branch.json"), "r") as f:
-        base_branch = json.load(f)
-    with open(path.join("api", "prs_to_list.json"), "r") as f:
-        prs_to_list = json.load(f)
+    aggregate_info = load_from_json_file(path.join("api", "aggregate_info.json"))
+    draft_PRs = load_from_json_file(path.join("api", "draft_PRs.json"))
+    nondraft_PRs = load_from_json_file(path.join("api", "nondraft_PRs.json"))
+    CI_status = load_from_json_file(path.join("api", "CI_status.json"))
+    all_pr_status = load_from_json_file(path.join("api", "all_pr_status.json"))
+    base_branch = load_from_json_file(path.join("api", "base_branch.json"))
+    prs_to_list = load_from_json_file(path.join("api", "prs_to_list.json"))
 
     write_on_the_queue_page(all_pr_status, aggregate_info, nondraft_PRs, CI_status, base_branch)
 
