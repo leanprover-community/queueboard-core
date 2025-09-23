@@ -344,26 +344,14 @@ class CustomJSONDecoder:
             return obj
 
 
-def save_to_json(data: Any, filepath: str, indent: int = 2):
+def dump_to_json_file(data: Any, filepath: str, indent: int = 2):
     """Save data to JSON file with custom serialization"""
     serialized_data = CustomJSONEncoder.serialize_obj(data)
     with open(filepath, 'w') as f:
         json.dump(serialized_data, f, indent=indent)
 
-
-def load_from_json(filepath: str, class_registry: Dict[str, type] = None):
-    """Load data from JSON file with custom deserialization"""
-    with open(filepath, 'r') as f:
-        json_data = json.load(f)
-
-    decoder = CustomJSONDecoder(class_registry)
-    return decoder.deserialize_obj(json_data)
-
-
-# Example usage and registry setup
-def create_class_registry():
-    """Create a registry of all your custom classes for deserialization"""
-    return {
+# Example registry containing custom classes
+DEFAULT_CLASS_REGISTRY = {
         'AggregatePRInfo': AggregatePRInfo,
         'CIStatus': CIStatus,
         'Label': Label,
@@ -374,6 +362,14 @@ def create_class_registry():
         'Dashboard': Dashboard,
         'BasicPRInformation': BasicPRInformation,
     }
+
+def load_from_json_file(filepath: str, class_registry: Dict[str, type] = DEFAULT_CLASS_REGISTRY):
+    """Load data from JSON file with custom deserialization"""
+    with open(filepath, 'r') as f:
+        json_data = json.load(f)
+
+    decoder = CustomJSONDecoder(class_registry)
+    return decoder.deserialize_obj(json_data)
 
 
 # Parse the contents |data| of an aggregate json file into a dictionary pr number -> AggregatePRInfo.

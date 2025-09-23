@@ -4,7 +4,6 @@
 # It assumes that for each PR N which should appear in some dashboard,
 # there is a file N.json in the `data` directory, which contains all necessary detailed information about that PR.
 
-import json
 import sys
 from datetime import datetime, timedelta, timezone
 from os import path
