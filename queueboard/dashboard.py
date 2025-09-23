@@ -382,7 +382,7 @@ def _compute_pr_entries(
         labels = _write_labels(pr.labels, page_name, id)
         # Mild HACK: if a PR has label "t-algebra", we append the hidden string "label:t-algebra$" to make this searchable.
         label_hack = hide('label:t-algebra$') if "t-algebra" in [lab.name for lab in pr.labels] else ""
-        branch_name = aggregate_information[pr_number].branch_name if pr.number in aggregate_information else "missing"
+        branch_name = aggregate_information[pr_number].branch_name if pr_number in aggregate_information else "missing"
         description = aggregate_information[pr_number].description
         # Mild HACK: append each PR's author as "author:name" to the end of the author column (hidden),
         # to allow for searches "author:name".
@@ -391,7 +391,7 @@ def _compute_pr_entries(
             title_link(pr.title, pr.url), description, labels + label_hack]
         # Detailed information about the current PR.
         pr_info = None
-        if pr.number in aggregate_information:
+        if pr_number in aggregate_information:
             pr_info = aggregate_information[pr_number]
         if pr_info is None:
             print(f"main dashboard: found no aggregate information for PR {pr.number}", file=sys.stderr)
