@@ -275,19 +275,24 @@ class CustomJSONDecoder:
                     return tuple(self.deserialize_obj(item) for item in obj["__data__"])
 
                 # Handle StrEnum and other custom enums
-                elif type_name in self.class_registry and hasattr(self.class_registry[type_name], '_value_'):
-                    enum_class = self.class_registry[type_name]
-                    return enum_class(obj["__value__"])
-
-                # Handle NamedTuples
                 elif type_name in self.class_registry:
                     target_class = self.class_registry[type_name]
-                    # Recursively deserialize the data
-                    deserialized_data = {
-                        key: self.deserialize_obj(value)
-                        for key, value in obj["__data__"].items()
-                    }
-                    return target_class(**deserialized_data)
+
+                    # Check if this is an enum (has __value__ instead of __data__)
+                    if hasattr(target_class, '_value_') or issubclass(target_class, StrEnum):
+                        return target_class(obj["__value__"])
+
+                    # Handle NamedTuples and other classes (has __data__)
+                    elif "__data__" in obj:
+                        # Recursively deserialize the data
+                        deserialized_data = {
+                            key: self.deserialize_obj(value)
+                            for key, value in obj["__data__"].items()
+                        }
+                        return target_class(**deserialized_data)
+
+                    else:
+                        raise ValueError(f"Cannot deserialize object of type '{type_name}': missing __data__ or __value__")
 
                 else:
                     # Unknown type, return as-is or raise an error
