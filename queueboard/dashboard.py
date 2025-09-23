@@ -14,8 +14,8 @@ from dateutil import parser, relativedelta, tz
 
 from ci_status import CIStatus
 from classify_pr_state import PRStatus
-from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus,
-    infer_pr_url, link_to, gather_pr_statistics)
+from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus, deserialize_aggregate_info,
+    infer_pr_url, link_to, gather_pr_statistics, parse_aggregate_file)
 from mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
 from util import format_delta
 
@@ -1079,7 +1079,7 @@ def write_triage_page(
 
 def main() -> None:
     with open(path.join("api", "aggregate_info.json"), "r") as f:
-        aggregate_info = json.load(f)
+        aggregate_info = deserialize_aggregate_info(json.load(f))
     with open(path.join("api", "draft_PRs.json"), "r") as f:
         draft_PRs = json.load(f)
     with open(path.join("api", "nondraft_PRs.json"), "r") as f:

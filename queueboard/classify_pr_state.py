@@ -5,7 +5,7 @@ Most of this logic is at least partially specific to mathlib.
 """
 
 from datetime import datetime
-from enum import Enum, auto
+from enum import StrEnum
 from typing import List, NamedTuple
 
 from dateutil import tz
@@ -15,22 +15,22 @@ from ci_status import CIStatus
 
 # The different kinds of PR labels we care about.
 # We usually do not care about the precise label names, but just their function.
-class LabelKind(Enum):
-    WIP = auto()  # the WIP labelled, denoting a PR which is work in progress
-    AwaitingCI = auto()
-    Review = auto()
+class LabelKind(StrEnum):
+    WIP = "WIP"  # the WIP labelled, denoting a PR which is work in progress
+    AwaitingCI = "AwaitingCI"
+    Review = "Review"
     """This PR is ready for review: this label is only added for historical purposes, as mathlib does not use this label any more"""
-    HelpWanted = auto()
+    HelpWanted = "HelpWanted"
     '''This PR is labelled help-wanted or please-adopt'''
-    Author = auto()
+    Author = "Author"
     '''This PR is labelled awaiting-author'''
-    MergeConflict = auto()  # merge-conflict
-    Blocked = auto()  # blocked-by-other-PR, etc.
-    Decision = auto()  # awaiting-zulip
-    Delegated = auto()  # delegated
-    Bors = auto()  # ready-to-merge or auto-merge-after-CI
+    MergeConflict = "MergeConflict"  # merge-conflict
+    Blocked = "Blocked"  # blocked-by-other-PR, etc.
+    Decision = "Decision"  # awaiting-zulip
+    Delegated = "Delegated"  # delegated
+    Bors = "Bors"  # ready-to-merge or auto-merge-after-CI
     # any other label, such as t-something (but also "easy", "bug" and a few more)
-    Other = auto()
+    Other = "Other"
 
 
 # All relevant state of a PR at each point in time.
@@ -88,35 +88,35 @@ def canonicalise_label(name: str) -> str:
 
 
 # Describes the current status of a pull request in terms of the categories we care about.
-class PRStatus(Enum):
+class PRStatus(StrEnum):
     # TODO: in August, re-instate reverted
     # # This PR is opened from a fork of mathlib:
     # # in particular, CI cannot fully run, and this PR should be re-created from a branch of mathlib.
     # FromFork = auto()
     # This PR is marked as work in progress, is in draft state or CI fails.
     # CI running is ignored, as this ought to be intermittent.
-    NotReady = auto()
+    NotReady = "NotReady"
     # This PR is blocked on another PR, to mathlib, core or batteries.
-    Blocked = auto()
-    AwaitingReview = auto()
+    Blocked = "Blocked"
+    AwaitingReview = "AwaitingReview"
     # This PR is labelled help-wanted or please-adopt: it needs some help
     # to be moved along (not just the author finding enough time).
-    HelpWanted = auto()
+    HelpWanted = "HelpWanted"
     # Review comments to process: different from "not ready"
-    AwaitingAuthor = auto()
+    AwaitingAuthor = "AwaitingAuthor"
     # This PR is blocked on a decision: the awaiting-zulip label signifies this.
-    AwaitingDecision = auto()
+    AwaitingDecision = "AwaitingDecision"
     # This PR has a merge conflict and is ready, not blocked on another PR,
     # not awaiting author action and and otherwise awaiting review.
     # (Put differently, "blocked", "not ready" or "awaiting-author" take precedence over a merge conflict.)
-    MergeConflict = auto()
+    MergeConflict = "MergeConflict"
     # This PR was delegated to the user.
-    Delegated = auto()
+    Delegated = "Delegated"
     # Ready-to-merge or auto-merge-after-CI. Can become stale if CI fails/multiple retries etc.
-    AwaitingBors = auto()
+    AwaitingBors = "AwaitingBors"
     # FIXME: do we actually need this category?
-    Closed = auto()
-    Contradictory = auto()
+    Closed = "Closed"
+    Contradictory = "Contradictory"
     """PR labels are contradictory: we cannot determine easily what this PR's status is"""
 
     # Keep this in sync with the definition above.

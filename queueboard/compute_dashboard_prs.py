@@ -6,7 +6,7 @@ This file contains the code for computing the PRs on each dashboard in |mathlib_
 """
 
 from datetime import datetime, timedelta, timezone
-from enum import Enum, auto
+from enum import StrEnum, auto
 import json
 import sys
 from dateutil import parser, relativedelta
@@ -61,12 +61,12 @@ def _extract_prs(data: dict) -> List[BasicPRInformation]:
     return prs
 
 
-class DataStatus(Enum):
-    Valid = auto()
-    Incomplete = auto()
+class DataStatus(StrEnum):
+    Valid = "valid"
+    Incomplete = "incomplete"
     # This can happen if a PR is stubborn (i.e. no events data is collected)
     # or a PR's data is contradictory (hence ignored).
-    Missing = auto()
+    Missing = "missing"
 
     # Throws a ValueError on invalid input.
     @staticmethod
@@ -83,10 +83,22 @@ class LastStatusChange(NamedTuple):
     delta: relativedelta.relativedelta
     current_status: PRStatus
 
+class SerializableLastStatusChange(NamedTuple):
+    status: DataStatus
+    time: str # datetime
+    delta: str # relativedelta.relativedelta
+    current_status: PRStatus
+
 class TotalQueueTime(NamedTuple):
     status: DataStatus
     value_td: timedelta
     value_rd: relativedelta.relativedelta
+    explanation: str
+
+class SerializableTotalQueueTime(NamedTuple):
+    status: DataStatus
+    value_td: str # timedelta
+    value_rd: str # relativedelta.relativedelta
     explanation: str
 
 # All information about a single PR contained in `open_pr_info.json`.
@@ -138,6 +150,63 @@ class AggregatePRInfo(NamedTuple):
     last_status_change: LastStatusChange | None
     first_on_queue: Tuple[DataStatus, datetime | None] | None
     total_queue_time: TotalQueueTime | None
+
+# A JSON-serializable version of AggregatePRInfo
+# Keep this in sync with the actual file, extending this once new data is added!
+class SerializableAggregatePRInfo(NamedTuple):
+    is_draft: bool
+    CI_status: CIStatus
+    # The branch this PR is opened against: should be 'master' (for most PRs)
+    base_branch: str
+    # The name of this PR's branch.
+    branch_name: str
+    # The repository this PR was opened from: should not be 'leanprover-community',
+    # i.e. a PR opened from a fork of mathlib
+    head_repo: str
+    # 'open' for open PRs, 'closed' for closed PRs
+    state: str
+    # Github's time when the PR was "last updated"
+    last_updated: str # datetime
+    # The PR author's github handle
+    author: str
+    title: str
+    # The full body of the PR description. For mathlib PRs,
+    # everything before the first "---" line becomes the final commit message.
+    # Information about dependent PRs is noted after the fold.
+    description: str
+    # The numbers of all PRs which this one directly depends on
+    # (as parsed from the PR description).
+    direct_dependencies: List[int]
+    # All labels assigned to this PR.
+    labels: List[Label]
+    additions: int
+    deletions: int
+    # The first 100 modified files.
+    modified_files: List[str]
+    number_modified_files: int
+    # Github handles of all users (if any) approving this
+    approvals: List[str]
+    # The github handles of all users (if any) assigned to this PR
+    assignees: List[str]
+    # All users who left a standard or review comment on this PR: could include
+    # bots posting, and the PR author (aside from the description).
+    users_commented: Tuple[DataStatus, List[str]]
+    # This field is *not* present if there is only "basic" information about this PR.
+    # (Basic PRs contain have the number of standard comments, but of review comments.)
+    number_total_comments: int | None
+    # The following fields are not present when there is only basic information about this PR.
+    # They are also missing if a PR's events data is invalid (because github returned bogus results).
+    # Otherwise, they include their validity status ("missing", "incomplete", "valid").
+    last_status_change: LastStatusChange | None
+    first_on_queue: Tuple[DataStatus, datetime | None] | None
+    total_queue_time: TotalQueueTime | None
+
+def serialize_aggregate_info(aggregate_info: Dict[int, AggregatePRInfo]) -> Dict[int, SerializableAggregatePRInfo]:
+    return
+
+def deserialize_aggregate_info(serialized_aggregate_info: Dict[int, SerializableAggregatePRInfo]) -> Dict[int, AggregatePRInfo]:
+    return
+
 
 # Missing aggregate information will be replaced by this default item.
 PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(

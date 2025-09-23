@@ -1,18 +1,18 @@
-from enum import StrEnum, auto
+from enum import StrEnum
 
 class CIStatus(StrEnum):
     # All build jobs pass (or are skipped).
-    Pass = auto()
+    Pass = "pass"
     # Some build job fails which is not "inessential" (see below).
-    Fail = auto()
+    Fail = "fail"
     # Some build job fails, but all failing jobs are (usually) spurious failures,
     # or related to defects in the infrastructure.
     # Unless a PR actively modifies such infrastructure, this is not a bug in the PR.
-    FailInessential = auto()
+    FailInessential = "fail-inessential"
     # CI is currently running
-    Running = auto()
+    Running = "running"
     # Missing data.
-    Missing = auto()
+    Missing = None
 
     @staticmethod
     def from_string(s: str):

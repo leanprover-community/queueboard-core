@@ -6,7 +6,7 @@ from typing import List, NamedTuple, Dict
 from ci_status import CIStatus
 from mathlib_dashboards import Dashboard
 from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation,
-    PLACEHOLDER_AGGREGATE_INFO, compute_pr_statusses, determine_pr_dashboards, parse_aggregate_file, _extract_prs)
+    PLACEHOLDER_AGGREGATE_INFO, SerializableAggregatePRInfo, compute_pr_statusses, determine_pr_dashboards, parse_aggregate_file, _extract_prs, serialize_aggregate_info)
 
 ### Reading the input files passed to this script ###
 
@@ -125,14 +125,14 @@ def main() -> None:
             print(f"warning: found no aggregate information for PR {pr.number}; filling in defaults", file=sys.stderr)
             aggregate_info[pr.number] = PLACEHOLDER_AGGREGATE_INFO
     with open(path.join("api", "aggregate_info.json"), "w") as f:
-        json.dump(aggregate_info, f)
+        json.dump(serialize_aggregate_info(aggregate_info), f)
 
     draft_PRs = [pr for pr in input_data.all_open_prs if aggregate_info[pr.number].is_draft]
     with open(path.join("api", "draft_PRs.json"), "w") as f:
-        json.dump(draft_PRs, f)
+        json.dump(serialize_aggregate_info(draft_PRs), f)
     nondraft_PRs = [pr for pr in input_data.all_open_prs if not aggregate_info[pr.number].is_draft]
     with open(path.join("api", "nondraft_PRs.json"), "w") as f:
-        json.dump(nondraft_PRs, f)
+        json.dump(serialize_aggregate_info(nondraft_PRs), f)
 
     # The only exception is for the "on the queue" page,
     # which points out missing information explicitly, hence is passed the non-filled in data.
