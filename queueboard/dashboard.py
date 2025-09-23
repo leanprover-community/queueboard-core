@@ -375,14 +375,15 @@ def _compute_pr_entries(
 ) -> str:
     result = ""
     for pr in prs:
-        name = aggregate_information[pr.number].author
+        pr_number = str(pr.number)
+        name = aggregate_information[pr_number].author
         if pr.url != infer_pr_url(pr.number):
             print(f"warning: PR {pr.number} has url differing from the inferred one:\n  actual:   {pr.url}\n  inferred: {infer_pr_url(pr.number)}", file=sys.stderr)
         labels = _write_labels(pr.labels, page_name, id)
         # Mild HACK: if a PR has label "t-algebra", we append the hidden string "label:t-algebra$" to make this searchable.
         label_hack = hide('label:t-algebra$') if "t-algebra" in [lab.name for lab in pr.labels] else ""
-        branch_name = aggregate_information[pr.number].branch_name if pr.number in aggregate_information else "missing"
-        description = aggregate_information[pr.number].description
+        branch_name = aggregate_information[pr_number].branch_name if pr.number in aggregate_information else "missing"
+        description = aggregate_information[pr_number].description
         # Mild HACK: append each PR's author as "author:name" to the end of the author column (hidden),
         # to allow for searches "author:name".
         author_hack = hide(f"author:{name}")
@@ -391,7 +392,7 @@ def _compute_pr_entries(
         # Detailed information about the current PR.
         pr_info = None
         if pr.number in aggregate_information:
-            pr_info = aggregate_information[pr.number]
+            pr_info = aggregate_information[pr_number]
         if pr_info is None:
             print(f"main dashboard: found no aggregate information for PR {pr.number}", file=sys.stderr)
             entries.extend(["-1/-1", "no data available", "-1", "-1", '<a title="no data available">n/a</a>'])
@@ -442,7 +443,7 @@ def _compute_pr_entries(
                 approval_link = f'<a title="{app}">{len(approvals_dedup)}</a>' if approvals_dedup else "none"
                 entries.append(approval_link)
             if extra_settings.potential_reviewers and potential_reviewers is not None:
-                (reviewer_str, names) = potential_reviewers[pr.number]
+                (reviewer_str, names) = potential_reviewers[pr_number]
                 entries.append(reviewer_str)
                 if names:
                     # Just allow contacting the first reviewer, for now.
@@ -464,14 +465,14 @@ def _compute_pr_entries(
         real_update = f'{hide(" ")}<a title="the last actual update for this PR could not be determined">unknown</a>'
         total_time = f'{hide(" ")}<a title="this PR\'s total time in review could not be determined">unknown</a>'
         if pr_info:
-            last_update = aggregate_information[pr.number].last_status_change
+            last_update = aggregate_information[pr_number].last_status_change
             if last_update is not None and last_update.status != DataStatus.Missing:
                 date = str(last_update.time).replace("+00:00", "")
                 prefix = hide(format_delta2(datetime.now(timezone.utc) - last_update.time))
                 real_update = f'{prefix}<a title="{date}">{format_delta(last_update.delta)} ago</a>'
                 if last_update.status == DataStatus.Incomplete:
                     real_update += '<a title="caution: this data is likely incomplete">*</a>'
-            tqt = aggregate_information[pr.number].total_queue_time
+            tqt = aggregate_information[pr_number].total_queue_time
             if tqt is not None and tqt.status != DataStatus.Missing:
                 prefix = hide(format_delta2(tqt.value_td))
                 total_time = f'{prefix}<a title="{tqt.explanation}">{format_delta(tqt.value_rd)}</a>'
@@ -658,7 +659,8 @@ def write_on_the_queue_page(
 
     body = ""
     for pr in prs:
-        if base_branch[pr.number] != "master":
+        pr_number = str(pr.number)
+        if base_branch[pr_number] != "master":
             continue
         # from_fork = pr in prs_from_fork
         status_symbol = {
@@ -673,7 +675,7 @@ def write_on_the_queue_page(
         has_merge_conflict = "merge-conflict" in [lab.name for lab in pr.labels]
         is_ready = not (any(lab.name in ["WIP", "help-wanted", "please-adopt"] for lab in pr.labels))
         review = not (any(lab.name in ["awaiting-CI", "awaiting-author", "awaiting-zulip"] for lab in pr.labels))
-        overall = (CI_status[pr.number] == CIStatus.Pass) and (not is_blocked) and (not has_merge_conflict) and is_ready and review
+        overall = (CI_status[pr_number] == CIStatus.Pass) and (not is_blocked) and (not has_merge_conflict) and is_ready and review
         name = pr.author_name
         if name is None:
             # TODO: take the author from the aggregate information instead
@@ -682,7 +684,7 @@ def write_on_the_queue_page(
         has_topic_label = any((lab.name.startswith("t-") or lab.name in ["CI", "IMO"]) for lab in pr.labels)
         missing_topic_label = pr.title.startswith("feat") and (not has_topic_label)
         topic_label_symbol = '<a title="this feature PR has no topic label">⚠️</a>' if missing_topic_label else ""
-        current_status = PRStatus.Closed if aggregate_info[pr.number].state == "closed" else all_pr_status[pr.number]
+        current_status = PRStatus.Closed if aggregate_info[pr_number].state == "closed" else all_pr_status[pr_number]
         (curr1, curr2) = {
             PRStatus.AwaitingBors: ("is", "awaiting bors"),
             PRStatus.AwaitingAuthor: ("is", "awaiting author"),
@@ -700,14 +702,14 @@ def write_on_the_queue_page(
         }[current_status]
         if current_status == PRStatus.NotReady:
             # We emit more fine-grained information for "not ready" PRs.
-            if aggregate_info[pr.number].is_draft:
+            if aggregate_info[pr_number].is_draft:
                 curr2 = "marked draft"
-            if "WIP" in [lab.name for lab in aggregate_info[pr.number].labels]:
+            if "WIP" in [lab.name for lab in aggregate_info[pr_number].labels]:
                 curr2 = "labelled WIP"
-            elif "awaiting-CI" in [lab.name for lab in aggregate_info[pr.number].labels]:
+            elif "awaiting-CI" in [lab.name for lab in aggregate_info[pr_number].labels]:
                 (curr1, curr2) = ("", "does not pass CI")
             else:
-                match aggregate_info[pr.number].CI_status:
+                match aggregate_info[pr_number].CI_status:
                     case CIStatus.Fail:
                         (curr1, curr2) = ("has", "failing CI")
                     case CIStatus.Running:
@@ -720,8 +722,8 @@ def write_on_the_queue_page(
                     case CIStatus.Pass:
                         pass  # should not happen!
                     case _:
-                        raise ValueError(f"missing case: {aggregate_info[pr.number].CI_status}")
-        pr_data = aggregate_info[pr.number]
+                        raise ValueError(f"missing case: {aggregate_info[pr_number].CI_status}")
+        pr_data = aggregate_info[pr_number]
         if pr_data.last_status_change is None or pr_data.total_queue_time is None:
             status = curr2
         else:
@@ -740,7 +742,7 @@ def write_on_the_queue_page(
             pr_link(pr.number, pr.url), user_filter_link(name, "on_the_queue.html", ""), title_link(pr.title, pr.url),
             _write_labels(pr.labels, "on_the_queue.html", ""),
             # icon(not from_fork), # TODO(August/September): re-instate with inverted meaning
-            status_symbol[CI_status[pr.number]],
+            status_symbol[CI_status[pr_number]],
             icon(not is_blocked), icon(not has_merge_conflict), icon(is_ready), icon(review), icon(overall),
             topic_label_symbol, status
         ]
@@ -992,7 +994,8 @@ def write_triage_page(
     recent_on_queue = []
     two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
     for pr in prs_to_list[Dashboard.Queue]:
-        first_on_queue = aggregate_info[pr.number].first_on_queue
+        pr_number = str(pr.number)
+        first_on_queue = aggregate_info[pr_number].first_on_queue
         if first_on_queue is not None:
             (foq_status, foq_time) = first_on_queue
             if foq_time is None:

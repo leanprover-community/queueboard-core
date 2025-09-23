@@ -502,7 +502,7 @@ def gather_pr_statistics(
         PRStatus.Contradictory,
         PRStatus.Delegated, PRStatus.AwaitingBors,
     ]
-    numbers = [pr.number for pr in all_ready_prs]
+    numbers = [str(pr.number) for pr in all_ready_prs]
     ready_pr_status = { n: all_pr_statusses[n] for n in numbers }
     number_prs: Dict[PRStatus, int] = {
         status: len([number for number in ready_pr_status if ready_pr_status[number] == status]) for status in statusses
