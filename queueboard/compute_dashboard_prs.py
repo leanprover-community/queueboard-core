@@ -147,63 +147,86 @@ PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(
     "unknown", "unknown title", "unknown description", [], [], -1, -1, [], -1, [], [], (DataStatus.Missing, []), None, None, None, None,
 )
 
-def custom_json_serializer(obj: Any) -> Any:
-    """Custom serializer for json.dump/dumps"""
+class CustomJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles our special types"""
 
-    # Handle datetime objects
-    if isinstance(obj, datetime):
-        return {
-            "__type__": "datetime",
-            "__value__": obj.isoformat()
-        }
+    def encode(self, obj):
+        """Override encode to handle our types before default processing"""
+        return super().encode(self._transform_object(obj))
 
-    # Handle timedelta objects
-    elif isinstance(obj, timedelta):
-        return {
-            "__type__": "timedelta",
-            "__value__": obj.total_seconds()
-        }
+    def _transform_object(self, obj):
+        """Recursively transform objects to JSON-serializable format"""
 
-    # Handle relativedelta objects
-    elif isinstance(obj, relativedelta.relativedelta):
-        return {
-            "__type__": "relativedelta",
-            "__value__": {
-                "years": obj.years,
-                "months": obj.months,
-                "days": obj.days,
-                "hours": obj.hours,
-                "minutes": obj.minutes,
-                "seconds": obj.seconds,
-                "microseconds": obj.microseconds
+        # Handle NamedTuple objects FIRST
+        if hasattr(obj, '_fields') and hasattr(obj, '_asdict'):
+            return {
+                "__type__": "namedtuple",
+                "__class__": obj.__class__.__name__,
+                "__value__": self._transform_object(obj._asdict())
             }
-        }
 
-    # Handle StrEnum objects
-    elif isinstance(obj, StrEnum):
-        return {
-            "__type__": "enum",
-            "__enum_class__": obj.__class__.__name__,
-            "__value__": obj.value
-        }
+        # Handle datetime objects
+        elif isinstance(obj, datetime):
+            return {
+                "__type__": "datetime",
+                "__value__": obj.isoformat()
+            }
 
-    # Handle NamedTuple objects
-    elif hasattr(obj, '_fields') and hasattr(obj, '_asdict'):
-        return {
-            "__type__": "namedtuple",
-            "__class__": obj.__class__.__name__,
-            "__value__": obj._asdict()
-        }
+        # Handle timedelta objects
+        elif isinstance(obj, timedelta):
+            return {
+                "__type__": "timedelta",
+                "__value__": obj.total_seconds()
+            }
 
-    # If we can't serialize it, let json.dumps handle it (will raise TypeError)
-    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+        # Handle relativedelta objects
+        elif isinstance(obj, relativedelta.relativedelta):
+            return {
+                "__type__": "relativedelta",
+                "__value__": {
+                    "years": obj.years,
+                    "months": obj.months,
+                    "days": obj.days,
+                    "hours": obj.hours,
+                    "minutes": obj.minutes,
+                    "seconds": obj.seconds,
+                    "microseconds": obj.microseconds
+                }
+            }
+
+        # Handle StrEnum objects
+        elif isinstance(obj, StrEnum):
+            return {
+                "__type__": "enum",
+                "__enum_class__": obj.__class__.__name__,
+                "__value__": obj.value
+            }
+
+        # Handle regular tuples (after checking for NamedTuples)
+        elif isinstance(obj, tuple):
+            return {
+                "__type__": "tuple",
+                "__value__": [self._transform_object(item) for item in obj]
+            }
+
+        # Handle lists
+        elif isinstance(obj, list):
+            return [self._transform_object(item) for item in obj]
+
+        # Handle dictionaries
+        elif isinstance(obj, dict):
+            return {key: self._transform_object(value) for key, value in obj.items()}
+
+        # For everything else, return as-is
+        else:
+            return obj
 
 
 def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
     """Custom deserializer for json.load/loads"""
 
     # Check if this is one of our special serialized objects
-    if "__type__" not in dct:
+    if not isinstance(dct, dict) or "__type__" not in dct:
         return dct
 
     obj_type = dct["__type__"]
@@ -270,6 +293,10 @@ def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
             # Fallback - return the dict
             return value_dict
 
+    # Handle regular tuples
+    elif obj_type == "tuple":
+        return tuple(dct["__value__"])
+
     # If we don't recognize the type, return the dict as-is
     return dct
 
@@ -278,7 +305,7 @@ def custom_json_deserializer(dct: Dict[str, Any]) -> Any:
 def dump_to_json_file(obj: Any, filepath: str, **kwargs) -> None:
     """Save object to JSON file with custom serialization"""
     with open(filepath, 'w') as f:
-        json.dump(obj, f, default=custom_json_serializer, **kwargs)
+        json.dump(obj, f, cls=CustomJSONEncoder, **kwargs)
 
 
 def load_from_json_file(filepath: str, **kwargs) -> Any:
