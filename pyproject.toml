@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
 [project]
 name = "queueboard-core"
 version = "0.1.0"
@@ -13,3 +17,16 @@ dependencies = [
 dev = [
     "ruff>=0.13.1",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/queueboard"]
+
+[tool.hatch.build]
+include = [
+  "src/queueboard/**/*.py",
+  "src/queueboard/graphql/**/*",
+  "src/queueboard/static/**/*",
+]
+
+[tool.uv]
+package-dir = "src"
