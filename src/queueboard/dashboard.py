@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
-# This script reads json files from the api/ directory and displays the data in an HTML dashboard.
-# This takes an (optional) input argument giving the name of the directory to place the output files ("gh-pages" by default)
+# This script reads in API json files displays the data in an HTML dashboard.
+# This takes 2 (optional) input arguments,
+# the first giving the name of the directory to place the output files ("gh-pages" by default)
+# the second giving the name of the directory where the api files are ("api" by default)
 
 import sys
 import shutil
@@ -630,9 +632,10 @@ HTML_HEADER = """
 
 
 GH_PAGES_DIR = "gh-pages"
+API_DIR = "api"
 
 
-# Write a webpage with body out a file called 'outfile*.
+# Write a webpage with body out a file called 'outfile'.
 # 'custom_script' (if present) is expected to be newline-delimited and appropriately indented.
 def write_webpage(body: str, outfile: str, use_tables: bool = True, custom_script: str | None = None) -> None:
     with open(path.join(GH_PAGES_DIR, outfile), "w") as fi:
@@ -1164,20 +1167,25 @@ def write_triage_page(
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1]:
+        global GH_PAGES_DIR
         GH_PAGES_DIR = sys.argv[1]  # "gh-pages" by default
 
-    aggregate_info = load_from_json_file(path.join("api", "aggregate_info.json"))
-    draft_PRs = load_from_json_file(path.join("api", "draft_PRs.json"))
-    nondraft_PRs = load_from_json_file(path.join("api", "nondraft_PRs.json"))
-    CI_status = load_from_json_file(path.join("api", "CI_status.json"))
-    all_pr_status = load_from_json_file(path.join("api", "all_pr_status.json"))
-    base_branch = load_from_json_file(path.join("api", "base_branch.json"))
-    prs_to_list = load_from_json_file(path.join("api", "prs_to_list.json"))
+    if len(sys.argv) > 2 and sys.argv[2]:
+        global API_DIR
+        API_DIR = sys.argv[1]  # "gh-pages" by default
+
+    aggregate_info = load_from_json_file(path.join(API_DIR, "aggregate_info.json"))
+    draft_PRs = load_from_json_file(path.join(API_DIR, "draft_PRs.json"))
+    nondraft_PRs = load_from_json_file(path.join(API_DIR, "nondraft_PRs.json"))
+    CI_status = load_from_json_file(path.join(API_DIR, "CI_status.json"))
+    all_pr_status = load_from_json_file(path.join(API_DIR, "all_pr_status.json"))
+    base_branch = load_from_json_file(path.join(API_DIR, "base_branch.json"))
+    prs_to_list = load_from_json_file(path.join(API_DIR, "prs_to_list.json"))
 
     makedirs(GH_PAGES_DIR, exist_ok=True)
-    # copy JSON files from API into place
-    shutil.copy2(path.join("api", "automatic_assignments.json"), GH_PAGES_DIR)
-    shutil.copy2(path.join("api", "dependency_graph.json"), GH_PAGES_DIR)
+    # copy JSON files from API_DIR into place
+    shutil.copy2(path.join(API_DIR, "automatic_assignments.json"), GH_PAGES_DIR)
+    shutil.copy2(path.join(API_DIR, "dependency_graph.json"), GH_PAGES_DIR)
 
     # all HTML files are written to GH_PAGES_DIR, see write_webpage
     write_on_the_queue_page(all_pr_status, aggregate_info, nondraft_PRs, CI_status, base_branch)
