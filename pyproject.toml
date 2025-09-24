@@ -27,6 +27,3 @@ include = [
   "src/queueboard/graphql/**/*",
   "src/queueboard/static/**/*",
 ]
-
-[tool.uv]
-package-dir = "src"

@@ -88,15 +88,44 @@ def determine_ci_status(number, CI_check_nodes: dict) -> str:
 # - the total time a PR was on the review queue.
 # Each dictionary contains its answer status (which can be "missing", "incomplete" or "valid")
 # and (if data is present) the computed value.
-def _compute_status_change_data(pr_data: dict, CI_status: str | None, number: int, is_incomplete: bool) -> Tuple[dict, dict, dict]:
+def _compute_status_change_data(
+    pr_data: dict, CI_status: str | None, number: int, is_incomplete: bool
+) -> Tuple[dict, dict, dict]:
     # These particular PRs have one label noted as removed several times in a row.
     # This trips up my algorithm. Omit the analysis for now. FIXME: make smarter?
     bad_prs = [
-        10655, 10823, 10878, 11703, 11711, 11385, 11874, 12076, 12268, 12311, 12371,
-        12435, 12488, 12561, 13149, 13248, 13270, 13273, 13697, 14008, 14065,
-        13089, # TODO: investigate more closely!
-        3200, 6595,
-        9526, 9273, 12032, 24769, 25712, 25753, 25922, 26004,
+        10655,
+        10823,
+        10878,
+        11703,
+        11711,
+        11385,
+        11874,
+        12076,
+        12268,
+        12311,
+        12371,
+        12435,
+        12488,
+        12561,
+        13149,
+        13248,
+        13270,
+        13273,
+        13697,
+        14008,
+        14065,
+        13089,  # TODO: investigate more closely!
+        3200,
+        6595,
+        9526,
+        9273,
+        12032,
+        24769,
+        25712,
+        25753,
+        25922,
+        26004,
     ]
     if number in bad_prs:
         missing = {"status": "missing"}
@@ -170,7 +199,7 @@ def parse_direct_dependencies(description: str) -> List[int]:
         return []
     # Pattern matches both checked [x] and unchecked [ ] dependencies
     # Captures the PR number after the #. Allows both content before and after the pattern.
-    pattern = r'- \[[ x]\] depends on: #(\d+)'
+    pattern = r"- \[[ x]\] depends on: #(\d+)"
     matches = re.findall(pattern, description, re.IGNORECASE)
     # Remove duplicate numbers; sort for determinism.
     return sorted(list(set([int(pr_num) for pr_num in matches])))
@@ -179,8 +208,9 @@ def parse_direct_dependencies(description: str) -> List[int]:
 def test_deps_parsing():
     def check(input: str, expected: List[int]) -> None:
         actual = parse_direct_dependencies(input)
-        aux = input.replace('\n', '\n  ')
+        aux = input.replace("\n", "\n  ")
         assert expected == actual, f"expected direct dependencies {expected} from description\n  {aux}\ngot {actual}"
+
     check("", [])
     check("Some PR description without dependencies", [])
     check("- [ ] depends on: #12", [12])
@@ -203,7 +233,7 @@ def test_deps_parsing():
     # Putting something bogus is not recognised either.
     check("Some PR description\n- [ ] depends on: #xyz with lots of additional text", [])
     # The standard PR template does not yield dependent PRs.
-    std = '- [ ] depends on: #abc [optional extra text]\r\n- [ ] depends on: #xyz [optional extra text]\r\n'
+    std = "- [ ] depends on: #abc [optional extra text]\r\n- [ ] depends on: #xyz [optional extra text]\r\n"
     check(std, [])
     # NB. We currently don't check if a PR number is inside the HTML comment.
     check("<!--\n- [ ] depends on: #123 ->", [123])
@@ -291,16 +321,70 @@ def get_aggregate_data(pr_data: dict, only_basic_info: bool) -> dict:
         # All these PRs have (sometimes far) more than commits or 250 events, so re-downloading their
         # data now would not help: do not print information about them.
         do_not_redownload = [
-            6057, 6277, 6468, 7849, 8585, 9013,
+            6057,
+            6277,
+            6468,
+            7849,
+            8585,
+            9013,
             # 13611 has ~240 commits, so the events data is also incomplete
-            10235, 10383, 11465, 11466, 13194, 13429, 13611, 13905,
-            16152, 16316, 16351, 17518, 17519, 17715, 18672, 20768,
-            15564, 15746, 15748, 15749, 15978, 15981, 16077, 16080, 16112, 16148, 16313,
-            16362, 16375, 16534, 16535, 16657, 17132, 17240, 19706,
+            10235,
+            10383,
+            11465,
+            11466,
+            13194,
+            13429,
+            13611,
+            13905,
+            16152,
+            16316,
+            16351,
+            17518,
+            17519,
+            17715,
+            18672,
+            20768,
+            15564,
+            15746,
+            15748,
+            15749,
+            15978,
+            15981,
+            16077,
+            16080,
+            16112,
+            16148,
+            16313,
+            16362,
+            16375,
+            16534,
+            16535,
+            16657,
+            17132,
+            17240,
+            19706,
             # adaptation PRs or benchmarking
             8076,
-            15181, 15358, 15503, 15788, 15827, 16163, 16244, 16425, 16669, 16716, 17058,
-            17374, 17532, 18007, 18421, 18830, 19494, 19984, 20392, 20402,
+            15181,
+            15358,
+            15503,
+            15788,
+            15827,
+            16163,
+            16244,
+            16425,
+            16669,
+            16716,
+            17058,
+            17374,
+            17532,
+            18007,
+            18421,
+            18830,
+            19494,
+            19984,
+            20392,
+            20402,
         ]
         # Until cursor handling has been implemented, these warnings do not add helpful information.
         # if num_events == 250 and len(events_not_commit) == 0:
@@ -310,10 +394,15 @@ def get_aggregate_data(pr_data: dict, only_basic_info: bool) -> dict:
         num_commits = len(inner["commits"]["nodes"])
         if num_commits == 100 and state == "open":
             if number not in do_not_redownload:
-                print(f"process.py: {state} PR {number} has exactly 100 commits; please double-check if this data is complete", file=sys.stderr)
+                print(
+                    f"process.py: {state} PR {number} has exactly 100 commits; please double-check if this data is complete",
+                    file=sys.stderr,
+                )
 
         # Compute information about this PR's real status changes, using the code in state_evolution.py.
-        (res_first_on_queue, res_last_status_change, res_total_queue_time) = _compute_status_change_data(pr_data, CI_status, number, num_events == 250)
+        (res_first_on_queue, res_last_status_change, res_total_queue_time) = _compute_status_change_data(
+            pr_data, CI_status, number, num_events == 250
+        )
         aggregate_data["first_on_queue"] = res_first_on_queue
         aggregate_data["last_status_change"] = res_last_status_change
         aggregate_data["total_queue_time"] = res_total_queue_time
@@ -328,21 +417,30 @@ def compute_infinity_cosmos_data(now: str, all_open_pr_items: dict) -> dict:
         if "infinity-cosmos" in pr["label_names"]:
             real = pr.get("last_status_change")
             if real is None or real["status"] != "valid":
-                prs.append({
-                    "number": pr["number"], "last_updated": pr["last_updated"],
-                    "last_status_change": None, "current_status": None,
-                })
+                prs.append(
+                    {
+                        "number": pr["number"],
+                        "last_updated": pr["last_updated"],
+                        "last_status_change": None,
+                        "current_status": None,
+                    }
+                )
             else:
-                prs.append({
-                    "number": pr["number"], "last_updated": pr["last_updated"],
-                    "last_status_change": real["time"], "current_status": real["current_status"]
-                })
+                prs.append(
+                    {
+                        "number": pr["number"],
+                        "last_updated": pr["last_updated"],
+                        "last_status_change": real["time"],
+                        "current_status": real["current_status"],
+                    }
+                )
     return {"timestamp": now, "prs": prs}
+
 
 def main() -> None:
     fast = False
     if len(sys.argv) == 2:
-        if sys.argv[1] == '--fast':
+        if sys.argv[1] == "--fast":
             fast = True
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     label_colours: dict[str, str] = dict()
@@ -359,14 +457,19 @@ def main() -> None:
     for pr_dir in pr_dirs:
         only_basic_info = "basic" in pr_dir
         pr_number = pr_dir.removesuffix("-basic")
-        filename = path.join("data", pr_dir, "basic_pr_info.json") if only_basic_info else path.join("data", pr_dir, "pr_info.json")
+        filename = (
+            path.join("data", pr_dir, "basic_pr_info.json") if only_basic_info else path.join("data", pr_dir, "pr_info.json")
+        )
         match parse_json_file(filename, pr_number):
             case str(err):
                 if pr_number not in known_erronerous:
                     print(f"attention: found an unexpected error!\n  {err}", file=sys.stderr)
             case dict(data):
                 if (pr_number in known_erronerous) and not only_basic_info:
-                    print(f"warning: PR {pr_number} has fine data, but is listed as erronerous: please remove it from that list", file=sys.stderr)
+                    print(
+                        f"warning: PR {pr_number} has fine data, but is listed as erronerous: please remove it from that list",
+                        file=sys.stderr,
+                    )
                 label_data = data["data"]["repository"]["pullRequest"]["labels"]["nodes"]
                 for lab in label_data:
                     if "color" in lab:

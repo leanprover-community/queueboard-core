@@ -55,16 +55,21 @@ def read_reviewer_info() -> List[ReviewerInfo]:
     # Future: download the raw file from this link, instead of reading a local copy!
     # (This requires fixing the upstream version first: locally, it is easy to just correct the bugs.)
     # And the file should live on a more stable branch (master?), or the webpage?
-    _file_url = "https://raw.githubusercontent.com/leanprover-community/mathlib4/refs/heads/reviewer-topics/docs/reviewer-topics.json"
+    _file_url = (
+        "https://raw.githubusercontent.com/leanprover-community/mathlib4/refs/heads/reviewer-topics/docs/reviewer-topics.json"
+    )
     with open("reviewer-topics.json", "r") as fi:
         reviewer_topics = json.load(fi)
     return [
         ReviewerInfo(
-            entry["github_handle"], entry["zulip_handle"], entry["top_level"], entry["free_form"],
+            entry["github_handle"],
+            entry["zulip_handle"],
+            entry["top_level"],
+            entry["free_form"],
             entry["maximum_capacity"] if "maximum_capacity" in entry else DEFAULT_CAPACITY,
             entry["auto_assign"] if "auto_assign" in entry else True,
             entry["temporary_break"] if "temporary_break" in entry else False,
-            entry["conflict_of_interest"] if "conflict_of_interest" in entry else []
+            entry["conflict_of_interest"] if "conflict_of_interest" in entry else [],
         )
         for entry in reviewer_topics
     ]
@@ -97,8 +102,10 @@ class AssignmentStatistics(NamedTuple):
 def _compute_weight(pr: int, data: AggregatePRInfo) -> float:
     # We don't use data.last_status_change as that is None for stubborn PRs
     # (whereas we still classify them using labels and CI data).
-    labels: List[LabelKind] = [label_categorisation_rules[lab.name] for lab in data.labels if lab.name in label_categorisation_rules]
-    state = PRState(labels, data.CI_status, data.is_draft, data.head_repo != 'leanprover-community')
+    labels: List[LabelKind] = [
+        label_categorisation_rules[lab.name] for lab in data.labels if lab.name in label_categorisation_rules
+    ]
+    state = PRState(labels, data.CI_status, data.is_draft, data.head_repo != "leanprover-community")
     status: PRStatus = determine_PR_status(datetime(2025, 1, 1, tzinfo=tz.tzutc()), state)
     match status:
         case PRStatus.AwaitingReview | PRStatus.MergeConflict:
@@ -119,7 +126,7 @@ def _compute_weight(pr: int, data: AggregatePRInfo) -> float:
                     return 1 / (delta.days + 1)
         case PRStatus.Delegated | PRStatus.AwaitingBors:
             return 0
-        case PRStatus.Closed | PRStatus.Contradictory | PRStatus.NotReady: # | PRStatus.FromFork:
+        case PRStatus.Closed | PRStatus.Contradictory | PRStatus.NotReady:  # | PRStatus.FromFork:
             return 0
         case PRStatus.HelpWanted:
             return 0  # arguably also fine
@@ -135,7 +142,7 @@ def _compute_weight(pr: int, data: AggregatePRInfo) -> float:
 # (where t is the number of days since the PR was last on the queue),
 # blocked PRs get weight 0.
 # Self-assigned PRs also get weight 0.
-def _compute_assignment_weight(reviewer: str, prs : List[int], all_aggregate_info: dict[int, AggregatePRInfo]) -> float:
+def _compute_assignment_weight(reviewer: str, prs: List[int], all_aggregate_info: dict[int, AggregatePRInfo]) -> float:
     return sum([_compute_weight(pr, all_aggregate_info[pr]) for pr in prs if all_aggregate_info[pr].author != reviewer])
 
 
@@ -153,11 +160,11 @@ def collect_assignment_statistics(all_aggregate_info: dict[int, AggregatePRInfo]
         assigned_open_prs.extend(open_assigned)
     num_multiple_assignees = len(assigned_open_prs) - len(set(assigned_open_prs))
     if assignment_data["number_open_assigned"] != len(list(set(assigned_open_prs))):
-        print(f'WARNING: assignment statistics are inconsistent, found {assignment_data["number_open_assigned"]} open assigned PRs in the .json file, but am counting PR {len(list(set(assigned_open_prs)))} of them')
+        print(
+            f"WARNING: assignment statistics are inconsistent, found {assignment_data['number_open_assigned']} open assigned PRs in the .json file, but am counting PR {len(list(set(assigned_open_prs)))} of them"
+        )
     # assert assignment_data["number_open_assigned"] == len(list(set(assigned_open_prs)))
-    return AssignmentStatistics(
-        time, num_open, sorted(list(set(assigned_open_prs))), num_multiple_assignees, numbers
-    )
+    return AssignmentStatistics(time, num_open, sorted(list(set(assigned_open_prs))), num_multiple_assignees, numbers)
 
 
 class ReviewerSuggestion(NamedTuple):
@@ -178,8 +185,11 @@ class ReviewerSuggestion(NamedTuple):
 # We return all reviewers whose top-level interest have the best possible match
 # for this PR.
 def suggest_reviewers(
-    existing_assignments: dict[str, Tuple[List[int], float, int]], reviewers: List[ReviewerInfo], number: int, info: AggregatePRInfo,
-    all_info: dict[int, AggregatePRInfo]  # aggregate information about all PRs
+    existing_assignments: dict[str, Tuple[List[int], float, int]],
+    reviewers: List[ReviewerInfo],
+    number: int,
+    info: AggregatePRInfo,
+    all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
 ) -> ReviewerSuggestion:
     # Look at all topic labels of this PR, and find all suitable reviewers.
     topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
@@ -228,21 +238,25 @@ def suggest_reviewers(
         # (Not every reviewer has had an assignment so far, so we need to use a fall-back value.)
         with_curr_assignments = [
             (rev, areas, existing_assignments[rev.github][1] if rev.github in existing_assignments else 0)
-                for (rev, areas) in proposed_reviewers
+            for (rev, areas) in proposed_reviewers
         ]
         with_curr_assignments = sorted(with_curr_assignments, key=lambda s: s[2])
         # FIXME: refine which information is actually useful here.
         # Or also show information if a single (and the PR's only) area matches?
         if not topic_labels:
-            formatted = ", ".join([
-                user_link(rev.github, f"{n:0.1f} (weighted) open assigned PRs(s)")
-                for (rev, areas, n) in with_curr_assignments
-            ])
+            formatted = ", ".join(
+                [user_link(rev.github, f"{n:0.1f} (weighted) open assigned PRs(s)") for (rev, areas, n) in with_curr_assignments]
+            )
         else:
-            formatted = ", ".join([
-                user_link(rev.github, f"relevant area(s) of competence: {', '.join(areas)}{f'; comments: {rev.comment}' if rev.comment else ''}; {n:.1f} (weighted) open assigned PRs(s)")
-                for (rev, areas, n) in with_curr_assignments
-            ])
+            formatted = ", ".join(
+                [
+                    user_link(
+                        rev.github,
+                        f"relevant area(s) of competence: {', '.join(areas)}{f'; comments: {rev.comment}' if rev.comment else ''}; {n:.1f} (weighted) open assigned PRs(s)",
+                    )
+                    for (rev, areas, n) in with_curr_assignments
+                ]
+            )
         suggested_reviewers = [rev.github for (rev, _areas, _n_weighted) in with_curr_assignments]
 
         available_with_weights = [
@@ -254,9 +268,12 @@ def suggest_reviewers(
         chosen_reviewer = None
         if all_available_reviewers:
             import random
+
             chosen_reviewer = random.choices(all_available_reviewers, weights=[n for (rev, n) in available_with_weights], k=1)[0]
         else:
-            print(f"warning: PR {number} has {len(suggested_reviewers)} suitable reviewers (these: {suggested_reviewers}), but nobody has reviewing capacity right now")
+            print(
+                f"warning: PR {number} has {len(suggested_reviewers)} suitable reviewers (these: {suggested_reviewers}), but nobody has reviewing capacity right now"
+            )
         return ReviewerSuggestion(formatted, suggested_reviewers, all_available_reviewers, chosen_reviewer)
 
 
@@ -265,7 +282,10 @@ def suggest_reviewers(
 # is returned --- who is on the review rotation and has available review capacity.
 # Return a dictionary (pr_number: candidate reviewer).
 def suggest_reviewers_many(
-    existing_assignments: dict[str, Tuple[List[int], float, int]], reviewers: List[ReviewerInfo], prs_to_assign: List[int], info: dict[int, AggregatePRInfo]
+    existing_assignments: dict[str, Tuple[List[int], float, int]],
+    reviewers: List[ReviewerInfo],
+    prs_to_assign: List[int],
+    info: dict[int, AggregatePRInfo],
 ) -> dict[int, str]:
     suggestions = {}
     stats = existing_assignments.copy()

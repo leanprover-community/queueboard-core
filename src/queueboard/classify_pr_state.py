@@ -21,9 +21,9 @@ class LabelKind(StrEnum):
     Review = "Review"
     """This PR is ready for review: this label is only added for historical purposes, as mathlib does not use this label any more"""
     HelpWanted = "HelpWanted"
-    '''This PR is labelled help-wanted or please-adopt'''
+    """This PR is labelled help-wanted or please-adopt"""
     Author = "Author"
-    '''This PR is labelled awaiting-author'''
+    """This PR is labelled awaiting-author"""
     MergeConflict = "MergeConflict"  # merge-conflict
     Blocked = "Blocked"  # blocked-by-other-PR, etc.
     Decision = "Decision"  # awaiting-zulip
@@ -46,9 +46,11 @@ class PRState(NamedTuple):
     def with_labels(labels: List[LabelKind]):
         """Create a PR state with just these labels, passing CI and ready for review"""
         return PRState(labels, CIStatus.Pass, False, False)
+
     @staticmethod
     def with_labels_and_ci(labels: List[LabelKind], ci: CIStatus):
         return PRState(labels, ci, False, False)
+
     @staticmethod
     def with_labels_ci_draft(labels: List[LabelKind], ci: CIStatus, is_draft: bool):
         return PRState(labels, ci, is_draft, False)
@@ -140,7 +142,7 @@ class PRStatus(StrEnum):
 
     # Keep this in sync with to_str definition above.
     @staticmethod
-    def tryFrom_str(value: str):  #-> PRStatus | None:
+    def tryFrom_str(value: str):  # -> PRStatus | None:
         return {
             # TODO: in August, re-instate reverted
             # "FromFork": PRStatus.FromFork,
@@ -154,7 +156,7 @@ class PRStatus(StrEnum):
             "Delegated": PRStatus.Delegated,
             "AwaitingBors": PRStatus.AwaitingBors,
             "Closed": PRStatus.Closed,
-            "Contradictory": PRStatus.Contradictory
+            "Contradictory": PRStatus.Contradictory,
         }.get(value)
 
 
@@ -378,5 +380,5 @@ def test_determine_status() -> None:
     check([LabelKind.Bors, LabelKind.Bors], PRStatus.AwaitingBors)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_determine_status()

@@ -13,13 +13,13 @@ from dateutil import parser, relativedelta
 from typing import Dict, List, NamedTuple, OrderedDict, Tuple, Any
 
 from queueboard.ci_status import CIStatus
-from queueboard.classify_pr_state import (PRState, PRStatus,
-                               determine_PR_status, label_categorisation_rules)
+from queueboard.classify_pr_state import PRState, PRStatus, determine_PR_status, label_categorisation_rules
 from queueboard.mathlib_dashboards import Dashboard, getIdTitle
 from queueboard.util import my_assert_eq, timedelta_tryParse, relativedelta_tryParse
 
 
 # The following structures are completely project-agnostic.
+
 
 # The information we need about each PR label: its name, background colour and URL
 class Label(NamedTuple):
@@ -50,14 +50,18 @@ def _extract_prs(data: dict) -> List[BasicPRInformation]:
             name = None
             if "login" not in entry["author"]:
                 print(
-                    f'warning: missing author information for PR {entry["number"]}, its authors dictionary is {entry["author"]} --- was this submitted by dependabot?',
+                    f"warning: missing author information for PR {entry['number']}, its authors dictionary is {entry['author']} --- was this submitted by dependabot?",
                     file=sys.stderr,
                 )
             else:
                 name = entry["author"]["login"]
             labels = [Label(label["name"], label["color"], label["url"]) for label in entry["labels"]["nodes"]]
 
-            prs.append(BasicPRInformation(entry["number"], name, entry["title"], entry["url"], labels, parser.isoparse(entry["updatedAt"])))
+            prs.append(
+                BasicPRInformation(
+                    entry["number"], name, entry["title"], entry["url"], labels, parser.isoparse(entry["updatedAt"])
+                )
+            )
     return prs
 
 
@@ -77,17 +81,20 @@ class DataStatus(StrEnum):
             "missing": DataStatus.Missing,
         }[val]
 
+
 class LastStatusChange(NamedTuple):
     status: DataStatus
     time: datetime
     delta: relativedelta.relativedelta
     current_status: PRStatus
 
+
 class TotalQueueTime(NamedTuple):
     status: DataStatus
     value_td: timedelta
     value_rd: relativedelta.relativedelta
     explanation: str
+
 
 # All information about a single PR contained in `open_pr_info.json`.
 # Keep this in sync with the actual file, extending this once new data is added!
@@ -142,10 +149,31 @@ class AggregatePRInfo(NamedTuple):
 
 # Missing aggregate information will be replaced by this default item.
 PLACEHOLDER_AGGREGATE_INFO = AggregatePRInfo(
-    False, CIStatus.Missing, "master", "leanprover-community", "default-branch-name",
-    "open", datetime.now(timezone.utc),
-    "unknown", "unknown title", "unknown description", [], [], -1, -1, [], -1, [], [], (DataStatus.Missing, []), None, None, None, None,
+    False,
+    CIStatus.Missing,
+    "master",
+    "leanprover-community",
+    "default-branch-name",
+    "open",
+    datetime.now(timezone.utc),
+    "unknown",
+    "unknown title",
+    "unknown description",
+    [],
+    [],
+    -1,
+    -1,
+    [],
+    -1,
+    [],
+    [],
+    (DataStatus.Missing, []),
+    None,
+    None,
+    None,
+    None,
 )
+
 
 class CustomJSONEncoder:
     """Handles serialization of custom objects to JSON-serializable format"""
@@ -159,48 +187,48 @@ class CustomJSONEncoder:
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
-                "__data__": OrderedDict(
-                    (field, CustomJSONEncoder.serialize_obj(getattr(obj, field)))
-                    for field in obj._fields
-                )
+                "__data__": OrderedDict((field, CustomJSONEncoder.serialize_obj(getattr(obj, field))) for field in obj._fields),
             }
 
         # Handle StrEnum and other enums
         elif isinstance(obj, StrEnum):
-            return {
-                "__type__": obj.__class__.__name__,
-                "__module__": obj.__class__.__module__,
-                "__value__": obj.value
-            }
+            return {"__type__": obj.__class__.__name__, "__module__": obj.__class__.__module__, "__value__": obj.value}
 
         # Handle datetime objects
         elif isinstance(obj, datetime):
-            return {
-                "__type__": "datetime",
-                "__value__": obj.isoformat()
-            }
+            return {"__type__": "datetime", "__value__": obj.isoformat()}
 
         # Handle timedelta objects
         elif isinstance(obj, timedelta):
-            return {
-                "__type__": "timedelta",
-                "__total_seconds__": obj.total_seconds()
-            }
+            return {"__type__": "timedelta", "__total_seconds__": obj.total_seconds()}
 
         # Handle relativedelta objects
         elif isinstance(obj, relativedelta.relativedelta):
             # Only serialize non-None/non-zero attributes
             data = {}
-            for attr in ['years', 'months', 'days', 'hours', 'minutes', 'seconds', 'microseconds', 'leapdays',
-                        'year', 'month', 'day', 'hour', 'minute', 'second', 'microsecond', 'weekday']:
+            for attr in [
+                "years",
+                "months",
+                "days",
+                "hours",
+                "minutes",
+                "seconds",
+                "microseconds",
+                "leapdays",
+                "year",
+                "month",
+                "day",
+                "hour",
+                "minute",
+                "second",
+                "microsecond",
+                "weekday",
+            ]:
                 value = getattr(obj, attr, None)
                 if value is not None and value != 0:
                     data[attr] = value
 
-            return {
-                "__type__": "relativedelta",
-                "__data__": data
-            }
+            return {"__type__": "relativedelta", "__data__": data}
 
         # Handle strings (don't iterate over them)
         elif isinstance(obj, str):
@@ -208,17 +236,11 @@ class CustomJSONEncoder:
 
         # Handle dictionaries
         elif hasattr(obj, "keys"):
-            return OrderedDict(
-                (key, CustomJSONEncoder.serialize_obj(value))
-                for key, value in obj.items()
-            )
+            return OrderedDict((key, CustomJSONEncoder.serialize_obj(value)) for key, value in obj.items())
 
         # Handle tuples (preserve as tuples with type info)
         elif isinstance(obj, tuple):
-            return {
-                "__type__": "tuple",
-                "__data__": [CustomJSONEncoder.serialize_obj(item) for item in obj]
-            }
+            return {"__type__": "tuple", "__data__": [CustomJSONEncoder.serialize_obj(item) for item in obj]}
 
         # Handle other iterables (lists, sets, etc.)
         elif hasattr(obj, "__iter__"):
@@ -242,12 +264,9 @@ class CustomJSONDecoder:
         self.class_registry = class_registry or {}
 
         # Add built-in types
-        self.class_registry.update({
-            'datetime': datetime,
-            'timedelta': timedelta,
-            'relativedelta': relativedelta.relativedelta,
-            'tuple': tuple
-        })
+        self.class_registry.update(
+            {"datetime": datetime, "timedelta": timedelta, "relativedelta": relativedelta.relativedelta, "tuple": tuple}
+        )
 
     def deserialize_obj(self, obj):
         """Convert JSON data back to custom objects"""
@@ -279,16 +298,13 @@ class CustomJSONDecoder:
                     target_class = self.class_registry[type_name]
 
                     # Check if this is an enum (has __value__ instead of __data__)
-                    if hasattr(target_class, '_value_') or issubclass(target_class, StrEnum):
+                    if hasattr(target_class, "_value_") or issubclass(target_class, StrEnum):
                         return target_class(obj["__value__"])
 
                     # Handle NamedTuples and other classes (has __data__)
                     elif "__data__" in obj:
                         # Recursively deserialize the data
-                        deserialized_data = {
-                            key: self.deserialize_obj(value)
-                            for key, value in obj["__data__"].items()
-                        }
+                        deserialized_data = {key: self.deserialize_obj(value) for key, value in obj["__data__"].items()}
                         return target_class(**deserialized_data)
 
                     else:
@@ -301,10 +317,7 @@ class CustomJSONDecoder:
 
             # Regular dictionary
             else:
-                return {
-                    key: self.deserialize_obj(value)
-                    for key, value in obj.items()
-                }
+                return {key: self.deserialize_obj(value) for key, value in obj.items()}
 
         # Handle lists
         elif isinstance(obj, list):
@@ -318,25 +331,27 @@ class CustomJSONDecoder:
 def dump_to_json_file(data: Any, filepath: str, indent: int = 2):
     """Save data to JSON file with custom serialization"""
     serialized_data = CustomJSONEncoder.serialize_obj(data)
-    with open(filepath, 'w') as f:
+    with open(filepath, "w") as f:
         json.dump(serialized_data, f, indent=indent)
+
 
 # Example registry containing custom classes
 DEFAULT_CLASS_REGISTRY = {
-        'AggregatePRInfo': AggregatePRInfo,
-        'CIStatus': CIStatus,
-        'Label': Label,
-        'DataStatus': DataStatus,
-        'LastStatusChange': LastStatusChange,
-        'TotalQueueTime': TotalQueueTime,
-        'PRStatus': PRStatus,
-        'Dashboard': Dashboard,
-        'BasicPRInformation': BasicPRInformation,
-    }
+    "AggregatePRInfo": AggregatePRInfo,
+    "CIStatus": CIStatus,
+    "Label": Label,
+    "DataStatus": DataStatus,
+    "LastStatusChange": LastStatusChange,
+    "TotalQueueTime": TotalQueueTime,
+    "PRStatus": PRStatus,
+    "Dashboard": Dashboard,
+    "BasicPRInformation": BasicPRInformation,
+}
+
 
 def load_from_json_file(filepath: str, class_registry: Dict[str, type] = DEFAULT_CLASS_REGISTRY):
     """Load data from JSON file with custom deserialization"""
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         json_data = json.load(f)
 
     decoder = CustomJSONDecoder(class_registry)
@@ -371,14 +386,27 @@ def parse_aggregate_file(data: dict) -> dict[int, AggregatePRInfo]:
             if st["status"] == "missing":
                 last_status_change = None
             else:
-                (data_status, raw_time, raw_delta, raw_current_status) = st["status"], st["time"], st["delta"], st["current_status"]
+                (data_status, raw_time, raw_delta, raw_current_status) = (
+                    st["status"],
+                    st["time"],
+                    st["delta"],
+                    st["current_status"],
+                )
                 delta = relativedelta_tryParse(raw_delta)
                 current_status = PRStatus.tryFrom_str(raw_current_status)
                 if delta is None:
-                    print(f"error: invalid data, input {raw_delta} for 'delta' field of 'last_status_change' is invalid", file=sys.stderr)
+                    print(
+                        f"error: invalid data, input {raw_delta} for 'delta' field of 'last_status_change' is invalid",
+                        file=sys.stderr,
+                    )
                 elif current_status is None:
-                    print(f"error: invalid data, input {raw_current_status} for 'current_status' field of 'last_status_change' is invalid", file=sys.stderr)
-                last_status_change = LastStatusChange(DataStatus.fromStr(data_status), parser.isoparse(raw_time), delta, current_status)
+                    print(
+                        f"error: invalid data, input {raw_current_status} for 'current_status' field of 'last_status_change' is invalid",
+                        file=sys.stderr,
+                    )
+                last_status_change = LastStatusChange(
+                    DataStatus.fromStr(data_status), parser.isoparse(raw_time), delta, current_status
+                )
 
             foq = pr["first_on_queue"]
             if foq["status"] == "missing":
@@ -391,13 +419,22 @@ def parse_aggregate_file(data: dict) -> dict[int, AggregatePRInfo]:
             if tqt["status"] == "missing":
                 total_queue_time = None
             else:
-                (data_status, value_td, value_rd, explanation) = (tqt["status"], tqt["value_td"], tqt["value_rd"], tqt["explanation"])
+                (data_status, value_td, value_rd, explanation) = (
+                    tqt["status"],
+                    tqt["value_td"],
+                    tqt["value_rd"],
+                    tqt["explanation"],
+                )
                 td = timedelta_tryParse(value_td)
                 rd = relativedelta_tryParse(value_rd)
                 if rd is None:
-                    print(f"error: invalid data, input {rd} for 'value_rd' field of 'total_queue_time' is invalid", file=sys.stderr)
+                    print(
+                        f"error: invalid data, input {rd} for 'value_rd' field of 'total_queue_time' is invalid", file=sys.stderr
+                    )
                 elif td is None:
-                    print(f"error: invalid data, input {td} for 'value_td' field of 'total_queue_time' is invalid", file=sys.stderr)
+                    print(
+                        f"error: invalid data, input {td} for 'value_td' field of 'total_queue_time' is invalid", file=sys.stderr
+                    )
                 total_queue_time = TotalQueueTime(DataStatus.fromStr(data_status), td, rd, explanation)
         else:
             number_all_comments = None
@@ -405,10 +442,29 @@ def parse_aggregate_file(data: dict) -> dict[int, AggregatePRInfo]:
             first_on_queue = None
             total_queue_time = None
         info = AggregatePRInfo(
-            pr["is_draft"], CIStatus.from_string(pr["CI_status"]), pr["base_branch"], pr["branch_name"], pr["head_repo"]["login"],
-            pr["state"], date, pr["author"], pr["title"], pr["description"], pr["direct_dependencies"], [toLabel(name) for name in label_names],
-            pr["additions"], pr["deletions"], pr["files"], pr["num_files"], pr["review_approvals"], pr["assignees"],
-            users_commented, number_all_comments, last_status_change, first_on_queue, total_queue_time,
+            pr["is_draft"],
+            CIStatus.from_string(pr["CI_status"]),
+            pr["base_branch"],
+            pr["branch_name"],
+            pr["head_repo"]["login"],
+            pr["state"],
+            date,
+            pr["author"],
+            pr["title"],
+            pr["description"],
+            pr["direct_dependencies"],
+            [toLabel(name) for name in label_names],
+            pr["additions"],
+            pr["deletions"],
+            pr["files"],
+            pr["num_files"],
+            pr["review_approvals"],
+            pr["assignees"],
+            users_commented,
+            number_all_comments,
+            last_status_change,
+            first_on_queue,
+            total_queue_time,
         )
         aggregate_info[pr["number"]] = info
     return aggregate_info
@@ -426,6 +482,7 @@ def compute_pr_statusses(aggregate_info: dict[int, AggregatePRInfo], prs: List[B
         from_fork = aggregate_info.head_repo != "leanprover-community"
         state = PRState(labels, aggregate_info.CI_status, aggregate_info.is_draft, from_fork)
         return determine_PR_status(datetime.now(timezone.utc), state)
+
     return {info.number: determine_status(aggregate_info[info.number] or PLACEHOLDER_AGGREGATE_INFO) for info in prs}
 
 
@@ -455,6 +512,7 @@ def prs_without_any_label(prs: List[BasicPRInformation], label_names: List[str])
 
 
 # XXX: this method should go into dashboard.py, but cannot as gather_pr_statistics_inner also uses it.
+
 
 # Compute the HTML code for a link to a particular dashboard |kind|.
 # If the link to a dashboard goes to a separate page |subpage|, open the link in a new tab.
@@ -494,16 +552,21 @@ def gather_pr_statistics(
     # Collect the number of PRs in each possible status.
     # NB. The order of these statusses is meaningful; the statistics are shown in the order of these items.
     statusses = [
-        PRStatus.AwaitingReview, PRStatus.Blocked, PRStatus.AwaitingAuthor, PRStatus.MergeConflict,
-        PRStatus.HelpWanted,PRStatus.NotReady,
+        PRStatus.AwaitingReview,
+        PRStatus.Blocked,
+        PRStatus.AwaitingAuthor,
+        PRStatus.MergeConflict,
+        PRStatus.HelpWanted,
+        PRStatus.NotReady,
         PRStatus.AwaitingDecision,
         # TODO: in August, re-instate reverted
         # PRStatus.FromFork,
         PRStatus.Contradictory,
-        PRStatus.Delegated, PRStatus.AwaitingBors,
+        PRStatus.Delegated,
+        PRStatus.AwaitingBors,
     ]
     numbers = [str(pr.number) for pr in all_ready_prs]
-    ready_pr_status = { n: all_pr_statusses[n] for n in numbers }
+    ready_pr_status = {n: all_pr_statusses[n] for n in numbers}
     number_prs: Dict[PRStatus, int] = {
         status: len([number for number in ready_pr_status if ready_pr_status[number] == status]) for status in statusses
     }
@@ -525,9 +588,9 @@ def gather_pr_statistics(
 
     def number_percent(n: int, total: int, color: str = "") -> str:
         if color:
-            return f'{n} (<span style="color: {color};">{n/total:.1%}</span>)'
+            return f'{n} (<span style="color: {color};">{n / total:.1%}</span>)'
         else:
-            return f"{n} (<span>{n/total:.1%}</span>)"
+            return f"{n} (<span>{n / total:.1%}</span>)"
 
     instatus = {
         PRStatus.AwaitingReview: f"are awaiting review ({link_to(Dashboard.Queue, subpage='review_dashboard.html', force_same_page=is_triage_board)}), among these <b>{number_percent(len(prs[Dashboard.QueueNewContributor]), len(queue_prs))}</b> by new contributors ({link_to(Dashboard.QueueNewContributor, subpage='review_dashboard.html')})",
@@ -558,13 +621,17 @@ def gather_pr_statistics(
         PRStatus.NotReady: "#e899cd",
     }
     assert set(color.keys()) == set(statusses)
-    details = "\n".join([f"  <li><b>{number_percent(number_prs[s], number_all, color[s])}</b> {instatus[s]}</li>" for s in statusses])
+    details = "\n".join(
+        [f"  <li><b>{number_percent(number_prs[s], number_all, color[s])}</b> {instatus[s]}</li>" for s in statusses]
+    )
     # Generate a simple pie chart showing the distribution of PR statusses.
     # Doing so requires knowing the cumulative sums, of all statusses so far.
     numbers = [number_prs[s] for s in statusses]
     cumulative = [sum(numbers[: i + 1]) for i in range(len(numbers))]
     piechart = ", ".join([f"{color[s]} 0 {cumulative[i] * 360 // number_all}deg" for (i, s) in enumerate(statusses)])
-    piechart_style = f"width: 200px;height: 200px;border-radius: 50%;border: 1px solid black;background-image: conic-gradient( {piechart} );"
+    piechart_style = (
+        f"width: 200px;height: 200px;border-radius: 50%;border: 1px solid black;background-image: conic-gradient( {piechart} );"
+    )
     if cumulative[-1] != number_all:
         dict = "{" + ", ".join([f"{s}: {number_prs[s]}" for s in statusses]) + "}"
         msg = f"""error: statistics calculation is inconsistent, all PR kinds do not add up!
@@ -580,14 +647,20 @@ def gather_pr_statistics(
 def has_contradictory_labels(pr: BasicPRInformation) -> bool:
     # Combine common labels.
     canonicalise = {
-        "ready-to-merge": "bors", "auto-merge-after-CI": "bors",
-        "blocked-by-other-PR": "blocked", "blocked-by-core-PR": "blocked", "blocked-by-batt-PR": "blocked", "blocked-by-qq-PR": "blocked",
+        "ready-to-merge": "bors",
+        "auto-merge-after-CI": "bors",
+        "blocked-by-other-PR": "blocked",
+        "blocked-by-core-PR": "blocked",
+        "blocked-by-batt-PR": "blocked",
+        "blocked-by-qq-PR": "blocked",
     }
     normalised_labels = [(canonicalise[label.name] if label.name in canonicalise else label.name) for label in pr.labels]
     # Test for contradictory label combinations.
     if "awaiting-review-DONT-USE" in normalised_labels:
         return True
-    elif "bors" in normalised_labels and ("awaiting-author" in normalised_labels or "awaiting-zulip" in normalised_labels or "WIP" in normalised_labels):
+    elif "bors" in normalised_labels and (
+        "awaiting-author" in normalised_labels or "awaiting-zulip" in normalised_labels or "WIP" in normalised_labels
+    ):
         return True
     elif "WIP" in normalised_labels and "awaiting-review" in normalised_labels:
         return True
@@ -603,7 +676,9 @@ def compute_dashboards_bad_labels_title(
 ) -> Tuple[List[BasicPRInformation], List[BasicPRInformation], List[BasicPRInformation]]:
     # Filter out all PRs which have a WIP label.
     nonwip_prs = prs_without_label(prs, "WIP")
-    with_bad_title = [pr for pr in nonwip_prs if not pr.title.startswith(("feat", "chore", "perf", "refactor", "style", "fix", "doc"))]
+    with_bad_title = [
+        pr for pr in nonwip_prs if not pr.title.startswith(("feat", "chore", "perf", "refactor", "style", "fix", "doc"))
+    ]
 
     # Whether a PR has a "topic" label.
     def has_topic_label(pr: BasicPRInformation) -> bool:
@@ -644,7 +719,9 @@ def determine_pr_dashboards(
     # The review queue consists of all PRs against the master branch, with passing CI,
     # that are not in draft state and not labelled WIP, help-wanted or please-adopt,
     # and have none of the other labels below.
-    master_prs_with_CI = [pr for pr in nondraft_PRs if base_branch[pr.number] == "master" and (CI_status[pr.number] == CIStatus.Pass)]
+    master_prs_with_CI = [
+        pr for pr in nondraft_PRs if base_branch[pr.number] == "master" and (CI_status[pr.number] == CIStatus.Pass)
+    ]
     other_labels = [
         # XXX: does the #queue check for all of these labels?
         "blocked-by-other-PR",
@@ -693,7 +770,9 @@ def determine_pr_dashboards(
     prs_to_list[Dashboard.StaleDelegated] = prs_with_label(one_day_stale, "delegated")
     mm_prs = prs_with_label(one_day_stale, "maintainer-merge")
     prs_to_list[Dashboard.StaleMaintainerMerge] = prs_without_label(mm_prs, "ready-to-merge")
-    prs_to_list[Dashboard.AllMaintainerMerge] = prs_without_label(prs_with_label(nondraft_PRs, "maintainer-merge"), "ready-to-merge")
+    prs_to_list[Dashboard.AllMaintainerMerge] = prs_without_label(
+        prs_with_label(nondraft_PRs, "maintainer-merge"), "ready-to-merge"
+    )
     prs_to_list[Dashboard.StaleNewContributor] = prs_with_label(one_week_stale, "new-contributor")
 
     stale_queue = []

@@ -38,13 +38,22 @@ def parse_json_file(name: str, pr_number: str) -> dict | str:
 # Compare two lists of PR numbers for equality, printing informative output if different.
 def my_assert_eq(msg: str, left: List[int], right: List[int]) -> bool:
     if left != right:
-        print(f"assertion failure comparing {msg}\n  found {len(left)} PR(s) on the left, {len(right)} PR(s) on the right", file=sys.stderr)
+        print(
+            f"assertion failure comparing {msg}\n  found {len(left)} PR(s) on the left, {len(right)} PR(s) on the right",
+            file=sys.stderr,
+        )
         left_sans_right = set(left) - set(right)
         right_sans_left = set(right) - set(left)
         if left_sans_right:
-            print(f"  the following {len(left_sans_right)} PR(s) are contained in left, but not right: {sorted(left_sans_right)}", file=sys.stderr)
+            print(
+                f"  the following {len(left_sans_right)} PR(s) are contained in left, but not right: {sorted(left_sans_right)}",
+                file=sys.stderr,
+            )
         if right_sans_left:
-            print(f"  the following {len(right_sans_left)} PR(s) are contained in right, but not left: {sorted(right_sans_left)}", file=sys.stderr)
+            print(
+                f"  the following {len(right_sans_left)} PR(s) are contained in right, but not left: {sorted(right_sans_left)}",
+                file=sys.stderr,
+            )
         return False
     return True
 
@@ -52,6 +61,7 @@ def my_assert_eq(msg: str, left: List[int], right: List[int]) -> bool:
 def format_delta(delta: relativedelta.relativedelta) -> str:
     def pluralize(n: int, s: str) -> str:
         return f"{n} {s}" if n == 1 else f"{n} {s}s"
+
     if delta.years > 0:
         return pluralize(delta.years, "year")
     elif delta.months > 0:
@@ -65,6 +75,7 @@ def format_delta(delta: relativedelta.relativedelta) -> str:
     else:
         return pluralize(delta.seconds, "second")
 
+
 # We consciously do not use the repr() instance on timedelta, as this does not round-trip:
 # it displays everything with hours and minutes, even when the interval representation might differ.
 #
@@ -73,21 +84,25 @@ def timedelta_tostr(delta: timedelta) -> str:
     # This is not producing zero-padded outputs; that is fine.
     res = f"timedelta(days={delta.days}, seconds={delta.seconds})"
     back = timedelta_tryParse(res)
-    assert back == timedelta(days=delta.days, seconds=delta.seconds), f"mismatch for {delta}, stringified {res} gets re-parsed as {back}"
+    assert back == timedelta(days=delta.days, seconds=delta.seconds), (
+        f"mismatch for {delta}, stringified {res} gets re-parsed as {back}"
+    )
     return res
+
 
 # Inverse to timedelta_tryParse.
 def timedelta_tryParse(value: str) -> timedelta | None:
     if not (value.startswith("timedelta(") and value.endswith(")")):
         print(f"bad input: {value}")
         return None
-    inner = value[len("timedelta("):][:-1]
+    inner = value[len("timedelta(") :][:-1]
     attrs = {}
     parts = [p for p in inner.split(", ") if p]
     for part in parts:
-        (attr, val) = part.split('=')
+        (attr, val) = part.split("=")
         attrs[attr] = int(val)
     return timedelta(**attrs)
+
 
 # Expects input from |value|'s repr instance, i.e. of the form
 # "relativedelta(days=2, hours=4)".
@@ -95,10 +110,10 @@ def relativedelta_tryParse(value: str) -> relativedelta.relativedelta | None:
     if not (value.startswith("relativedelta(") and value.endswith(")")):
         print(f"bad input: {value}")
         return None
-    inner = value[len("relativedelta("):][:-1]
+    inner = value[len("relativedelta(") :][:-1]
     attrs = {}
     parts = [p for p in inner.split(", ") if p]
     for part in parts:
-        (attr, val) = part.split('=')
+        (attr, val) = part.split("=")
         attrs[attr] = int(val)
     return relativedelta.relativedelta(**attrs)

@@ -22,12 +22,17 @@ from queueboard.compute_dashboard_prs import AggregatePRInfo, infer_pr_url, Labe
 from queueboard.dashboard_data import parse_aggregate_file
 from queueboard.util import eprint, parse_json_file
 
+
 # Read the input JSON files, return a dictionary mapping each PR number
 # to the (current) last update data github provides.
 # This operation is (supposed to be) infallible.
 def extract_last_update_from_input() -> dict[int, str]:
     output = dict()
-    with open("all-open-PRs-1.json", "r") as file1, open("all-open-PRs-2.json", "r") as file2, open("all-open-PRs-3.json", "r") as file3:
+    with (
+        open("all-open-PRs-1.json", "r") as file1,
+        open("all-open-PRs-2.json", "r") as file2,
+        open("all-open-PRs-3.json", "r") as file3,
+    ):
         data = json.load(file1)
         for page in data["output"]:
             for entry in page["data"]["search"]["nodes"]:
@@ -100,7 +105,9 @@ def check_data_directory_contents() -> Tuple[List[Tuple[int, bool]], List[int]]:
             expected = ["basic_pr_info.json", "timestamp.txt"]
             files = sorted(os.listdir(os.path.join("data", dir)))
             if files != expected:
-                eprint(f"files for PR {number} (in directory {dir}) did not match what I wanted: expected {expected}, got {files}")
+                eprint(
+                    f"files for PR {number} (in directory {dir}) did not match what I wanted: expected {expected}, got {files}"
+                )
                 stubborn_prs_with_errors.append(int(number))
                 continue
             if not _check_directory(os.path.join("data", dir), int(number), files):
@@ -230,6 +237,7 @@ def remove_broken_data(number: int, is_temporary: bool, no_remove: bool) -> None
     if not no_remove:
         dirname = f"{number}-temp" if is_temporary else str(number)
         shutil.rmtree(os.path.join("data", dirname))
+
     # Return whether the PR should now be marked as stubborn.
     def _inner(number: int, filename: str) -> bool:
         # NB. We write a comment "second time" to both missing_prs.txt and closed_prs_to_backfill.txt
@@ -250,17 +258,18 @@ def remove_broken_data(number: int, is_temporary: bool, no_remove: bool) -> None
                 # Replace "second" by "third" in that line; remove broken data.
                 new_content.append(f"{comment_third}{number}")
                 with open(filename, "w") as fi:
-                    fi.write('\n'.join(new_content) + '\n')
+                    fi.write("\n".join(new_content) + "\n")
             elif previous_comments[0].startswith(comment_third):
                 # Remove the comment; remove the PR number from the file (any number of times);
                 # write an entry to stubborn_prs.txt instead.
                 new_content = [line for line in content if line != str(number)]
                 with open(filename, "w") as fi:
-                    fi.write('\n'.join(new_content) + '\n')
+                    fi.write("\n".join(new_content) + "\n")
                 return True
             else:
                 print(f"error: comment {previous_comments} for PR {number} is unexpected; aborting!")
         return False
+
     newly_stubborn = (_inner(number, "missing_prs.txt"), _inner(number, "closed_prs_to_backfill.txt"))
     if newly_stubborn[0] or newly_stubborn[1]:
         with open("stubborn_prs.txt", "a") as fi:
@@ -321,8 +330,14 @@ def compare_data_inner(rest: List[RESTData], aggregate: dict[int, AggregatePRInf
             outdated.append(pr.number)
         else:
             # For PR labels, also normalise the colours into lower-case and sort alphabetically.
-            norm1 = [Label(lab.name, lab.color.lower(), lab.url.replace(" ", "%20")) for lab in sorted(pr.labels, key=lambda lab: lab.name)]
-            norm2 = [Label(lab.name, lab.color.lower(), lab.url.replace(" ", "%20")) for lab in sorted(agg.labels, key=lambda lab: lab.name)]
+            norm1 = [
+                Label(lab.name, lab.color.lower(), lab.url.replace(" ", "%20"))
+                for lab in sorted(pr.labels, key=lambda lab: lab.name)
+            ]
+            norm2 = [
+                Label(lab.name, lab.color.lower(), lab.url.replace(" ", "%20"))
+                for lab in sorted(agg.labels, key=lambda lab: lab.name)
+            ]
             if different(norm1, norm2, "labels", pr.number):
                 outdated.append(pr.number)
     print(f"Compared information about {len(rest)} PRs, found {len(outdated)} PRs with different data")
@@ -348,13 +363,13 @@ def compare_data_aggressive() -> List[int]:
                 if "login" in pr["author"]:
                     author = pr["author"]["login"]
                     url = pr["author"]["url"]
-                    if url != f'https://github.com/{author}':
+                    if url != f"https://github.com/{author}":
                         print("warning: PR author {author} has URL {url}, which is unexpected", file=sys.stderr)
                 else:
                     author = "dependabot?"
-                rest_data.append(RESTData(
-                    int(pr["number"]), pr["url"], author, pr["title"], pr["state"], pr["updatedAt"], parsed_labels
-                ))
+                rest_data.append(
+                    RESTData(int(pr["number"]), pr["url"], author, pr["title"], pr["state"], pr["updatedAt"], parsed_labels)
+                )
     with open(os.path.join("processed_data", "all_pr_data.json"), "r") as f:
         aggregate_data = parse_aggregate_file(json.load(f))
     return compare_data_inner(rest_data, aggregate_data)
@@ -382,9 +397,9 @@ def ensure_file(filename):
         raise FileNotFoundError(f"Neither {filename} nor its split parts were found")
 
     # Join the parts into the original file
-    with open(filename, 'wb') as outfile:
+    with open(filename, "wb") as outfile:
         for part in parts:
-            with open(part, 'rb') as infile:
+            with open(part, "rb") as infile:
                 outfile.write(infile.read())
 
     return filename
@@ -398,7 +413,7 @@ def main() -> None:
     (normal_prs_with_errors, stubborn_prs_with_errors) = check_data_directory_contents()
     lines = []
     try:
-        with open('broken_pr_data.txt', 'r') as fi:
+        with open("broken_pr_data.txt", "r") as fi:
             lines = fi.readlines()
     except FileNotFoundError:
         pass
@@ -408,7 +423,7 @@ def main() -> None:
             normal_prs_with_errors.append((int(line), True))
 
     # Prune broken data for all PRs, and remove superfluous entries from 'missing_prs.txt'.
-    for (pr_number, is_temporary) in normal_prs_with_errors:
+    for pr_number, is_temporary in normal_prs_with_errors:
         remove_broken_data(pr_number, is_temporary, True)
     for pr_number in stubborn_prs_with_errors:
         shutil.rmtree(os.path.join("data", f"{pr_number}-basic"))
@@ -503,7 +518,9 @@ def main() -> None:
                 file.write("\n".join([str(n) for n in new_missing_entries]) + "\n")
             print("  Scheduled all PRs for backfilling")
     if outdated_prs:
-        print(f"SUMMARY: the data integrity check found {len(outdated_prs)} PRs with outdated aggregate information:\n{outdated_prs}")
+        print(
+            f"SUMMARY: the data integrity check found {len(outdated_prs)} PRs with outdated aggregate information:\n{outdated_prs}"
+        )
         # Batch the PRs to to re-download: write the first 5 PRs into redownload.txt,
         # if that file is basically empty (i.e. no other files to already handle).
         # The next run of this script will pick this up and try to download them.

@@ -174,7 +174,7 @@ def getIdTitle(kind: Dashboard) -> Tuple[str, str]:
             "PRs with contradictory labels",
         ),
         Dashboard.Approved: ("approved", "PRs with an 'approved' review"),
-        Dashboard.All: ("all", "All open PRs")
+        Dashboard.All: ("all", "All open PRs"),
     }[kind]
 
 

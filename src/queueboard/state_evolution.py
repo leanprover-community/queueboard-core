@@ -47,39 +47,45 @@ from dateutil import parser
 from dateutil.relativedelta import relativedelta
 
 from queueboard.ci_status import CIStatus
-from queueboard.classify_pr_state import (PRState, PRStatus, canonicalise_label, determine_PR_status, label_categorisation_rules)
+from queueboard.classify_pr_state import PRState, PRStatus, canonicalise_label, determine_PR_status, label_categorisation_rules
 from queueboard.util import format_delta
 
 
 class LabelAdded(NamedTuple):
     """A new label got added"""
+
     name: str
 
 
 class LabelRemoved(NamedTuple):
     """An existing label got removed"""
+
     name: str
 
 
 class LabelAddedRemoved(NamedTuple):
     """A set of labels was added, and some set of labels was removed.
     Note that a given label can be added and removed at the same time."""
+
     added: List[str]
     removed: List[str]
 
 
 class CIStatusChanged(NamedTuple):
     """This PR's CI status changed"""
+
     new_status: CIStatus
 
 
 class MarkedDraft(NamedTuple):
     """This PR was marked as draft."""
+
     pass
 
 
 class MarkedReady(NamedTuple):
     """This PR was marked as ready for review."""
+
     pass
 
 
@@ -160,7 +166,9 @@ def update_state(current: PRState, ev: Event) -> PRState:
                     print(f"warning: label {r} is supposedly removed twice")
                     continue
                 new_labels.remove(label_categorisation_rules[r])
-            return PRState(new_labels + [label_categorisation_rules[lab] for lab in added], current.ci, current.draft, current.from_fork)
+            return PRState(
+                new_labels + [label_categorisation_rules[lab] for lab in added], current.ci, current.draft, current.from_fork
+            )
         case _:
             print(f"unhandled event: {ev.change}")
             assert False
@@ -201,7 +209,7 @@ def determine_status_changes(
 def total_time_in_status(
     creation_time: datetime, now: datetime, initial_state: PRState, events: List[Event], status: PRStatus
 ) -> Tuple[Tuple[timedelta, relativedelta], str]:
-    '''Determine the total amount of time this PR was in a given status,
+    """Determine the total amount of time this PR was in a given status,
     from its creation to the current time.
 
     Returns a tuple (time, description), where
@@ -209,7 +217,7 @@ def total_time_in_status(
     - time is a tuple (td, rd), containing the total time in this state,
       once as a timedelta (i.e. only knowing days, not e.g. months) and
       once as a relativedelta. The former is more useful for comparing time spans,
-      the latter provides nicer output for users.'''
+      the latter provides nicer output for users."""
     explanation = ""
     total_rd = relativedelta(days=0)
     total_td = timedelta(days=0)
@@ -234,6 +242,7 @@ def total_time_in_status(
 class Metadata(NamedTuple):
     """All necessary input data for analysing a PR's state evolution: its creation time, initial state
     and all relevant changes to its state over time."""
+
     created_at: datetime
     events: List[Event]
     created_as_draft: bool
@@ -241,10 +250,13 @@ class Metadata(NamedTuple):
 
 
 # Determine the total amount of time this PR was in a given status.
-def total_time_in_status_inner(now: datetime, metadata: Metadata, status: PRStatus) -> Tuple[Tuple[timedelta, relativedelta], str]:
+def total_time_in_status_inner(
+    now: datetime, metadata: Metadata, status: PRStatus
+) -> Tuple[Tuple[timedelta, relativedelta], str]:
     # We assume the PR was created in passing state without labels.
     initial_state = PRState([], CIStatus.Pass, metadata.created_as_draft, metadata.from_fork)
     return total_time_in_status(metadata.created_at, now, initial_state, metadata.events, status)
+
 
 # Determine the total amount of time this PR was awaiting review.
 #
@@ -265,7 +277,7 @@ def first_in_status_inner(metadata, status: PRStatus) -> datetime | None:
     if len(evolution_status) > 1:
         if evolution_status[0][0] == evolution_status[1][0]:
             _ = evolution_status.pop(0)
-    for (time, estatus) in evolution_status:
+    for time, estatus in evolution_status:
         if estatus == status:
             return time
     return None
@@ -283,14 +295,14 @@ def first_on_queue_inner(metadata) -> datetime | None:
 # Return the total time since this PR's last status change,
 # as a tuple (absolute time, time since now).
 def last_status_update_inner(now: datetime, metadata: Metadata) -> Tuple[datetime, relativedelta, PRStatus]:
-    '''Compute the total time since this PR's state changed last.'''
+    """Compute the total time since this PR's state changed last."""
     # We assume the PR was created in passing state without labels.
     initial_state = PRState([], CIStatus.Pass, metadata.created_as_draft, metadata.from_fork)
     # FUTURE: should this ignore short-lived merge conflicts? for now, it does not
     evolution_status = determine_status_changes(metadata.created_at, initial_state, metadata.events)
     # The PR creation should be the first event in `evolution_status`.
     assert len(evolution_status) == len(metadata.events) + 1
-    last : datetime = evolution_status[-1][0]
+    last: datetime = evolution_status[-1][0]
     return (last, relativedelta(now, last), evolution_status[-1][1])
 
 
@@ -302,17 +314,41 @@ def parse_data(data: dict) -> Tuple[datetime, List[Event]]:
     events = []
     events_data = data["data"]["repository"]["pullRequest"]["timelineItems"]["nodes"]
     known_irrelevant = [
-        "ClosedEvent", "ReopenedEvent", "BaseRefChangedEvent", "HeadRefForcePushedEvent", "HeadRefDeletedEvent",
-        "PullRequestCommit", "IssueComment", "PullRequestReview", "RenamedTitleEvent", "AssignedEvent", "UnassignedEvent",
-        "ReferencedEvent", "CrossReferencedEvent", "MentionedEvent",
-        "ReviewRequestedEvent", "ReviewRequestRemovedEvent", "ReviewDismissedEvent",
-        "ConnectedEvent", "DisconnectedEvent",  # no idea what these are used for
-        "SubscribedEvent", "UnsubscribedEvent",
+        "ClosedEvent",
+        "ReopenedEvent",
+        "BaseRefChangedEvent",
+        "HeadRefForcePushedEvent",
+        "HeadRefDeletedEvent",
+        "PullRequestCommit",
+        "IssueComment",
+        "PullRequestReview",
+        "RenamedTitleEvent",
+        "AssignedEvent",
+        "UnassignedEvent",
+        "ReferencedEvent",
+        "CrossReferencedEvent",
+        "MentionedEvent",
+        "ReviewRequestedEvent",
+        "ReviewRequestRemovedEvent",
+        "ReviewDismissedEvent",
+        "ConnectedEvent",
+        "DisconnectedEvent",  # no idea what these are used for
+        "SubscribedEvent",
+        "UnsubscribedEvent",
         "CommentDeletedEvent",
-        "MergedEvent", "BaseRefForcePushedEvent", "MarkedAsDuplicateEvent",
-        "PullRequestRevisionMarker", "BaseRefDeletedEvent", "HeadRefRestoredEvent",
-        "AddedToMergeQueueEvent", "RemovedFromMergeQueueEvent", "LockedEvent", "UnlockedEvent",
-        "AutoMergeEnabledEvent", "AutoMergeDisabledEvent", "MilestonedEvent",
+        "MergedEvent",
+        "BaseRefForcePushedEvent",
+        "MarkedAsDuplicateEvent",
+        "PullRequestRevisionMarker",
+        "BaseRefDeletedEvent",
+        "HeadRefRestoredEvent",
+        "AddedToMergeQueueEvent",
+        "RemovedFromMergeQueueEvent",
+        "LockedEvent",
+        "UnlockedEvent",
+        "AutoMergeEnabledEvent",
+        "AutoMergeDisabledEvent",
+        "MilestonedEvent",
     ]
     for event in events_data:
         match event.get("__typename"):

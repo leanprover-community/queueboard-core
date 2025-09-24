@@ -13,13 +13,22 @@ from dateutil import parser, relativedelta, tz
 
 from queueboard.ci_status import CIStatus
 from queueboard.classify_pr_state import PRStatus
-from queueboard.compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus, load_from_json_file,
-    infer_pr_url, link_to, gather_pr_statistics)
+from queueboard.compute_dashboard_prs import (
+    AggregatePRInfo,
+    BasicPRInformation,
+    Label,
+    DataStatus,
+    load_from_json_file,
+    infer_pr_url,
+    link_to,
+    gather_pr_statistics,
+)
 from queueboard.mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
 from queueboard.util import format_delta
 
 
 ### Helper methods: writing HTML code for various parts of the generated webpage ###
+
 
 # Determine HTML code for writing a table header with entries |entries|.
 # |base_indent| is the indentation of the <table> tag; we add two additional space per additional level.
@@ -73,6 +82,7 @@ def user_filter_link(author_name: str, page: str, id: str) -> str:
     id = f"#{id}" if id else ""
     return f"<a href='{page}?search={author_name}{id}'>{author_name}</a>"
 
+
 # An HTML link to a GitHub user profile
 def user_link(author_name: str, details: str | None = None) -> str:
     url = f"https://github.com/{author_name}"
@@ -112,6 +122,7 @@ def label_link(label: Label, page: str, id: str) -> str:
 # Auxiliary function, used for sorting the "total time in review".
 def format_delta2(delta: timedelta) -> str:
     return f"{delta.days}-{delta.seconds}"
+
 
 assert parser.isoparse("2024-04-29T18:53:51Z") == datetime(2024, 4, 29, 18, 53, 51, tzinfo=tz.tzutc())
 
@@ -164,7 +175,9 @@ STANDARD_ALIAS_MAPPING = """
 """
 
 # Dashboard columns with a special sorting relation.
-STANDARD_COLUMN_DEFS = "columnDefs: [{ type: 'diff_stat', targets: 5 }, { type: 'assignee', targets: 10 }, { visible: false, targets: [3, 6, 9] } ],"
+STANDARD_COLUMN_DEFS = (
+    "columnDefs: [{ type: 'diff_stat', targets: 5 }, { type: 'assignee', targets: 10 }, { visible: false, targets: [3, 6, 9] } ],"
+)
 
 # Version of STANDARD_ALIAS_MAPPING tailored to the on_the_queue.html page.
 # Keep in sync with changes to the above table!
@@ -283,7 +296,9 @@ $(document).ready( function () {
 """
 
 
-def tables_configuration_script(alias_mapping: str, column_defs: str, test_tables_with_approval: str, omit_column_config=False) -> str:
+def tables_configuration_script(
+    alias_mapping: str, column_defs: str, test_tables_with_approval: str, omit_column_config=False
+) -> str:
     # If table_test is not none, we have two sets of alias configurations,
     # for tables with and without approval.
     if test_tables_with_approval:
@@ -296,13 +311,17 @@ def tables_configuration_script(alias_mapping: str, column_defs: str, test_table
         sort_config.push([getIdx(col, false), dir]);
         sort_config_approvals.push([getIdx(col, true), dir]);
         """.strip().replace("        ", "  ")
-        table_config = """
+        table_config = (
+            """
         const tableId = $(this).attr('id')
         let tableOptions = { ...options }
         const show_approval = {table_test};
         tableOptions.order = show_approval ? sort_config_approvals : sort_config;
         $(this).DataTable(tableOptions);
-        """.strip().replace("        ", "  ").replace("{table_test}", test_tables_with_approval)
+        """.strip()
+            .replace("        ", "  ")
+            .replace("{table_test}", test_tables_with_approval)
+        )
     else:
         sort_config1 = """
         // The configuration for initial sorting of tables.
@@ -315,9 +334,13 @@ def tables_configuration_script(alias_mapping: str, column_defs: str, test_table
           $(this).DataTable(options);
         }
         """.replace("        ", "  ").strip()
-    template = (_TEMPLATE_SCRIPT.replace("{SORT_CONFIG1}", sort_config1).replace("{SORT_CONFIG2}", sort_config2)
-        .replace("{ALIAS_MAPPING}", alias_mapping).replace("{TABLE_CONFIGURATION}", table_config)
-        .replace("{COLUMN_DEFS}", column_defs))
+    template = (
+        _TEMPLATE_SCRIPT.replace("{SORT_CONFIG1}", sort_config1)
+        .replace("{SORT_CONFIG2}", sort_config2)
+        .replace("{ALIAS_MAPPING}", alias_mapping)
+        .replace("{TABLE_CONFIGURATION}", table_config)
+        .replace("{COLUMN_DEFS}", column_defs)
+    )
     if omit_column_config:
         # NB. This is brittle; keep in sync with other changes!
         template = template.replace("    columnDefs: ", "    // columnDefs: ")
@@ -331,6 +354,7 @@ table_test = " || ".join([f'tableId == "{getTableId(kind)}"' for kind in TABLES_
 # This javascript code is placed at the bottom of each generated webpage page
 # (except for the on_the_queue page, which tweaks this slightly).
 STANDARD_SCRIPT = tables_configuration_script(STANDARD_ALIAS_MAPPING, STANDARD_COLUMN_DEFS, table_test)
+
 
 # Settings for which 'extra columns' to display in a PR dashboard.
 class ExtraColumnSettings(NamedTuple):
@@ -369,26 +393,37 @@ def hide(code: str) -> str:
 # TODO: remove 'prs' in favour of the aggregate information --- once I can ensure that the data
 # in the latter is always kept updated.
 def _compute_pr_entries(
-    page_name: str, id: str,
-    prs: List[BasicPRInformation], aggregate_information: dict[int, AggregatePRInfo],
-    extra_settings: ExtraColumnSettings, potential_reviewers: dict[int, Tuple[str, List[str]]] | None=None,
+    page_name: str,
+    id: str,
+    prs: List[BasicPRInformation],
+    aggregate_information: dict[int, AggregatePRInfo],
+    extra_settings: ExtraColumnSettings,
+    potential_reviewers: dict[int, Tuple[str, List[str]]] | None = None,
 ) -> str:
     result = ""
     for pr in prs:
         pr_number = str(pr.number)
         name = aggregate_information[pr_number].author
         if pr.url != infer_pr_url(pr.number):
-            print(f"warning: PR {pr.number} has url differing from the inferred one:\n  actual:   {pr.url}\n  inferred: {infer_pr_url(pr.number)}", file=sys.stderr)
+            print(
+                f"warning: PR {pr.number} has url differing from the inferred one:\n  actual:   {pr.url}\n  inferred: {infer_pr_url(pr.number)}",
+                file=sys.stderr,
+            )
         labels = _write_labels(pr.labels, page_name, id)
         # Mild HACK: if a PR has label "t-algebra", we append the hidden string "label:t-algebra$" to make this searchable.
-        label_hack = hide('label:t-algebra$') if "t-algebra" in [lab.name for lab in pr.labels] else ""
+        label_hack = hide("label:t-algebra$") if "t-algebra" in [lab.name for lab in pr.labels] else ""
         branch_name = aggregate_information[pr_number].branch_name if pr_number in aggregate_information else "missing"
         description = aggregate_information[pr_number].description
         # Mild HACK: append each PR's author as "author:name" to the end of the author column (hidden),
         # to allow for searches "author:name".
         author_hack = hide(f"author:{name}")
-        entries = [pr_link(pr.number, pr.url, branch_name), user_filter_link(name, page_name, id) + author_hack,
-            title_link(pr.title, pr.url), description, labels + label_hack]
+        entries = [
+            pr_link(pr.number, pr.url, branch_name),
+            user_filter_link(name, page_name, id) + author_hack,
+            title_link(pr.title, pr.url),
+            description,
+            labels + label_hack,
+        ]
         # Detailed information about the current PR.
         pr_info = None
         if pr_number in aggregate_information:
@@ -406,18 +441,26 @@ def _compute_pr_entries(
             na = '<a title="no data available">n/a</a>'
             total_comments = na if pr_info.number_total_comments is None else str(pr_info.number_total_comments)
             (status, users) = pr_info.users_commented or (None, None)
-            entries.extend([
-                # NB: keep the styling of the diff column in sync with the custom sorting
-                # function by diff size below.
-                '<span style="color:green">{}</span>/<span style="color:red">{}</span>'.format(pr_info.additions, pr_info.deletions),
-                ",".join(pr_info.modified_files),
-                str(pr_info.number_modified_files),
-                total_comments, users,
-            ])
+            entries.extend(
+                [
+                    # NB: keep the styling of the diff column in sync with the custom sorting
+                    # function by diff size below.
+                    '<span style="color:green">{}</span>/<span style="color:red">{}</span>'.format(
+                        pr_info.additions, pr_info.deletions
+                    ),
+                    ",".join(pr_info.modified_files),
+                    str(pr_info.number_modified_files),
+                    total_comments,
+                    users,
+                ]
+            )
             if len(pr_info.modified_files) < pr_info.number_modified_files:
-                print(f"warning: PR {pr.number} has {pr_info.number_modified_files} modified files, "
+                print(
+                    f"warning: PR {pr.number} has {pr_info.number_modified_files} modified files, "
                     f"but the list of filenames only contains {len(pr_info.modified_files)}, "
-                    "data is incomplete", file=sys.stderr)
+                    "data is incomplete",
+                    file=sys.stderr,
+                )
             if status == DataStatus.Incomplete:
                 print(f"warning: PR {pr.number} supposedly has exactly 100 comments; data is likely incomplete", file=sys.stderr)
             if extra_settings.show_assignee:
@@ -497,13 +540,20 @@ def _compute_pr_entries(
 # a contact button.
 def write_dashboard(
     page_name: str,
-    prs: dict[Dashboard, List[BasicPRInformation]], kind: Dashboard, aggregate_info: dict[int, AggregatePRInfo],
-    extra_settings: ExtraColumnSettings | None=None, header=True,
-    potential_reviewers: dict[int, Tuple[str, List[str]]] | None=None, custom_subpage: str | None=None,
+    prs: dict[Dashboard, List[BasicPRInformation]],
+    kind: Dashboard,
+    aggregate_info: dict[int, AggregatePRInfo],
+    extra_settings: ExtraColumnSettings | None = None,
+    header=True,
+    potential_reviewers: dict[int, Tuple[str, List[str]]] | None = None,
+    custom_subpage: str | None = None,
 ) -> str:
     def _inner(
-        prs: List[BasicPRInformation], kind: Dashboard, aggregate_info: dict[int, AggregatePRInfo],
-        extra_settings: ExtraColumnSettings, add_header: bool
+        prs: List[BasicPRInformation],
+        kind: Dashboard,
+        aggregate_info: dict[int, AggregatePRInfo],
+        extra_settings: ExtraColumnSettings,
+        add_header: bool,
     ):
         # Title of each list, and the corresponding HTML anchor.
         # Explain what each dashboard contains upon hovering the heading.
@@ -517,12 +567,16 @@ def write_dashboard(
         else:
             title = ""
         headings = [
-            "Number", "Author", "Title", "Description", "Labels",
+            "Number",
+            "Author",
+            "Title",
+            "Description",
+            "Labels",
             '<a title="number of added/deleted lines">+/-</a>',
-            'Modified files (first 100)',
+            "Modified files (first 100)",
             '<a title="number of files modified">&#128221;</a>',
             '<a title="number of standard or review comments on this PR">&#128172;</a>',
-            'All users who commented or reviewed',
+            "All users who commented or reviewed",
         ]
         if extra_settings.show_assignee:
             headings.append('<a title="github user(s) this PR is assigned to (if any)">Assignee(s)</a>')
@@ -532,19 +586,24 @@ def write_dashboard(
             headings.append("Potential reviewers")
             headings.append("Contact")
         if not extra_settings.hide_update:
-            headings.append("<a title=\"this pull request's last update, according to github\">Updated</a>")
+            headings.append('<a title="this pull request\'s last update, according to github">Updated</a>')
 
         # TODO: are there better headings for this and the other header?
-        headings.append('<a title="The last time this PR\'s status changed from e.g. review to merge conflict, awaiting-author">Last status change</a>')
+        headings.append(
+            '<a title="The last time this PR\'s status changed from e.g. review to merge conflict, awaiting-author">Last status change</a>'
+        )
         headings.append("total time in review")
         head = _write_table_header(headings, "    ")
-        body = _compute_pr_entries(page_name, custom_subpage or getIdTitle(kind)[0], prs, aggregate_info, extra_settings, potential_reviewers)
+        body = _compute_pr_entries(
+            page_name, custom_subpage or getIdTitle(kind)[0], prs, aggregate_info, extra_settings, potential_reviewers
+        )
         id = getTableId(kind) if custom_subpage is None else f"t-{custom_subpage}"
         return f"{title}\n  <table id={id}>\n{head}{body}  </table>"
 
     if extra_settings is None:
         extra_settings = ExtraColumnSettings.default()
     return _inner(prs[kind], kind, aggregate_info, extra_settings, header)
+
 
 # Specific code for writing the actual webpage files.
 
@@ -671,11 +730,16 @@ def write_on_the_queue_page(
             CIStatus.Running: '<a title="CI for this pull request is still running">&#128996;</a>',
             CIStatus.Missing: '<a title="missing information about this PR\'s CI status">???</a>',
         }
-        is_blocked = any(lab.name in ["blocked-by-other-PR", "blocked-by-core-PR", "blocked-by-batt-PR", "blocked-by-qq-PR"] for lab in pr.labels)
+        is_blocked = any(
+            lab.name in ["blocked-by-other-PR", "blocked-by-core-PR", "blocked-by-batt-PR", "blocked-by-qq-PR"]
+            for lab in pr.labels
+        )
         has_merge_conflict = "merge-conflict" in [lab.name for lab in pr.labels]
         is_ready = not (any(lab.name in ["WIP", "help-wanted", "please-adopt"] for lab in pr.labels))
         review = not (any(lab.name in ["awaiting-CI", "awaiting-author", "awaiting-zulip"] for lab in pr.labels))
-        overall = (CI_status[pr_number] == CIStatus.Pass) and (not is_blocked) and (not has_merge_conflict) and is_ready and review
+        overall = (
+            (CI_status[pr_number] == CIStatus.Pass) and (not is_blocked) and (not has_merge_conflict) and is_ready and review
+        )
         name = pr.author_name
         if name is None:
             # TODO: take the author from the aggregate information instead
@@ -728,10 +792,14 @@ def write_on_the_queue_page(
             status = curr2
         else:
             if pr_data.last_status_change.current_status not in [PRStatus.NotReady, PRStatus.Closed]:
-                if pr_data.last_status_change.current_status != current_status and pr_data.last_status_change.status == DataStatus.Valid:
+                if (
+                    pr_data.last_status_change.current_status != current_status
+                    and pr_data.last_status_change.status == DataStatus.Valid
+                ):
                     print(
                         f"WARNING: mismatch for {pr.number}: current status (from REST API data) is {current_status}, "
-                        f"but the 'last status' from the aggregate data is {pr_data.last_status_change.current_status}", file=sys.stderr
+                        f"but the 'last status' from the aggregate data is {pr_data.last_status_change.current_status}",
+                        file=sys.stderr,
                     )
             details = f" (details: {pr_data.total_queue_time.explanation})" if pr_data.total_queue_time.explanation else ""
             hover = f"PR {pr.number} was in review for {format_delta(pr_data.total_queue_time.value_rd)} overall{details}. It was last updated {format_delta(pr_data.last_status_change.delta)} ago and {curr1} {curr2}."
@@ -739,17 +807,27 @@ def write_on_the_queue_page(
             if pr_data.last_status_change.status == "incomplete" or pr_data.total_queue_time.status == "incomplete":
                 status += '<a title="caution: this data is likely incomplete">*</a>'
         entries = [
-            pr_link(pr.number, pr.url), user_filter_link(name, "on_the_queue.html", ""), title_link(pr.title, pr.url),
+            pr_link(pr.number, pr.url),
+            user_filter_link(name, "on_the_queue.html", ""),
+            title_link(pr.title, pr.url),
             _write_labels(pr.labels, "on_the_queue.html", ""),
             # icon(not from_fork), # TODO(August/September): re-instate with inverted meaning
             status_symbol[CI_status[pr_number]],
-            icon(not is_blocked), icon(not has_merge_conflict), icon(is_ready), icon(review), icon(overall),
-            topic_label_symbol, status
+            icon(not is_blocked),
+            icon(not has_merge_conflict),
+            icon(is_ready),
+            icon(review),
+            icon(overall),
+            topic_label_symbol,
+            status,
         ]
         result = _write_table_row(entries, "    ")
         body += result
     headings = [
-        "Number", "Author", "Title", "Labels",
+        "Number",
+        "Author",
+        "Title",
+        "Labels",
         # TODO(August/September): re-instate with inverted meaning "not from a fork?",
         "CI status?",
         '<a title="not labelled with blocked-by-other-PR, blocked-by-batt-PR, blocked-by-core-PR, blocked-by-qq-PR">not blocked?</a>',
@@ -913,8 +991,10 @@ def pr_statistics(
     all_draft_prs: List[BasicPRInformation],
     is_triage_board: bool,
 ) -> str:
-    (number_all, details_list, piechart) = gather_pr_statistics(all_pr_statusses, aggregate_info, prs, all_ready_prs, all_draft_prs, is_triage_board)
-    return f'\n{_make_h2("statistics", "Overall statistics")}\nFound <b>{number_all}</b> open PRs overall. Among these PRs\n{details_list}{piechart}\n'
+    (number_all, details_list, piechart) = gather_pr_statistics(
+        all_pr_statusses, aggregate_info, prs, all_ready_prs, all_draft_prs, is_triage_board
+    )
+    return f"\n{_make_h2('statistics', 'Overall statistics')}\nFound <b>{number_all}</b> open PRs overall. Among these PRs\n{details_list}{piechart}\n"
 
 
 def write_triage_page(
@@ -931,8 +1011,9 @@ def write_triage_page(
     welcome += f"\n  <small>This dashboard was last updated on: {updated}</small>"
 
     spurious_ci = (
-        getIdTitle(Dashboard.InessentialCIFails)[0], "Likely-spurious CI failures",
-         "PRs with just failing CI, and all failures that are very likely to be infrastructure issues, and not the fault of the PR!"
+        getIdTitle(Dashboard.InessentialCIFails)[0],
+        "Likely-spurious CI failures",
+        "PRs with just failing CI, and all failures that are very likely to be infrastructure issues, and not the fault of the PR!",
     )
     subsections = [
         ("statistics", "PR statistics"),
@@ -952,23 +1033,21 @@ def write_triage_page(
         getIdTitle(Dashboard.All),
         ("other", "Other lists of PRs"),
     ]
-    subsections_mapped = [
-        (a, b, None) if a != "spuriousci" else spurious_ci
-        for (a, b) in subsections
-    ]
+    subsections_mapped = [(a, b, None) if a != "spuriousci" else spurious_ci for (a, b) in subsections]
+
     # Created solely because escaping in format strings was too hard.
     def aux(tooltip: str | None) -> str:
         return " " if tooltip is None else f' title="{tooltip}"'
-    items = [
-        f"<a href=\"#{anchor}\"{aux(tooltip)}target=\"_self\">{title}</a>"
-        for (anchor, title, tooltip) in subsections_mapped
-    ]
+
+    items = [f'<a href="#{anchor}"{aux(tooltip)}target="_self">{title}</a>' for (anchor, title, tooltip) in subsections_mapped]
     toc = f"<br><p>\n<b>Quick links:</b> {' | '.join(items)}"
 
     stats = pr_statistics(all_pr_status, aggregate_info, prs_to_list, nondraft_PRs, draft_PRs, False)
 
     output_file = "triage.html"
-    some_stale = f": <strong>{len(prs_to_list[Dashboard.StaleReadyToMerge])}</strong> of them are stale, and merit another look</li>\n"
+    some_stale = (
+        f": <strong>{len(prs_to_list[Dashboard.StaleReadyToMerge])}</strong> of them are stale, and merit another look</li>\n"
+    )
     some_stale += write_dashboard(output_file, prs_to_list, Dashboard.StaleReadyToMerge, aggregate_info, header=False)
     no_stale = " &mdash; among these <strong>no</strong> stale ones, congratulations!</li>"
     ready_to_merge = f"<strong>{len(prs_to_list[Dashboard.AllReadyToMerge])}</strong> PRs are ready to merge{some_stale if prs_to_list[Dashboard.StaleReadyToMerge] else no_stale}"
@@ -980,7 +1059,7 @@ def write_triage_page(
     no_stale_delegated = "<li><strong>no</strong> PRs have been delegated and not updated in a day, congratulations!</li>"
     stale_delegated = f"<li><details><summary><strong>{len(prs_to_list[Dashboard.StaleDelegated])}</strong> PRs have been delegated and not updated in a day</summary>\n  \n  {write_dashboard(output_file, prs_to_list, Dashboard.StaleDelegated, aggregate_info, header=False)}</details></li>"
 
-    notlanded = f"""{_make_h2('not-yet-landed', 'Approved, not yet landed PRs')}
+    notlanded = f"""{_make_h2("not-yet-landed", "Approved, not yet landed PRs")}
 
     At the moment,
     <ul>
@@ -1009,7 +1088,7 @@ def write_triage_page(
     # Awaiting review, assigned and no meaningful update in two weeks.
     # (This includes PRs which were reviewed, when the reviewer forgot to change the PR label.)
     stale_assigned = len(prs_to_list[Dashboard.QueueStaleAssigned])
-    review_heading = f"""\n{_make_h2('review-status', 'Review status')}
+    review_heading = f"""\n{_make_h2("review-status", "Review status")}
   <p>There are currently <strong>{len(prs_to_list[Dashboard.Queue])}</strong> {link_to(Dashboard.Queue, "PRs awaiting review", "review_dashboard.html")}. Among these,</p>
   <ul>
     <li><strong>{len(prs_to_list[Dashboard.QueueEasy])}</strong> are labelled easy ({link_to(Dashboard.QueueEasy, subpage="review_dashboard.html")}),</li>
@@ -1068,9 +1147,9 @@ def write_triage_page(
     list_items = [
         f'<li>{pre}<a href="#{getIdTitle(kind)[0]}">{description}</a>{post}</li>\n' for (kind, pre, description, post) in items2
     ]
-    remainder = f"""\n{_make_h2('other', 'Other lists of PRs')}
+    remainder = f"""\n{_make_h2("other", "Other lists of PRs")}
     Some other lists of PRs which could be useful:
-    <ul>{'    '.join(list_items)}  </ul>
+    <ul>{"    ".join(list_items)}  </ul>
     """
 
     body = f"{title}\n  {welcome}\n  {toc}\n  {stats}\n  {notlanded}\n  {review_heading}\n  {stale_unassigned}\n  {further}\n  {remainder}\n"

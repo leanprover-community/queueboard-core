@@ -1,5 +1,6 @@
 from enum import StrEnum
 
+
 class CIStatus(StrEnum):
     # All build jobs pass (or are skipped).
     Pass = "pass"

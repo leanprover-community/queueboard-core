@@ -5,10 +5,19 @@ from random import shuffle
 from typing import List, NamedTuple, Dict
 from queueboard.ci_status import CIStatus
 from queueboard.mathlib_dashboards import Dashboard
-from queueboard.compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, dump_to_json_file,
-    PLACEHOLDER_AGGREGATE_INFO, compute_pr_statusses, determine_pr_dashboards, parse_aggregate_file, _extract_prs)
+from queueboard.compute_dashboard_prs import (
+    AggregatePRInfo,
+    BasicPRInformation,
+    dump_to_json_file,
+    PLACEHOLDER_AGGREGATE_INFO,
+    compute_pr_statusses,
+    determine_pr_dashboards,
+    parse_aggregate_file,
+    _extract_prs,
+)
 
 ### Reading the input files passed to this script ###
+
 
 # Information passed to this script, via various JSON files.
 class JSONInputData(NamedTuple):
@@ -29,15 +38,22 @@ def read_json_files() -> JSONInputData:
         with open(sys.argv[i]) as prfile:
             open_prs = _extract_prs(json.load(prfile))
             if len(open_prs) >= 990:
-                print(f"error: file {sys.argv[i]} contains at least 990 PRs: the REST API will never return more than 1000 PRs. "
-                "Please split the list into more files as necessary. Erroring now as this means incomplete data (now or very soon).", file=sys.stderr)
+                print(
+                    f"error: file {sys.argv[i]} contains at least 990 PRs: the REST API will never return more than 1000 PRs. "
+                    "Please split the list into more files as necessary. Erroring now as this means incomplete data (now or very soon).",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             elif len(open_prs) >= 900:
-                print(f"warning: file {sys.argv[i]} contains at least 900 PRs: the REST API will never return more than 1000 PRs. Please split the list into more files as necessary.", file=sys.stderr)
+                print(
+                    f"warning: file {sys.argv[i]} contains at least 900 PRs: the REST API will never return more than 1000 PRs. Please split the list into more files as necessary.",
+                    file=sys.stderr,
+                )
             all_open_prs.extend(open_prs)
     with open(path.join("processed_data", "open_pr_data.json"), "r") as f:
         aggregate_info = parse_aggregate_file(json.load(f))
     return JSONInputData(aggregate_info, all_open_prs)
+
 
 # TODO: this code is AI-generated and has not been fully reviewed yet.
 # TODO: move this analysis to process.py, and run it at data aggregation time?
@@ -70,32 +86,36 @@ def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dic
         pr_url = f"https://github.com/leanprover-community/mathlib4/pull/{pr_number}"
 
         # Check for draft status in labels
-        is_draft = pr_info.is_draft or any(label.name.lower() in ['wip', 'draft'] for label in pr_info.labels)
+        is_draft = pr_info.is_draft or any(label.name.lower() in ["wip", "draft"] for label in pr_info.labels)
 
-        nodes.append({
-            "id": pr_number,
-            "title": pr_info.title,
-            "author": pr_info.author,
-            "state": pr_info.state.lower(),
-            "is_draft": is_draft,
-            "labels": [label.name for label in pr_info.labels],
-            "url": pr_url,
-            "dependency_count": len(pr_dependencies.get(pr_number, [])),
-            "dependent_count": len(pr_dependents.get(pr_number, [])),
-            "additions": pr_info.additions,
-            "deletions": pr_info.deletions
-        })
+        nodes.append(
+            {
+                "id": pr_number,
+                "title": pr_info.title,
+                "author": pr_info.author,
+                "state": pr_info.state.lower(),
+                "is_draft": is_draft,
+                "labels": [label.name for label in pr_info.labels],
+                "url": pr_url,
+                "dependency_count": len(pr_dependencies.get(pr_number, [])),
+                "dependent_count": len(pr_dependents.get(pr_number, [])),
+                "additions": pr_info.additions,
+                "deletions": pr_info.deletions,
+            }
+        )
 
     # Create links
     for pr_number, direct_deps in pr_dependencies.items():
         for dep_pr in direct_deps:
             if dep_pr in aggregate_info:
-                links.append({
-                    "source": pr_number,
-                    "target": dep_pr,
-                    "source_state": aggregate_info[pr_number].state.lower(),
-                    "target_state": aggregate_info[dep_pr].state.lower()
-                })
+                links.append(
+                    {
+                        "source": pr_number,
+                        "target": dep_pr,
+                        "source_state": aggregate_info[pr_number].state.lower(),
+                        "target_state": aggregate_info[dep_pr].state.lower(),
+                    }
+                )
 
     return {
         "nodes": nodes,
@@ -104,13 +124,14 @@ def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dic
             "total_prs": len(aggregate_info),
             "prs_with_dependencies": len([deps for deps in pr_dependencies.values() if deps]),
             "prs_that_are_dependencies": len([deps for deps in pr_dependents.values() if deps]),
-            "dependency_links": len(links)
-        }
+            "dependency_links": len(links),
+        },
     }
+
 
 def main() -> None:
     # intermediate "API" files will go in the api directory
-    makedirs('api')
+    makedirs("api")
 
     input_data = read_json_files()
     # Populate basic information from the input data: splitting into draft and non-draft PRs
@@ -163,9 +184,10 @@ def main() -> None:
     # reviewers or everybody is too busy) --- so in practice, fewer reviewers may be actually assigned.
     # XXX: importing this at the beginning leads to a circular import; importing it here seems to work.
     from queueboard.suggest_reviewer import read_reviewer_info, collect_assignment_statistics, suggest_reviewers_many
+
     reviewer_info = read_reviewer_info()
     assignment_stats = collect_assignment_statistics(aggregate_info)
-    all_stale_unassigned : List[int] = [pr.number for pr in prs_to_list[Dashboard.QueueStaleUnassigned]]
+    all_stale_unassigned: List[int] = [pr.number for pr in prs_to_list[Dashboard.QueueStaleUnassigned]]
     shuffle(all_stale_unassigned)
     try:
         with open("outdated_prs.txt", "r") as fi:
@@ -174,7 +196,9 @@ def main() -> None:
         lines = []
     outdated_prs = [int(s) for s in lines if s]
     to_analyze = [pr for pr in all_stale_unassigned if pr not in outdated_prs]
-    proposed_reviews = suggest_reviewers_many(assignment_stats.assignments, reviewer_info, sorted(to_analyze[0:50]), aggregate_info)
+    proposed_reviews = suggest_reviewers_many(
+        assignment_stats.assignments, reviewer_info, sorted(to_analyze[0:50]), aggregate_info
+    )
     with open("automatic_assignments.json", "w") as fi:
         print(json.dumps(proposed_reviews, indent=4), file=fi)
 
@@ -183,7 +207,9 @@ def main() -> None:
     with open("dependency_graph.json", "w") as f:
         json.dump(dependency_graph_data, f, indent=2)
 
-    print(f"Generated dependency graph with {dependency_graph_data['metadata']['dependency_links']} links between {dependency_graph_data['metadata']['total_prs']} PRs")
+    print(
+        f"Generated dependency graph with {dependency_graph_data['metadata']['dependency_links']} links between {dependency_graph_data['metadata']['total_prs']} PRs"
+    )
 
 
 if __name__ == "__main__":
