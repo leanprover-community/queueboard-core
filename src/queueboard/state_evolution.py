@@ -46,9 +46,9 @@ from typing import List, NamedTuple, Tuple
 from dateutil import parser
 from dateutil.relativedelta import relativedelta
 
-from ci_status import CIStatus
-from classify_pr_state import (PRState, PRStatus, canonicalise_label, determine_PR_status, label_categorisation_rules)
-from util import format_delta
+from queueboard.ci_status import CIStatus
+from queueboard.classify_pr_state import (PRState, PRStatus, canonicalise_label, determine_PR_status, label_categorisation_rules)
+from queueboard.util import format_delta
 
 
 class LabelAdded(NamedTuple):

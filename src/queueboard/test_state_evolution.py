@@ -4,9 +4,9 @@
 Unit test for the code in `state_evolution.py`: all of these are very mathlib-specific, hence extracted into a separate file.
 """
 
-from ci_status import CIStatus
-from classify_pr_state import LabelKind
-from state_evolution import PRState, PRStatus, Event, Metadata, total_queue_time_inner, determine_state_changes, first_on_queue_inner, last_status_update_inner
+from queueboard.ci_status import CIStatus
+from queueboard.classify_pr_state import LabelKind
+from queueboard.state_evolution import PRState, PRStatus, Event, Metadata, total_queue_time_inner, determine_state_changes, first_on_queue_inner, last_status_update_inner
 
 from dateutil.relativedelta import relativedelta
 from dateutil import tz

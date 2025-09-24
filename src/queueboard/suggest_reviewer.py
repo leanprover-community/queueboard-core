@@ -9,15 +9,15 @@ This may take the current number of pull requests assigned to each reviewer into
 import json
 import sys
 from typing import List, NamedTuple, Tuple
-from classify_pr_state import PRState, PRStatus, LabelKind, determine_PR_status, label_categorisation_rules
-from compute_dashboard_prs import LastStatusChange, DataStatus
+from queueboard.classify_pr_state import PRState, PRStatus, LabelKind, determine_PR_status, label_categorisation_rules
+from queueboard.compute_dashboard_prs import LastStatusChange, DataStatus
 
 from datetime import datetime
 from os import path
 
 from dateutil import parser, tz
 
-from dashboard import (
+from queueboard.dashboard import (
     AggregatePRInfo,
     user_link,
 )

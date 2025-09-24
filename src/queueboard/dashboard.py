@@ -11,12 +11,12 @@ from typing import List, NamedTuple, Tuple
 
 from dateutil import parser, relativedelta, tz
 
-from ci_status import CIStatus
-from classify_pr_state import PRStatus
-from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus, load_from_json_file,
+from queueboard.ci_status import CIStatus
+from queueboard.classify_pr_state import PRStatus
+from queueboard.compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, Label, DataStatus, load_from_json_file,
     infer_pr_url, link_to, gather_pr_statistics)
-from mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
-from util import format_delta
+from queueboard.mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
+from queueboard.util import format_delta
 
 
 ### Helper methods: writing HTML code for various parts of the generated webpage ###

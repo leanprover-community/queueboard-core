@@ -12,11 +12,11 @@ import sys
 from dateutil import parser, relativedelta
 from typing import Dict, List, NamedTuple, OrderedDict, Tuple, Any
 
-from ci_status import CIStatus
-from classify_pr_state import (PRState, PRStatus,
+from queueboard.ci_status import CIStatus
+from queueboard.classify_pr_state import (PRState, PRStatus,
                                determine_PR_status, label_categorisation_rules)
-from mathlib_dashboards import Dashboard, getIdTitle
-from util import my_assert_eq, timedelta_tryParse, relativedelta_tryParse
+from queueboard.mathlib_dashboards import Dashboard, getIdTitle
+from queueboard.util import my_assert_eq, timedelta_tryParse, relativedelta_tryParse
 
 
 # The following structures are completely project-agnostic.

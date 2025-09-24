@@ -3,9 +3,9 @@ from os import path, makedirs
 import sys
 from random import shuffle
 from typing import List, NamedTuple, Dict
-from ci_status import CIStatus
-from mathlib_dashboards import Dashboard
-from compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, dump_to_json_file,
+from queueboard.ci_status import CIStatus
+from queueboard.mathlib_dashboards import Dashboard
+from queueboard.compute_dashboard_prs import (AggregatePRInfo, BasicPRInformation, dump_to_json_file,
     PLACEHOLDER_AGGREGATE_INFO, compute_pr_statusses, determine_pr_dashboards, parse_aggregate_file, _extract_prs)
 
 ### Reading the input files passed to this script ###
@@ -162,7 +162,7 @@ def main() -> None:
     # NB. These 50 PRs include any PRs without any suggested reviewer (say, because an area has not enough
     # reviewers or everybody is too busy) --- so in practice, fewer reviewers may be actually assigned.
     # XXX: importing this at the beginning leads to a circular import; importing it here seems to work.
-    from suggest_reviewer import read_reviewer_info, collect_assignment_statistics, suggest_reviewers_many
+    from queueboard.suggest_reviewer import read_reviewer_info, collect_assignment_statistics, suggest_reviewers_many
     reviewer_info = read_reviewer_info()
     assignment_stats = collect_assignment_statistics(aggregate_info)
     all_stale_unassigned : List[int] = [pr.number for pr in prs_to_list[Dashboard.QueueStaleUnassigned]]

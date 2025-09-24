@@ -12,9 +12,9 @@ import glob
 from os import path
 from typing import List
 
-from ci_status import CIStatus
-from dashboard_data import determine_pr_dashboards, parse_aggregate_file
-from dashboard import (
+from queueboard.ci_status import CIStatus
+from queueboard.dashboard_data import determine_pr_dashboards, parse_aggregate_file
+from queueboard.dashboard import (
     AggregatePRInfo,
     BasicPRInformation,
     Dashboard,
@@ -30,7 +30,7 @@ from dashboard import (
     write_webpage,
 )
 
-from suggest_reviewer import (
+from queueboard.suggest_reviewer import (
   read_reviewer_info,
   suggest_reviewers,
   collect_assignment_statistics,

@@ -17,10 +17,10 @@ from typing import List, NamedTuple, Tuple
 
 from dateutil import parser
 
-from ci_status import CIStatus
-from compute_dashboard_prs import AggregatePRInfo, infer_pr_url, Label
-from dashboard_data import parse_aggregate_file
-from util import eprint, parse_json_file
+from queueboard.ci_status import CIStatus
+from queueboard.compute_dashboard_prs import AggregatePRInfo, infer_pr_url, Label
+from queueboard.dashboard_data import parse_aggregate_file
+from queueboard.util import eprint, parse_json_file
 
 # Read the input JSON files, return a dictionary mapping each PR number
 # to the (current) last update data github provides.

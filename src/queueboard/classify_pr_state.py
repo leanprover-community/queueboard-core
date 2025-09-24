@@ -10,7 +10,7 @@ from typing import List, NamedTuple
 
 from dateutil import tz
 
-from ci_status import CIStatus
+from queueboard.ci_status import CIStatus
 
 
 # The different kinds of PR labels we care about.
