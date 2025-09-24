@@ -202,12 +202,12 @@ def main() -> None:
     proposed_reviews = suggest_reviewers_many(
         assignment_stats.assignments, reviewer_info, sorted(to_analyze[0:50]), aggregate_info
     )
-    with open("automatic_assignments.json", "w") as fi:
+    with open(path.join("api", "automatic_assignments.json"), "w") as fi:
         print(json.dumps(proposed_reviews, indent=4), file=fi)
 
     # Generate dependency graph for the dependency dashboard
     dependency_graph_data = generate_dependency_graph(aggregate_info)
-    with open("dependency_graph.json", "w") as f:
+    with open(path.join("api", "dependency_graph.json"), "w") as f:
         json.dump(dependency_graph_data, f, indent=2)
 
     print(
