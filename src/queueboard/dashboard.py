@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-# This script accepts json files as command line arguments and displays the data in an HTML dashboard.
-# It assumes that for each PR N which should appear in some dashboard,
-# there is a file N.json in the `data` directory, which contains all necessary detailed information about that PR.
+# This script reads json files from the api/ directory and displays the data in an HTML dashboard.
+# This
 
 import sys
+import shutil
+from importlib.resources import files, as_file
 from datetime import datetime, timedelta, timezone
-from os import path
+from os import path, makedirs
 from typing import List, NamedTuple, Tuple
 
 from dateutil import parser, relativedelta, tz
@@ -628,10 +629,13 @@ HTML_HEADER = """
 """.strip()
 
 
+GH_PAGES_DIR = "gh-pages"
+
+
 # Write a webpage with body out a file called 'outfile*.
 # 'custom_script' (if present) is expected to be newline-delimited and appropriately indented.
 def write_webpage(body: str, outfile: str, use_tables: bool = True, custom_script: str | None = None) -> None:
-    with open(outfile, "w") as fi:
+    with open(path.join(GH_PAGES_DIR, outfile), "w") as fi:
         script = f"<script>{custom_script or STANDARD_SCRIPT}</script>\n" if use_tables else ""
         footer = f"{script}</body>\n</html>"
         print(f"{HTML_HEADER}\n{body}\n{footer}", file=fi)
@@ -1159,6 +1163,9 @@ def write_triage_page(
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1]:
+        GH_PAGES_DIR = sys.argv[1]  # "gh-pages" by default
+
     aggregate_info = load_from_json_file(path.join("api", "aggregate_info.json"))
     draft_PRs = load_from_json_file(path.join("api", "draft_PRs.json"))
     nondraft_PRs = load_from_json_file(path.join("api", "nondraft_PRs.json"))
@@ -1167,6 +1174,12 @@ def main() -> None:
     base_branch = load_from_json_file(path.join("api", "base_branch.json"))
     prs_to_list = load_from_json_file(path.join("api", "prs_to_list.json"))
 
+    makedirs(GH_PAGES_DIR, exist_ok=True)
+    # copy JSON files from API into place
+    shutil.copy2(path.join("api", "automatic_assignments.json"), GH_PAGES_DIR)
+    shutil.copy2(path.join("api", "dependency_graph.json"), GH_PAGES_DIR)
+
+    # all HTML files are written to GH_PAGES_DIR, see write_webpage
     write_on_the_queue_page(all_pr_status, aggregate_info, nondraft_PRs, CI_status, base_branch)
 
     # FUTURE: can this time be displayed in the local time zone of the user viewing this page?
@@ -1178,6 +1191,10 @@ def main() -> None:
     write_maintainers_quick_page(updated, prs_to_list, aggregate_info)
     write_help_out_page(updated, prs_to_list, aggregate_info)
     write_triage_page(updated, prs_to_list, all_pr_status, aggregate_info, nondraft_PRs, draft_PRs)
+
+    # copy files in static/ to GH_PAGES_DIR
+    with as_file(files("queueboard").joinpath("static")) as tmp:
+        shutil.copytree(tmp, GH_PAGES_DIR, dirs_exist_ok=True)
 
 
 if __name__ == "__main__":
