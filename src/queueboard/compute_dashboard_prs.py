@@ -577,7 +577,7 @@ def gather_pr_statistics(
 
     # For some kinds, we have this data already: the review queue and the "not merged" kinds come to mind.
     # Let us compare with the classification logic.
-    queue_prs_numbers = [pr for pr in ready_pr_status if ready_pr_status[pr] == PRStatus.AwaitingReview]
+    queue_prs_numbers = [int(pr) for pr in ready_pr_status if ready_pr_status[pr] == PRStatus.AwaitingReview]
     msg = "the review queue (left) with all PRs classified as awaiting review (right)"
     if my_assert_eq(msg, queue_prs_numbers, [i.number for i in queue_prs]):
         print("review queue: two computations match, hooray", file=sys.stderr)
