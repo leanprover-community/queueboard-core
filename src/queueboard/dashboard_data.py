@@ -1,3 +1,6 @@
+# This script accepts json files as command line arguments and generates "API" files
+# that are consumed by dashboard.py to create the frontend.
+
 import json
 from os import path, makedirs
 import sys

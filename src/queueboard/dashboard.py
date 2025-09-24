@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # This script reads json files from the api/ directory and displays the data in an HTML dashboard.
-# This
+# This takes an (optional) input argument giving the name of the directory to place the output files ("gh-pages" by default)
 
 import sys
 import shutil
