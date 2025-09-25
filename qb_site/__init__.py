@@ -1,0 +1,1 @@
+"""Queueboard Django project package."""

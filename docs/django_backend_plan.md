@@ -2,16 +2,17 @@
 
 ## Project Configuration
 - Use a settings package (`qb_site/settings/`) with `base.py`, `local.py`, `ci.py`, `production.py`; load config from environment variables and select modules via `DJANGO_SETTINGS_MODULE`.
-- Register first-party apps (`qb_site.core`, `qb_site.syncer`, `qb_site.analyzer`, `qb_site.api`) alongside Django defaults; keep shared dependencies centralized in `core`.
+- Register first-party apps (`core`, `syncer`, `analyzer`, `api`) alongside Django defaults; keep shared dependencies centralized in `core`.
 - Inject `src/` onto `PYTHONPATH` so the legacy package continues to work during the migration, and plan to replace ad-hoc path tweaks with a proper editable install.
-- Standardize settings via `django-environ` or `pydantic-settings`; provide `.env.example` covering DB credentials, GitHub tokens, caches, and task broker configuration.
+- Standardize settings via `django-environ` or `pydantic-settings`; maintain `.env.example` in the repo root covering DB credentials, GitHub tokens, caches, and task broker configuration.
 - Target PostgreSQL for primary storage, but retain SQLite overrides for local/CI; add logging/observability stubs (structured logs, Sentry placeholder, health-check endpoint).
+- Maintain Dockerfile and docker-compose setup to emulate production locally (web + Postgres containers, shared `.env`).
 
 ## App Scaffolding
 - Directory layout (`qb_site/<app>/`) separates `models`, `services`, `tasks`, `management/commands`, `serializers`, and `tests` to keep domains isolated.
 - `core` owns shared domain objects and helpers; `syncer` manages ingestion; `analyzer` computes analytics; `api` exposes JSON endpoints.
 - Each app ships with an `apps.py` config and placeholder packages so migrations/tests may be added incrementally.
-- Extend `qb_site/api/urls.py` with DRF routers once endpoints exist; project `urls.py` already delegates `/api/` traffic here.
+- Extend `api/urls.py` with DRF routers once endpoints exist; project `urls.py` already delegates `/api/` traffic here.
 - Document module boundaries and workflows in `docs/ARCHITECTURE.md` so new contributors understand the split.
 
 ## Data Modeling
@@ -50,7 +51,7 @@
 - Document deployment steps, secrets management, infrastructure requirements (DB, cache, worker, static hosting), and provide a runbook for on-call triage.
 
 ## Immediate Next Steps
-1. Finalize environment tooling (dotenv management, database credentials, background task runner decision) and document `.env.example`.
+1. Finalize environment tooling (dotenv management choice, database credentials, background task runner decision).
 2. Define initial `core` domain models plus shared mixins, then scaffold migrations.
 3. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
 4. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
