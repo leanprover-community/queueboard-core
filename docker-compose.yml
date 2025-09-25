@@ -1,0 +1,41 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python qb_site/manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: qb_site.settings.local
+      DJANGO_DB_HOST: db
+      DJANGO_DB_PORT: 5432
+      DJANGO_DB_NAME: queueboard
+      DJANGO_DB_USER: queueboard
+      DJANGO_DB_PASSWORD: queueboard
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: queueboard
+      POSTGRES_USER: queueboard
+      POSTGRES_PASSWORD: queueboard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U queueboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

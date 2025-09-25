@@ -59,3 +59,11 @@ To view the files properly, you may need to start a static web server in that di
 
 **Contact.** The initial design, architecture and infrastructure of this dashboard were created by Johan Commelin (@jcommelin). Michael Rothgang (@grunweg) contributed improvements to the design, added more dashboards and added the analysis of the "last status change" and "total time in review" information.
 If you have questions or feedback, feel free to contact us on the [leanprover zulip chat](https://leanprover.zulipchat.com), such as in [the private reviewers stream](https://leanprover.zulipchat.com/#narrow/stream/345428-mathlib-reviewers/topic/proof.20of.20concept.20review.20dashboard) or in the public `#mathlib4` channel.
+
+### Docker Compose
+
+Local development via Docker mirrors the production-style Postgres setup.
+1. Copy `.env.example` to `.env` and adjust values if needed.
+2. Run `docker compose up --build` to start the web and Postgres services.
+3. Access Django at http://localhost:8000 once the containers are healthy.
+
