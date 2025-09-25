@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .base import *  # noqa: F401,F403 - import base defaults
+from .base import SECRET_KEY, ALLOWED_HOSTS, env_bool
 
 DEBUG = False
 
