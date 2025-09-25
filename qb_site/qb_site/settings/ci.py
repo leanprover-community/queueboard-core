@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from .base import *  # noqa: F401,F403 - import base defaults
+from .base import BASE_DIR
 
 DEBUG = False
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-ci")
