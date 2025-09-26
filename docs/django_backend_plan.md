@@ -51,7 +51,11 @@
 - Document deployment steps, secrets management, infrastructure requirements (DB, cache, worker, static hosting), and provide a runbook for on-call triage.
 
 ## Immediate Next Steps
-1. Finalize environment tooling (docs now reflect Docker-compose-only `.env` usage and Postgres-only policy; background task runner decision still pending).
+1. Finalize environment tooling (docs updated for Docker-compose-only `.env` usage and Postgres-only policy; Celery + Redis integration underway).
+    1.1 Dependencies (`celery`, `redis`) added via `uv` and locked.
+    1.2 Environment defaults extended to include `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`.
+    1.3 Celery app scaffolding in progress (`qb_site/qb_site/celery.py`, `core/tasks/__init__.py::heartbeat`).
+    1.4 Upcoming: docker-compose worker/beat services, documentation refresh, Postgres guardrails.
 2. Define initial `core` domain models plus shared mixins, then scaffold migrations.
 3. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
 4. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
