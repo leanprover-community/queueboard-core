@@ -4,8 +4,8 @@
 - Use a settings package (`qb_site/settings/`) with `base.py`, `local.py`, `ci.py`, `production.py`; load config from environment variables and select modules via `DJANGO_SETTINGS_MODULE`.
 - Register first-party apps (`core`, `syncer`, `analyzer`, `api`) alongside Django defaults; keep shared dependencies centralized in `core`.
 - Inject `src/` onto `PYTHONPATH` so the legacy package continues to work during the migration, and plan to replace ad-hoc path tweaks with a proper editable install.
-- Standardize settings via `django-environ` or `pydantic-settings`; maintain `.env.example` in the repo root covering DB credentials, GitHub tokens, caches, and task broker configuration.
-- Target PostgreSQL for primary storage, but retain SQLite overrides for local/CI; add logging/observability stubs (structured logs, Sentry placeholder, health-check endpoint).
+- Standardize settings by reading from the process environment. `.env` files are consumed by Docker Compose only; developers who bypass Compose must export the same variables manually.
+- Target PostgreSQL for all environments. SQLite fallbacks are out of scope so that local, CI, and production share the same database behavior.
 - Maintain Dockerfile and docker-compose setup to emulate production locally (web + Postgres containers, shared `.env`).
 
 ## App Scaffolding
@@ -51,7 +51,7 @@
 - Document deployment steps, secrets management, infrastructure requirements (DB, cache, worker, static hosting), and provide a runbook for on-call triage.
 
 ## Immediate Next Steps
-1. Finalize environment tooling (dotenv management choice, database credentials, background task runner decision).
+1. Finalize environment tooling (docs now reflect Docker-compose-only `.env` usage and Postgres-only policy; background task runner decision still pending).
 2. Define initial `core` domain models plus shared mixins, then scaffold migrations.
 3. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
 4. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
