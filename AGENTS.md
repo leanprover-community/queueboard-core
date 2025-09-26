@@ -32,5 +32,5 @@ docker compose up --build                      # launch Django + Postgres stack 
 
 ## Configuration & Environment
 - Copy `.env.example` to `.env` for local Django work; supply database credentials, GitHub tokens, and task runner settings as described in `docs/django_backend_plan.md`.
-- Default to PostgreSQL via `docker compose`; override to SQLite by setting `DJANGO_DB_ENGINE=django.db.backends.sqlite3` for quick tests.
+- Run the stack through `docker compose` against PostgreSQL; we no longer support SQLite fallbacks for quick tests.
 - Keep secrets out of version control—store them in the `.env` file or your chosen secret manager.
