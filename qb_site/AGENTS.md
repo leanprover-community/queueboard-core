@@ -14,7 +14,7 @@ uv run pytest qb_site                              # run pytest/pytest-django su
 ```
 - Copy `.env.example` to `.env` and adjust database credentials or GitHub tokens; Docker compose reads the same file.
 - PostgreSQL is the only supported database; ensure local/CI environments route through the Compose Postgres service or equivalent.
-- For containerized work, run `docker compose up --build` from the repo root to start web + Postgres services.
+- For containerized work, run `docker compose up --build` from the repo root to start web + Postgres + Redis + Celery worker/beat.
 
 ## Coding Style & Conventions
 - Continue using four-space indentation and `ruff` linting; run `uv run ruff check qb_site` before opening a PR.
@@ -29,6 +29,13 @@ uv run pytest qb_site                              # run pytest/pytest-django su
 - Validate API responses with DRF test clients or `pytest` snapshot tools; ensure pagination, filtering, and ordering rules are asserted.
 
 ## Operational Notes
+- Containers & volumes:
+  - Code is bind-mounted read-only as `.:/app:ro`.
+  - Runtime artifacts (Django `STATIC_ROOT`, `MEDIA_ROOT`, Celery beat schedule) write under `/data` backed by the `appdata` named volume.
+  - Generate migrations on the host (not inside containers) and commit them.
+- Celery:
+  - Worker: `celery -A qb_site worker -l info` (non-root via `--uid/--gid`), `PYTHONPATH=/app/qb_site:/app`.
+  - Beat: `celery -A qb_site beat -l info --schedule /data/celerybeat-schedule` (same env and non-root flags).
 - Align new models with the migration plan in `docs/django_backend_plan.md`; coordinate raw vs. analytics tables with the future Postgres schema.
 - Add observability hooks (structured logging, metrics) through Django settings rather than ad-hoc prints.
-- Document any background worker requirements (Celery, RQ, etc.) in PRs and update Docker compose definitions when new services are introduced.
+- See scheduler rationale in `docs/design-decisions/002-beat-scheduler-choice.md`.

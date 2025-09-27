@@ -1,1 +1,1 @@
-"""Queueboard Django project package."""
+"""Queueboard Django project top-level package."""

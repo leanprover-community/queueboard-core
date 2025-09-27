@@ -1,12 +1,29 @@
 # Queueboard Django Backend Migration Plan
 
 ## Project Configuration
-- Use a settings package (`qb_site/settings/`) with `base.py`, `local.py`, `ci.py`, `production.py`; load config from environment variables and select modules via `DJANGO_SETTINGS_MODULE`.
+- Use a settings package (`qb_site/qb_site/settings/`) with `base.py`, `local.py`, `ci.py`, `production.py`; load config from environment variables and select modules via `DJANGO_SETTINGS_MODULE`.
 - Register first-party apps (`core`, `syncer`, `analyzer`, `api`) alongside Django defaults; keep shared dependencies centralized in `core`.
 - Inject `src/` onto `PYTHONPATH` so the legacy package continues to work during the migration, and plan to replace ad-hoc path tweaks with a proper editable install.
 - Standardize settings by reading from the process environment. `.env` files are consumed by Docker Compose only; developers who bypass Compose must export the same variables manually.
 - Target PostgreSQL for all environments. SQLite fallbacks are out of scope so that local, CI, and production share the same database behavior.
 - Maintain Dockerfile and docker-compose setup to emulate production locally (web + Postgres containers, shared `.env`).
+
+### Celery in Docker Compose
+- Services: `redis` (broker), `worker` (Celery workers), `beat` (Celery scheduler) run alongside `web` and `db`.
+- Commands:
+  - Worker: `celery -A qb_site worker -l info`
+  - Beat: `celery -A qb_site beat -l info`
+- Environment:
+  - `PYTHONPATH=/app/qb_site:/app` for worker/beat to ensure imports resolve the inner Django package consistently.
+  - `DJANGO_SETTINGS_MODULE=qb_site.settings.local` for parity with the web service.
+  - Broker/Result default to Redis (`CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`) and match `.env.example`.
+- Orchestration: both services depend on `db` and `redis` healthchecks and use `restart: unless-stopped`.
+- Note: Because the repository has an outer `qb_site/` folder and an inner `qb_site/qb_site/` package, the `PYTHONPATH` override makes `celery -A qb_site ...` resolve correctly without additional code changes.
+ - Filesystem:
+   - Code is mounted read-only (`.:/app:ro`) for `web`, `worker`, and `beat` to prevent container writes into the repo.
+   - A named volume `appdata:/data` holds runtime artifacts (e.g., Django `STATIC_ROOT`, `MEDIA_ROOT`, and Celery beat’s schedule file).
+   - Beat persists its schedule to `/data/celerybeat-schedule` inside that volume to survive container restarts and keep the repo clean.
+ - Security: `worker` and `beat` drop privileges to a non-root user via Celery CLI flags (`--uid/--gid`); beat ensures `/data` is writable before dropping privileges.
 
 ## App Scaffolding
 - Directory layout (`qb_site/<app>/`) separates `models`, `services`, `tasks`, `management/commands`, `serializers`, and `tests` to keep domains isolated.
@@ -55,7 +72,7 @@
     1.1 Dependencies (`celery`, `redis`) added via `uv` and locked.
     1.2 Environment defaults extended to include `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`.
     1.3 Celery app scaffolding in progress (`qb_site/qb_site/celery.py`, `core/tasks/__init__.py::heartbeat`).
-    1.4 Upcoming: docker-compose worker/beat services, documentation refresh, Postgres guardrails.
+    1.4 Completed: docker-compose `worker`/`beat` services and `redis` broker added; docs refreshed to cover service layout and import-path nuance. Postgres‑only policy enforced via Compose and settings defaults (no SQLite support).
 2. Define initial `core` domain models plus shared mixins, then scaffold migrations.
 3. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
 4. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.

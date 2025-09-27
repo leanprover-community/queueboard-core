@@ -5,13 +5,16 @@ services:
       dockerfile: Dockerfile
     command: python qb_site/manage.py runserver 0.0.0.0:8000
     volumes:
-      - .:/app
+      - .:/app:ro
+      - appdata:/data
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: qb_site.settings.local
+      DJANGO_STATIC_ROOT: /data/staticfiles
+      DJANGO_MEDIA_ROOT: /data/media
       DJANGO_DB_HOST: db
       DJANGO_DB_PORT: 5432
       DJANGO_DB_NAME: queueboard
@@ -20,6 +23,64 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A qb_site worker -l info --uid nobody --gid nogroup
+    volumes:
+      - .:/app:ro
+      - appdata:/data
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app/qb_site:/app
+      DJANGO_SETTINGS_MODULE: qb_site.settings.local
+      DJANGO_DB_HOST: db
+      DJANGO_DB_PORT: 5432
+      DJANGO_DB_NAME: queueboard
+      DJANGO_DB_USER: queueboard
+      DJANGO_DB_PASSWORD: queueboard
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c 'mkdir -p /data && chown -R 65534:65534 /data && exec celery -A qb_site beat -l info --schedule /data/celerybeat-schedule --uid 65534 --gid 65534'
+    volumes:
+      - .:/app:ro
+      - appdata:/data
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /app/qb_site:/app
+      DJANGO_SETTINGS_MODULE: qb_site.settings.local
+      DJANGO_DB_HOST: db
+      DJANGO_DB_PORT: 5432
+      DJANGO_DB_NAME: queueboard
+      DJANGO_DB_USER: queueboard
+      DJANGO_DB_PASSWORD: queueboard
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   db:
     image: postgres:16-alpine
@@ -39,3 +100,4 @@ services:
 
 volumes:
   pgdata:
+  appdata:
