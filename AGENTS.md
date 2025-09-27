@@ -12,7 +12,7 @@ uv run ruff check .                            # lint against ruff.toml rules (1
 uv run ruff format .                           # apply canonical formatting
 uv run python -m queueboard.dashboard test/all-open-PRs-1.json test/all-open-PRs-2.json  # regenerate HTML from fixtures
 uv run python src/queueboard/test_state_evolution.py                                    # run targeted state evolution tests
-docker compose up --build                      # launch Django + Postgres stack defined in docker-compose.yml
+docker compose up --build                      # launch web + Postgres + Redis + Celery worker/beat
 ```
 
 ## Coding Style & Naming Conventions
@@ -34,3 +34,12 @@ docker compose up --build                      # launch Django + Postgres stack 
 - Copy `.env.example` to `.env` for local Django work; supply database credentials, GitHub tokens, and task runner settings as described in `docs/django_backend_plan.md`.
 - Run the stack through `docker compose` against PostgreSQL; we no longer support SQLite fallbacks for quick tests.
 - Keep secrets out of version control—store them in the `.env` file or your chosen secret manager.
+
+## Containers & Volumes
+- Code is bind-mounted read-only into containers (`.:/app:ro`) to avoid writes into the repo from inside Docker.
+- Runtime artifacts (Django `STATIC_ROOT`, `MEDIA_ROOT`, Celery beat schedule) write under `/data` backed by the `appdata` named volume.
+- Generate migrations on the host (e.g., `uv run python qb_site/manage.py makemigrations`) and commit them, rather than creating files from inside containers.
+
+## Design Decisions
+- Architectural and operational choices are recorded under `docs/design-decisions/`.
+- Start with `docs/design-decisions/README.md` for format and naming conventions.
