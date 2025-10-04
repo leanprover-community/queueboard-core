@@ -682,18 +682,18 @@ TIPS_AND_TRICKS = f"""  <h2 id="tips-and-tricks"><a href="#tips-and-tricks">Tips
   There is special support for this combining: searching for <code>t-algebra$</code> will match only PRs with label <code>t-algebra</code>.</li>
   <li><strong>find PRs by modified file</strong>: search for a file name and find all PRs in a list which modify this file. Searching for several files finds all PRs which modify all these files. (Caveat: we only track the first 100 files each PR changes, so this may yield incomplete results for cross-cutting PRs. Such PRs are rare, however.)</li>
   <li><strong>find your PRs</strong>: searching for your user name returns all PRs you reviewed or commented on</li>
-  <li><strong>search PR description</strong>: searching also searches a PR description, and the list of all users who ever commented on this PR. To find all PRs from the sphere-eversion project, searching for "sphere eversion" (or "sphere eversion") should do the trick.</li>
+  <li><strong>search PR description</strong>: searching also searches a PR description, and the list of all users who ever commented on this PR. To find all PRs from the sphere-eversion project, searching for "sphere-eversion" (or "sphere eversion") should do the trick.</li>
   <li><strong>configuration via URL</strong>: you can configure the initial sorting, search terms and number of entries per page by changing the URL you're visiting. Three short examples:
     <ul>
       <li>{code_link("review_dashboard.html?sort=totalTimeReview-desc#queue")} sorts the #queue table by total time in review (in descending order),</li>
       <li>{code_link("triage.html=?search=manifold&sort=author-asc&length=10#all")} shows all PRs which contain the string "manifold" in their entry or PR description, sorted by author (in ascending order), with 10 items per page, and</li>
       <li>{code_link("on_the_queue.html?search=jcommelin&length=100")} shows the status of all PRs by <code>jcommelin</code></li>
-      <li>{code_link("dependency_dashboard.html?search=carleson")} shows visualises dependencies between all PRs from the Carleson project (i.e., with the Carleson label)
+      <li>{code_link("dependency_dashboard.html?search=carleson")} visualises dependencies between all PRs from the Carleson project (i.e., with the Carleson label)
     </ul>
   <details><summary>Reference-level explanation of search syntax</summary>
   The <code>search</code> parameter filters all tables on a page by default.
   The <code>sort</code> parameter changes the initial sorting of all dashboards; if the parameter is given several times, this configures a multi-column sort (sorting by the first parameter first). A valid value is of the form <code>idxOrAlias-direction</code>, where <code>direction</code> is either <code>asc</code> or <code>desc</code> (for ascending or descending order), and <code>idxOrAlias</code> describes the column to sort.
-  All columns have human-readable names: these are <code>number</code>, <code>author</code>, <code>title</code>, <code>labels</code>, <code>diff</code>, <code>numberChangedFiles</code>, <code>numberComments</code>, <code>assignee</code>, <code>approvals</code>, <code>lastUpdate</code>, <code>lastStatusChange</code> and <code>totalTimeReview</code>, respectively &emdash; mapping to the obvious column.
+  All columns have human-readable names: these are <code>number</code>, <code>author</code>, <code>title</code>, <code>labels</code>, <code>diff</code>, <code>numberChangedFiles</code>, <code>numberComments</code>, <code>assignee</code>, <code>approvals</code>, <code>lastUpdate</code>, <code>lastStatusChange</code> and <code>totalTimeReview</code>, respectively &mdash; mapping to the obvious column.
   Alternatively (deprecated), you can pass in the (0-based) index of the column you want to sort. (You have to account for hidden columns, and there are no stability guarantees. This option is only kept for backwards compatibility.)
   </details>
   </li>
