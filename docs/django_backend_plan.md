@@ -35,11 +35,22 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Document module boundaries and workflows in `docs/ARCHITECTURE.md` so new contributors understand the split.
 
 ## Data Modeling
-- **Core**: define canonical objects (repository, contributor, label, milestone) plus timestamp mixins and enums shared across apps.
-- **Syncer raw schema**: tables for pull requests, commits, reviews, timeline events, check runs, statuses, deployment markers; persist GitHub IDs for idempotency and incremental fetches.
+- **Core**: define canonical objects (repository, user), milestone as needed, plus timestamp mixins and enums shared across apps. Keep curated config here (e.g., Areas, ReviewerPreferences); avoid GitHub‑owned state.
+- **Syncer raw schema**: tables for pull requests, labels (definitions), PR↔label attachments, commits, reviews, timeline events, check runs, statuses, deployment markers; persist GitHub IDs for idempotency and incremental fetches.
 - Add ingestion metadata tables (sync jobs, run logs, cursors) to track API pagination state.
 - **Analyzer analytics schema**: materialized models for PR cycle time, review turnaround, queue backlog snapshots, author stats, and aggregate metrics (daily/weekly).
 - Consider database indexes, constraints, and retention policies to keep storage manageable.
+
+### Core Model: Repository
+- Purpose: canonical identity for a GitHub repository; minimal settings.
+- Fields:
+  - `owner` (str), `name` (str): unique together.
+  - `github_node_id` (str, unique, nullable): the global GraphQL/REST node ID (REST exposes this as `node_id` alongside the numeric `id`).
+  - `default_branch` (str): repo’s default branch from GitHub (e.g., `master`/`main`).
+  - `is_active` (bool, default True), `created_at`, `updated_at` (timestamps).
+- Constraints: unique `(owner, name)`; unique `github_node_id` (nullable).
+- Population: syncer upserts by `github_node_id` if present, falling back to `(owner, name)`; updates `default_branch` from the repo API.
+- Rationale: low‑churn identity belongs in core; high‑volume GitHub‑owned entities (PRs, events, checks) live in syncer.
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
@@ -70,12 +81,16 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Document deployment steps, secrets management, infrastructure requirements (DB, cache, worker, static hosting), and provide a runbook for on-call triage.
 
 ## Immediate Next Steps
-1. Finalize environment tooling (docs updated for Docker-compose-only `.env` usage and Postgres-only policy; Celery + Redis integration underway).
-    1.1 Dependencies (`celery`, `redis`) added via `uv` and locked.
-    1.2 Environment defaults extended to include `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`.
-    1.3 Celery app scaffolding in progress (`qb_site/qb_site/celery.py`, `core/tasks/__init__.py::heartbeat`).
-    1.4 Completed: docker-compose `worker`/`beat` services and `redis` broker added; docs refreshed to cover service layout and import-path nuance. Postgres‑only policy enforced via Compose and settings defaults (no SQLite support).
-2. Define initial `core` domain models plus shared mixins, then scaffold migrations.
-3. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
-4. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
-5. Stand up the first DRF endpoint (e.g., queue snapshot) and wire the frontend to consume it.
+1. Define initial `core` domain models plus shared mixins, then scaffold migrations.
+    - 1.1 Models: `Repository`, `User` (GitHub identity), `Area` (curated taxonomy), `ReviewerPreference` (capacity/rotation/areas/conflicts).
+    - 1.2 Shared: timestamp mixins, external ID mixin, enums (`CIStatus`, `PRStatus`) aligned with legacy code.
+    - 1.3 Admin registrations and minimal factories for tests; initial indexes/constraints (e.g., unique repo+number for PRs when introduced, unique label name per repo, unique user+area).
+    - 1.4 Import stubs: seed `Area` set and a loader for `reviewer-topics.json` into `ReviewerPreference` (offline script/management command).
+2. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
+    - 2.1 Phase 1 entities: `PullRequest`, `LabelDef` (label catalog), `PRLabel` (join), `PRAssignee` (join), `PRDependency`, `Commit`, `CheckRun/StatusContext`, `TimelineEvent`, `Review`, `Comment` (reaction optional).
+    - 2.2 Persist GitHub node IDs for idempotent upserts; add ingestion metadata (jobs, cursors, run logs) and pragmatic indexes on foreign keys + `created_at`.
+    - 2.3 Provide a backfill importer from existing JSON to validate parity against legacy aggregates (see docs/legacy_data_surface.md shapes).
+3. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
+    - 3.1 Recompute `last_status_change`, `first_on_queue`, `total_queue_time` from `TimelineEvent` into `PRStatusChange`/`ReviewCycle`.
+    - 3.2 Build a `QueueSnapshot` materialization and compare counts with legacy outputs.
+4. Stand up the first DRF endpoint (e.g., queue snapshot) and wire the frontend to consume it.
