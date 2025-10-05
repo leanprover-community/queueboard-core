@@ -67,6 +67,19 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
   - For Zulip, once `zulip_user_id` is known, match/update by it; `zulip_full_name` is display‑only.
 - Rationale: stable identity keys enable consistent joins from syncer/analyzer/API without leaking provider specifics into other tables.
 
+### Core Model: ReviewerPreference
+- Purpose: repo‑scoped reviewer preferences; used by suggestion logic and admin UIs.
+- Fields:
+  - `repository` (FK → Repository), `user` (FK → User); unique together.
+  - `maximum_capacity` (int, default 10), `auto_assign` (bool),
+  - `away_until` (timezone‑aware datetime, nullable) for temporary breaks; skip reviewer while `now_utc < away_until`.
+  - `preferred_labels` (JSON list[str]) for topic/area preferences (GitHub label names).
+  - `free_form` (text, nullable) for notes from reviewer‑topics.json.
+- Constraints: unique `(repository, user)`.
+- Import: map fields from `reviewer-topics.json` (capacity, auto_assign, temporary_break → rotation/breaks, top_level → preferred_labels, free_form → notes).
+- Validation: management command to warn about unknown `preferred_labels` vs. ingested labels (see design decision 003).
+
+
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
 - Introduce background execution (Celery, RQ, or Django-Q) to schedule sync cycles and analytics recomputation, with periodic tasks for incremental and full refresh runs.
@@ -87,6 +100,7 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Create smoke tests for API endpoints and regression tests for analytics calculations.
 - Update GitHub Actions workflow to run linting (ruff, mypy), tests, migrations, and build Docker images if applicable.
 - Collect sample fixtures from existing scraped data to validate migration parity.
+- Compose checks: use `scripts/repo_check_compose.sh` in CI to run various system checks inside Docker Compose against a real Postgres.
 
 ## Data Migration and Operations
 - Write import scripts to load historical JSON/CSV dumps into the new raw tables (bulk create, upsert by GitHub ID).
@@ -97,8 +111,8 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 
 ## Immediate Next Steps
 1. Define initial `core` domain models plus shared mixins, then scaffold migrations.
-    - 1.1 Models: `Repository`, `User` (GitHub identity), `Area` (curated taxonomy), `ReviewerPreference` (capacity/rotation/areas/conflicts).
-    - 1.2 Shared: timestamp mixins, external ID mixin, enums (`CIStatus`, `PRStatus`) aligned with legacy code.
+    - 1.1 Models: `Repository`, `User` (GitHub identity), `ReviewerPreference` (repo‑scoped; capacity/rotation/breaks; label‑based interests as JSON per docs/design-decisions/003-preferred-labels-storage.md).
+    - 1.2 Shared: timestamp mixin (`TimestampedModel`) added; external IDs are plain fields for now (no mixin); defer shared enums (`CIStatus`, `PRStatus`) until classification/analytics are ported.
     - 1.3 Admin registrations and minimal factories for tests; initial indexes/constraints (e.g., unique repo+number for PRs when introduced, unique label name per repo, unique user+area).
     - 1.4 Import stubs: seed `Area` set and a loader for `reviewer-topics.json` into `ReviewerPreference` (offline script/management command).
 2. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
@@ -109,3 +123,4 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
     - 3.1 Recompute `last_status_change`, `first_on_queue`, `total_queue_time` from `TimelineEvent` into `PRStatusChange`/`ReviewCycle`.
     - 3.2 Build a `QueueSnapshot` materialization and compare counts with legacy outputs.
 4. Stand up the first DRF endpoint (e.g., queue snapshot) and wire the frontend to consume it.
+    - 4.1 Add a validator/management command that reports unknown preferred labels by comparing ReviewerPreference JSON names to ingested labels (when syncer is active).
