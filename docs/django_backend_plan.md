@@ -52,6 +52,21 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Population: syncer upserts by `github_node_id` if present, falling back to `(owner, name)`; updates `default_branch` from the repo API.
 - Rationale: low‑churn identity belongs in core; high‑volume GitHub‑owned entities (PRs, events, checks) live in syncer.
 
+### Core Model: User
+- Purpose: canonical person entity mapped to GitHub (and optionally Zulip) across apps.
+- Fields:
+  - GitHub: `github_node_id` (str, unique, nullable), `github_login` (str, case‑insensitive unique, nullable), `name` (str, nullable), `avatar_url` (URL, nullable).
+  - Zulip: `zulip_user_id` (int, unique, nullable), `zulip_full_name` (str, nullable). Single realm assumed for v1.
+  - Common: `is_active` (bool), `created_at`, `updated_at` (timestamps).
+- Constraints:
+  - Unique `github_node_id` when present.
+  - Case‑insensitive unique on `github_login` (functional unique constraint on `Lower(github_login)` when present).
+  - Unique `zulip_user_id` when present (single Zulip realm assumption).
+- Upserts:
+  - Prefer matching by `github_node_id`; fallback to case‑insensitive `github_login` and backfill `github_node_id`.
+  - For Zulip, once `zulip_user_id` is known, match/update by it; `zulip_full_name` is display‑only.
+- Rationale: stable identity keys enable consistent joins from syncer/analyzer/API without leaking provider specifics into other tables.
+
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
 - Introduce background execution (Celery, RQ, or Django-Q) to schedule sync cycles and analytics recomputation, with periodic tasks for incremental and full refresh runs.
