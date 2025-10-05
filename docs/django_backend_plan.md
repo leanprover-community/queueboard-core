@@ -79,6 +79,20 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Import: map fields from `reviewer-topics.json` (capacity, auto_assign, temporary_break → rotation/breaks, top_level → preferred_labels, free_form → notes).
 - Validation: management command to warn about unknown `preferred_labels` vs. ingested labels (see design decision 003).
 
+Reviewer preferences import (management command)
+- Command: `import_reviewer_topics`
+- Args:
+  - `--repo OWNER/NAME` (optional; defaults to `leanprover-community/mathlib4`)
+  - `--path PATH` (optional; defaults to `reviewer-topics.json` at repo root)
+  - `--dry-run` to preview changes
+  - `--replace-labels` (default) vs. `--merge` to control preferred label updates
+  - `--create-missing-users` (default true) to create `User` rows by GitHub login if absent
+  - `--create-missing-repo-default-branch` (optional; default `master`) used only if the repo row is missing
+  - `--verbose` for per-row detail
+- Behavior:
+  - Repo-scoped upsert of `ReviewerPreference` per mapping above; case-insensitive matching for GitHub logins and label name dedupe
+  - Non-blocking label validation when syncer labels exist
+
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
@@ -117,8 +131,8 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 1. Define initial `core` domain models plus shared mixins, then scaffold migrations.
     - 1.1 Models: `Repository`, `User` (GitHub identity), `ReviewerPreference` (repo‑scoped; capacity/rotation/breaks; label‑based interests as JSON per docs/design-decisions/003-preferred-labels-storage.md).
     - 1.2 Shared: timestamp mixin (`TimestampedModel`) added; external IDs are plain fields for now (no mixin); defer shared enums (`CIStatus`, `PRStatus`) until classification/analytics are ported.
-    - 1.3 Admin registrations and minimal factories for tests; initial indexes/constraints (e.g., unique repo+number for PRs when introduced, unique label name per repo, unique user+area).
-    - 1.4 Import stubs: seed `Area` set and a loader for `reviewer-topics.json` into `ReviewerPreference` (offline script/management command).
+    - 1.3 Admin registrations for `Repository`, `User`, and `ReviewerPreference`; defer syncer‑specific indexes/constraints to the syncer model design; add minimal factories later when tests land.
+    - 1.4 Implement `import_reviewer_topics` management command (defaults: `--repo` optional with `leanprover-community/mathlib4`, `--path reviewer-topics.json`, `--replace-labels` by default) to upsert `ReviewerPreference` rows.
 2. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
     - 2.1 Phase 1 entities: `PullRequest`, `LabelDef` (label catalog), `PRLabel` (join), `PRAssignee` (join), `PRDependency`, `Commit`, `CheckRun/StatusContext`, `TimelineEvent`, `Review`, `Comment` (reaction optional).
     - 2.2 Persist GitHub node IDs for idempotent upserts; add ingestion metadata (jobs, cursors, run logs) and pragmatic indexes on foreign keys + `created_at`.
