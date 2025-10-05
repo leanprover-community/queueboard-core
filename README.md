@@ -67,3 +67,5 @@ Local development via Docker mirrors the production-style Postgres setup.
 2. Run `docker compose up --build` to start the web and Postgres services.
 3. Access Django at http://localhost:8000 once the containers are healthy.
 
+Compose checks
+- Run `bash scripts/repo_check_compose.sh` to execute various system checks inside Docker Compose.

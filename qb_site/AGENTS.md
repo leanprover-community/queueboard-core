@@ -11,6 +11,7 @@ uv run python qb_site/manage.py migrate            # apply database migrations (
 uv run python qb_site/manage.py runserver 0:8000   # start the local Django dev server
 uv run python qb_site/manage.py collectstatic      # gather static assets before production builds
 uv run pytest qb_site                              # run pytest/pytest-django suite when added
+bash scripts/repo_check_compose.sh                 # run compose-based repo checks inside Docker
 ```
 - Copy `.env.example` to `.env` and adjust database credentials or GitHub tokens; Docker compose reads the same file.
 - PostgreSQL is the only supported database; ensure local/CI environments route through the Compose Postgres service or equivalent.

@@ -13,6 +13,7 @@ uv run ruff format .                           # apply canonical formatting
 uv run python -m queueboard.dashboard test/all-open-PRs-1.json test/all-open-PRs-2.json  # regenerate HTML from fixtures
 uv run python src/queueboard/test_state_evolution.py                                    # run targeted state evolution tests
 docker compose up --build                      # launch web + Postgres + Redis + Celery worker/beat
+bash scripts/repo_check_compose.sh             # run compose-based repo checks inside Docker
 ```
 
 ## Coding Style & Naming Conventions
