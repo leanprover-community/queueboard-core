@@ -1,4 +1,26 @@
 services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python qb_site/manage.py migrate --noinput
+    volumes:
+      - .:/app:ro
+      - appdata:/data
+    env_file:
+      - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: qb_site.settings.local
+      DJANGO_DB_HOST: db
+      DJANGO_DB_PORT: 5432
+      DJANGO_DB_NAME: queueboard
+      DJANGO_DB_USER: queueboard
+      DJANGO_DB_PASSWORD: queueboard
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   web:
     build:
       context: .
@@ -23,6 +45,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build:
@@ -48,6 +72,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   beat:
     build:
@@ -73,6 +99,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   redis:
     image: redis:7-alpine

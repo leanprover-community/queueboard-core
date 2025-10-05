@@ -108,6 +108,10 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Plan rollback: keep legacy scraping workflow runnable until Django pipelines reach parity; introduce feature flags for API clients.
 - Add operational dashboards/alerts for sync failures, latency, and data freshness.
 - Document deployment steps, secrets management, infrastructure requirements (DB, cache, worker, static hosting), and provide a runbook for on-call triage.
+- Docker Compose: use a dedicated `migrate` service that runs `python qb_site/manage.py migrate --noinput` and mark `web`/`worker`/`beat` as depending on it with `condition: service_completed_successfully`. Avoid running migrations from multiple long‑lived services concurrently.
+- Developer note: running `makemigrations` on the host without Postgres may emit a RuntimeWarning
+  about a refused DB connection or missing password. This is harmless and migrations are still created;
+  use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Immediate Next Steps
 1. Define initial `core` domain models plus shared mixins, then scaffold migrations.
