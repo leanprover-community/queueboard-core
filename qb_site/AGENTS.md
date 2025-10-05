@@ -13,6 +13,11 @@ uv run python qb_site/manage.py collectstatic      # gather static assets before
 uv run pytest qb_site                              # run pytest/pytest-django suite when added
 bash scripts/repo_check_compose.sh                 # run compose-based repo checks inside Docker
 ```
+
+Notes
+- When generating migrations on the host (outside Docker), Django may print a RuntimeWarning about
+  not being able to connect to Postgres. This is expected if the DB isn’t running locally and does
+  not affect migration file generation.
 - Copy `.env.example` to `.env` and adjust database credentials or GitHub tokens; Docker compose reads the same file.
 - PostgreSQL is the only supported database; ensure local/CI environments route through the Compose Postgres service or equivalent.
 - For containerized work, run `docker compose up --build` from the repo root to start web + Postgres + Redis + Celery worker/beat.

@@ -16,6 +16,12 @@ docker compose up --build                      # launch web + Postgres + Redis +
 bash scripts/repo_check_compose.sh             # run compose-based repo checks inside Docker
 ```
 
+Notes
+- Running `makemigrations` on the host without Postgres running may emit a RuntimeWarning about
+  a refused DB connection or missing password. This is harmless and migrations are still created.
+- Compose runs migrations via a dedicated `migrate` service; `web`/`worker`/`beat` depend on it to avoid
+  concurrent migration races.
+
 ## Coding Style & Naming Conventions
 - Use four-space indentation, explicit imports, and `snake_case` for modules/functions, `PascalCase` for classes, `SCREAMING_SNAKE_CASE` for settings.
 - Treat `ruff` as the source of truth; prefer `ruff --fix` or `uv run ruff format .` for autofixes before committing.
