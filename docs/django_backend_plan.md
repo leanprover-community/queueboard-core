@@ -35,7 +35,7 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Document module boundaries and workflows in `docs/ARCHITECTURE.md` so new contributors understand the split.
 
 ## Data Modeling
-- **Core**: define canonical objects (repository, user), milestone as needed, plus timestamp mixins and enums shared across apps. Keep curated config here (e.g., Areas, ReviewerPreferences); avoid GitHub‑owned state.
+- **Core**: define canonical objects (repository, user), milestone as needed, plus timestamp mixins and enums shared across apps. Keep curated config here (e.g., ReviewerPreferences); avoid GitHub‑owned state.
 - **Syncer raw schema**: tables for pull requests, labels (definitions), PR↔label attachments, commits, reviews, timeline events, check runs, statuses, deployment markers; persist GitHub IDs for idempotency and incremental fetches.
 - Add ingestion metadata tables (sync jobs, run logs, cursors) to track API pagination state.
 - **Analyzer analytics schema**: materialized models for PR cycle time, review turnaround, queue backlog snapshots, author stats, and aggregate metrics (daily/weekly).
@@ -57,7 +57,7 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 - Fields:
   - GitHub: `github_node_id` (str, unique, nullable), `github_login` (str, case‑insensitive unique, nullable), `name` (str, nullable), `avatar_url` (URL, nullable).
   - Zulip: `zulip_user_id` (int, unique, nullable), `zulip_full_name` (str, nullable). Single realm assumed for v1.
-  - Common: `is_active` (bool), `created_at`, `updated_at` (timestamps).
+  - Common: `timezone` (IANA tz name, str, nullable), `is_active` (bool), `created_at`, `updated_at` (timestamps).
 - Constraints:
   - Unique `github_node_id` when present.
   - Case‑insensitive unique on `github_login` (functional unique constraint on `Lower(github_login)` when present).

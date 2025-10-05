@@ -31,6 +31,10 @@ class User(TimestampedModel):
     name = models.CharField(max_length=255, null=True, blank=True)
     avatar_url = models.URLField(null=True, blank=True)
 
+    # Optional IANA timezone name for localizing times in UIs and inputs (e.g., "Europe/Berlin").
+    # If omitted, fall back to project default timezone settings.
+    timezone = models.CharField(max_length=64, null=True, blank=True)
+
     # Zulip identity (single realm for v1)
     zulip_user_id = models.BigIntegerField(null=True, blank=True, unique=True)
     zulip_full_name = models.CharField(max_length=255, null=True, blank=True)
@@ -50,4 +54,3 @@ class User(TimestampedModel):
     def __str__(self) -> str:  # pragma: no cover - simple representation
         glogin = self.github_login or "<no-login>"
         return f"{glogin}"
-
