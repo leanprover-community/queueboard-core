@@ -1,1 +1,2 @@
 line-length = 130
+extend-exclude = ["qb_site/**/migrations"]
