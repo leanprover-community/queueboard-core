@@ -120,6 +120,18 @@ Reviewer preferences import (management command)
 - Notes:
   - No description field; URL derivable if needed. Validation is deferred; we accept API-provided values as-is.
 
+### Syncer Model: PRLabel
+- Purpose: current label attachments for PRs (no history — timeline events will capture add/remove for analytics).
+- Fields:
+  - `pull_request` (FK → syncer.PullRequest)
+  - `label_def` (FK → syncer.LabelDef)
+- Constraints/indexes:
+  - Unique `(pull_request, label_def)` to prevent duplicates.
+  - Index on `pull_request` to speed EXISTS/NOT EXISTS probes from PR when filtering by allowed/blocked labels.
+  - Index on `label_def` to support “all PRs with label X” lookups.
+- Notes:
+  - Case-insensitive label identity is enforced at LabelDef via `(repository, lower(name))`; PRLabel only references those canonical rows.
+
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
