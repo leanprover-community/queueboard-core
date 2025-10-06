@@ -36,7 +36,7 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 
 ## Data Modeling
 - **Core**: define canonical objects (repository, user), milestone as needed, plus timestamp mixins and enums shared across apps. Keep curated config here (e.g., ReviewerPreferences); avoid GitHub‑owned state.
-- **Syncer raw schema**: tables for pull requests, labels (definitions), PR↔label attachments, commits, reviews, timeline events, check runs, statuses, deployment markers; persist GitHub IDs for idempotency and incremental fetches.
+- **Syncer raw schema**: tables for pull requests, labels (definitions), PR↔label attachments, commits, reviews, timeline events, check runs, statuses, deployment markers; persist provider IDs where helpful for idempotency. PullRequest starts keyed by `(repository, number)` and can add GitHub IDs later if needed.
 - Add ingestion metadata tables (sync jobs, run logs, cursors) to track API pagination state.
 - **Analyzer analytics schema**: materialized models for PR cycle time, review turnaround, queue backlog snapshots, author stats, and aggregate metrics (daily/weekly).
 - Consider database indexes, constraints, and retention policies to keep storage manageable.
@@ -93,6 +93,22 @@ Reviewer preferences import (management command)
   - Repo-scoped upsert of `ReviewerPreference` per mapping above; case-insensitive matching for GitHub logins and label name dedupe
   - Non-blocking label validation when syncer labels exist
 
+### Syncer Model: PullRequest
+- Purpose: raw PR entity with minimal fields required to reproduce the current queueboard.
+- Fields:
+  - Identity: `repository` (FK → core.Repository), `number` (int, unique with repository), `author` (FK → core.User, nullable).
+  - State/timing: `state` (`open`/`closed`), `is_draft` (bool), `gh_created_at` (datetime), `gh_updated_at` (datetime), `closed_at`/`merged_at` (datetime, nullable).
+  - Branches: `base_ref_name` (str), `head_ref_name` (str), `head_repo_owner_login` (str), `head_repo_name` (str).
+  - Content/sizes: `title` (str), `body` (text), `additions` (int), `deletions` (int), `changed_files_count` (int).
+  - Ingestion: `last_synced_at` (datetime, nullable).
+- Derived/not stored initially: `from_fork` (compute from `head_repo_owner_login` vs repo owner), `html_url` (format from owner/name/number), `mergeable_state` (defer; labels drive merge-conflict today).
+- Constraints/indexes:
+  - Unique `(repository, number)`.
+  - Index `(repository, state)` for “open PRs” filters.
+  - Index `(repository, gh_updated_at)` to support recency sorts within a repo.
+- Notes:
+  - CI, labels, assignees, reviews, comments, and timeline events live in separate syncer tables joined during queue/dashboard computation.
+
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
@@ -128,17 +144,12 @@ Reviewer preferences import (management command)
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Immediate Next Steps
-1. Define initial `core` domain models plus shared mixins, then scaffold migrations.
-    - 1.1 Models: `Repository`, `User` (GitHub identity), `ReviewerPreference` (repo‑scoped; capacity/rotation/breaks; label‑based interests as JSON per docs/design-decisions/003-preferred-labels-storage.md).
-    - 1.2 Shared: timestamp mixin (`TimestampedModel`) added; external IDs are plain fields for now (no mixin); defer shared enums (`CIStatus`, `PRStatus`) until classification/analytics are ported.
-    - 1.3 Admin registrations for `Repository`, `User`, and `ReviewerPreference`; defer syncer‑specific indexes/constraints to the syncer model design; add minimal factories later when tests land.
-    - 1.4 Implement `import_reviewer_topics` management command (defaults: `--repo` optional with `leanprover-community/mathlib4`, `--path reviewer-topics.json`, `--replace-labels` by default) to upsert `ReviewerPreference` rows.
-2. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
-    - 2.1 Phase 1 entities: `PullRequest`, `LabelDef` (label catalog), `PRLabel` (join), `PRAssignee` (join), `PRDependency`, `Commit`, `CheckRun/StatusContext`, `TimelineEvent`, `Review`, `Comment` (reaction optional).
-    - 2.2 Persist GitHub node IDs for idempotent upserts; add ingestion metadata (jobs, cursors, run logs) and pragmatic indexes on foreign keys + `created_at`.
-    - 2.3 Provide a backfill importer from existing JSON to validate parity against legacy aggregates (see docs/legacy_data_surface.md shapes).
-3. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
-    - 3.1 Recompute `last_status_change`, `first_on_queue`, `total_queue_time` from `TimelineEvent` into `PRStatusChange`/`ReviewCycle`.
-    - 3.2 Build a `QueueSnapshot` materialization and compare counts with legacy outputs.
-4. Stand up the first DRF endpoint (e.g., queue snapshot) and wire the frontend to consume it.
-    - 4.1 Add a validator/management command that reports unknown preferred labels by comparing ReviewerPreference JSON names to ingested labels (when syncer is active).
+1. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
+    - 1.1 Phase 1 entities: `PullRequest`, `LabelDef` (label catalog), `PRLabel` (join), `PRAssignee` (join), `PRDependency`, `Commit`, `CheckRun/StatusContext`, `TimelineEvent`, `Review`, `Comment` (reaction optional).
+    - 1.2 Persist GitHub node IDs for idempotent upserts; add ingestion metadata (jobs, cursors, run logs) and pragmatic indexes on FKs + `created_at`. Enforce unique constraints such as `(repository, number)` for PRs and `(repository, lower(name))` for label definitions (labels are case-insensitive in GitHub; store display name as-is).
+    - 1.3 Provide a backfill importer from existing JSON produced by the legacy scripts (`scripts/gather_stats.sh`, `scripts/download_missing_outdated_PRs.sh`, `scripts/dashboard.sh`) to validate parity against the shapes documented in `docs/legacy_data_surface.md`.
+2. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
+    - 2.1 Recompute `last_status_change`, `first_on_queue`, `total_queue_time` from `TimelineEvent` into `PRStatusChange`/`ReviewCycle`.
+    - 2.2 Build a `QueueSnapshot` materialization and compare counts with legacy outputs.
+3. Stand up the first DRF endpoint (e.g., queue snapshot) and wire the frontend to consume it.
+    - 3.1 Add a validator/management command that reports unknown preferred labels by comparing ReviewerPreference JSON names to ingested labels (when syncer is active).
