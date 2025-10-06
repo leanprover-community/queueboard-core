@@ -109,6 +109,17 @@ Reviewer preferences import (management command)
 - Notes:
   - CI, labels, assignees, reviews, comments, and timeline events live in separate syncer tables joined during queue/dashboard computation.
 
+### Syncer Model: LabelDef
+- Purpose: per-repository label catalog used for PR label attachments and filtering.
+- Fields:
+  - `repository` (FK → core.Repository)
+  - `name` (str) — display casing from GitHub, stored as-is
+  - `color` (str, 6 hex digits, no leading `#`)
+- Constraints/indexes:
+  - Case-insensitive unique on `(repository, lower(name))` to reflect GitHub’s case-insensitive labels while preserving display casing.
+- Notes:
+  - No description field; URL derivable if needed. Validation is deferred; we accept API-provided values as-is.
+
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
