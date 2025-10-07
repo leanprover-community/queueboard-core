@@ -132,6 +132,21 @@ Reviewer preferences import (management command)
 - Notes:
   - Case-insensitive label identity is enforced at LabelDef via `(repository, lower(name))`; PRLabel only references those canonical rows.
 
+### Syncer Model: PRTimelineEvent
+- Purpose: store only the timeline events needed to replay PR status evolution.
+- Event types (enum): `LABELED`, `UNLABELED`, `READY_FOR_REVIEW`, `CONVERT_TO_DRAFT`, `REOPENED`, `CLOSED`.
+- Fields:
+  - `pull_request` (FK → syncer.PullRequest)
+  - `github_node_id` (str, nullable) — GraphQL timeline item id, used for idempotent upserts
+  - `type` (enum)
+  - `occurred_at` (datetime, tz-aware)
+  - `label_name` (str, nullable; only for LABELED/UNLABELED; stored as-is for historical fidelity)
+- Constraints/indexes:
+  - Conditional unique on `github_node_id` when present.
+  - Index on `(pull_request, occurred_at)` to support chronological replay by PR.
+- Notes:
+  - We intentionally avoid an FK from `label_name` to `LabelDef` to keep ingestion fast, tolerate gaps, and preserve historical names independent of label catalog renames; classification will canonicalize names as needed.
+
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
