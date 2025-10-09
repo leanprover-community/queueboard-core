@@ -36,7 +36,7 @@ See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s
 
 ## Data Modeling
 - **Core**: define canonical objects (repository, user), milestone as needed, plus timestamp mixins and enums shared across apps. Keep curated config here (e.g., ReviewerPreferences); avoid GitHub‑owned state.
-- **Syncer raw schema**: tables for pull requests, labels (definitions), PR↔label attachments, commits, reviews, timeline events, check runs, statuses, deployment markers; persist provider IDs where helpful for idempotency. PullRequest starts keyed by `(repository, number)` and can add GitHub IDs later if needed.
+- **Syncer raw schema**: tables for pull requests, labels (definitions), PR↔label attachments, timeline events, check runs, and commit statuses; persist provider IDs where helpful for idempotency. PullRequest starts keyed by `(repository, number)` and can add GitHub IDs later if needed.
 - Add ingestion metadata tables (sync jobs, run logs, cursors) to track API pagination state.
 - **Analyzer analytics schema**: materialized models for PR cycle time, review turnaround, queue backlog snapshots, author stats, and aggregate metrics (daily/weekly).
 - Consider database indexes, constraints, and retention policies to keep storage manageable.
@@ -147,6 +147,34 @@ Reviewer preferences import (management command)
 - Notes:
   - We intentionally avoid an FK from `label_name` to `LabelDef` to keep ingestion fast, tolerate gaps, and preserve historical names independent of label catalog renames; classification will canonicalize names as needed.
 
+### Syncer Model: CheckRun
+- Purpose: historical GitHub Check Runs for PR head commits (GraphQL Checks API), used to derive coarse CI history.
+- Fields:
+  - `pull_request` (FK → syncer.PullRequest)
+  - `github_node_id` (str, unique) — GraphQL node id
+  - `head_sha` (str), `name` (str)
+  - `status` (QUEUED/IN_PROGRESS/COMPLETED), `conclusion` (SUCCESS/FAILURE/CANCELLED/NEUTRAL/SKIPPED/TIMED_OUT/ACTION_REQUIRED, nullable)
+  - `details_url` (url, nullable), `external_id` (str, nullable)
+  - Timestamps: `gh_started_at` (nullable), `gh_completed_at` (nullable), `gh_updated_at` (nullable)
+  - Ingestion: `last_synced_at` (nullable)
+- Indexes:
+  - `(pull_request, gh_completed_at)` for chronological scans
+
+### Syncer Model: StatusContext
+- Purpose: historical “legacy statuses” for PR head commits (REST Statuses API), complementing CheckRuns.
+- Fields:
+  - `pull_request` (FK → syncer.PullRequest)
+  - `rest_id` (bigint, unique)
+  - `head_sha` (str), `name` (context name), `state` (SUCCESS/FAILURE/ERROR/PENDING)
+  - `target_url` (url, nullable), `description` (text, nullable)
+  - Timestamp: `gh_created_at` (datetime)
+  - Ingestion: `last_synced_at` (nullable)
+- Indexes:
+  - `(pull_request, gh_created_at)` for chronological scans
+
+Analyzer ownership: coarse CI transitions
+- Analyzer will materialize `PRCIStatusEvent (pull_request, occurred_at, ci_status)` from CheckRun + StatusContext and the repo-configurable “inessential jobs” list. This keeps Syncer focused on raw facts and allows us to evolve classification rules without ingestion changes.
+
 
 ## Service Architecture
 - Port existing scraping logic into `syncer.services` with interfaces like `PullRequestSyncService`; wrap GitHub API access behind clients that manage rate limits, retries, and ETag caching.
@@ -182,12 +210,14 @@ Reviewer preferences import (management command)
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Immediate Next Steps
-1. Design `syncer` raw-data models and move existing scraping code into `syncer.services` with accompanying tests.
-    - 1.1 Phase 1 entities: `PullRequest`, `LabelDef` (label catalog), `PRLabel` (join), `PRAssignee` (join), `PRDependency`, `Commit`, `CheckRun/StatusContext`, `TimelineEvent`, `Review`, `Comment` (reaction optional).
-    - 1.2 Persist GitHub node IDs for idempotent upserts; add ingestion metadata (jobs, cursors, run logs) and pragmatic indexes on FKs + `created_at`. Enforce unique constraints such as `(repository, number)` for PRs and `(repository, lower(name))` for label definitions (labels are case-insensitive in GitHub; store display name as-is).
-    - 1.3 Provide a backfill importer from existing JSON produced by the legacy scripts (`scripts/gather_stats.sh`, `scripts/download_missing_outdated_PRs.sh`, `scripts/dashboard.sh`) to validate parity against the shapes documented in `docs/legacy_data_surface.md`.
-2. Prototype an analytics computation in `analyzer` to validate data flow end-to-end.
-    - 2.1 Recompute `last_status_change`, `first_on_queue`, `total_queue_time` from `TimelineEvent` into `PRStatusChange`/`ReviewCycle`.
-    - 2.2 Build a `QueueSnapshot` materialization and compare counts with legacy outputs.
-3. Stand up the first DRF endpoint (e.g., queue snapshot) and wire the frontend to consume it.
-    - 3.1 Add a validator/management command that reports unknown preferred labels by comparing ReviewerPreference JSON names to ingested labels (when syncer is active).
+1. Finalize v1 `syncer` schema and batch migrations.
+    - 1.1 Models in scope (v1): `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun`, `StatusContext`. Defer `PRAssignee`, `PRDependency`, `Commit`, `Review`, `Comment` to a later phase.
+    - 1.2 Confirm constraints and indexes: unique `(repository, number)` for PRs; case-insensitive unique `(repository, lower(name))` for labels; PRLabel uniques and FKs; timeline event conditional unique on `github_node_id`; CI history indexes `(pull_request, gh_completed_at)` and `(pull_request, gh_created_at)`.
+    - 1.3 Generate migrations for `syncer` once reviewed; validate via `scripts/repo_check_compose.sh`.
+2. Implement ingestion services for v1 parity.
+    - 2.1 PR sync: open listing + per‑PR GraphQL; upsert PullRequest, LabelDef, PRLabel; store key timeline events; persist CI history (CheckRun via GraphQL; StatusContext via REST).
+    - 2.2 Add idempotent upserts keyed by provider ids and `(repository, number)`; record `last_synced_at` and basic run metrics.
+    - 2.3 Provide a backfill/importer from legacy JSON (`gather_stats.sh`, `download_missing_outdated_PRs.sh`, `dashboard.sh`) to seed the new schema for comparison.
+3. Analyzer derivations and API surface.
+    - 3.1 Materialize `PRCIStatusEvent` from CI history (repo‑configurable inessential list); replay status evolution to compute `last_status_change`, `first_on_queue`, `total_queue_time`.
+    - 3.2 Expose a first DRF endpoint for a queue snapshot and compare counts with the legacy dashboards.
