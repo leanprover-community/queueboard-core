@@ -161,11 +161,10 @@ Reviewer preferences import (management command)
   - `(pull_request, gh_completed_at)` for chronological scans
 
 ### Syncer Model: StatusContext
-- Purpose: per-commit context statuses. In v1 we ingest latest snapshots from GraphQL rollup and, when enabled, append-only history from the REST Statuses API.
+- Purpose: per-commit context statuses. In v1 we ingest latest snapshots for each context from GraphQL rollup.
 - Fields:
   - `pull_request` (FK → syncer.PullRequest)
-  - Snapshot id: `github_node_id` (str, unique, nullable) for GraphQL rollup
-  - History id: `rest_id` (bigint, unique, nullable) for REST history rows
+  - `github_node_id` (str, unique, nullable) — GraphQL snapshot id
   - `head_sha` (str), `name` (context name), `state` (SUCCESS/FAILURE/ERROR/PENDING)
   - `target_url` (url, nullable), `description` (text, nullable)
   - Timestamp: `gh_created_at` (datetime)
@@ -212,11 +211,11 @@ Analyzer ownership: coarse CI transitions
 
 ## Immediate Next Steps
 1. Finalize v1 `syncer` schema and batch migrations.
-    - 1.1 Models in scope (v1): `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun` (snapshot), `StatusContext` (snapshot + optional history). Defer `PRAssignee`, `PRDependency`, `Commit`, `Review`, `Comment` to a later phase.
+    - 1.1 Models in scope (v1): `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun` (snapshot), `StatusContext` (snapshot). Defer `PRAssignee`, `PRDependency`, `Commit`, `Review`, `Comment` to a later phase.
     - 1.2 Confirm constraints and indexes: unique `(repository, number)` for PRs; case-insensitive unique `(repository, lower(name))` for labels; PRLabel uniques and FKs; timeline event conditional unique on `github_node_id`; CI indexes `(pull_request, gh_completed_at)` for CheckRun and `(pull_request, gh_created_at)` for StatusContext.
     - 1.3 Generate migrations for `syncer` once reviewed; validate via `scripts/repo_check_compose.sh`.
 2. Implement ingestion services for v1 parity.
-    - 2.1 PR sync: open listing + per‑PR GraphQL bundle; upsert PullRequest, LabelDef, PRLabel; store key timeline events; persist CI snapshots via both CheckRun and StatusContext from statusCheckRollup; backfill StatusContext history via REST when needed.
+    - 2.1 PR sync: open listing + per‑PR GraphQL bundle; upsert PullRequest, LabelDef, PRLabel; store key timeline events; persist CI snapshots via both CheckRun and StatusContext from statusCheckRollup.
     - 2.2 Add idempotent upserts keyed by provider ids and `(repository, number)`; record `last_synced_at` and basic run metrics.
     - 2.3 Provide a backfill/importer from legacy JSON (`gather_stats.sh`, `download_missing_outdated_PRs.sh`, `dashboard.sh`) to seed the new schema for comparison.
 3. Analyzer derivations and API surface.
