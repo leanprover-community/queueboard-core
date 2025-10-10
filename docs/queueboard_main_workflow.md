@@ -1,4 +1,4 @@
-Here is the main workflow in the `queueboard` repo, which queries data and generates the dashboard using the code in this repo (`queueboard-core`).
+Here is the main workflow in the `queueboard` repo, which queries data and generates the dashboard using the code in this repo (`queueboard-core`). For the planned v2 ingestion that replaces these ad‑hoc scripts with a database‑backed syncer, see docs/syncer_ingestion_plan.md.
 Note that in the `queueboard` repo, the JSON files in `data/` and `processed-data/` are persisted from run to run by git pushes in this workflow.
 This is also true of a few auxiliary text files: `closed_prs_to_backfill.txt`, `missing_prs.txt`, `redownload.txt`, `stubborn_prs.txt`.
 

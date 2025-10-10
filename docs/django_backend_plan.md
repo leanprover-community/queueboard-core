@@ -1,6 +1,6 @@
 # Queueboard Django Backend Migration Plan
 
-See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s data surface and flow used to inform the new models.
+See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s data surface and flow used to inform the new models, and docs/syncer_ingestion_plan.md for the v1 syncer ingestion architecture and service layout.
 
 ## Project Configuration
 - Use a settings package (`qb_site/qb_site/settings/`) with `base.py`, `local.py`, `ci.py`, `production.py`; load config from environment variables and select modules via `DJANGO_SETTINGS_MODULE`.
