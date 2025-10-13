@@ -1,11 +1,4 @@
 __pycache__/
-index.html
-on_the_queue.html
-help_out.html
-maintainers_quick.html
-review_dashboard.html
-triage.html
-
-# no longer committed automatically
-# regenerate using `cat processed_data/all_pr_data.json.* > processed_data/all_pr_data.json`
-processed_data/all_pr_data.json
+.env
+test/gh-pages
+test/api
