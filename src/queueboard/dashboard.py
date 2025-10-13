@@ -130,235 +130,6 @@ def format_delta2(delta: timedelta) -> str:
 assert parser.isoparse("2024-04-29T18:53:51Z") == datetime(2024, 4, 29, 18, 53, 51, tzinfo=tz.tzutc())
 
 
-### Core logic: writing out a dashboard of PRs ###
-
-STANDARD_ALIAS_MAPPING = """
-  // Return a table column index corresponding to a human-readable alias.
-  // |aliasOrIdx| is supposed to be an integer or a string;
-  // |show_approvals| is true iff this table contains a visible column of github approvals.
-  function getIdx (aliasOrIdx, show_approvals) {
-    // Some tables show a column of all PR approvals right after the assignee.
-    // In this case, later indices must be shifted by 1.
-    let offset = show_approvals ? 1 : 0;
-    switch (aliasOrIdx) {
-      case "number":
-        return 0;
-      case "author":
-        return 1;
-      case "title":
-        return 2;
-      // idx = 3 means the PR description, which is a hidden field
-      case "labels":
-        return 4;
-      case "diff":
-        return 5;
-      // idx = 6 is the list of modified files
-      case "numberChangedFiles":
-        return 7;
-      case "numberComments":
-        return 8;
-      // idx = 9 means the handles of users who commented or reviewed this PR
-      case "assignee":
-        return 10;
-      // The following column indices depend on whether a dashboard shows
-      // the list of users who approved a PR.
-      case "approvals":
-        if (show_approvals) { return 11; }
-        break;
-      case "lastUpdate":
-        return 11 + offset;
-      case "lastStatusChange":
-        return 12 + offset;
-      case "totalTimeReview":
-        return 13 + offset;
-      default:
-        return aliasOrIdx;
-    }
-  }
-"""
-
-# Dashboard columns with a special sorting relation.
-STANDARD_COLUMN_DEFS = (
-    "columnDefs: [{ type: 'diff_stat', targets: 5 }, { type: 'assignee', targets: 10 }, { visible: false, targets: [3, 6, 9] } ],"
-)
-
-# Version of STANDARD_ALIAS_MAPPING tailored to the on_the_queue.html page.
-# Keep in sync with changes to the above table!
-ON_THE_QUEUE_ALIAS_MAPPING = """
-  // Return a table column index corresponding to a human-readable alias.
-  // |aliasOrIdx| is supposed to be an integer or a string;
-  // |show_approvals| is true iff this table contains a visible column of github approvals.
-  function getIdx (aliasOrIdx) {
-    switch (aliasOrIdx) {
-      case "number":
-        return 0;
-      case "author":
-        return 1;
-      case "title":
-        return 2;
-      case "fromFork":
-        return 3;
-      case "ciStatus":
-        return 4;
-      case "hasMergeConflict":
-        return 5
-      case "isBlocked":
-        return 6;
-      case "isReady":
-        return 7;
-      case "awaitingReview":
-        return 8;
-      case "missingTopicLabel":
-        return 10;
-      case "overallStatus":
-        return 11;
-      default:
-        return aliasOrIdx;
-    }
-  }
-"""
-
-ON_THE_QUEUE_COLUMN_DEFS = "columnDefs: [{ type: 'diff_stat', targets: 5 }, { visible: false, targets: [3, 6, 9] } ],"
-
-
-# Template for configuring all datatables on a generated webpage.
-# Has two template parameters ALIAS_MAPPING and TABLE_CONFIGURATION.
-# NB. We always specify a default sorting order, but may override that in the table configuration.
-_TEMPLATE_SCRIPT = """
-  let diff_stat = DataTable.type('diff_stat', {
-    detect: function (data) { return false; },
-    order: {
-      pre: function (data) {
-        // Input has the form
-        // <span style="color:green">42</span>/<span style="color:red">13</span>,
-        // we extract the tuple (42, 13) and compute their sum 42+13.
-        let parts = data.split('</span>/<span', 2);
-        return Number(parts[0].slice(parts[0].search(">") + 1)) + Number(parts[1].slice(parts[1].search(">") + 1, -7));
-      }
-    },
-  });
-  let formatted_relativedelta = DataTable.type('formatted_relativedelta', {
-    detect: function (data) { return data.startsWith('<div style="display:none">'); },
-    order: {
-      pre: function (data) {
-        let main = (data.split('</div>', 2))[0].slice('<div style="display:none">'.length);
-        // If there is no input data, main is the empty string.
-        if (!main.includes('-')) {
-            return -1;
-        }
-        const [days, seconds, ...rest] = main.split('-');
-        return 100000 * Number(days) + Number(seconds);
-      }
-    }
-  })
-  // A PR assignee is sorted as a string; except that the string "nobody"
-  // (i.e., a PR is unassigned) is sorted last.
-  let assignee = DataTable.type('assignee', {
-    order: {
-      pre: function (data) { return (data == 'nobody') ? "zzzzzzzzzz" : data; }
-    },
-  });
-{ALIAS_MAPPING}
-$(document).ready( function () {
-  // Parse the URL for any initial configuration settings.
-  // Future: use this for deciding which table to apply the options to.
-  let fragment = window.location.hash;
-  const params = new URLSearchParams(document.location.search);
-  const search_params = params.get("search");
-  const pageLength = params.get("length") || 10;
-  const sort_params = params.getAll("sort");
-  {SORT_CONFIG1}
-  for (const config of sort_params) {
-    if (!config.includes('-')) {
-      console.log(`invalid value ${config} passed as sort parameter`);
-      continue;
-    }
-    const [col, dir, ...rest] = config.split('-');
-    if (dir != "asc" && dir != "desc") {
-      console.log(`invalid sorting direction ${dir} passed as sorting configuration`);
-      continue;
-    }
-    {SORT_CONFIG2}
-   }
-  const options = {
-    stateDuration: 0,
-    pageLength: pageLength,
-    "searching": true,
-    {COLUMN_DEFS}
-    order: sort_config,
-  };
-  if (params.has("search")) {
-    options.search = {
-        search: search_params
-    };
-  }
-  $('table').each(function () {
-    {TABLE_CONFIGURATION}
-  })
-});
-"""
-
-
-def tables_configuration_script(
-    alias_mapping: str, column_defs: str, test_tables_with_approval: str, omit_column_config=False
-) -> str:
-    # If table_test is not none, we have two sets of alias configurations,
-    # for tables with and without approval.
-    if test_tables_with_approval:
-        sort_config1 = """
-        // The configuration for initial sorting of tables, for tables with and without approvals.
-        let sort_config = [];
-        let sort_config_approvals = [];
-        """.strip().replace("        ", "  ")
-        sort_config2 = """
-        sort_config.push([getIdx(col, false), dir]);
-        sort_config_approvals.push([getIdx(col, true), dir]);
-        """.strip().replace("        ", "  ")
-        table_config = (
-            """
-        const tableId = $(this).attr('id')
-        let tableOptions = { ...options }
-        const show_approval = {table_test};
-        tableOptions.order = show_approval ? sort_config_approvals : sort_config;
-        $(this).DataTable(tableOptions);
-        """.strip()
-            .replace("        ", "  ")
-            .replace("{table_test}", test_tables_with_approval)
-        )
-    else:
-        sort_config1 = """
-        // The configuration for initial sorting of tables.
-        let sort_config = [];
-        """.strip().replace("        ", "  ")
-        sort_config2 = "sort_config.push([getIdx(col), dir]);"
-        table_config = """
-        const tableId = $(this).attr('id') || "";
-        if (tableId.startsWith("t-")) {
-          $(this).DataTable(options);
-        }
-        """.replace("        ", "  ").strip()
-    template = (
-        _TEMPLATE_SCRIPT.replace("{SORT_CONFIG1}", sort_config1)
-        .replace("{SORT_CONFIG2}", sort_config2)
-        .replace("{ALIAS_MAPPING}", alias_mapping)
-        .replace("{TABLE_CONFIGURATION}", table_config)
-        .replace("{COLUMN_DEFS}", column_defs)
-    )
-    if omit_column_config:
-        # NB. This is brittle; keep in sync with other changes!
-        template = template.replace("    columnDefs: ", "    // columnDefs: ")
-    return template
-
-
-# NB: keep this list in sync with any dashboard using ExtraColumnSettings.show_approvals(...).
-TABLES_WITH_APPROVALS = [Dashboard.QueueStaleUnassigned, Dashboard.QueueStaleAssigned, Dashboard.Approved]
-table_test = " || ".join([f'tableId == "{getTableId(kind)}"' for kind in TABLES_WITH_APPROVALS])
-
-# This javascript code is placed at the bottom of each generated webpage page
-# (except for the on_the_queue page, which tweaks this slightly).
-STANDARD_SCRIPT = tables_configuration_script(STANDARD_ALIAS_MAPPING, STANDARD_COLUMN_DEFS, table_test)
-
-
 # Settings for which 'extra columns' to display in a PR dashboard.
 class ExtraColumnSettings(NamedTuple):
     # Show which github user(s) this PR is assigned to (if any)
@@ -637,9 +408,13 @@ API_DIR = "api"
 
 # Write a webpage with body out a file called 'outfile'.
 # 'custom_script' (if present) is expected to be newline-delimited and appropriately indented.
-def write_webpage(body: str, outfile: str, use_tables: bool = True, custom_script: str | None = None) -> None:
+def write_webpage(body: str, outfile: str, use_tables: bool = True, standard: bool = True) -> None:
     with open(path.join(GH_PAGES_DIR, outfile), "w") as fi:
-        script = f"<script>{custom_script or STANDARD_SCRIPT}</script>\n" if use_tables else ""
+        script = (
+            f'<script>const STANDARD = {"true" if standard else "false"};</script><script src="./queueboard.js"></script>'
+            if use_tables
+            else ""
+        )
         footer = f"{script}</body>\n</html>"
         print(f"{HTML_HEADER}\n{body}\n{footer}", file=fi)
 
@@ -686,7 +461,7 @@ TIPS_AND_TRICKS = f"""  <h2 id="tips-and-tricks"><a href="#tips-and-tricks">Tips
   <li><strong>configuration via URL</strong>: you can configure the initial sorting, search terms and number of entries per page by changing the URL you're visiting. Three short examples:
     <ul>
       <li>{code_link("review_dashboard.html?sort=totalTimeReview-desc#queue")} sorts the #queue table by total time in review (in descending order),</li>
-      <li>{code_link("triage.html=?search=manifold&sort=author-asc&length=10#all")} shows all PRs which contain the string "manifold" in their entry or PR description, sorted by author (in ascending order), with 10 items per page, and</li>
+      <li>{code_link("triage.html?search=manifold&sort=author-asc&length=10#all")} shows all PRs which contain the string "manifold" in their entry or PR description, sorted by author (in ascending order), with 10 items per page, and</li>
       <li>{code_link("on_the_queue.html?search=jcommelin&length=100")} shows the status of all PRs by <code>jcommelin</code></li>
       <li>{code_link("dependency_dashboard.html?search=carleson")} visualises dependencies between all PRs from the Carleson project (i.e., with the Carleson label)
     </ul>
@@ -850,8 +625,7 @@ def write_on_the_queue_page(
     # FUTURE: can this time be displayed in the local time zone of the user viewing this page?
     updated = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
     start = f"  <h1>Why is my PR not on the queue?</h1>\n  <small>This page was last updated on: {updated}</small>"
-    script = tables_configuration_script(ON_THE_QUEUE_ALIAS_MAPPING, ON_THE_QUEUE_COLUMN_DEFS, "", True)
-    write_webpage(f"{start}\n{EXPLANATION_ON_THE_QUEUE_PAGE}\n{table}", "on_the_queue.html", custom_script=script)
+    write_webpage(f"{start}\n{EXPLANATION_ON_THE_QUEUE_PAGE}\n{table}", "on_the_queue.html", standard=False)
 
 
 def write_overview_page(updated: str) -> None:
