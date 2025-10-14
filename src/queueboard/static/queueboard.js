@@ -32,6 +32,7 @@ let assignee = DataTable.type('assignee', {
   },
 });
 let getIdx;
+let getAlias;
 if (STANDARD) {
   // Return a table column index corresponding to a human-readable alias.
   // |aliasOrIdx| is supposed to be an integer or a string;
@@ -75,6 +76,43 @@ if (STANDARD) {
         return aliasOrIdx;
     };
   }
+  getAlias = function(idx, show_approvals) {
+    // Some tables show a column of all PR approvals right after the assignee.
+    // In this case, later indices must be shifted by 1.
+    switch (idx) {
+      case 0:
+        return "number";
+      case 1:
+        return "author";
+      case 2:
+        return "title";
+      // idx = 3 means the PR description, which is a hidden field
+      case 4:
+        return "labels";
+      case 5:
+        return "diff";
+      // idx = 6 is the list of modified files
+      case 7:
+        return "numberChangedFiles";
+      case 8:
+        return "numberComments";
+      // idx = 9 means the handles of users who commented or reviewed this PR
+      case 10:
+        return "assignee";
+      // The following column indices depend on whether a dashboard shows
+      // the list of users who approved a PR.
+      case 11:
+        if (show_approvals) { return "approvals"; } else { return "lastUpdate"; }
+      case 12:
+        if (show_approvals) { return "lastUpdate"; } else { return "lastStatusChange"; }
+      case 13:
+        if (show_approvals) { return "lastStatusChange"; } else { return "totalTimeReview"; }
+      case 14:
+        if (show_approvals) { return "totalTimeReview"; } else { return idx; }
+      default:
+        return idx;
+    };
+  }
 } else {
   // Return a table column index corresponding to a human-readable alias.
   // |aliasOrIdx| is supposed to be an integer or a string;
@@ -87,13 +125,14 @@ if (STANDARD) {
         return 1;
       case "title":
         return 2;
-      case "fromFork":
+      // case "fromFork":
+      case "labels":
         return 3;
       case "ciStatus":
         return 4;
-      case "hasMergeConflict":
-        return 5
       case "isBlocked":
+        return 5;
+      case "hasMergeConflict":
         return 6;
       case "isReady":
         return 7;
@@ -107,14 +146,53 @@ if (STANDARD) {
         return aliasOrIdx;
     };
   }
+  getAlias = function (idx) {
+    switch (idx) {
+      case 0:
+        return "number";
+      case 1:
+        return "author";
+      case 2:
+        return "title";
+      case 3:
+        // return "fromFork";
+        return "labels";
+      case 4:
+        return "ciStatus";
+      case 5:
+        return "isBlocked";
+      case 6:
+        return "hasMergeConflict";
+      case 7:
+        return "isReady";
+      case 8:
+        return "awaitingReview";
+      case 10:
+        return "missingTopicLabel";
+      case 11:
+        return "overallStatus";
+      default:
+        return idx;
+    };
+  }
 }
-$(document).ready( function () {
+const DEFAULT_LENGTH = 10;
+function debounce(callback, delay = 300) {
+  let timeout; // This variable is part of the closure
+  return function(...args) { // The debounced function
+    clearTimeout(timeout); // Clear any previous timeout
+    timeout = setTimeout(() => {
+      callback(...args); // Execute the original callback
+    }, delay);
+  };
+}
+function optionsFromParams() {
   // Parse the URL for any initial configuration settings.
   // Future: use this for deciding which table to apply the options to.
-  let fragment = window.location.hash;
+  // let fragment = window.location.hash;
   const params = new URLSearchParams(document.location.search);
   const search_params = params.get("search");
-  const pageLength = params.get("length") || 10;
+  const pageLength = params.get("length") || DEFAULT_LENGTH;
   const sort_params = params.getAll("sort");
   // The configuration for initial sorting of tables, for tables with and without approvals.
   let sort_config = [];
@@ -129,6 +207,7 @@ $(document).ready( function () {
       console.log(`invalid sorting direction ${dir} passed as sorting configuration`);
       continue;
     }
+    // push to sort_config in same order as in sort_params
     if (STANDARD) {
       sort_config.push([getIdx(col, false), dir]);
       sort_config_approvals.push([getIdx(col, true), dir]);
@@ -154,17 +233,124 @@ $(document).ready( function () {
         search: search_params
     };
   }
+  return ({ options, sort_config_approvals, sort_config, params });
+}
+
+$(document).ready(function () {
+  const {options, sort_config_approvals, sort_config} = optionsFromParams();
+  const tables = [];
   $('table').each(function () {
+    let table;
     if (STANDARD) {
-      const tableId = $(this).attr('id')
+      const tableId = $(this).attr('id');
       let tableOptions = { ...options }
       const show_approval = tableId == "t-queue-stale-unassigned" || tableId == "t-queue-stale-assigned" || tableId == "t-approved";
       tableOptions.order = show_approval ? sort_config_approvals : sort_config;
-      $(this).DataTable(tableOptions);
+      table = $(this).DataTable(tableOptions);
     } else {
       const tableId = $(this).attr('id') || "";
       if (tableId.startsWith("t-")) {
-        $(this).DataTable(options);
+        table = $(this).DataTable(options);
+      }
+    }
+
+    // an object that tracks the number of times to disable the following event handlers after updating from popstate events
+    const ignoreNext = { search: 0, length: 0, order: 0 };
+    // event handlers to update params when table settings are changed
+    $(this).on('search.dt', function (e, settings) {
+      function updateParams(search) {
+        const url = new URL(window.location.href);
+        console.log('search', search);
+        if (search === "") {
+          url.searchParams.delete('search');
+        } else {
+          url.searchParams.set('search', search);
+        }
+        window.history.pushState({}, '', url.toString());
+      }
+      if (ignoreNext.search === 0) {
+        debounce(updateParams)(settings.api.search());
+      } else {
+        ignoreNext.search--;
+      }
+    });
+    $(this).on('length.dt', function (e, settings) {
+      if (ignoreNext.length === 0) {
+        const len = settings.api.page.len();
+        const url = new URL(window.location.href);
+        const paramsLength = url.searchParams.get("length") || DEFAULT_LENGTH;
+        console.log('length', len);
+        if (len !== paramsLength) {
+          if (len === DEFAULT_LENGTH) {
+            url.searchParams.delete('length');
+          } else {
+            url.searchParams.set('length', len);
+          }
+          window.history.pushState({}, '', url.toString());
+        }
+      } else {
+        ignoreNext.length--;
+      }
+    });
+    $(this).on('order.dt', function (e, settings) {
+      if (ignoreNext.order === 0) {
+        const order = settings.api.order();
+        console.log('order', order);
+        const url = new URL(window.location.href);
+        // reset sort params in current URL
+        url.searchParams.delete('sort');
+        for (const [idx, dir] of order) {
+          let alias;
+          if (STANDARD) {
+            const tableId = $(this).attr('id');
+            const show_approval = tableId == "t-queue-stale-unassigned" || tableId == "t-queue-stale-assigned" || tableId == "t-approved";
+            alias = getAlias(idx, show_approval);
+          } else {
+            alias = getAlias(idx);
+          }
+          if (dir !== '') {
+            url.searchParams.append('sort', `${alias}-${dir}`);
+          }
+        }
+        window.history.pushState({}, '', url.toString());
+      } else {
+        ignoreNext.order--;
+      }
+    });
+    tables.push({table, ignoreNext});
+  });
+
+  // handle query parameter changes when user clicks backwards / forwards in history
+  // (popstate is not fired on pushState)
+  $(window).on('popstate', function (event) {
+    const {options, sort_config_approvals, sort_config, params} = optionsFromParams();
+    console.log('popstate', params, options, sort_config_approvals, sort_config);
+    enable_events = false;
+    // for each table, update search, length, and order
+    for (const {table, ignoreNext} of tables) {
+      if (params.has("search") && table.search() !== options.search.search) {
+        ignoreNext.search++;
+        table.search(options.search.search);
+      } else if (!params.has("search") && table.search() !== '') {
+        ignoreNext.search++;
+        table.search('');
+      }
+
+      if (table.page.len() !== options.pageLength) {
+        ignoreNext.length++;
+        table.page.len(options.pageLength);
+      }
+
+      if (STANDARD) {
+        const tableId = $(table).attr('id');
+        const show_approval = tableId == "t-queue-stale-unassigned" || tableId == "t-queue-stale-assigned" || tableId == "t-approved";
+        ignoreNext.order++;
+        ignoreNext.search++; // the draw() triggers a search
+        table.order(show_approval ? sort_config_approvals : sort_config).draw();
+      } else {
+        ignoreNext.order++;
+        ignoreNext.search++; // the draw() triggers a search
+        table.order(sort_config).draw();
       }
     }
   });
