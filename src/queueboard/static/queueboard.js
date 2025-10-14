@@ -177,7 +177,7 @@ if (STANDARD) {
   }
 }
 const DEFAULT_LENGTH = 10;
-function debounce(callback, delay = 300) {
+function debounce(callback, delay = 500) {
   let timeout; // This variable is part of the closure
   return function(...args) { // The debounced function
     clearTimeout(timeout); // Clear any previous timeout
@@ -186,6 +186,17 @@ function debounce(callback, delay = 300) {
     }, delay);
   };
 }
+function updateParams(search) {
+  const url = new URL(window.location.href);
+  console.log('search', search);
+  if (search === "") {
+    url.searchParams.delete('search');
+  } else {
+    url.searchParams.set('search', search);
+  }
+  window.history.pushState({}, '', url.toString());
+}
+const debouncedUpdateSearchParams = debounce(updateParams);
 function optionsFromParams() {
   // Parse the URL for any initial configuration settings.
   // Future: use this for deciding which table to apply the options to.
@@ -258,18 +269,8 @@ $(document).ready(function () {
     const ignoreNext = { search: 0, length: 0, order: 0 };
     // event handlers to update params when table settings are changed
     $(this).on('search.dt', function (e, settings) {
-      function updateParams(search) {
-        const url = new URL(window.location.href);
-        console.log('search', search);
-        if (search === "") {
-          url.searchParams.delete('search');
-        } else {
-          url.searchParams.set('search', search);
-        }
-        window.history.pushState({}, '', url.toString());
-      }
       if (ignoreNext.search === 0) {
-        debounce(updateParams)(settings.api.search());
+        debouncedUpdateSearchParams(settings.api.search());
       } else {
         ignoreNext.search--;
       }
