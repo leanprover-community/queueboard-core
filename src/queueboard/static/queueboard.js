@@ -1,4 +1,4 @@
-let diff_stat = DataTable.type('diff_stat', {
+const diff_stat = DataTable.type('diff_stat', {
   detect: function (data) { return false; },
   order: {
     pre: function (data) {
@@ -10,7 +10,7 @@ let diff_stat = DataTable.type('diff_stat', {
     }
   },
 });
-let formatted_relativedelta = DataTable.type('formatted_relativedelta', {
+const formatted_relativedelta = DataTable.type('formatted_relativedelta', {
   detect: function (data) { return data.startsWith('<div style="display:none">'); },
   order: {
     pre: function (data) {
@@ -26,7 +26,7 @@ let formatted_relativedelta = DataTable.type('formatted_relativedelta', {
 });
 // A PR assignee is sorted as a string; except that the string "nobody"
 // (i.e., a PR is unassigned) is sorted last.
-let assignee = DataTable.type('assignee', {
+const assignee = DataTable.type('assignee', {
   order: {
     pre: function (data) { return (data == 'nobody') ? "zzzzzzzzzz" : data; }
   },
@@ -76,6 +76,7 @@ if (STANDARD) {
         return aliasOrIdx;
     };
   }
+  // an "inverse" function to getIdx
   getAlias = function(idx, show_approvals) {
     // Some tables show a column of all PR approvals right after the assignee.
     // In this case, later indices must be shifted by 1.
@@ -146,6 +147,7 @@ if (STANDARD) {
         return aliasOrIdx;
     };
   }
+  // an "inverse" function to getIdx
   getAlias = function (idx) {
     switch (idx) {
       case 0:
@@ -186,7 +188,7 @@ function debounce(callback, delay = 500) {
     }, delay);
   };
 }
-function updateParams(search) {
+function updateSearchParams(search) {
   const url = new URL(window.location.href);
   console.log('search', search);
   if (search === "") {
@@ -196,7 +198,7 @@ function updateParams(search) {
   }
   window.history.pushState({}, '', url.toString());
 }
-const debouncedUpdateSearchParams = debounce(updateParams);
+const debouncedUpdateSearchParams = debounce(updateSearchParams);
 function optionsFromParams() {
   // Parse the URL for any initial configuration settings.
   // Future: use this for deciding which table to apply the options to.
@@ -265,8 +267,10 @@ $(document).ready(function () {
       }
     }
 
-    // an object that tracks the number of times to disable the following event handlers after updating from popstate events
+    // an object that tracks the number of times to disable the event handlers below during updates from popstate events
     const ignoreNext = { search: 0, length: 0, order: 0 };
+    tables.push({table, ignoreNext});
+
     // event handlers to update params when table settings are changed
     $(this).on('search.dt', function (e, settings) {
       if (ignoreNext.search === 0) {
@@ -318,7 +322,6 @@ $(document).ready(function () {
         ignoreNext.order--;
       }
     });
-    tables.push({table, ignoreNext});
   });
 
   // handle query parameter changes when user clicks backwards / forwards in history
@@ -326,8 +329,7 @@ $(document).ready(function () {
   $(window).on('popstate', function (event) {
     const {options, sort_config_approvals, sort_config, params} = optionsFromParams();
     console.log('popstate', params, options, sort_config_approvals, sort_config);
-    enable_events = false;
-    // for each table, update search, length, and order
+    // for each table, update search, length, and order settings
     for (const {table, ignoreNext} of tables) {
       if (params.has("search") && table.search() !== options.search.search) {
         ignoreNext.search++;
