@@ -67,7 +67,7 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
 
 ## Services & File Organization
 - `syncer/services/github_client.py`
-  - `GitHubGraphQLClient.execute(...)`
+  - `GitHubClient.execute(...)`
   - `GitHubClient.get_changed_pr_numbers(owner, name, since)`
   - `GitHubClient.get_pr_bundle(owner, name, number, limits)`
 - `syncer/queries/pr_bundle.graphql` (single source of truth for the bundle)
@@ -85,8 +85,19 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
   - `syncer/management/commands/sync_repo.py`: repo runner with `--since` and bundle limits
 
 ## Incremental & Backfills
-- Incremental gating: skip bundle when PR `updatedAt < last_synced_at`.
-- Backfill: “deep CI” for a PR by temporarily increasing `M` for commits; optionally fetch REST statuses for those SHAs.
+- Incremental discovery
+  - Use a lightweight listing on `repository.pullRequests` ordered by `UPDATED_AT DESC` to enumerate candidate PR numbers since a cutoff. Stop paging when `updatedAt < since`.
+  - Method: `GitHubClient.get_changed_pr_numbers(owner, name, since_iso, states=[OPEN], limit=N)`
+  - Typical usage: `states=[OPEN]` for ongoing sync; broaden to `MERGED,CLOSED` when backfilling.
+- Ingestion gating
+  - Before fetching a bundle, optionally compare the PR's GraphQL `updatedAt` to our `PullRequest.last_synced_at` and skip when unchanged.
+- Backfill phases (v1)
+  - Phase A: all OPEN PRs + CLOSED/MERGED from the past ~90 days for dashboard parity.
+  - Phase B: extend the window to 6–12 months if historical analytics requires it.
+  - Phase C (optional later): CI history backfill via REST if we decide to track multiple transitions per commit SHA.
+- Resume & idempotency
+  - Keep a small JSON resume file (per repo) storing pagination cursor and counters, or later add a `SyncJob` table to persist job metadata.
+  - Ingestion is idempotent by design (unique constraints on PR identity, label defs, attachments, timeline event ids, and CI snapshot ids).
 
 ## Rate/Cost Controls
 - Keep K/M bounded; log GraphQL costs and durations.

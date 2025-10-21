@@ -222,7 +222,7 @@ Developer utilities (current)
 
 ## Immediate Next Steps
 1. Live syncer orchestration and GitHub client.
-    - 1.1 Add `syncer/services/github_client.py` with `GitHubGraphQLClient.execute`, `get_changed_pr_numbers(...)`, and `get_pr_bundle(...)` using `queries/pr_bundle.graphql`.
+    - 1.1 Add `syncer/services/github_client.py` with `GitHubClient.execute`, `get_changed_pr_numbers(...)`, and `get_pr_bundle(...)` using `queries/pr_bundle.graphql`.
     - 1.2 Implement `syncer/services/pr_sync_service.py` (`sync_repository`, `sync_pull_request`) to orchestrate sub‑syncs in a single transaction and update `last_synced_at`.
     - 1.3 Add a `sync_repo` management command; optional Celery tasks (`sync_repo_task`, `sync_pr_task`) and a periodic schedule.
 2. Tests and fixtures expansion.

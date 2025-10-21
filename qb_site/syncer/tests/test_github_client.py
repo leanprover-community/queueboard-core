@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+from unittest import mock
+
+from django.test import SimpleTestCase
+
+from syncer.services.github_client import GitHubClient
+
+
+class TestGitHubClient(SimpleTestCase):
+    def test_execute_success_and_headers(self) -> None:
+        client = GitHubClient(token="test-token")
+
+        with mock.patch("requests.post") as mpost:
+            mresp = mock.Mock()
+            mresp.raise_for_status.return_value = None
+            mresp.json.return_value = {"data": {"ok": True}}
+            mpost.return_value = mresp
+
+            out = client.execute("query X", {"a": 1})
+            self.assertEqual(out["data"]["ok"], True)
+
+            # Verify request was formed correctly
+            self.assertTrue(mpost.called)
+            args, kwargs = mpost.call_args
+            self.assertEqual(args[0], client.endpoint)
+            self.assertIn("Authorization", kwargs["headers"])  # Bearer header present
+            self.assertIn("application/vnd.github+json", kwargs["headers"]["Accept"])
+            self.assertEqual(kwargs["json"]["query"], "query X")
+            self.assertEqual(kwargs["json"]["variables"]["a"], 1)
+
+    def test_execute_raises_on_graphql_errors(self) -> None:
+        client = GitHubClient(token="test-token")
+        with mock.patch("requests.post") as mpost:
+            mresp = mock.Mock()
+            mresp.raise_for_status.return_value = None
+            mresp.json.return_value = {"errors": [{"message": "nope"}]}
+            mpost.return_value = mresp
+
+            with self.assertRaises(RuntimeError) as cm:
+                client.execute("q", {})
+            self.assertIn("GraphQL", str(cm.exception))
+
+    def test_get_pr_bundle_calls_execute_with_vars(self) -> None:
+        client = GitHubClient(token="t")
+
+        # Avoid reading from disk
+        with mock.patch.object(GitHubClient, "_read_file", return_value="query { bundle }"):
+            captured = {}
+
+            def fake_execute(_self, q, variables):  # type: ignore[no-redef]
+                captured.update(variables)
+                return {"data": {}}
+
+            with mock.patch.object(GitHubClient, "execute", new=fake_execute):
+                out = client.get_pr_bundle(owner="o", name="r", number=123, timelineK=10, commitsM=2)
+                self.assertEqual(out, {"data": {}})
+                self.assertEqual(captured["owner"], "o")
+                self.assertEqual(captured["name"], "r")
+                self.assertEqual(captured["number"], 123)
+                self.assertEqual(captured["timelineK"], 10)
+                self.assertEqual(captured["commitsM"], 2)
+
+    def test_get_changed_pr_numbers_pagination_and_cutoff(self) -> None:
+        client = GitHubClient(token="t")
+
+        # Two pages; second page has items older than cutoff
+        pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                            "nodes": [
+                                {"number": 5, "updatedAt": "2025-10-20T10:00:00Z", "state": "OPEN"},
+                                {"number": 4, "updatedAt": "2025-10-20T09:00:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            },
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {"number": 3, "updatedAt": "2025-10-19T23:00:00Z", "state": "OPEN"},
+                                {"number": 2, "updatedAt": "2025-10-19T12:00:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            },
+        ]
+
+        calls = {"i": 0}
+
+        def fake_execute(_self, q, variables):  # type: ignore[no-redef]
+            i = calls["i"]
+            calls["i"] = i + 1
+            # basic sanity checks on variables
+            if i == 0:
+                assert variables["after"] is None
+            else:
+                assert variables["after"] == "c1"
+            return pages[i]
+
+        with mock.patch.object(GitHubClient, "execute", new=fake_execute):
+            # Cutoff excludes 2025-10-19T23:00:00Z
+            nums = client.get_changed_pr_numbers(owner="o", name="r", since_iso="2025-10-20T00:00:00Z", limit=10)
+            self.assertEqual(nums, [5, 4])
+
+    def test_get_changed_pr_numbers_respects_limit(self) -> None:
+        client = GitHubClient(token="t")
+        page = {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": True, "endCursor": "x"},
+                        "nodes": [
+                            {"number": 10, "updatedAt": "2025-10-21T01:00:00Z", "state": "OPEN"},
+                            {"number": 9, "updatedAt": "2025-10-21T00:30:00Z", "state": "OPEN"},
+                            {"number": 8, "updatedAt": "2025-10-21T00:00:00Z", "state": "OPEN"},
+                        ],
+                    }
+                }
+            }
+        }
+
+        with mock.patch.object(GitHubClient, "execute", return_value=page):
+            nums = client.get_changed_pr_numbers(owner="o", name="r", since_iso="2025-10-20T00:00:00Z", limit=2)
+            self.assertEqual(nums, [10, 9])

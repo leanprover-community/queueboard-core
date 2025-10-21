@@ -29,6 +29,10 @@ gh api graphql \
 
 # Run syncer tests (Django test runner)
 docker compose exec -T web python qb_site/manage.py test syncer
+
+# List recently changed PRs (manual discovery)
+docker compose exec -T web python qb_site/manage.py list_changed_prs \
+  --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --states OPEN --limit 20
 ```
 
 Notes
