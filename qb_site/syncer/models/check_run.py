@@ -53,7 +53,6 @@ class CheckRun(TimestampedModel):
 
     gh_started_at = models.DateTimeField(null=True, blank=True)
     gh_completed_at = models.DateTimeField(null=True, blank=True)
-    gh_updated_at = models.DateTimeField(null=True, blank=True)
 
     # Ingestion bookkeeping for incremental syncs.
     last_synced_at = models.DateTimeField(null=True, blank=True)
