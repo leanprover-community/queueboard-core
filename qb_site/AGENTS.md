@@ -14,6 +14,29 @@ uv run pytest qb_site                              # run pytest/pytest-django su
 bash scripts/repo_check_compose.sh                 # run compose-based repo checks inside Docker
 ```
 
+### Syncer: local ingest & tests
+```bash
+# Ingest a single PR bundle JSON (GraphQL output) into syncer tables (labels, timeline, CI).
+docker compose exec -T web python qb_site/manage.py sync_pr_from_file \
+  --repo leanprover-community/mathlib4 --file pr-30723.json --dry-run
+
+# Generate a bundle file via GitHub CLI (ensure gh auth is set up)
+gh api graphql \
+  -F query=@qb_site/syncer/queries/pr_bundle.graphql \
+  -F owner='leanprover-community' -F name='mathlib4' \
+  -F number=30723 -F timelineK=150 -F commitsM=15 \
+  > pr-30723.json
+
+# Run syncer tests (Django test runner)
+docker compose exec -T web python qb_site/manage.py test syncer
+```
+
+Notes
+- The GraphQL bundle used for ingestion lives at `qb_site/syncer/queries/pr_bundle.graphql`.
+- Sub‑sync services are in `qb_site/syncer/services/sub/` and covered by unit tests under `qb_site/syncer/tests/`.
+  - Core entity helpers: `core_entities_sync.py` with `upsert_repo_metadata` (persists `github_node_id` and `default_branch`) and `upsert_user_from_github` (resolves/creates `core.User` by GitHub node id or login and updates `name`/`avatar_url`).
+```
+
 Notes
 - When generating migrations on the host (outside Docker), Django may print a RuntimeWarning about
   not being able to connect to Postgres. This is expected if the DB isn’t running locally and does

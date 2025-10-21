@@ -184,6 +184,15 @@ Analyzer ownership: coarse CI transitions
 - Capture domain events (e.g., sync completed) to trigger downstream analytics tasks, and keep orchestration idempotent.
 - Provide management commands for manual runs (`sync_github`, `build_analytics`, `refresh_dashboards`).
 
+Developer utilities (current)
+- A file‑based ingestion command is available to ingest a single PR bundle JSON (from GraphQL) for development and fixtures:
+  - `qb_site/manage.py sync_pr_from_file --repo OWNER/NAME --file PATH [--dry-run]`
+  - Uses the sub‑sync services to upsert PR core, labels, timeline events, and CI snapshots. `--dry-run` rolls back writes.
+- Sub‑sync services live under `qb_site/syncer/services/sub/` and are covered by unit tests. See `docs/syncer_ingestion_plan.md` for the query and layout.
+ - Core entity sub‑services:
+   - `upsert_repo_metadata` persists `core.Repository.github_node_id` and `default_branch` from the bundle, with optional rename support (disabled by default).
+   - `upsert_user_from_github` creates/updates `core.User` for PR authors by GitHub node id or login, updating `name` and `avatar_url` when provided.
+
 ## API Layer
 - Adopt Django REST Framework for serialization, viewsets, filtering, pagination, throttling.
 - Namespace routes under `/api/` with versioning (`/api/v1/`); expose raw entities as needed and focused analytics endpoints consumed by the frontend.
@@ -198,6 +207,7 @@ Analyzer ownership: coarse CI transitions
 - Update GitHub Actions workflow to run linting (ruff, mypy), tests, migrations, and build Docker images if applicable.
 - Collect sample fixtures from existing scraped data to validate migration parity.
 - Compose checks: use `scripts/repo_check_compose.sh` in CI to run various system checks inside Docker Compose against a real Postgres.
+ - Current test entrypoints (Django test runner): `docker compose exec -T web python qb_site/manage.py test syncer`.
 
 ## Data Migration and Operations
 - Write import scripts to load historical JSON/CSV dumps into the new raw tables (bulk create, upsert by GitHub ID).
@@ -211,14 +221,17 @@ Analyzer ownership: coarse CI transitions
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Immediate Next Steps
-1. Finalize v1 `syncer` schema and batch migrations.
-    - 1.1 Models in scope (v1): `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun` (snapshot), `StatusContext` (snapshot). Defer `PRAssignee`, `PRDependency`, `Commit`, `Review`, `Comment` to a later phase.
-    - 1.2 Confirm constraints and indexes: unique `(repository, number)` for PRs; case-insensitive unique `(repository, lower(name))` for labels; PRLabel uniques and FKs; timeline event conditional unique on `github_node_id`; CI indexes `(pull_request, gh_completed_at)` for CheckRun and `(pull_request, gh_created_at)` for StatusContext.
-    - 1.3 Generate migrations for `syncer` once reviewed; validate via `scripts/repo_check_compose.sh`.
-2. Implement ingestion services for v1 parity.
-    - 2.1 PR sync: open listing + per‑PR GraphQL bundle; upsert PullRequest, LabelDef, PRLabel; store key timeline events; persist CI snapshots via both CheckRun and StatusContext from statusCheckRollup.
-    - 2.2 Add idempotent upserts keyed by provider ids and `(repository, number)`; record `last_synced_at` and basic run metrics.
-    - 2.3 Provide a backfill/importer from legacy JSON (`gather_stats.sh`, `download_missing_outdated_PRs.sh`, `dashboard.sh`) to seed the new schema for comparison.
-3. Analyzer derivations and API surface.
-    - 3.1 Materialize `PRCIStatusEvent` from CI history (repo‑configurable inessential list); replay status evolution to compute `last_status_change`, `first_on_queue`, `total_queue_time`.
-    - 3.2 Expose a first DRF endpoint for a queue snapshot and compare counts with the legacy dashboards.
+1. Live syncer orchestration and GitHub client.
+    - 1.1 Add `syncer/services/github_client.py` with `GitHubGraphQLClient.execute`, `get_changed_pr_numbers(...)`, and `get_pr_bundle(...)` using `queries/pr_bundle.graphql`.
+    - 1.2 Implement `syncer/services/pr_sync_service.py` (`sync_repository`, `sync_pull_request`) to orchestrate sub‑syncs in a single transaction and update `last_synced_at`.
+    - 1.3 Add a `sync_repo` management command; optional Celery tasks (`sync_repo_task`, `sync_pr_task`) and a periodic schedule.
+2. Tests and fixtures expansion.
+    - 2.1 Broaden sub‑sync unit tests (label case‑insensitivity, idempotency, null CI timestamps) and add orchestrator tests.
+    - 2.2 Add an integration test with fixtures (e.g., a PR with CI and one without `statusCheckRollup`) and verify idempotent re‑runs.
+    - 2.3 Ensure CI runs ruff and Django tests; keep Compose checks (`scripts/repo_check_compose.sh`).
+3. Admin registrations and factories.
+    - 3.1 Register `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun`, `StatusContext` in admin with useful list/filter views; keep heavy fields read‑only.
+    - 3.2 Add minimal factory‑boy factories for `Repository`, `User`, and key syncer models for tests.
+4. Analyzer stub for CI transitions.
+    - 4.1 Define `analyzer` model `PRCIStatusEvent` and a service to derive coarse CI transitions from snapshots.
+    - 4.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
