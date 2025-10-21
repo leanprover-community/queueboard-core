@@ -125,12 +125,6 @@ query($owner: String!, $repo: String!, $prNumber: Int!) {
       potentialMergeCommit {
         oid
       }
-      projectCards(first: 100) {
-        nodes {
-          id
-          note
-        }
-      }
       reactionGroups {
         content
         users(first: 100) {
