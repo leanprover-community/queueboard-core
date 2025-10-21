@@ -1,0 +1,76 @@
+{
+  "data": {
+    "repository": {
+      "id": "R_repo123",
+      "name": "mathlib4",
+      "owner": { "login": "leanprover-community" },
+      "defaultBranchRef": { "name": "main" },
+      "pullRequest": {
+        "number": 30723,
+        "state": "OPEN",
+        "isDraft": false,
+        "title": "Test PR",
+        "body": "Testing bundle",
+        "createdAt": "2025-10-20T12:00:00Z",
+        "updatedAt": "2025-10-20T12:30:00Z",
+        "baseRefName": "master",
+        "headRefName": "test-branch",
+        "headRepositoryOwner": { "login": "test-author" },
+        "headRepository": { "name": "fork-repo" },
+        "additions": 10,
+        "deletions": 2,
+        "changedFiles": 3,
+        "author": { "__typename": "User", "id": "U_user123", "login": "test-author", "name": "Test Author", "avatarUrl": "https://example.com/a.png" },
+        "labels": {
+          "nodes": [
+            { "name": "Easy", "color": "abcdef" },
+            { "name": "awaiting-author", "color": "b60205" }
+          ]
+        },
+        "timelineItems": {
+          "nodes": [
+            { "__typename": "LabeledEvent", "id": "TL1", "createdAt": "2025-10-20T12:05:00Z", "label": { "name": "Easy" } },
+            { "__typename": "UnlabeledEvent", "id": "TL2", "createdAt": "2025-10-20T12:06:00Z", "label": { "name": "Easy" } },
+            { "__typename": "ReadyForReviewEvent", "id": "TL3", "createdAt": "2025-10-20T12:10:00Z" },
+            { "__typename": "ReopenedEvent", "id": "TL4", "createdAt": "2025-10-20T12:20:00Z" }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "abc1234",
+                "statusCheckRollup": {
+                  "contexts": {
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "id": "CR1",
+                        "name": "build-and-test",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2025-10-20T12:15:00Z",
+                        "completedAt": "2025-10-20T12:25:00Z",
+                        "detailsUrl": null,
+                        "externalId": null
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "id": "SC1",
+                        "context": "bors",
+                        "state": "SUCCESS",
+                        "targetUrl": null,
+                        "description": "bors status",
+                        "createdAt": "2025-10-20T12:26:00Z"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

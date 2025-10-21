@@ -69,3 +69,23 @@ Local development via Docker mirrors the production-style Postgres setup.
 
 Compose checks
 - Run `bash scripts/repo_check_compose.sh` to execute various system checks inside Docker Compose.
+
+### Syncer (developer workflow)
+- Ingestion plan and services are documented in `docs/syncer_ingestion_plan.md`.
+- To generate the bundle JSON with the GitHub CLI:
+  ```bash
+  gh api graphql \
+    -F query=@qb_site/syncer/queries/pr_bundle.graphql \
+    -F owner='leanprover-community' -F name='mathlib4' \
+    -F number=30723 -F timelineK=150 -F commitsM=15 \
+    > pr-30723.json
+  ```
+- To ingest a single PR bundle JSON into the database (labels, key timeline events, CI snapshots), run:
+  ```bash
+  docker compose exec -T web python qb_site/manage.py sync_pr_from_file \
+    --repo leanprover-community/mathlib4 --file pr-30723.json --dry-run
+  ```
+- Run syncer tests:
+  ```bash
+  docker compose exec -T web python qb_site/manage.py test syncer
+  ```

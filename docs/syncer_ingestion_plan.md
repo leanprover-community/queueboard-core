@@ -32,6 +32,7 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
 ## Models and Ownership
 - Syncer (raw facts):
   - `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun` (snapshot via statusCheckRollup), `StatusContext` (snapshot via statusCheckRollup)
+  - Core entity touch points: update `core.Repository.github_node_id` and `core.Repository.default_branch`; upsert `core.User` for PR authors (and later reviewers/assignees) using GitHub node id or login.
 - Analyzer (derived semantics):
   - `PRCIStatusEvent` (coarse CI transitions: pass/fail/fail-inessential/running/missing) computed from CheckRun + StatusContext and the repo-configurable “inessential jobs” set.
 
@@ -43,7 +44,9 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
 - Execute the PR bundle; cap using K/M.
 
 3) Persist in a single transaction per PR
+- Repository: update `github_node_id` and `default_branch` if present in the bundle (`defaultBranchRef.name`).
 - PullRequest: upsert by `(repository, number)` from bundle core; set `last_synced_at`.
+- Author User: upsert in `core.User` (prefer `id` match, fallback to case-insensitive `login`; update `name`/`avatarUrl`).
 - LabelDef: upsert by `(repository, lower(name))` with display `name` and `color`.
 - PRLabel: diff the current attachments vs DB; bulk create missing and delete extras.
 - PRTimelineEvent: insert key events by `github_node_id` with `occurred_at`; store `label_name` as-is.
@@ -72,6 +75,7 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
   - `PRSyncService.sync_repository(repo, since, limits)`
   - `PRSyncService.sync_pull_request(repo, number, limits)`
 - Sub‑syncs (pure mapping + DB writes):
+  - `services/sub/core_entities_sync.py`: `upsert_repo_metadata`, `upsert_repo_node_id`, `upsert_user_from_github`
   - `services/sub/pull_request_sync.py`: `upsert_pull_request(...)`
   - `services/sub/labels_sync.py`: `sync_label_catalog(...)`, `sync_pr_labels(...)`
   - `services/sub/timeline_sync.py`: `sync_timeline_events(...)`
@@ -107,3 +111,47 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
 - Add `PRAssignee`, `Review`, `Comment`, `PRDependency`, and (if needed) `Commit` tables.
 - Add Snapshot materializations in Analyzer (e.g., queue snapshot) for fast UI reads.
 - Status history: enable append‑only StatusContext history via REST (`/commits/{sha}/statuses`) and/or CheckRun attempt history via `checkSuites → checkRuns`. Add conditional upserts keyed by `rest_id` (StatusContext) and extend replay to subtract fail/running intervals on a single SHA.
+
+## Implementation Status (v1)
+- Query
+  - `qb_site/syncer/queries/pr_bundle.graphql` (variables: `$owner`, `$name`, `$number`, `$timelineK`, `$commitsM`)
+  - Commit CI fetched via `commit.statusCheckRollup.contexts.nodes` (union of `CheckRun` and `StatusContext`).
+- Services (sub‑syncs)
+  - PR core: `syncer/services/sub/pull_request_sync.py` (`upsert_pull_request`)
+  - Labels: `syncer/services/sub/labels_sync.py` (`sync_label_catalog`, `sync_pr_labels`)
+  - Timeline: `syncer/services/sub/timeline_sync.py` (`sync_timeline_events`)
+  - CI snapshots: `syncer/services/sub/ci_sync.py` (`sync_check_runs`, `sync_status_contexts`)
+- File‑based ingestion command (for fixtures/dev)
+  - `qb_site/manage.py sync_pr_from_file --repo OWNER/NAME --file PATH [--dry-run]`
+  - Ingests a single PR bundle JSON (GraphQL output) using the sub‑syncs; `--dry-run` rolls back.
+- Tests
+  - Sub‑sync unit tests and a command integration test under `qb_site/syncer/tests/` with a minimal fixture at
+    `qb_site/syncer/tests/fixtures/pr_bundle_min.json`.
+  - Run inside compose: `docker compose exec -T web python qb_site/manage.py test syncer`.
+
+Notes
+- Snapshots only: `statusCheckRollup` returns the latest state per context on each commit. Timeline and CI commit windows are capped by `$timelineK` and `$commitsM`.
+
+### Generating a Bundle (dev)
+- Authenticate gh: `gh auth status` (or set `GH_TOKEN`).
+- Run the bundle query for a single PR and write to JSON:
+  ```bash
+  gh api graphql \
+    -F query=@qb_site/syncer/queries/pr_bundle.graphql \
+    -F owner='leanprover-community' -F name='mathlib4' \
+    -F number=30723 -F timelineK=150 -F commitsM=15 \
+    > pr-30723.json
+  ```
+  If your shell/gh doesn’t expand `@file`, use:
+  ```bash
+  gh api graphql \
+    -F query="$(< qb_site/syncer/queries/pr_bundle.graphql)" \
+    -F owner='leanprover-community' -F name='mathlib4' \
+    -F number=30723 -F timelineK=150 -F commitsM=15 \
+    > pr-30723.json
+  ```
+- Sanity‑check shape with `jq`:
+  - PR core: `jq '.data.repository.pullRequest.number' pr-30723.json`
+  - Timeline types: `jq -r '.data.repository.pullRequest.timelineItems.nodes[].__typename' pr-30723.json | sort | uniq -c`
+  - Commit oids: `jq -r '.data.repository.pullRequest.commits.nodes[].commit.oid' pr-30723.json`
+  - Context types per commit: `jq -r '.data.repository.pullRequest.commits.nodes[].commit.statusCheckRollup.contexts.nodes[].__typename' pr-30723.json | sort | uniq -c`

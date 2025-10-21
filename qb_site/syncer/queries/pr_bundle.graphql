@@ -1,0 +1,97 @@
+# GitHub GraphQL bundle for a single PR
+# Variables:
+#   $owner: String!, $name: String!, $number: Int!
+#   $timelineK: Int!  (max timeline items to fetch)
+#   $commitsM: Int!   (number of head commits to inspect)
+
+query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!, $commitsM: Int!) {
+  repository(owner: $owner, name: $name) {
+    id
+    name
+    owner { login }
+    defaultBranchRef { name }
+    pullRequest(number: $number) {
+      number
+      state
+      isDraft
+      title
+      body
+      createdAt
+      updatedAt
+      closedAt
+      mergedAt
+      baseRefName
+      headRefName
+      headRepositoryOwner { login }
+      headRepository { name }
+      additions
+      deletions
+      changedFiles
+
+      author {
+        __typename
+        ... on User { id login name avatarUrl }
+        ... on Bot { id login avatarUrl }
+      }
+
+      labels(first: 100) {
+        nodes { name color }
+      }
+
+      timelineItems(
+        first: $timelineK
+        itemTypes: [
+          LABELED_EVENT
+          UNLABELED_EVENT
+          READY_FOR_REVIEW_EVENT
+          CONVERT_TO_DRAFT_EVENT
+          REOPENED_EVENT
+          CLOSED_EVENT
+        ]
+      ) {
+        nodes {
+          __typename
+          ... on LabeledEvent { id createdAt label { name } }
+          ... on UnlabeledEvent { id createdAt label { name } }
+          ... on ReadyForReviewEvent { id createdAt }
+          ... on ConvertToDraftEvent { id createdAt }
+          ... on ReopenedEvent { id createdAt }
+          ... on ClosedEvent { id createdAt }
+        }
+      }
+
+      commits(last: $commitsM) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    id
+                    name
+                    status
+                    conclusion
+                    startedAt
+                    completedAt
+                    detailsUrl
+                    externalId
+                  }
+                  ... on StatusContext {
+                    id
+                    context
+                    state
+                    targetUrl
+                    description
+                    createdAt
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
