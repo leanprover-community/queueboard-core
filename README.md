@@ -101,3 +101,6 @@ Compose checks
     docker compose exec -T web python qb_site/manage.py sync_repo \
       --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --limit 50
     ```
+  - Task results in admin:
+    - Set `CELERY_RESULT_BACKEND=django-db` in `.env` and rebuild containers to enable `django-celery-results`.
+    - After migrations, view task outcomes in the Django admin under “Task results”.

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from django.contrib import admin
+from django.template.response import TemplateResponse
+from django.urls import reverse
+from django.utils.html import format_html
 
 from .models import (
     PullRequest,
@@ -73,6 +76,47 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "updated_at",
     )
     inlines = [PRLabelInline]
+
+    actions = ["action_enqueue_sync", "action_enqueue_sync_dry_run"]
+
+    def action_enqueue_sync(self, request, queryset):  # type: ignore[override]
+        from syncer.tasks.sync_tasks import sync_pr_task
+
+        enqueued: list[tuple[PullRequest, str]] = []
+        for pr in queryset.select_related("repository"):
+            # Enqueue Celery task per PR
+            async_result = sync_pr_task.delay(pr.repository_id, pr.number)
+            enqueued.append((pr, async_result.id))
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Enqueued PR sync tasks",
+            "enqueued": enqueued,
+            "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+            "dry_run": False,
+        }
+        return TemplateResponse(request, "admin/syncer/pullrequest/enqueue_sync.html", context)
+
+    action_enqueue_sync.short_description = "Enqueue sync for selected PRs"  # type: ignore[attr-defined]
+
+    def action_enqueue_sync_dry_run(self, request, queryset):  # type: ignore[override]
+        from syncer.tasks.sync_tasks import sync_pr_task
+
+        enqueued: list[tuple[PullRequest, str]] = []
+        for pr in queryset.select_related("repository"):
+            async_result = sync_pr_task.delay(pr.repository_id, pr.number, dry_run=True)
+            enqueued.append((pr, async_result.id))
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Enqueued DRY-RUN PR sync tasks",
+            "enqueued": enqueued,
+            "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+            "dry_run": True,
+        }
+        return TemplateResponse(request, "admin/syncer/pullrequest/enqueue_sync.html", context)
+
+    action_enqueue_sync_dry_run.short_description = "Enqueue DRY-RUN sync for selected PRs"  # type: ignore[attr-defined]
 
 
 @admin.register(LabelDef)

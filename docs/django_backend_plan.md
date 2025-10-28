@@ -221,21 +221,22 @@ Developer utilities (current)
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Immediate Next Steps
-1. Live syncer orchestration and GitHub client.
-    - 1.1 Add `syncer/services/github_client.py` with `GitHubClient.execute`, `get_changed_pr_numbers(...)`, and `get_pr_bundle(...)` using `queries/pr_bundle.graphql`.
-    - 1.2 Implement `syncer/services/pr_sync_service.py` (`sync_repository`, `sync_pull_request`) to orchestrate sub‑syncs in a single transaction and update `last_synced_at`.
-    - 1.3 Add a `sync_repo` management command; optional Celery tasks (`sync_repo_task`, `sync_pr_task`) and a periodic schedule.
-    - 1.4 Add discovery and preflight: `get_changed_pr_numbers` and `get_pr_header` (skip unchanged PRs), and include `rateLimit` in queries for budgeting/logging.
-2. Tests and fixtures expansion.
-    - 2.1 Broaden sub‑sync unit tests (label case‑insensitivity, idempotency, null CI timestamps) and add orchestrator tests.
-    - 2.2 Add an integration test with fixtures (e.g., a PR with CI and one without `statusCheckRollup`) and verify idempotent re‑runs.
-    - 2.3 Ensure CI runs ruff and Django tests; keep Compose checks (`scripts/repo_check_compose.sh`).
-3. Admin registrations and factories.
-    - 3.1 Register `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun`, `StatusContext` in admin with useful list/filter views; keep heavy fields read‑only.
-    - 3.2 Add minimal factory‑boy factories for `Repository`, `User`, and key syncer models for tests.
-4. Analyzer stub for CI transitions.
-    - 4.1 Define `analyzer` model `PRCIStatusEvent` and a service to derive coarse CI transitions from snapshots.
-    - 4.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
+1. Repo‑level sync task + scheduling.
+    - 1.1 Implement `sync_repo_since_task(repo_id, since, limit, states)` with preflight, rate‑budget stop, and continuation at `resetAt`.
+    - 1.2 Add a per‑repo lock (and optional global single‑token lock) to avoid overlap.
+    - 1.3 Add a lightweight beat schedule to kick active repos every few minutes (staggered by jitter).
+2. Paging until cutoff.
+    - 2.1 Add cutoff‑based loops for timeline and commits with small page caps; stop as soon as we cross the cutoff.
+    - 2.2 Log page counts and truncation flags; add tests for paging paths.
+3. Admin polish.
+    - 3.1 Link enqueued task IDs from admin result pages to django‑celery‑results TaskResult detail.
+    - 3.2 Show “recent task results” on the repo Sync tools page; add a preflight‑only report.
+4. Tests and CI.
+    - 4.1 Expand orchestrator tests; add basic admin form/view tests.
+    - 4.2 Keep Compose checks; optionally add ruff to CI once cache perms are stable.
+5. Analyzer stub for CI transitions (unchanged).
+    - 5.1 Define `PRCIStatusEvent` and a derivation service using snapshots.
+    - 5.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
 
 ## Syncer Scheduling (Planned)
 - Single-token, rate-aware orchestration:
