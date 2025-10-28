@@ -56,4 +56,3 @@ class TestCoreEntitiesSync(TestCase):
         self.assertFalse(created2)
         self.assertIn("github_node_id", updated2)
         self.assertEqual(user2.github_node_id, "U2")
-

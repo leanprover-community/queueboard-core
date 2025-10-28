@@ -65,12 +65,16 @@ class Command(BaseCommand):
         )
 
         if json_out:
-            self.stdout.write(json.dumps({
-                "repo": owner_name,
-                "since": since_iso,
-                "states": states,
-                "numbers": nums,
-            }))
+            self.stdout.write(
+                json.dumps(
+                    {
+                        "repo": owner_name,
+                        "since": since_iso,
+                        "states": states,
+                        "numbers": nums,
+                    }
+                )
+            )
             return
 
         # Default: print one number per line for easy piping

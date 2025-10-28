@@ -19,7 +19,9 @@ class Command(BaseCommand):
         parser.add_argument("--repo", required=True, help="Repository in owner/name format")
         parser.add_argument("--number", action="append", type=int, help="PR number to sync (repeatable)")
         parser.add_argument("--since", help="ISO8601 cutoff; discover changed PRs since this time")
-        parser.add_argument("--states", action="append", help="Repeatable PR states for --since (OPEN, MERGED, CLOSED). Default: OPEN")
+        parser.add_argument(
+            "--states", action="append", help="Repeatable PR states for --since (OPEN, MERGED, CLOSED). Default: OPEN"
+        )
         parser.add_argument("--limit", type=int, default=50, help="Max PRs to discover with --since")
         parser.add_argument("--timelineK", type=int, default=150, help="Max timeline items per PR bundle")
         parser.add_argument("--commitsM", type=int, default=15, help="Number of head commits to inspect")

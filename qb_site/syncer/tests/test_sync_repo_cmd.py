@@ -39,8 +39,10 @@ class TestSyncRepoCommand(TestCase):
 
     def test_since_discovery_triggers_sync(self) -> None:
         # Patch GitHubClient and PRSyncService used inside the command module
-        with mock.patch("syncer.management.commands.sync_repo.GitHubClient") as MockClient, \
-             mock.patch("syncer.management.commands.sync_repo.PRSyncService") as MockSvc:
+        with (
+            mock.patch("syncer.management.commands.sync_repo.GitHubClient") as MockClient,
+            mock.patch("syncer.management.commands.sync_repo.PRSyncService") as MockSvc,
+        ):
             gh = MockClient.return_value
             gh.get_changed_pr_numbers.return_value = [42]
             gh.get_pr_header.return_value = {
@@ -76,12 +78,18 @@ class TestSyncRepoCommand(TestCase):
         # Existing PR with recent last_synced_at
         pr = self._make_pr(1, last_synced_at=timezone.now())
 
-        with mock.patch("syncer.management.commands.sync_repo.GitHubClient") as MockClient, \
-             mock.patch("syncer.management.commands.sync_repo.PRSyncService") as MockSvc:
+        with (
+            mock.patch("syncer.management.commands.sync_repo.GitHubClient") as MockClient,
+            mock.patch("syncer.management.commands.sync_repo.PRSyncService") as MockSvc,
+        ):
             gh = MockClient.return_value
             # updatedAt earlier than last_synced_at → skip
             gh.get_pr_header.return_value = {
-                "data": {"repository": {"pullRequest": {"number": 1, "updatedAt": (pr.last_synced_at - timezone.timedelta(minutes=1)).isoformat()}}}
+                "data": {
+                    "repository": {
+                        "pullRequest": {"number": 1, "updatedAt": (pr.last_synced_at - timezone.timedelta(minutes=1)).isoformat()}
+                    }
+                }
             }
             svc = MockSvc.return_value
 
@@ -99,10 +107,14 @@ class TestSyncRepoCommand(TestCase):
             self.assertIn("up-to-date; skipping", out.getvalue())
 
     def test_rate_limit_reset_printed_once(self) -> None:
-        with mock.patch("syncer.management.commands.sync_repo.GitHubClient") as MockClient, \
-             mock.patch("syncer.management.commands.sync_repo.PRSyncService") as MockSvc:
+        with (
+            mock.patch("syncer.management.commands.sync_repo.GitHubClient") as MockClient,
+            mock.patch("syncer.management.commands.sync_repo.PRSyncService") as MockSvc,
+        ):
             gh = MockClient.return_value
-            gh.get_pr_header.return_value = {"data": {"repository": {"pullRequest": {"number": 7, "updatedAt": "2025-10-21T00:00:00Z"}}}}
+            gh.get_pr_header.return_value = {
+                "data": {"repository": {"pullRequest": {"number": 7, "updatedAt": "2025-10-21T00:00:00Z"}}}
+            }
             # Same resetAt twice -> should print only once
             gh.get_last_rate_limit.side_effect = [
                 {"resetAt": "2025-11-01T00:00:00Z"},

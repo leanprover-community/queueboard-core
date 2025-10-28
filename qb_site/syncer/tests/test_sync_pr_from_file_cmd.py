@@ -12,7 +12,9 @@ from syncer.models import PullRequest, LabelDef, PRLabel, PRTimelineEvent, Check
 class TestSyncFromFileCommand(TestCase):
     def setUp(self) -> None:
         # Pre-create repository to avoid side effects outside transaction
-        self.repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master", is_active=True)
+        self.repo = Repository.objects.create(
+            owner="leanprover-community", name="mathlib4", default_branch="master", is_active=True
+        )
         self.fixture = Path(__file__).resolve().parent / "fixtures" / "pr_bundle_min.json"
 
     def test_dry_run_no_changes(self) -> None:
