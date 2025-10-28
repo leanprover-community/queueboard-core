@@ -127,7 +127,9 @@ class RepositoryAdmin(admin.ModelAdmin):
                     commitsM = discover_form.cleaned_data.get("commitsM") or 15
                     try:
                         gh = GitHubClient()
-                        numbers = gh.get_changed_pr_numbers(owner=repo.owner, name=repo.name, since_iso=since, states=states, limit=int(limit))
+                        numbers = gh.get_changed_pr_numbers(
+                            owner=repo.owner, name=repo.name, since_iso=since, states=states, limit=int(limit)
+                        )
                         if not numbers:
                             error = "No changed PRs discovered for the given cutoff/states"
                         else:

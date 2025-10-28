@@ -14,7 +14,9 @@ class TestGitHubClient(SimpleTestCase):
         with mock.patch("requests.post") as mpost:
             mresp = mock.Mock()
             mresp.raise_for_status.return_value = None
-            mresp.json.return_value = {"data": {"ok": True, "rateLimit": {"remaining": 4999, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 1}}}
+            mresp.json.return_value = {
+                "data": {"ok": True, "rateLimit": {"remaining": 4999, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 1}}
+            }
             mpost.return_value = mresp
 
             out = client.execute("query X", {"a": 1})
@@ -81,7 +83,7 @@ class TestGitHubClient(SimpleTestCase):
                                 {"number": 4, "updatedAt": "2025-10-20T09:00:00Z", "state": "OPEN"},
                             ],
                         }
-                    }
+                    },
                 }
             },
             {
@@ -95,7 +97,7 @@ class TestGitHubClient(SimpleTestCase):
                                 {"number": 2, "updatedAt": "2025-10-19T12:00:00Z", "state": "OPEN"},
                             ],
                         }
-                    }
+                    },
                 }
             },
         ]

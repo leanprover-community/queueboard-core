@@ -51,7 +51,9 @@ def upsert_repo_metadata(
     return (len(updated) > 0, tuple(f for f in updated if f != "updated_at"))
 
 
-def upsert_user_from_github(actor: Dict[str, Any] | None, *, create_missing: bool = True) -> Tuple[Optional[User], bool, Tuple[str, ...]]:
+def upsert_user_from_github(
+    actor: Dict[str, Any] | None, *, create_missing: bool = True
+) -> Tuple[Optional[User], bool, Tuple[str, ...]]:
     """Create or update a core.User from a GitHub actor dict.
 
     Supports GraphQL shapes like:

@@ -55,4 +55,3 @@ class PRTimelineEvent(TimestampedModel):
     def __str__(self) -> str:  # pragma: no cover - simple representation
         extra = f" ({self.label_name})" if self.label_name else ""
         return f"{self.pull_request} @ {self.occurred_at} {self.type}{extra}"
-

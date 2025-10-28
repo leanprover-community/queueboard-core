@@ -41,5 +41,4 @@ class TestListChangedPRsCommand(SimpleTestCase):
                 stdout=out,
             )
             txt = out.getvalue().strip()
-            self.assertIn("\"numbers\": [1, 2]", txt)
-
+            self.assertIn('"numbers": [1, 2]', txt)

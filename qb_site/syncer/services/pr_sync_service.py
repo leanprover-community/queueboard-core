@@ -110,15 +110,17 @@ class PRSyncService:
 
             # Timeline paging
             if max_timeline_pages > 0:
-                tl_conn = (pr.get("timelineItems") or {})
+                tl_conn = pr.get("timelineItems") or {}
                 page = tl_conn.get("pageInfo") or {}
                 after = page.get("endCursor")
                 has_next = bool(page.get("hasNextPage"))
                 pages = 0
                 while has_next and pages < max_timeline_pages:
-                    tdata = client.get_timeline_page(owner=repo.owner, name=repo.name, number=number, first=timelineK, after=after)
+                    tdata = client.get_timeline_page(
+                        owner=repo.owner, name=repo.name, number=number, first=timelineK, after=after
+                    )
                     tpr = ((tdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
-                    titems = (tpr.get("timelineItems") or {})
+                    titems = tpr.get("timelineItems") or {}
                     nodes = titems.get("nodes") or []
                     tl_res = sync_timeline_events(pr_obj, nodes)
                     result["events_created"] += tl_res.created
@@ -133,7 +135,7 @@ class PRSyncService:
 
             # Commits paging (older via before)
             if max_commit_pages > 0:
-                c_conn = (pr.get("commits") or {})
+                c_conn = pr.get("commits") or {}
                 c_page = c_conn.get("pageInfo") or {}
                 before = c_page.get("startCursor")
                 has_prev = bool(c_page.get("hasPreviousPage"))
@@ -141,7 +143,7 @@ class PRSyncService:
                 while has_prev and pages < max_commit_pages:
                     cdata = client.get_commits_page(owner=repo.owner, name=repo.name, number=number, last=commitsM, before=before)
                     cpr = ((cdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
-                    commits = (cpr.get("commits") or {})
+                    commits = cpr.get("commits") or {}
                     nodes = commits.get("nodes") or []
                     for cnode in nodes:
                         commit = (cnode or {}).get("commit") or {}

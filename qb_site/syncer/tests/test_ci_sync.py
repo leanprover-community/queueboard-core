@@ -62,7 +62,7 @@ class TestCISync(TestCase):
                 "state": "SUCCESS",
                 "targetUrl": None,
                 "description": "",
-                "createdAt": "2025-10-20T00:00:00Z"
+                "createdAt": "2025-10-20T00:00:00Z",
             }
         ]
         res = sync_status_contexts(self.pr, ctxs, head_sha)
