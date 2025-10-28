@@ -1,0 +1,35 @@
+# Timeline items page for a single PR
+# Variables:
+#   $owner: String!, $name: String!, $number: Int!
+#   $first: Int!, $after: String
+
+query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String) {
+  rateLimit { cost remaining resetAt used }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(
+        first: $first
+        after: $after
+        itemTypes: [
+          LABELED_EVENT
+          UNLABELED_EVENT
+          READY_FOR_REVIEW_EVENT
+          CONVERT_TO_DRAFT_EVENT
+          REOPENED_EVENT
+          CLOSED_EVENT
+        ]
+      ) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          __typename
+          ... on LabeledEvent { id createdAt label { name } }
+          ... on UnlabeledEvent { id createdAt label { name } }
+          ... on ReadyForReviewEvent { id createdAt }
+          ... on ConvertToDraftEvent { id createdAt }
+          ... on ReopenedEvent { id createdAt }
+          ... on ClosedEvent { id createdAt }
+        }
+      }
+    }
+  }
+}

@@ -14,11 +14,15 @@ class TestGitHubClient(SimpleTestCase):
         with mock.patch("requests.post") as mpost:
             mresp = mock.Mock()
             mresp.raise_for_status.return_value = None
-            mresp.json.return_value = {"data": {"ok": True}}
+            mresp.json.return_value = {"data": {"ok": True, "rateLimit": {"remaining": 4999, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 1}}}
             mpost.return_value = mresp
 
             out = client.execute("query X", {"a": 1})
             self.assertEqual(out["data"]["ok"], True)
+            rl = client.get_last_rate_limit()
+            self.assertIsNotNone(rl)
+            assert rl is not None
+            self.assertIn("remaining", rl)
 
             # Verify request was formed correctly
             self.assertTrue(mpost.called)
@@ -68,6 +72,7 @@ class TestGitHubClient(SimpleTestCase):
         pages = [
             {
                 "data": {
+                    "rateLimit": {"remaining": 4999, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 1},
                     "repository": {
                         "pullRequests": {
                             "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
@@ -81,6 +86,7 @@ class TestGitHubClient(SimpleTestCase):
             },
             {
                 "data": {
+                    "rateLimit": {"remaining": 4998, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 2},
                     "repository": {
                         "pullRequests": {
                             "pageInfo": {"hasNextPage": False, "endCursor": None},
@@ -131,3 +137,5 @@ class TestGitHubClient(SimpleTestCase):
         with mock.patch.object(GitHubClient, "execute", return_value=page):
             nums = client.get_changed_pr_numbers(owner="o", name="r", since_iso="2025-10-20T00:00:00Z", limit=2)
             self.assertEqual(nums, [10, 9])
+            rl = client.get_last_rate_limit()
+            self.assertIsNotNone(rl)

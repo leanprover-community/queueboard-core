@@ -7,6 +7,7 @@ This document outlines the v1 GitHub ingestion architecture that powers the raw 
 - Clean separation from Analyzer (derived CI transitions, status evolution)
 
 See also: `docs/django_backend_plan.md` for the broader migration plan and model summaries. CI signal choices and tradeoffs are captured in `docs/design-decisions/004-ci-status-sources.md`.
+Pagination strategy for timeline and commits is captured in `docs/design-decisions/005-page-until-cutoff-pagination.md`.
 
 ## Goals
 - Persist raw facts for open PRs so we can reproduce dashboards and compute analytics:
@@ -16,6 +17,13 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
   - CI history from CheckRun snapshots and StatusContext snapshots (latest per commit context via statusCheckRollup)
 - Minimize API calls while staying robust and easy to reason about.
 
+## Discovery & Preflight
+- Discovery (incremental): `GitHubClient.get_changed_pr_numbers(owner, name, since_iso, states=[OPEN], limit=N)` pages the PR list ordered by `UPDATED_AT` and stops at the cutoff or limit.
+- Preflight (per PR): `GitHubClient.get_pr_header(owner, name, number)` fetches `updatedAt`; skip ingestion when `updatedAt <= PullRequest.last_synced_at`.
+- Commands:
+  - `list_changed_prs` lists PR numbers for manual testing.
+  - `sync_repo --since` discovers changed PRs, preflights each PR, then ingests with the bundle.
+
 ## Data Sources: Single “PR Bundle” Query
 - One GraphQL request per changed PR fetches all needed data:
   - pullRequest core: number/author/state/isDraft/title/body/createdAt/updatedAt/baseRefName/headRefName/headRepo owner+name/additions/deletions/changedFiles
@@ -24,6 +32,8 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
   - commits: `last: M` (head commit window), with:
     - status.contexts { id, __typename, context/state OR name/status/conclusion, targetUrl/detailsUrl, createdAt/startedAt/completedAt }
       (latest per context per commit; union of `StatusContext` and `CheckRun`)
+  - Both connections include `pageInfo` (timeline: `hasNextPage`/`endCursor`; commits: `hasPreviousPage`/`startCursor`).
+  - All queries include a `rateLimit { cost remaining resetAt used }` snapshot for budgeting/logging.
 - Tunable limits (defaults; adjust per repo in settings):
   - `K` (timeline items): ~150–200
   - `M` (commits): ~10–20
@@ -65,6 +75,12 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
 - StatusContext: unique `github_node_id`
 - Replay indexes: `(pull_request, occurred_at)` for timeline; `(pull_request, gh_completed_at)` (CheckRun) and `(pull_request, gh_created_at)` (StatusContext)
 
+## Paging Queries (v1)
+- Keep the bundle for the first page; add lean page queries for subsequent pages when needed:
+  - `queries/timeline_page.graphql`: pages `timelineItems(first:$first, after:$after)` and returns nodes + pageInfo.
+  - `queries/commits_page.graphql`: pages `commits(last:$last, before:$before)` and returns commit oids + contexts + pageInfo.
+- Orchestrator can fetch additional pages with small caps; cutoffs are described in `005-page-until-cutoff-pagination.md` and can be added after the first iteration.
+
 ## Services & File Organization
 - `syncer/services/github_client.py`
   - `GitHubClient.execute(...)`
@@ -98,6 +114,15 @@ See also: `docs/django_backend_plan.md` for the broader migration plan and model
 - Resume & idempotency
   - Keep a small JSON resume file (per repo) storing pagination cursor and counters, or later add a `SyncJob` table to persist job metadata.
   - Ingestion is idempotent by design (unique constraints on PR identity, label defs, attachments, timeline event ids, and CI snapshot ids).
+
+## Rate Limits & Logging
+- Every query selects `rateLimit { cost remaining resetAt used }`; `GitHubClient` caches the last snapshot.
+- `sync_repo` prints:
+  - rateLimit.remaining and resetAt early in the run (piggy-backing on the first API call),
+  - per-query cost/remaining for header, bundle, and any page queries,
+  - resetAt again only if it changes,
+  - final remaining at the end of the run.
+- Budgeting strategy: stop when remaining drops near a threshold and schedule a continuation at `resetAt` (see `django_backend_plan.md` for scheduling roadmap).
 
 ## Rate/Cost Controls
 - Keep K/M bounded; log GraphQL costs and durations.

@@ -89,3 +89,15 @@ Compose checks
   ```bash
   docker compose exec -T web python qb_site/manage.py test syncer
   ```
+
+- Discovery and live sync:
+  - List changed PRs since a cutoff for manual testing:
+    ```bash
+    docker compose exec -T web python qb_site/manage.py list_changed_prs \
+      --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --states OPEN --limit 20
+    ```
+  - Sync changed PRs since a cutoff (preflight skips up-to-date PRs). The command prints GraphQL rate limit snapshots and per-query costs:
+    ```bash
+    docker compose exec -T web python qb_site/manage.py sync_repo \
+      --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --limit 50
+    ```

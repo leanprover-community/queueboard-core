@@ -5,6 +5,7 @@
 #   $commitsM: Int!   (number of head commits to inspect)
 
 query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!, $commitsM: Int!) {
+  rateLimit { cost remaining resetAt used }
   repository(owner: $owner, name: $name) {
     id
     name
@@ -49,6 +50,10 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
           CLOSED_EVENT
         ]
       ) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           __typename
           ... on LabeledEvent { id createdAt label { name } }
@@ -61,6 +66,10 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
       }
 
       commits(last: $commitsM) {
+        pageInfo {
+          hasPreviousPage
+          startCursor
+        }
         nodes {
           commit {
             oid

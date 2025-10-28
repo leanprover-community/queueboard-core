@@ -225,6 +225,7 @@ Developer utilities (current)
     - 1.1 Add `syncer/services/github_client.py` with `GitHubClient.execute`, `get_changed_pr_numbers(...)`, and `get_pr_bundle(...)` using `queries/pr_bundle.graphql`.
     - 1.2 Implement `syncer/services/pr_sync_service.py` (`sync_repository`, `sync_pull_request`) to orchestrate sub‑syncs in a single transaction and update `last_synced_at`.
     - 1.3 Add a `sync_repo` management command; optional Celery tasks (`sync_repo_task`, `sync_pr_task`) and a periodic schedule.
+    - 1.4 Add discovery and preflight: `get_changed_pr_numbers` and `get_pr_header` (skip unchanged PRs), and include `rateLimit` in queries for budgeting/logging.
 2. Tests and fixtures expansion.
     - 2.1 Broaden sub‑sync unit tests (label case‑insensitivity, idempotency, null CI timestamps) and add orchestrator tests.
     - 2.2 Add an integration test with fixtures (e.g., a PR with CI and one without `statusCheckRollup`) and verify idempotent re‑runs.
@@ -235,3 +236,12 @@ Developer utilities (current)
 4. Analyzer stub for CI transitions.
     - 4.1 Define `analyzer` model `PRCIStatusEvent` and a service to derive coarse CI transitions from snapshots.
     - 4.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
+
+## Syncer Scheduling (Planned)
+- Single-token, rate-aware orchestration:
+  - Beat schedules a `sync_repo_since(repo_id, since)` task every few minutes per active repo.
+  - The task discovers changed PRs since a watermark, preflights, and ingests bundles.
+  - Use a per-repo lock (and optionally a global token lock) to avoid overlap; stop early when `rateLimit.remaining` nears a threshold and enqueue a continuation at `resetAt`.
+- State and watermarks:
+  - Per repo: last discovery time; per PR: `PullRequest.last_synced_at`.
+  - Optional SyncJob row for long backfills/resume; deferred for v1 thanks to idempotency.

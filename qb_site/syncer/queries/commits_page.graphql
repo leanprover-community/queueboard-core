@@ -1,0 +1,45 @@
+# Commits page for a single PR (older commits via before)
+# Variables:
+#   $owner: String!, $name: String!, $number: Int!
+#   $last: Int!, $before: String
+
+query PRCommitsPage($owner: String!, $name: String!, $number: Int!, $last: Int!, $before: String) {
+  rateLimit { cost remaining resetAt used }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(last: $last, before: $before) {
+        pageInfo { hasPreviousPage startCursor }
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    id
+                    name
+                    status
+                    conclusion
+                    startedAt
+                    completedAt
+                    detailsUrl
+                    externalId
+                  }
+                  ... on StatusContext {
+                    id
+                    context
+                    state
+                    targetUrl
+                    description
+                    createdAt
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
