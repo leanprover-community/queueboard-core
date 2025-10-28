@@ -1,0 +1,14 @@
+# Lightweight PR header
+# Variables: $owner, $name, $number
+
+query PRHeader($owner: String!, $name: String!, $number: Int!) {
+  rateLimit { cost remaining resetAt used }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      number
+      updatedAt
+      state
+      isDraft
+    }
+  }
+}

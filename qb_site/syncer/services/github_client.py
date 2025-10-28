@@ -24,6 +24,7 @@ class GitHubClient:
         self.token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if not self.token:
             raise RuntimeError("GitHub token not found; set GH_TOKEN or pass token explicitly")
+        self._last_rate_limit: Optional[Dict[str, Any]] = None
 
     def execute(self, query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         headers = {
@@ -37,6 +38,10 @@ class GitHubClient:
             # Surface GraphQL errors in a readable way for the caller/command.
             msgs = "; ".join(str(e.get("message")) for e in data["errors"])
             raise RuntimeError(f"GraphQL error(s): {msgs}")
+        # Capture rateLimit snapshot when present
+        rl = (data.get("data") or {}).get("rateLimit")
+        if isinstance(rl, dict):
+            self._last_rate_limit = rl
         return data
 
     def _read_file(self, rel_path_from_repo_root: str) -> str:
@@ -64,6 +69,68 @@ class GitHubClient:
             "number": int(number),
             "timelineK": int(timelineK),
             "commitsM": int(commitsM),
+        }
+        return self.execute(query, variables)
+
+    def get_pr_header(
+        self,
+        *,
+        owner: str,
+        name: str,
+        number: int,
+        query_path: str = "qb_site/syncer/queries/pr_header.graphql",
+    ) -> Dict[str, Any]:
+        """Fetch a lightweight header for a PR to check updatedAt quickly."""
+        query = self._read_file(query_path)
+        variables = {"owner": owner, "name": name, "number": int(number)}
+        return self.execute(query, variables)
+
+    def get_timeline_page(
+        self,
+        *,
+        owner: str,
+        name: str,
+        number: int,
+        first: int,
+        after: Optional[str] = None,
+        query_path: str = "qb_site/syncer/queries/timeline_page.graphql",
+    ) -> Dict[str, Any]:
+        query = self._read_file(query_path)
+        variables = {
+            "owner": owner,
+            "name": name,
+            "number": int(number),
+            "first": int(first),
+            "after": after,
+        }
+        return self.execute(query, variables)
+
+    def get_last_rate_limit(self) -> Optional[Dict[str, Any]]:
+        """Return the last seen rateLimit snapshot (if any)."""
+        return self._last_rate_limit
+
+    def get_rate_limit(self) -> Dict[str, Any]:
+        """Fetch a bare rateLimit snapshot."""
+        query = "query { rateLimit { cost remaining resetAt used } }"
+        return self.execute(query, {})
+
+    def get_commits_page(
+        self,
+        *,
+        owner: str,
+        name: str,
+        number: int,
+        last: int,
+        before: Optional[str] = None,
+        query_path: str = "qb_site/syncer/queries/commits_page.graphql",
+    ) -> Dict[str, Any]:
+        query = self._read_file(query_path)
+        variables = {
+            "owner": owner,
+            "name": name,
+            "number": int(number),
+            "last": int(last),
+            "before": before,
         }
         return self.execute(query, variables)
 
@@ -99,6 +166,7 @@ class GitHubClient:
 
         query = (
             "query PRList($owner: String!, $name: String!, $first: Int!, $after: String, $states: [PullRequestState!]) {\n"
+            "  rateLimit { cost remaining resetAt used }\n"
             "  repository(owner: $owner, name: $name) {\n"
             "    pullRequests(states: $states, orderBy: {field: UPDATED_AT, direction: DESC}, first: $first, after: $after) {\n"
             "      pageInfo { hasNextPage endCursor }\n"
