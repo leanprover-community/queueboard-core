@@ -1,0 +1,35 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  {% if dry_run %}
+    <p><strong>{% trans "DRY-RUN:" %}</strong> {% trans "No database changes will be persisted. The following PR sync tasks have been enqueued:" %}</p>
+  {% else %}
+    <p>{% trans "The following PR sync tasks have been enqueued:" %}</p>
+  {% endif %}
+
+  <table class="listing">
+    <thead>
+      <tr>
+        <th>{% trans "Repository" %}</th>
+        <th>{% trans "PR #" %}</th>
+        <th>{% trans "Title" %}</th>
+        <th>{% trans "Task ID" %}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for pr, task_id in enqueued %}
+      <tr>
+        <td>{{ pr.repository }}</td>
+        <td>{{ pr.number }}</td>
+        <td>{{ pr.title|default:"" }}</td>
+        <td><code>{{ task_id }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p><a href="{{ changelist_url }}">{% trans "Return to Pull Requests" %}</a></p>
+{% endblock %}
+

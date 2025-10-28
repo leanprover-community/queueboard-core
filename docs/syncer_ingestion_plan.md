@@ -149,24 +149,50 @@ Pagination strategy for timeline and commits is captured in `docs/design-decisio
 - Status history: enable append‑only StatusContext history via REST (`/commits/{sha}/statuses`) and/or CheckRun attempt history via `checkSuites → checkRuns`. Add conditional upserts keyed by `rest_id` (StatusContext) and extend replay to subtract fail/running intervals on a single SHA.
 
 ## Implementation Status (v1)
-- Query
-  - `qb_site/syncer/queries/pr_bundle.graphql` (variables: `$owner`, `$name`, `$number`, `$timelineK`, `$commitsM`)
-  - Commit CI fetched via `commit.statusCheckRollup.contexts.nodes` (union of `CheckRun` and `StatusContext`).
+- Queries
+  - `qb_site/syncer/queries/pr_bundle.graphql` (variables: `$owner`, `$name`, `$number`, `$timelineK`, `$commitsM`); includes `pageInfo` and `rateLimit`.
+  - `qb_site/syncer/queries/timeline_page.graphql` and `commits_page.graphql` for optional extra pages (lean connections only); include `rateLimit`.
+  - `qb_site/syncer/queries/pr_header.graphql` for preflight (`updatedAt`, state, draft) with `rateLimit`.
 - Services (sub‑syncs)
   - PR core: `syncer/services/sub/pull_request_sync.py` (`upsert_pull_request`)
   - Labels: `syncer/services/sub/labels_sync.py` (`sync_label_catalog`, `sync_pr_labels`)
   - Timeline: `syncer/services/sub/timeline_sync.py` (`sync_timeline_events`)
   - CI snapshots: `syncer/services/sub/ci_sync.py` (`sync_check_runs`, `sync_status_contexts`)
-- File‑based ingestion command (for fixtures/dev)
-  - `qb_site/manage.py sync_pr_from_file --repo OWNER/NAME --file PATH [--dry-run]`
-  - Ingests a single PR bundle JSON (GraphQL output) using the sub‑syncs; `--dry-run` rolls back.
+- CLI commands
+  - File‑based: `qb_site/manage.py sync_pr_from_file --repo OWNER/NAME --file PATH [--dry-run]` — ingest a saved bundle.
+  - Discovery: `qb_site/manage.py list_changed_prs --repo OWNER/NAME --since ISO [--states OPEN --limit N]` — list PR numbers since cutoff.
+  - Live ingest: `qb_site/manage.py sync_repo --repo OWNER/NAME [--since ISO --limit N] [--number N ...]` — preflights and ingests changed PRs; prints `rateLimit` budget and per‑query costs.
+  - Optional paging: `PRSyncService.sync_pull_request` supports page caps for timeline/commits; cutoff‑based loops planned.
 - Tests
   - Sub‑sync unit tests and a command integration test under `qb_site/syncer/tests/` with a minimal fixture at
     `qb_site/syncer/tests/fixtures/pr_bundle_min.json`.
   - Run inside compose: `docker compose exec -T web python qb_site/manage.py test syncer`.
 
+- Admin
+  - Read‑only registrations for `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun`, `StatusContext`.
+  - PullRequest actions: enqueue sync (real or dry‑run) — lists task IDs after submission.
+  - Repository “Sync tools” page: sync specific PR numbers or discover+sync since cutoff (real or dry‑run), with simple result table.
+
+- Tasks/results
+  - Celery task: `syncer.sync_pr` (sync_pr_task) — preflight + PR ingest with rateLimit logging; returns a summary dict.
+  - `django-celery-results` enabled (when `CELERY_RESULT_BACKEND=django-db`) shows task status/name/result in admin.
+
 Notes
 - Snapshots only: `statusCheckRollup` returns the latest state per context on each commit. Timeline and CI commit windows are capped by `$timelineK` and `$commitsM`.
+
+## Next Steps
+- Page‑until‑cutoff loops
+  - Use cutoff (`last_synced_at` or `--since`) to stop paging as soon as we cross the boundary (with small page caps for safety).
+  - Log page counts and truncation flags for tuning.
+- Repo‑level task + scheduling
+  - Implement `sync_repo_since_task(repo_id, since, limit, states)` with per‑repo lock and rate‑budget stop; enqueue continuation at `resetAt`.
+  - Add a lightweight “kick all repos” beat schedule and global single‑token guard if needed.
+- Admin polish
+  - Link enqueued Task IDs to Task Results; show recent results on the repo tools page.
+  - Optional: add a “preflight only” report (no enqueue) summarizing updatedAt vs last_synced_at.
+- Tests
+  - Orchestrator paging tests; repo‑task budget/continuation tests (once added).
+  - Admin view/form tests (basic GET/POST flows).
 
 ### Generating a Bundle (dev)
 - Authenticate gh: `gh auth status` (or set `GH_TOKEN`).

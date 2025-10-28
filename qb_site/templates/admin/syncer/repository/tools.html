@@ -1,0 +1,90 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+  <h1>{{ title }}</h1>
+  {% if error %}
+    <p style="color:#b94a48; font-weight:bold;">{{ error }}</p>
+  {% endif %}
+
+  <h2>{% trans "Sync specific PR numbers" %}</h2>
+  <form method="post" style="margin-bottom:2em;">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="enqueue_prs" />
+    <table>
+      <tr>
+        <th>{{ form.pr_numbers.label_tag }}</th>
+        <td>{{ form.pr_numbers }}<br/><small>{{ form.pr_numbers.help_text }}</small></td>
+      </tr>
+      <tr>
+        <th>{{ form.dry_run.label_tag }}</th>
+        <td>{{ form.dry_run }}</td>
+      </tr>
+      <tr>
+        <th>{{ form.timelineK.label_tag }}</th>
+        <td>{{ form.timelineK }}</td>
+      </tr>
+      <tr>
+        <th>{{ form.commitsM.label_tag }}</th>
+        <td>{{ form.commitsM }}</td>
+      </tr>
+    </table>
+    <p><input type="submit" class="default" value="{% trans 'Enqueue sync' %}" /></p>
+  </form>
+
+  <h2>{% trans "Discover & sync since cutoff" %}</h2>
+  <form method="post">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="discover_sync" />
+    <table>
+      <tr>
+        <th>{{ discover_form.since.label_tag }}</th>
+        <td>{{ discover_form.since }}<br/><small>{{ discover_form.since.help_text }}</small></td>
+      </tr>
+      <tr>
+        <th>{{ discover_form.states.label_tag }}</th>
+        <td>{{ discover_form.states }}</td>
+      </tr>
+      <tr>
+        <th>{{ discover_form.limit.label_tag }}</th>
+        <td>{{ discover_form.limit }}</td>
+      </tr>
+      <tr>
+        <th>{{ discover_form.dry_run.label_tag }}</th>
+        <td>{{ discover_form.dry_run }}</td>
+      </tr>
+      <tr>
+        <th>{{ discover_form.timelineK.label_tag }}</th>
+        <td>{{ discover_form.timelineK }}</td>
+      </tr>
+      <tr>
+        <th>{{ discover_form.commitsM.label_tag }}</th>
+        <td>{{ discover_form.commitsM }}</td>
+      </tr>
+    </table>
+    <p><input type="submit" value="{% trans 'Discover and enqueue sync' %}" /></p>
+  </form>
+
+  {% if enqueued %}
+    <h2>{% trans "Enqueued tasks" %}</h2>
+    <table class="listing">
+      <thead>
+        <tr>
+          <th>{% trans "PR #" %}</th>
+          <th>{% trans "Task ID" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for n, task_id in enqueued %}
+        <tr>
+          <td>{{ n }}</td>
+          <td><code>{{ task_id }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+
+  <p><a href="{{ changelist_url }}">{% trans "Return to Repositories" %}</a></p>
+{% endblock %}
+
