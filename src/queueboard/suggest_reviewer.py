@@ -188,7 +188,8 @@ def _suggest_reviewers_inner(
     reviewers: List[ReviewerInfo],
     number: int,  # used only for error messages
     labels: List[Label],
-    info: AggregatePRInfo,
+    # Github handle of the PR author
+    author: str,
     all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
 ) -> List[str]:
     # Each reviewer, together with the list of top-level areas
@@ -200,11 +201,11 @@ def _suggest_reviewers_inner(
             match = [lab for lab in labels if lab in reviewer_lab]
             # Do not propose a PR's author as potential reviewer,
             # nor suggest any reviewers who have a conflict of interest with the PR author.
-            if rev.github not in ([info.author] + rev.conflict_of_interest):
+            if rev.github not in ([author] + rev.conflict_of_interest):
                 matching_reviewers.append((rev, match))
     else:
         # Do not propose a PR's author as potential reviewer.
-        matching_reviewers = [(rev, []) for rev in reviewers if rev.github != info.author]
+        matching_reviewers = [(rev, []) for rev in reviewers if rev.github != author]
 
     # Future: decide how to customise and filter the output, lots of possibilities!
     # - no and one reviewer look sensible already
@@ -287,7 +288,7 @@ def suggest_reviewers(
 ) -> ReviewerSuggestion:
     # Look at all topic labels of this PR, and find all suitable reviewers.
     topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
-    return _suggest_reviewers_inner(existing_assignments, reviewers, number, topic_labels, all_info)
+    return _suggest_reviewers_inner(existing_assignments, reviewers, number, topic_labels, info.author, all_info)
 
 
 # Suggest potential reviewers for a list of PRs.
