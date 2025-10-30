@@ -305,7 +305,7 @@ def suggest_reviewers_many(
     for number in prs_to_assign:
         suggested = suggest_reviewers(stats, reviewers, number, info[number], info).suggested
         if suggested is None:
-            print(f"warning: no suitable review was found for PR {number}")
+            print(f"warning: no suitable reviewer was found for PR {number}")
             continue
         suggestions[number] = suggested
         (prs, n_weighted, n_all) = stats.get(suggested) or ([], 0, 0)
