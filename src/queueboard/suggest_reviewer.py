@@ -276,6 +276,22 @@ def _suggest_reviewers_inner(
         return ReviewerSuggestion(formatted, suggested_reviewers, all_available_reviewers, chosen_reviewer)
 
 
+def is_at_maximum_capacity(
+    existing_assignments: dict[str, Tuple[List[int], float, int]],
+    reviewers: List[ReviewerInfo],
+    all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
+    area_label: str,  # area label name, like "t-data"
+) -> bool:
+    labels = [Label(area_label, "colour", "url")]
+    available_reviewers = _suggest_reviewers_inner(
+        existing_assignments, reviewers, 12345, labels, "dummynonexistingauthor", all_info
+    )
+    if available_reviewers.suggested is None:
+        return True  # area is at maximum capacity
+    else:
+        return False
+
+
 # Suggest potential reviewers for a single pull request with given number.
 # We return all reviewers whose top-level interest have the best possible match
 # for this PR.
