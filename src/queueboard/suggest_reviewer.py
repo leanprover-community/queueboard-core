@@ -187,11 +187,11 @@ def _suggest_reviewers_inner(
     existing_assignments: dict[str, Tuple[List[int], float, int]],
     reviewers: List[ReviewerInfo],
     number: int,  # used only for error messages
-    labels: List[Label],
+    labels: List[str],
     # Github handle of the PR author
     author: str,
     all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
-) -> List[str]:
+) -> ReviewerSuggestion:
     # Each reviewer, together with the list of top-level areas
     # relevant to this PR in which this reviewer is competent.
     matching_reviewers: List[Tuple[ReviewerInfo, List[str]]] = []
@@ -282,10 +282,7 @@ def is_at_maximum_capacity(
     all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
     area_label: str,  # area label name, like "t-data"
 ) -> bool:
-    labels = [Label(area_label, "colour", "url")]
-    available_reviewers = _suggest_reviewers_inner(
-        existing_assignments, reviewers, 12345, labels, "dummynonexistingauthor", all_info
-    )
+    available_reviewers = _suggest_reviewers_inner(existing_assignments, reviewers, 12345, [area_label], "", all_info)
     if available_reviewers.suggested is None:
         return True  # area is at maximum capacity
     else:
