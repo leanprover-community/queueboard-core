@@ -328,6 +328,16 @@ def suggest_reviewers_many(
     return suggestions
 
 
+# Function to check if the colour of the label is light or dark
+# adapted from https://codepen.io/WebSeed/pen/pvgqEq
+# r, g and b are integers between 0 and 255.
+def _isLight(r: int, g: int, b: int) -> bool:
+    # Counting the perceptive luminance
+    # human eye favors green color...
+    a = 1 - (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return a < 0.5
+
+
 # generate list of topic labels for all open PRs
 # for each area, compute
 # - max_capacity: bool, whether the area is at maximum capacity
@@ -343,9 +353,17 @@ def compute_area_ratios(
     reviewer_github_set = set([reviewer.github for reviewer in reviewers])
     for pr in queue_prs:
         info = all_info[pr]
-        topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
-        for label_name in topic_labels:
+        topic_labels = [lab for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
+        for label in topic_labels:
+            label_name = label.name
             data = area_data.get(label_name, {})
+            if "bgcolor" not in data:
+                data["bgcolor"] = label.color
+                data["fgcolor"] = (
+                    "000000"
+                    if _isLight(int(label.color[:2], 16), int(label.color[2:4], 16), int(label.color[4:], 16))
+                    else "FFFFFF"
+                )
             if any(assignee in reviewer_github_set for assignee in info.assignees):
                 data["assigned"] = data.get("assigned", 0) + 1
             else:
