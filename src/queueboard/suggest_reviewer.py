@@ -10,7 +10,7 @@ import json
 import sys
 from typing import List, NamedTuple, Tuple
 from queueboard.classify_pr_state import PRState, PRStatus, LabelKind, determine_PR_status, label_categorisation_rules
-from queueboard.compute_dashboard_prs import LastStatusChange, DataStatus
+from queueboard.compute_dashboard_prs import Label, LastStatusChange, DataStatus
 
 from datetime import datetime
 from os import path
@@ -181,32 +181,31 @@ class ReviewerSuggestion(NamedTuple):
     suggested: str | None
 
 
-# Suggest potential reviewers for a single pull request with given number.
-# We return all reviewers whose top-level interest have the best possible match
-# for this PR.
-def suggest_reviewers(
+# Suggest potential reviewers for a single pull request with given labels.
+# We return all reviewers whose top-level interest have the best possible match for this PR.
+def _suggest_reviewers_inner(
     existing_assignments: dict[str, Tuple[List[int], float, int]],
     reviewers: List[ReviewerInfo],
-    number: int,
-    info: AggregatePRInfo,
+    number: int,  # used only for error messages
+    labels: List[str],
+    # Github handle of the PR author
+    author: str,
     all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
 ) -> ReviewerSuggestion:
-    # Look at all topic labels of this PR, and find all suitable reviewers.
-    topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
     # Each reviewer, together with the list of top-level areas
     # relevant to this PR in which this reviewer is competent.
     matching_reviewers: List[Tuple[ReviewerInfo, List[str]]] = []
-    if topic_labels:
+    if labels:
         for rev in reviewers:
             reviewer_lab = rev.top_level
-            match = [lab for lab in topic_labels if lab in reviewer_lab]
+            match = [lab for lab in labels if lab in reviewer_lab]
             # Do not propose a PR's author as potential reviewer,
             # nor suggest any reviewers who have a conflict of interest with the PR author.
-            if rev.github not in ([info.author] + rev.conflict_of_interest):
+            if rev.github not in ([author] + rev.conflict_of_interest):
                 matching_reviewers.append((rev, match))
     else:
         # Do not propose a PR's author as potential reviewer.
-        matching_reviewers = [(rev, []) for rev in reviewers if rev.github != info.author]
+        matching_reviewers = [(rev, []) for rev in reviewers if rev.github != author]
 
     # Future: decide how to customise and filter the output, lots of possibilities!
     # - no and one reviewer look sensible already
@@ -221,7 +220,7 @@ def suggest_reviewers(
         handle = matching_reviewers[0][0].github
         return ReviewerSuggestion(f"{user_link(handle)}", [handle], [handle], handle)
     else:
-        if not topic_labels:
+        if not labels:
             proposed_reviewers = [(rev, []) for rev in reviewers]
         else:
             max_score = max([len(areas) for (_, areas) in matching_reviewers])
@@ -243,7 +242,7 @@ def suggest_reviewers(
         with_curr_assignments = sorted(with_curr_assignments, key=lambda s: s[2])
         # FIXME: refine which information is actually useful here.
         # Or also show information if a single (and the PR's only) area matches?
-        if not topic_labels:
+        if not labels:
             formatted = ", ".join(
                 [user_link(rev.github, f"{n:0.1f} (weighted) open assigned PRs(s)") for (rev, areas, n) in with_curr_assignments]
             )
@@ -277,6 +276,34 @@ def suggest_reviewers(
         return ReviewerSuggestion(formatted, suggested_reviewers, all_available_reviewers, chosen_reviewer)
 
 
+def is_at_maximum_capacity(
+    existing_assignments: dict[str, Tuple[List[int], float, int]],
+    reviewers: List[ReviewerInfo],
+    all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
+    area_label: str,  # area label name, like "t-data"
+) -> bool:
+    available_reviewers = _suggest_reviewers_inner(existing_assignments, reviewers, 12345, [area_label], "", all_info)
+    if available_reviewers.suggested is None:
+        return True  # area is at maximum capacity
+    else:
+        return False
+
+
+# Suggest potential reviewers for a single pull request with given number.
+# We return all reviewers whose top-level interest have the best possible match
+# for this PR.
+def suggest_reviewers(
+    existing_assignments: dict[str, Tuple[List[int], float, int]],
+    reviewers: List[ReviewerInfo],
+    number: int,
+    info: AggregatePRInfo,
+    all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
+) -> ReviewerSuggestion:
+    # Look at all topic labels of this PR, and find all suitable reviewers.
+    topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
+    return _suggest_reviewers_inner(existing_assignments, reviewers, number, topic_labels, info.author, all_info)
+
+
 # Suggest potential reviewers for a list of PRs.
 # These are traversed in order, and for each PR a suggested candidate reviewer
 # is returned --- who is on the review rotation and has available review capacity.
@@ -292,10 +319,45 @@ def suggest_reviewers_many(
     for number in prs_to_assign:
         suggested = suggest_reviewers(stats, reviewers, number, info[number], info).suggested
         if suggested is None:
-            print(f"warning: no suitable review was found for PR {number}")
+            print(f"warning: no suitable reviewer was found for PR {number}")
             continue
         suggestions[number] = suggested
         (prs, n_weighted, n_all) = stats.get(suggested) or ([], 0, 0)
         prs.append(number)
         stats[suggested] = (prs, n_weighted + 1, n_all + 1)
     return suggestions
+
+
+# generate list of topic labels for all open PRs
+# for each area, compute
+# - max_capacity: bool, whether the area is at maximum capacity
+# - assigned: int, number of assigned PRs on the queue
+# - unassigned: int, number of unassigned PRs on the queue
+def compute_area_ratios(
+    existing_assignments: dict[str, Tuple[List[int], float, int]],
+    reviewers: List[ReviewerInfo],
+    queue_prs: List[int],  # prs in queue
+    all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
+):
+    area_data = {}
+    reviewer_github_set = set([reviewer.github for reviewer in reviewers])
+    for pr in queue_prs:
+        info = all_info[pr]
+        topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
+        for label_name in topic_labels:
+            data = area_data.get(label_name, {})
+            if any(assignee in reviewer_github_set for assignee in info.assignees):
+                data["assigned"] = data.get("assigned", 0) + 1
+            else:
+                data["unassigned"] = data.get("unassigned", 0) + 1
+            data["on_queue"] = data.get("on_queue", 0) + 1
+            area_data[label_name] = data
+
+    for label_name, data in area_data.items():
+        data["at_max_capacity"] = is_at_maximum_capacity(existing_assignments, reviewers, all_info, label_name)
+        if "assigned" in data and data["assigned"] > 0:
+            data["ratio"] = (data["on_queue"]) / data["assigned"]
+        else:
+            data["ratio"] = None
+
+    return area_data
