@@ -639,6 +639,7 @@ def write_overview_page(updated: str) -> None:
   <a href="help_out.html"><button>Help out</button></a>
   <a href="triage.html"><button>Triage dashboard</button></a>
   <a href="dependency_dashboard.html"><button>Dependency graph</button></a>
+  <a href="area_stats.html"><button>Area stats</button></a>
 </div><p></p>
 <div class="btn-group"><a href="on_the_queue.html"><button>Why is my PR not on the queue? Can I see all my PRs?</button></a></div><p></p>
 <div class="btn-group"><a href="triage.html#all"><button>What's going on? Just show me all open PRs, please!</button></a></div><p></p>
