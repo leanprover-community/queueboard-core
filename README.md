@@ -33,6 +33,14 @@ uv sync
 to set up the virtual environment.
 You may also want to install the [vscode-ruff](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff) extension.
 
+To test the API file generation, visit [the queueboard actions](https://github.com/leanprover-community/queueboard/actions), find a recent "Update PR metadata" run, download the "pre-api-artifact" artifact file and extract the contents to `test/pre-api-artifact`. Then run:
+
+```bash
+cd test/pre-api-artifact
+cp ../../reviewer-topics.json .
+uv run python -m queueboard.dashboard_data "all-open-PRs-1.json" "all-open-PRs-2.json" "all-open-PRs-3.json"
+```
+
 To test the dashboard generation, visit [the queueboard actions](https://github.com/leanprover-community/queueboard/actions), find a recent "Update PR metadata" run, download the "api-artifact" artifact file and extract the contents to `test/api`. Then run:
 
 ```bash

@@ -134,7 +134,7 @@ def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dic
 
 def main() -> None:
     # intermediate "API" files will go in the api directory
-    makedirs("api")
+    makedirs("api", exist_ok=True)
 
     input_data = read_json_files()
     # Populate basic information from the input data: splitting into draft and non-draft PRs
@@ -186,7 +186,12 @@ def main() -> None:
     # NB. These 50 PRs include any PRs without any suggested reviewer (say, because an area has not enough
     # reviewers or everybody is too busy) --- so in practice, fewer reviewers may be actually assigned.
     # XXX: importing this at the beginning leads to a circular import; importing it here seems to work.
-    from queueboard.suggest_reviewer import read_reviewer_info, collect_assignment_statistics, suggest_reviewers_many
+    from queueboard.suggest_reviewer import (
+        read_reviewer_info,
+        collect_assignment_statistics,
+        suggest_reviewers_many,
+        compute_area_ratios,
+    )
 
     reviewer_info = read_reviewer_info()
     assignment_stats = collect_assignment_statistics(aggregate_info)
@@ -204,6 +209,12 @@ def main() -> None:
     )
     with open(path.join("api", "automatic_assignments.json"), "w") as fi:
         print(json.dumps(proposed_reviews, indent=4), file=fi)
+
+    # Generate assignment ratios
+    queue_prs = [pr.number for pr in prs_to_list[Dashboard.Queue]]
+    area_data = compute_area_ratios(assignment_stats.assignments, reviewer_info, queue_prs, aggregate_info)
+    with open(path.join("api", "area_stats.json"), "w") as fi:
+        print(json.dumps(area_data, indent=4), file=fi)
 
     # Generate dependency graph for the dependency dashboard
     dependency_graph_data = generate_dependency_graph(aggregate_info)

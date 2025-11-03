@@ -339,24 +339,24 @@ def compute_area_ratios(
     queue_prs: List[int],  # prs in queue
     all_info: dict[int, AggregatePRInfo],  # aggregate information about all PRs
 ):
-    label_data = {}
+    area_data = {}
     reviewer_github_set = set([reviewer.github for reviewer in reviewers])
     for pr in queue_prs:
         info = all_info[pr]
         topic_labels = [lab.name for lab in info.labels if lab.name.startswith("t-") or lab.name in ["CI", "IMO", "tech debt"]]
         for label_name in topic_labels:
-            data = label_data.get(label_name, {})
+            data = area_data.get(label_name, {})
             if any(assignee in reviewer_github_set for assignee in info.assignees):
                 data["assigned"] = data.get("assigned", 0) + 1
             else:
                 data["unassigned"] = data.get("unassigned", 0) + 1
-            label_data[label_name] = data
+            area_data[label_name] = data
 
-    for label_name, data in label_data.items():
-        data["max_capacity"] = is_at_maximum_capacity(existing_assignments, reviewers, all_info, label_name)
-        if data["max_capacity"] and data["assigned"] > 0:
+    for label_name, data in area_data.items():
+        data["at_max_capacity"] = is_at_maximum_capacity(existing_assignments, reviewers, all_info, label_name)
+        if data["at_max_capacity"] and data["assigned"] > 0:
             data["ratio"] = (data["assigned"] + data["unassigned"]) / data["assigned"]
         else:
             data["ratio"] = None
 
-    return label_data
+    return area_data
