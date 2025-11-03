@@ -961,6 +961,7 @@ def main() -> None:
     # copy JSON files from API_DIR into place
     shutil.copy2(path.join(API_DIR, "automatic_assignments.json"), GH_PAGES_DIR)
     shutil.copy2(path.join(API_DIR, "dependency_graph.json"), GH_PAGES_DIR)
+    shutil.copy2(path.join(API_DIR, "area_stats.json"), GH_PAGES_DIR)
 
     # all HTML files are written to GH_PAGES_DIR, see write_webpage
     write_on_the_queue_page(all_pr_status, aggregate_info, nondraft_PRs, CI_status, base_branch)

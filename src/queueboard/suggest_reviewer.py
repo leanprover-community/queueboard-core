@@ -350,12 +350,13 @@ def compute_area_ratios(
                 data["assigned"] = data.get("assigned", 0) + 1
             else:
                 data["unassigned"] = data.get("unassigned", 0) + 1
+            data["on_queue"] = data.get("on_queue", 0) + 1
             area_data[label_name] = data
 
     for label_name, data in area_data.items():
         data["at_max_capacity"] = is_at_maximum_capacity(existing_assignments, reviewers, all_info, label_name)
-        if data["at_max_capacity"] and data["assigned"] > 0:
-            data["ratio"] = (data["assigned"] + data["unassigned"]) / data["assigned"]
+        if "assigned" in data and data["assigned"] > 0:
+            data["ratio"] = (data["on_queue"]) / data["assigned"]
         else:
             data["ratio"] = None
 
