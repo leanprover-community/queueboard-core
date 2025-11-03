@@ -15,7 +15,7 @@
         crossorigin="anonymous"></script>
     <link rel='stylesheet' href='style.css'>
     <style>
-        table.dataTable>tbody>tr.at-max-capacity {
+        table.dataTable>tbody>tr.at-max-capacity, .at-max-capacity {
             background-color: #ffb56f;
         }
 
@@ -26,8 +26,10 @@
 </head>
 
 <body>
-    <h1>Area Statistics</h1>
-    <a href="./">Back to overview</a>
+    <h1>Area statistics</h1>
+    <div><a href="./">Back to overview</a></div>
+    <p></p>
+    <div><span class="at-max-capacity">Orange shaded rows</span> are at maximum capacity -- the assignment algorithm cannot find a reviewer to assign to a new PR in this area.</div>
     <table id="areaTable" class="display">
         <thead>
             <tr>
