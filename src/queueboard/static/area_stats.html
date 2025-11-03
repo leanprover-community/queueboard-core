@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,17 +11,20 @@
     <link rel="stylesheet" href="https://cdn.datatables.net/2.1.8/css/dataTables.dataTables.css"
         integrity="sha384-eCorNQ6xLKDT9aok8iCYVVP8S813O3kaugZFLBt1YhfR80d1ZgkNcf2ghiTRzRno" crossorigin="anonymous">
     <script src="https://cdn.datatables.net/2.1.8/js/dataTables.js"
-        integrity="sha384-cDXquhvkdBprgcpTQsrhfhxXRN4wfwmWauQ3wR5ZTyYtGrET2jd68wvJ1LlDqlQG" crossorigin="anonymous"></script>
+        integrity="sha384-cDXquhvkdBprgcpTQsrhfhxXRN4wfwmWauQ3wR5ZTyYtGrET2jd68wvJ1LlDqlQG"
+        crossorigin="anonymous"></script>
     <link rel='stylesheet' href='style.css'>
     <style>
-        table.dataTable > tbody > tr.at-max-capacity {
-            background-color: #ffffe0;
+        table.dataTable>tbody>tr.at-max-capacity {
+            background-color: #ffb56f;
         }
+
         #areaTable {
             width: 100%;
         }
     </style>
 </head>
+
 <body>
     <h1>Area Statistics</h1>
     <table id="areaTable" class="display">
@@ -30,14 +34,14 @@
                 <th>On the queue</th>
                 <th>Assigned to a reviewer</th>
                 <th>Not assigned to a reviewer</th>
-                <th># on the queue / Assigned</th>
+                <th>Ratio of On the queue / Assigned</th>
             </tr>
         </thead>
         <tbody>
         </tbody>
     </table>
     <script>
-        $(document).ready(function() {
+        $(document).ready(function () {
             // Fetch the JSON data
             fetch('area_stats.json')
                 .then(response => response.json())
@@ -46,9 +50,11 @@
                     const tableData = Object.entries(data).map(([key, value]) => {
                         return {
                             area: key,
-                            assigned: value.assigned || '0',
-                            unassigned: value.unassigned || '0',
-                            on_queue: value.on_queue || '0',
+                            assigned: value.assigned || 0,
+                            unassigned: value.unassigned || 0,
+                            on_queue: value.on_queue || 0,
+                            fgcolor: value.fgcolor,
+                            bgcolor: value.bgcolor,
                             ratio: value.ratio !== null ? value.ratio.toFixed(2) : '',
                             atMaxCapacity: value.at_max_capacity
                         };
@@ -58,7 +64,16 @@
                     $('#areaTable').DataTable({
                         data: tableData,
                         columns: [
-                            { data: 'area' },
+                            {
+                                data: 'area',
+                                render: function (data, type, row) {
+                                    if (type === 'display') {
+                                        // TODO: return a DOM node?
+                                        return `<a href='review_dashboard.html?search=${data}#queue'><span class='label' style='color: #${row.fgcolor}; background: #${row.bgcolor}'>${data}</span></a>`
+                                    }
+                                    return data;
+                                }
+                            },
                             { data: 'on_queue' },
                             { data: 'assigned' },
                             { data: 'unassigned' },
@@ -66,7 +81,7 @@
                         ],
                         pageLength: tableData.length,
                         order: [[0, 'asc']], // Sort by Area column alphabetically
-                        createdRow: function(row, data, dataIndex) {
+                        createdRow: function (row, data, dataIndex) {
                             // Add class to rows at max capacity
                             if (data.atMaxCapacity) {
                                 $(row).addClass('at-max-capacity');
@@ -81,4 +96,5 @@
         });
     </script>
 </body>
+
 </html>
