@@ -123,6 +123,7 @@ class TestGitHubClient(SimpleTestCase):
         client = GitHubClient(token="t")
         page = {
             "data": {
+                "rateLimit": {"remaining": 4999, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 1},
                 "repository": {
                     "pullRequests": {
                         "pageInfo": {"hasNextPage": True, "endCursor": "x"},
@@ -136,7 +137,12 @@ class TestGitHubClient(SimpleTestCase):
             }
         }
 
-        with mock.patch.object(GitHubClient, "execute", return_value=page):
+        def fake_execute(self, q, variables):  # type: ignore[no-redef]
+            # Simulate execute() capturing rateLimit like the real implementation
+            self._last_rate_limit = {"remaining": 4999, "resetAt": "2025-10-21T00:00:00Z", "cost": 1, "used": 1}
+            return page
+
+        with mock.patch.object(GitHubClient, "execute", new=fake_execute):
             nums = client.get_changed_pr_numbers(owner="o", name="r", since_iso="2025-10-20T00:00:00Z", limit=2)
             self.assertEqual(nums, [10, 9])
             rl = client.get_last_rate_limit()

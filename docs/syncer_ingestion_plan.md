@@ -8,6 +8,7 @@ This document outlines the v1 GitHub ingestion architecture that powers the raw 
 
 See also: `docs/django_backend_plan.md` for the broader migration plan and model summaries. CI signal choices and tradeoffs are captured in `docs/design-decisions/004-ci-status-sources.md`.
 Pagination strategy for timeline and commits is captured in `docs/design-decisions/005-page-until-cutoff-pagination.md`.
+Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/design-decisions/006-pr-watermarks-single-vs-multiple.md`.
 
 ## Goals
 - Persist raw facts for open PRs so we can reproduce dashboards and compute analytics:
@@ -28,7 +29,7 @@ Pagination strategy for timeline and commits is captured in `docs/design-decisio
 - One GraphQL request per changed PR fetches all needed data:
   - pullRequest core: number/author/state/isDraft/title/body/createdAt/updatedAt/baseRefName/headRefName/headRepo owner+name/additions/deletions/changedFiles
   - labels: `labels(first: 100) { nodes { name color } }`
-  - timelineItems: `first: K` and filtered to `[LABELED_EVENT, UNLABELED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REOPENED_EVENT, CLOSED_EVENT]`
+  - timelineItems: `first: K`, `since: $timelineSince` (optional) and filtered to `[LABELED_EVENT, UNLABELED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REOPENED_EVENT, CLOSED_EVENT]`
   - commits: `last: M` (head commit window), with:
     - status.contexts { id, __typename, context/state OR name/status/conclusion, targetUrl/detailsUrl, createdAt/startedAt/completedAt }
       (latest per context per commit; union of `StatusContext` and `CheckRun`)
@@ -150,8 +151,8 @@ Pagination strategy for timeline and commits is captured in `docs/design-decisio
 
 ## Implementation Status (v1)
 - Queries
-  - `qb_site/syncer/queries/pr_bundle.graphql` (variables: `$owner`, `$name`, `$number`, `$timelineK`, `$commitsM`); includes `pageInfo` and `rateLimit`.
-  - `qb_site/syncer/queries/timeline_page.graphql` and `commits_page.graphql` for optional extra pages (lean connections only); include `rateLimit`.
+  - `qb_site/syncer/queries/pr_bundle.graphql` (variables: `$owner`, `$name`, `$number`, `$timelineK`, `$commitsM`, `$timelineSince?`); includes `pageInfo` and `rateLimit`.
+  - `qb_site/syncer/queries/timeline_page.graphql` and `commits_page.graphql` for optional extra pages (lean connections only); `timeline_page` accepts `$since?`; both include `rateLimit`.
   - `qb_site/syncer/queries/pr_header.graphql` for preflight (`updatedAt`, state, draft) with `rateLimit`.
 - Services (sub‑syncs)
   - PR core: `syncer/services/sub/pull_request_sync.py` (`upsert_pull_request`)
@@ -162,7 +163,7 @@ Pagination strategy for timeline and commits is captured in `docs/design-decisio
   - File‑based: `qb_site/manage.py sync_pr_from_file --repo OWNER/NAME --file PATH [--dry-run]` — ingest a saved bundle.
   - Discovery: `qb_site/manage.py list_changed_prs --repo OWNER/NAME --since ISO [--states OPEN --limit N]` — list PR numbers since cutoff.
   - Live ingest: `qb_site/manage.py sync_repo --repo OWNER/NAME [--since ISO --limit N] [--number N ...]` — preflights and ingests changed PRs; prints `rateLimit` budget and per‑query costs.
-  - Optional paging: `PRSyncService.sync_pull_request` supports page caps for timeline/commits; cutoff‑based loops planned.
+- Optional paging: `PRSyncService.sync_pull_request` supports page caps for timeline/commits; timeline uses `since = last_synced_at − epsilon` and pages forward; commit paging is a fixed window (last M) with optional capped extra pages — we do not rely on commit timestamps for cutoffs in V1.
 - Tests
   - Sub‑sync unit tests and a command integration test under `qb_site/syncer/tests/` with a minimal fixture at
     `qb_site/syncer/tests/fixtures/pr_bundle_min.json`.
@@ -202,6 +203,7 @@ Notes
     -F query=@qb_site/syncer/queries/pr_bundle.graphql \
     -F owner='leanprover-community' -F name='mathlib4' \
     -F number=30723 -F timelineK=150 -F commitsM=15 \
+    -F timelineSince='2025-10-20T00:00:00Z' \
     > pr-30723.json
   ```
   If your shell/gh doesn’t expand `@file`, use:
@@ -210,6 +212,7 @@ Notes
     -F query="$(< qb_site/syncer/queries/pr_bundle.graphql)" \
     -F owner='leanprover-community' -F name='mathlib4' \
     -F number=30723 -F timelineK=150 -F commitsM=15 \
+    -F timelineSince='2025-10-20T00:00:00Z' \
     > pr-30723.json
   ```
 - Sanity‑check shape with `jq`:
