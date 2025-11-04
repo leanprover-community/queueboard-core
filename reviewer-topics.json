@@ -307,7 +307,7 @@
   {
     "github_handle": "thorimur",
     "zulip_handle": "@**Thomas Murrills**",
-    "top_level": ["t-meta", "t-category-theory"],
+    "top_level": ["t-meta", "t-linter", "t-category-theory"],
     "free_form": "Primarily focused on metaprogramming!"
   }
 ]
