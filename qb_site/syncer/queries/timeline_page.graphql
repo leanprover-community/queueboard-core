@@ -2,14 +2,16 @@
 # Variables:
 #   $owner: String!, $name: String!, $number: Int!
 #   $first: Int!, $after: String
+#   $since: DateTime (optional lower bound)
 
-query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String) {
+query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String, $since: DateTime) {
   rateLimit { cost remaining resetAt used }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(
         first: $first
         after: $after
+        since: $since
         itemTypes: [
           LABELED_EVENT
           UNLABELED_EVENT

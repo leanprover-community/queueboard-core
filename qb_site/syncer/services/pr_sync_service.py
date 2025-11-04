@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Callable, Optional
+from datetime import timedelta, timezone as pytimezone
 
 from django.db import transaction
+from django.utils import timezone
 
 from core.models.repository import Repository
 from syncer.services.github_client import GitHubClient
@@ -79,8 +81,26 @@ class PRSyncService:
         dry_run: bool = False,
         rate_log: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, int]:
+        # Determine timeline since (use last_synced_at - epsilon if available)
+        existing = PullRequest.objects.filter(repository=repo, number=number).only("last_synced_at").first()
+        timeline_since_iso: Optional[str] = None
+        if existing and existing.last_synced_at:
+            # subtract a small epsilon to avoid boundary-equal misses
+            dt = existing.last_synced_at - timedelta(seconds=2)
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+            dt_utc = dt.astimezone(pytimezone.utc)
+            timeline_since_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
         # Fetch bundle and delegate to bundle-based ingestion
-        data = client.get_pr_bundle(owner=repo.owner, name=repo.name, number=number, timelineK=timelineK, commitsM=commitsM)
+        data = client.get_pr_bundle(
+            owner=repo.owner,
+            name=repo.name,
+            number=number,
+            timelineK=timelineK,
+            commitsM=commitsM,
+            timeline_since_iso=timeline_since_iso,
+        )
         repo_node = (data.get("data") or {}).get("repository", {})
         # Persist repository node id if present
         dbr = repo_node.get("defaultBranchRef") or {}
@@ -104,7 +124,7 @@ class PRSyncService:
             if isinstance(rl, dict):
                 rate_log("pr_bundle", rl)
 
-        # Optional pagination (capped, no cutoff yet)
+        # Optional pagination (capped)
         if max_timeline_pages > 0 or max_commit_pages > 0:
             pr_obj = PullRequest.objects.get(repository=repo, number=number)
 
@@ -117,7 +137,12 @@ class PRSyncService:
                 pages = 0
                 while has_next and pages < max_timeline_pages:
                     tdata = client.get_timeline_page(
-                        owner=repo.owner, name=repo.name, number=number, first=timelineK, after=after
+                        owner=repo.owner,
+                        name=repo.name,
+                        number=number,
+                        first=timelineK,
+                        after=after,
+                        since_iso=timeline_since_iso,
                     )
                     tpr = ((tdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
                     titems = tpr.get("timelineItems") or {}
@@ -133,7 +158,7 @@ class PRSyncService:
                     after = pinfo.get("endCursor")
                     pages += 1
 
-            # Commits paging (older via before)
+            # Commits paging (older via before) — capped pages only (no time-based cutoff in V1)
             if max_commit_pages > 0:
                 c_conn = pr.get("commits") or {}
                 c_page = c_conn.get("pageInfo") or {}

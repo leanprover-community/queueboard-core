@@ -60,6 +60,7 @@ class GitHubClient:
         timelineK: int = 150,
         commitsM: int = 15,
         query_path: str = "qb_site/syncer/queries/pr_bundle.graphql",
+        timeline_since_iso: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetch the single-PR GraphQL bundle as a dict."""
         query = self._read_file(query_path)
@@ -69,6 +70,7 @@ class GitHubClient:
             "number": int(number),
             "timelineK": int(timelineK),
             "commitsM": int(commitsM),
+            "timelineSince": timeline_since_iso,
         }
         return self.execute(query, variables)
 
@@ -94,6 +96,7 @@ class GitHubClient:
         first: int,
         after: Optional[str] = None,
         query_path: str = "qb_site/syncer/queries/timeline_page.graphql",
+        since_iso: Optional[str] = None,
     ) -> Dict[str, Any]:
         query = self._read_file(query_path)
         variables = {
@@ -102,6 +105,7 @@ class GitHubClient:
             "number": int(number),
             "first": int(first),
             "after": after,
+            "since": since_iso,
         }
         return self.execute(query, variables)
 

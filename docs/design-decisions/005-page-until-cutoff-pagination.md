@@ -7,9 +7,9 @@
 - GraphQL requires pagination for both connections, and contexts live inside a union under `statusCheckRollup`.
 
 ## Decision
-- Implement page‑until‑cutoff pagination for timeline events and commits.
-  - Timeline: page forward with `first/after` in descending order of `createdAt` until the oldest item on a page is older than the cutoff, or caps are hit.
-  - Commits: page backward with `last/before` (descending by commit time) until the oldest commit is older than the cutoff, or caps are hit.
+- Implement page‑until‑cutoff pagination for timeline events and a capped strategy for commits.
+  - Timeline: use `timelineItems(since: cutoff)` and page forward with `first/after` until no next page (recent‑first window). This reduces the number of pages vs. scanning down to the cutoff.
+  - Commits (V1): use a fixed window (`commits(last: M)`) and, if needed, a small number of extra pages capped by `SYNCER_COMMITS_MAX_PAGES`. We do not rely on commit timestamps for a cutoff due to rebases/force‑pushes and deprecated fields.
 - Stream pages directly into sub‑sync services; rely on idempotency (unique GraphQL IDs) to dedupe.
 - Bound work with small caps (per repo defaults): `SYNCER_TIMELINE_MAX_PAGES`, `SYNCER_COMMITS_MAX_PAGES`; log truncation.
 - Use the single‑page snapshot window as the fast path when a cutoff is recent and likely covered; escalate to paging when first page’s minimum timestamp is still ≥ cutoff.
@@ -42,4 +42,3 @@
   - Pages entire history (timeline, commits, and nested contexts); high cost with limited v1 value.
 - Adaptive “as needed”
   - Start snapshot; escalate based on heuristics (e.g., missing READY_FOR_REVIEW). Lower average cost but higher control‑flow complexity and risk of silent misses if heuristics are incomplete.
-

@@ -4,7 +4,9 @@
 #   $timelineK: Int!  (max timeline items to fetch)
 #   $commitsM: Int!   (number of head commits to inspect)
 
-query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!, $commitsM: Int!) {
+#   $timelineSince: DateTime (optional lower bound for timeline items)
+
+query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!, $commitsM: Int!, $timelineSince: DateTime) {
   rateLimit { cost remaining resetAt used }
   repository(owner: $owner, name: $name) {
     id
@@ -41,6 +43,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
 
       timelineItems(
         first: $timelineK
+        since: $timelineSince
         itemTypes: [
           LABELED_EVENT
           UNLABELED_EVENT

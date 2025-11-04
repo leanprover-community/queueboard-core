@@ -157,9 +157,4 @@ class Command(BaseCommand):
                 )
             )
 
-        # Final rate limit snapshot from last request (no extra call)
-        rlf = client.get_last_rate_limit()
-        if isinstance(rlf, dict):
-            remf = rlf.get("remaining")
-            if remf is not None:
-                self.stdout.write(self.style.NOTICE(f"rateLimit.remaining(final): {remf}"))
+        # Final rate limit snapshot already logged from the last query via callbacks; no extra calls here.
