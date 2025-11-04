@@ -33,6 +33,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - commits: `last: M` (head commit window), with:
     - status.contexts { id, __typename, context/state OR name/status/conclusion, targetUrl/detailsUrl, createdAt/startedAt/completedAt }
       (latest per context per commit; union of `StatusContext` and `CheckRun`)
+    - commit metadata: `oid` (we avoid time-based paging on commits; see Historical Consistency below)
   - Both connections include `pageInfo` (timeline: `hasNextPage`/`endCursor`; commits: `hasPreviousPage`/`startCursor`).
   - All queries include a `rateLimit { cost remaining resetAt used }` snapshot for budgeting/logging.
 - Tunable limits (defaults; adjust per repo in settings):
@@ -180,6 +181,29 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 
 Notes
 - Snapshots only: `statusCheckRollup` returns the latest state per context on each commit. Timeline and CI commit windows are capped by `$timelineK` and `$commitsM`.
+
+## Historical Consistency and Force Pushes (V1)
+- What force pushes do
+  - A force‑push rewrites the PR branch history; older commits may disappear from the PR UI along with their visible statuses.
+  - GraphQL rollups still expose latest statuses for commits that remain in the PR; disappeared commits won’t be listed.
+- V1 invariants for consistency
+  - We persist all snapshots we ingest and never delete them; old commits’ snapshots remain as history even if the PR branch is rewritten.
+  - Queue eligibility is evaluated from the current head SHA only. On head change (new commits or force‑push), we close the prior interval and start a new one.
+  - We ingest key timeline events (labels, draft toggles, reopened/closed) and will treat head changes as boundaries (via `HeadRefForcePushedEvent` or by detecting head SHA changes between syncs).
+- What can go wrong during backfills
+  - Missing older heads: if we never ingested CI for a past head SHA, total “time on queue” before our observation point may be undercounted or marked unknown.
+  - Flapping checks on the same head: without CI history (StatusContext only has `createdAt`), we can miss fail→pass→fail transitions; we favor conservative undercounting over overcounting.
+  - Hidden statuses after force‑push: UI hides old statuses; we don’t rely on UI, but if we never saw those statuses, we can’t reconstruct them without a targeted backfill.
+- Mitigations in V1
+  - Head‑centric intervals: treat any head change as an interval boundary; do not carry a green state across heads.
+  - Fixed commit window: ingest contexts for the last `M` commits (small, configurable); optionally allow a few extra pages by cap. No time‑based cutoff for commits in V1.
+  - Timeline “since”: use `timelineItems(since=last_synced_at−ε)` to reduce redundant fetch while retaining boundary events.
+  - CI refresh task (future in V1): a lightweight periodic task to refresh the head commit’s contexts, since CI flips don’t always bump `updatedAt`.
+  - Coverage flags: when we lack early timeline events or past head pass times, flag intervals as partial/unknown; downstream analytics can exclude or annotate.
+  - On‑demand backfill: provide knobs to raise K and add a couple of commit pages for specific PRs where history matters.
+- Out of scope for V1 (future extensions)
+  - Full commit history storage (Commits/PRCommit tables) and CI change history via REST/checkSuites.
+- Time‑based commit cutoffs (e.g., by commit timestamps) are unreliable across rebases/force‑pushes; V1 avoids them in favor of a fixed commit window with caps.
 
 ## Next Steps
 - Page‑until‑cutoff loops
