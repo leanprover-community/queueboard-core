@@ -39,3 +39,20 @@ class TestTimelineSync(TestCase):
         res = sync_timeline_events(self.pr, nodes)
         self.assertEqual(res.created, 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=self.pr).count(), 2)
+
+    def test_force_push_event_persists_shas(self) -> None:
+        nodes = [
+            {
+                "__typename": "HeadRefForcePushedEvent",
+                "id": "FP1",
+                "createdAt": "2025-10-21T00:00:00Z",
+                "beforeCommit": {"oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                "afterCommit": {"oid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+            }
+        ]
+        res = sync_timeline_events(self.pr, nodes)
+        self.assertEqual(res.created, 1)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr)
+        self.assertEqual(ev.type, "HEAD_FORCE_PUSHED")
+        self.assertEqual(ev.before_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        self.assertEqual(ev.after_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")

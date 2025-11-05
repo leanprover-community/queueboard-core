@@ -130,9 +130,18 @@ class LabelDefAdmin(ReadOnlyAdmin):
 
 @admin.register(PRTimelineEvent)
 class PRTimelineEventAdmin(ReadOnlyAdmin):
-    list_display = ("pull_request", "type", "occurred_at", "label_name")
+    def short_before_sha(self, obj: PRTimelineEvent) -> str:  # pragma: no cover - simple formatting
+        return (obj.before_sha or "")[:7]
+
+    def short_after_sha(self, obj: PRTimelineEvent) -> str:  # pragma: no cover - simple formatting
+        return (obj.after_sha or "")[:7]
+
+    short_before_sha.short_description = "before_sha"  # type: ignore[attr-defined]
+    short_after_sha.short_description = "after_sha"  # type: ignore[attr-defined]
+
+    list_display = ("pull_request", "type", "occurred_at", "label_name", "short_before_sha", "short_after_sha")
     list_filter = ("type",)
-    search_fields = ("label_name", "pull_request__number")
+    search_fields = ("label_name", "pull_request__number", "before_sha", "after_sha")
     date_hierarchy = "occurred_at"
     raw_id_fields = ("pull_request",)
     readonly_fields = (
@@ -141,6 +150,8 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "type",
         "occurred_at",
         "label_name",
+        "before_sha",
+        "after_sha",
         "created_at",
         "updated_at",
     )

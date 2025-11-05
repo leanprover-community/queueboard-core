@@ -77,7 +77,7 @@ Compose checks
   gh api graphql \
     -F query=@qb_site/syncer/queries/pr_bundle.graphql \
     -F owner='leanprover-community' -F name='mathlib4' \
-    -F number=30723 -F timelineK=150 -F commitsM=15 \
+    -F number=30723 -F timelineK=150 -F commitsM=15 -F timelineSince='2025-10-20T00:00:00Z' \
     > pr-30723.json
   ```
 - To ingest a single PR bundle JSON into the database (labels, key timeline events, CI snapshots), run:

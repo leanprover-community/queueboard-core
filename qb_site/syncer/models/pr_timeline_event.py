@@ -14,6 +14,7 @@ class PRTimelineEventType(models.TextChoices):
     CONVERT_TO_DRAFT = "CONVERT_TO_DRAFT", "convert_to_draft"
     REOPENED = "REOPENED", "reopened"
     CLOSED = "CLOSED", "closed"
+    HEAD_FORCE_PUSHED = "HEAD_FORCE_PUSHED", "head_force_pushed"
 
 
 class PRTimelineEvent(TimestampedModel):
@@ -23,6 +24,7 @@ class PRTimelineEvent(TimestampedModel):
     - Label add/remove (LABELED/UNLABELED) with ``label_name``
     - Draft toggles (READY_FOR_REVIEW/CONVERT_TO_DRAFT)
     - State flips (REOPENED/CLOSED)
+    - Force push (HEAD_FORCE_PUSHED) with ``before_sha`` and ``after_sha``
 
     Idempotency & indexes
     - ``github_node_id`` is the GraphQL timeline item id when available and is conditionally unique.
@@ -37,6 +39,9 @@ class PRTimelineEvent(TimestampedModel):
     occurred_at = models.DateTimeField()
     # Present only for LABELED/UNLABELED events; stored as-is from GitHub (display casing).
     label_name = models.CharField(max_length=100, null=True, blank=True)
+    # Present only for HEAD_FORCE_PUSHED events; Git commit SHAs (40 chars)
+    before_sha = models.CharField(max_length=40, null=True, blank=True)
+    after_sha = models.CharField(max_length=40, null=True, blank=True)
 
     class Meta:
         constraints = [
@@ -46,9 +51,27 @@ class PRTimelineEvent(TimestampedModel):
                 name="syncer_prtimelineevent_node_id_unique",
                 condition=Q(github_node_id__isnull=False),
             ),
+            # Ensure SHA fields are only set on HEAD_FORCE_PUSHED events and are both present there.
+            models.CheckConstraint(
+                name="syncer_prtl_sha_by_type_ck",
+                check=(
+                    (Q(type=PRTimelineEventType.HEAD_FORCE_PUSHED) & Q(before_sha__isnull=False) & Q(after_sha__isnull=False))
+                    | (~Q(type=PRTimelineEventType.HEAD_FORCE_PUSHED) & Q(before_sha__isnull=True) & Q(after_sha__isnull=True))
+                ),
+            ),
+            # If label_name is set, the type must be LABELED or UNLABELED.
+            models.CheckConstraint(
+                name="syncer_prtl_label_by_type_ck",
+                check=(Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])),
+            ),
         ]
         indexes = [
             models.Index(fields=["pull_request", "occurred_at"], name="syncer_prtimeline_pr_time_idx"),
+            models.Index(
+                fields=["pull_request", "after_sha"],
+                name="syncer_prtl_aftersha_idx",
+                condition=Q(after_sha__isnull=False) & Q(type=PRTimelineEventType.HEAD_FORCE_PUSHED),
+            ),
         ]
         ordering = ["pull_request", "occurred_at", "id"]
 

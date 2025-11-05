@@ -51,6 +51,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
           CONVERT_TO_DRAFT_EVENT
           REOPENED_EVENT
           CLOSED_EVENT
+          HEAD_REF_FORCE_PUSHED_EVENT
         ]
       ) {
         pageInfo {
@@ -65,6 +66,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
           ... on ConvertToDraftEvent { id createdAt }
           ... on ReopenedEvent { id createdAt }
           ... on ClosedEvent { id createdAt }
+          ... on HeadRefForcePushedEvent { id createdAt beforeCommit { oid } afterCommit { oid } }
         }
       }
 

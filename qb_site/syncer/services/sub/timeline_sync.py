@@ -34,6 +34,8 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
       - {"__typename": "UnlabeledEvent", "id": str, "createdAt": str, "label": {"name": str}}
       - {"__typename": "ReadyForReviewEvent" | "ConvertToDraftEvent" | "ReopenedEvent" | "ClosedEvent",
          "id": str, "createdAt": str}
+      - {"__typename": "HeadRefForcePushedEvent", "id": str, "createdAt": str,
+         "beforeCommit": {"oid": str}, "afterCommit": {"oid": str}}
 
     This function should:
       - Map __typename → PRTimelineEventType
@@ -48,6 +50,7 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         "ConvertToDraftEvent": PRTimelineEventType.CONVERT_TO_DRAFT,
         "ReopenedEvent": PRTimelineEventType.REOPENED,
         "ClosedEvent": PRTimelineEventType.CLOSED,
+        "HeadRefForcePushedEvent": PRTimelineEventType.HEAD_FORCE_PUSHED,
     }
     for ev in events:
         if not isinstance(ev, dict):
@@ -61,13 +64,26 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         if typename in ("LabeledEvent", "UnlabeledEvent"):
             label = ev.get("label") or {}
             label_name = label.get("name")
+        before_sha = None
+        after_sha = None
+        if typename == "HeadRefForcePushedEvent":
+            bc = ev.get("beforeCommit") or {}
+            ac = ev.get("afterCommit") or {}
+            before_sha = bc.get("oid")
+            after_sha = ac.get("oid")
         ev_type = type_map.get(typename)
         if ev_type is None:
             continue
         _, was_created = PRTimelineEvent.objects.get_or_create(
             pull_request=pr,
             github_node_id=gid,
-            defaults={"type": ev_type, "occurred_at": occurred_at, "label_name": label_name},
+            defaults={
+                "type": ev_type,
+                "occurred_at": occurred_at,
+                "label_name": label_name,
+                "before_sha": before_sha,
+                "after_sha": after_sha,
+            },
         )
         if was_created:
             created += 1
