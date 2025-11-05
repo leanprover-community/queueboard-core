@@ -189,8 +189,9 @@
   {
     "github_handle": "dagurtomas",
     "zulip_handle": "@**Dagur Asgeirsson**",
-    "top_level": ["t-condensed", "t-category-theory", "t-algebra", "t-algebraic-geometry", "t-algebraic-topology", "t-topology"],
+    "top_level": ["t-condensed", "t-category-theory", "t-algebraic-topology", "t-algebraic-geometry", "t-algebra", "t-topology"],
     "free_form": "I’m most competent in t-condensed and t-category-theory. I know the Topology/Category subfolder quite well, and I can review some algebraic geometry, homological algebra and algebraic topology PRs"
+    "maximum_capacity": 20,
   },
   {
     "github_handle": "alexjbest",
