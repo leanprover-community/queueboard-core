@@ -225,18 +225,21 @@ Developer utilities (current)
     - 1.1 Implement `sync_repo_since_task(repo_id, since, limit, states)` with preflight, rate‑budget stop, and continuation at `resetAt`.
     - 1.2 Add a per‑repo lock (and optional global single‑token lock) to avoid overlap.
     - 1.3 Add a lightweight beat schedule to kick active repos every few minutes (staggered by jitter).
-2. Paging until cutoff.
-    - 2.1 Add cutoff‑based loops for timeline and commits with small page caps; stop as soon as we cross the cutoff.
-    - 2.2 Log page counts and truncation flags; add tests for paging paths.
-3. Admin polish.
-    - 3.1 Link enqueued task IDs from admin result pages to django‑celery‑results TaskResult detail.
-    - 3.2 Show “recent task results” on the repo Sync tools page; add a preflight‑only report.
-4. Tests and CI.
-    - 4.1 Expand orchestrator tests; add basic admin form/view tests.
-    - 4.2 Keep Compose checks; optionally add ruff to CI once cache perms are stable.
-5. Analyzer stub for CI transitions (unchanged).
-    - 5.1 Define `PRCIStatusEvent` and a derivation service using snapshots.
-    - 5.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
+2. Paging & cutoffs.
+    - 2.1 Timeline: already uses `since = last_synced_at − ε` and pages forward; add tests for multi‑page paths.
+    - 2.2 Commits: keep fixed window (`last: M`) with small capped extra pages; no time‑based cutoffs in V1.
+3. Force‑push boundaries.
+    - 3.1 Analyzer: treat `HEAD_FORCE_PUSHED` events as hard boundaries; segment queue intervals by `after_sha`.
+    - 3.2 Optional fallback: detect head SHA drift between syncs when events fall outside the window.
+4. Admin polish.
+    - 4.1 Link enqueued task IDs from admin result pages to django‑celery‑results TaskResult detail.
+    - 4.2 Show “recent task results” on the repo Sync tools page; add a preflight‑only report.
+5. Tests and CI.
+    - 5.1 Add tests for timeline multi‑page and commit capped paging; extend admin view/form tests.
+    - 5.2 Keep Compose checks; optionally add ruff to CI once cache perms are stable.
+6. Analyzer stub for CI transitions (unchanged).
+    - 6.1 Define `PRCIStatusEvent` and a derivation service using snapshots.
+    - 6.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
 
 ## Syncer Scheduling (Planned)
 - Single-token, rate-aware orchestration:

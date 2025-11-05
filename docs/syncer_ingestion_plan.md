@@ -29,7 +29,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - One GraphQL request per changed PR fetches all needed data:
   - pullRequest core: number/author/state/isDraft/title/body/createdAt/updatedAt/baseRefName/headRefName/headRepo owner+name/additions/deletions/changedFiles
   - labels: `labels(first: 100) { nodes { name color } }`
-  - timelineItems: `first: K`, `since: $timelineSince` (optional) and filtered to `[LABELED_EVENT, UNLABELED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REOPENED_EVENT, CLOSED_EVENT]`
+  - timelineItems: `first: K`, `since: $timelineSince` (optional) and filtered to `[LABELED_EVENT, UNLABELED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, REOPENED_EVENT, CLOSED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT]`
   - commits: `last: M` (head commit window), with:
     - status.contexts { id, __typename, context/state OR name/status/conclusion, targetUrl/detailsUrl, createdAt/startedAt/completedAt }
       (latest per context per commit; union of `StatusContext` and `CheckRun`)
@@ -61,7 +61,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - Author User: upsert in `core.User` (prefer `id` match, fallback to case-insensitive `login`; update `name`/`avatarUrl`).
 - LabelDef: upsert by `(repository, lower(name))` with display `name` and `color`.
 - PRLabel: diff the current attachments vs DB; bulk create missing and delete extras.
-- PRTimelineEvent: insert key events by `github_node_id` with `occurred_at`; store `label_name` as-is.
+- PRTimelineEvent: insert key events by `github_node_id` with `occurred_at`; store `label_name` as-is; persist `before_sha`/`after_sha` for force‑push events.
 - CheckRun (snapshot): from `status.contexts` union when `__typename == CheckRun`; upsert by `github_node_id`; set `head_sha`, `gh_started_at`, `gh_completed_at`.
 - StatusContext (snapshot): from `status.contexts` union when `__typename == StatusContext`; upsert by `github_node_id`; set `head_sha`, `gh_created_at`.
 
