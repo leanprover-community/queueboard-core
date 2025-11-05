@@ -2,7 +2,6 @@
 {% load i18n %}
 
 {% block content %}
-  <h1>{{ title }}</h1>
   {% if error %}
     <p style="color:#b94a48; font-weight:bold;">{{ error }}</p>
   {% endif %}
@@ -87,4 +86,3 @@
 
   <p><a href="{{ changelist_url }}">{% trans "Return to Repositories" %}</a></p>
 {% endblock %}
-
