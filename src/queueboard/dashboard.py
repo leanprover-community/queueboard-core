@@ -372,7 +372,7 @@ def write_dashboard(
             page_name, custom_subpage or getIdTitle(kind)[0], prs, aggregate_info, extra_settings, potential_reviewers
         )
         id = getTableId(kind) if custom_subpage is None else f"t-{custom_subpage}"
-        return f"{title}\n  <table id={id}>\n{head}{body}  </table>"
+        return f'{title}\n  <table id="{id}">\n{head}{body}  </table>'
 
     if extra_settings is None:
         extra_settings = ExtraColumnSettings.default()
@@ -948,7 +948,7 @@ def main() -> None:
 
     if len(sys.argv) > 2 and sys.argv[2]:
         global API_DIR
-        API_DIR = sys.argv[1]  # "gh-pages" by default
+        API_DIR = sys.argv[2]  # "api" by default
 
     aggregate_info = load_from_json_file(path.join(API_DIR, "aggregate_info.json"))
     draft_PRs = load_from_json_file(path.join(API_DIR, "draft_PRs.json"))

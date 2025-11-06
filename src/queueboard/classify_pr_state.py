@@ -72,7 +72,7 @@ label_categorisation_rules: dict[str, LabelKind] = {
     "blocked-by-batt-PR": LabelKind.Blocked,
     "blocked-by-core-PR": LabelKind.Blocked,
     "blocked-by-qq-PR": LabelKind.Blocked,
-    "blocked-by-core-relase": LabelKind.Blocked,
+    "blocked-by-core-release": LabelKind.Blocked,
     "merge-conflict": LabelKind.MergeConflict,
     "awaiting-zulip": LabelKind.Decision,
     "delegated": LabelKind.Delegated,

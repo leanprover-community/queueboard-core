@@ -593,6 +593,8 @@ def gather_pr_statistics(
             return f"{n} (<span>{n / total:.1%}</span>)"
 
     instatus = {
+        # TODO: Avoid ZeroDivisionError when there are no PRs on the queue.
+        # len(queue_prs) can be 0 in small datasets; guard inside number_percent or skip percentage.
         PRStatus.AwaitingReview: f"are awaiting review ({link_to(Dashboard.Queue, subpage='review_dashboard.html', force_same_page=is_triage_board)}), among these <b>{number_percent(len(prs[Dashboard.QueueNewContributor]), len(queue_prs))}</b> by new contributors ({link_to(Dashboard.QueueNewContributor, subpage='review_dashboard.html')})",
         PRStatus.HelpWanted: f"are labelled help-wanted or please-adopt ({link_to(Dashboard.NeedsHelp, 'roughly these', 'help_out.html', is_triage_board)})",
         PRStatus.AwaitingAuthor: "are awaiting the PR author's action",
@@ -602,6 +604,9 @@ def gather_pr_statistics(
         PRStatus.Blocked: "are blocked on another PR",
         PRStatus.Delegated: f"are delegated (stale ones are {link_to(Dashboard.StaleDelegated, 'here', 'help_out.html', is_triage_board)})",
         PRStatus.AwaitingBors: f"have been sent to bors (stale ones are {link_to(Dashboard.StaleReadyToMerge, 'here', 'maintainers_quick.html', is_triage_board)})",
+        # TODO: Avoid ZeroDivisionError when there are no merge-conflict PRs.
+        # number_prs[PRStatus.MergeConflict] can be 0 in small or filtered datasets.
+        # We should guard number_percent(...) or rephrase to skip the percentage when total == 0.
         PRStatus.MergeConflict: f"have a merge conflict: among these, <b>{number_percent(len(justmerge_prs), number_prs[PRStatus.MergeConflict])}</b> would be ready for review otherwise: {link_to(Dashboard.NeedsMerge, 'these')}",
         PRStatus.Contradictory: f"have contradictory labels ({link_to(Dashboard.ContradictoryLabels)})",
         PRStatus.NotReady: "are marked as draft or work in progress",
