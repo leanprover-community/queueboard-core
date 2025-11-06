@@ -1,0 +1,90 @@
+{
+  "output": [
+    {
+      "data": {
+        "search": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "number": 101,
+              "url": "https://github.com/leanprover-community/mathlib4/pull/101",
+              "author": {
+                "login": "alice",
+                "url": "https://github.com/alice"
+              },
+              "title": "feat: Add analysis utilities",
+              "state": "OPEN",
+              "updatedAt": "2025-01-01T12:00:00Z",
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "t-analysis",
+                    "color": "33DBEC",
+                    "url": "https://github.com/leanprover-community/mathlib4/labels/t-analysis"
+                  }
+                ]
+              }
+            },
+            {
+              "number": 102,
+              "url": "https://github.com/leanprover-community/mathlib4/pull/102",
+              "author": {
+                "login": "bob",
+                "url": "https://github.com/bob"
+              },
+              "title": "refactor: Topology code",
+              "state": "OPEN",
+              "updatedAt": "2025-01-02T12:00:00Z",
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "t-topology",
+                    "color": "33DBEC",
+                    "url": "https://github.com/leanprover-community/mathlib4/labels/t-topology"
+                  }
+                ]
+              }
+            },
+            {
+              "number": 108,
+              "url": "https://github.com/leanprover-community/mathlib4/pull/108",
+              "author": {
+                "login": "hank",
+                "url": "https://github.com/hank"
+              },
+              "title": "feat: new contributor PR",
+              "state": "OPEN",
+              "updatedAt": "2025-01-08T12:00:00Z",
+              "labels": {
+                "nodes": [
+                  { "name": "t-algebra", "color": "33DBEC", "url": "https://github.com/leanprover-community/mathlib4/labels/t-algebra" },
+                  { "name": "new-contributor", "color": "8BBA68", "url": "https://github.com/leanprover-community/mathlib4/labels/new-contributor" }
+                ]
+              }
+            },
+            {
+              "number": 109,
+              "url": "https://github.com/leanprover-community/mathlib4/pull/109",
+              "author": {
+                "login": "isaac",
+                "url": "https://github.com/isaac"
+              },
+              "title": "feat: easy cleanup",
+              "state": "OPEN",
+              "updatedAt": "2025-01-09T12:00:00Z",
+              "labels": {
+                "nodes": [
+                  { "name": "t-analysis", "color": "33DBEC", "url": "https://github.com/leanprover-community/mathlib4/labels/t-analysis" },
+                  { "name": "easy", "color": "66CC66", "url": "https://github.com/leanprover-community/mathlib4/labels/easy" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -145,7 +145,44 @@ There are several levels at which this project can be tested. Currently, there a
 - `state_evolution.py` has unit tests in the file `test_state_evolution.py`: running either `python3 test_state_evolution.py` or `nose` will run them
 
 Changes to just `dashboard.py` can be tested using the JSON files in the `test` directory.
-(Since August 2025, the workflows also produce a third test JSON file, but passing only two works just as well.)
+
+Synthetic fixtures and integration testing
+- A compact, synthetic dataset lives in `test/newtest/` and mirrors the files the pipeline expects:
+  - `all-open-PRs-test.json`: minimal GraphQL-style search output (open PRs).
+  - `queue.json`: snapshot of the GitHub #queue used by the review dashboard.
+  - `processed_data/open_pr_data.json`: aggregate PR data (parsed by `parse_aggregate_file`).
+  - `processed_data/assignment_data.json`: reviewer assignment stats.
+  - `reviewer-topics.json`: reviewer areas and capacities for local/manual testing.
+- These fixtures purposely include PRs with a variety of labels and CI states to exercise most dashboards:
+  merge-conflict, help-wanted, awaiting-zulip, delegated, ready-to-merge, new-contributor, easy,
+  tech debt, maintainer-merge, non-master base, fail-inessential, fail, awaiting-CI, and a dependency edge.
+
+Manual test (from `test/newtest/`)
+- Generate API: `uv run python -m queueboard.dashboard_data "all-open-PRs-test.json"`
+- Generate HTML: `uv run python -m queueboard.dashboard`
+- Outputs go to `test/newtest/api/` and `test/newtest/gh-pages/`.
+- Notes: some warnings (e.g., queue mismatches or "never on queue") are expected with synthetic data.
+
+Non-destructive integration test (from repo root)
+- Run: `uv run python -m queueboard.test_reviewer_topics`
+- What it does:
+  - Copies `test/newtest/` into a temporary directory (so no repo files are modified).
+  - Copies the repo-root `reviewer-topics.json` into that temp directory (so the pipeline uses the real topics file).
+  - Generates a fresh `processed_data/assignment_data.json` in the temp directory consistent with the topics file and fixtures.
+  - Runs `queueboard.dashboard_data` then `queueboard.dashboard` in the temp directory.
+  - Verifies core outputs exist: `index.html`, `review_dashboard.html`, `maintainers_quick.html`, `help_out.html`,
+    and the copied JSONs `area_stats.json`, `dependency_graph.json`, `automatic_assignments.json`.
+
+Extending fixtures
+- To add new synthetic scenarios, edit:
+  - `test/newtest/processed_data/open_pr_data.json` (ensure `label_colours` contains any new labels),
+  - `test/newtest/all-open-PRs-test.json` (PRs must match the aggregate file),
+  - `test/newtest/queue.json` (optional: for #queue-backed comparisons),
+  - `test/newtest/reviewer-topics.json` (for manual capacity/area experiments).
+- The integration test ignores the local `test/newtest/reviewer-topics.json`; it uses the repo-root
+  `reviewer-topics.json` to validate the production configuration.
+
+**the following is outdated** (Since August 2025, the workflows also produce a third test JSON file, but passing only two works just as well.)
 Doing so requires a one-time set-up step: create a copy of the two relevant test files in the top-level directory. For instance, you can run `ln test/all-open-PRs-1.json all-open-PRs-1.json && ln test/all-open-PRs-2.json all-open-PRs-2.json`. (Another option is simply copying over these files.)
 Once this is done, you can run `python3 dashboard.py all-open-PRs-1.json all-open-PRs-2.json` (in the top-level directory) to execute the script. If you just want to test everything still works, you're done.
 Caution: to view the generated file, make sure to read the file in the top-level directory (otherwise, the .css file is not found.)
