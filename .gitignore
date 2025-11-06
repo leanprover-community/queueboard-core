@@ -1,5 +1,5 @@
 __pycache__/
 .env
-test/gh-pages
-test/api
-test/pre-api-artifact
+test/**/gh-pages
+test/**/api
+test/**/pre-api-artifact

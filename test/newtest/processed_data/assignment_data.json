@@ -1,0 +1,27 @@
+{
+  "timestamp": "2025-01-16T12:00:00Z",
+  "number_all_prs": 15,
+  "number_open_prs": 15,
+  "number_all_assigned": 7,
+  "number_open_assigned": 7,
+  "all_assignments": {
+    "reviewer_a": [
+      { "number": 101, "state": "open" }
+    ],
+    "reviewer_b": [
+      { "number": 106, "state": "open" },
+      { "number": 111, "state": "open" }
+    ],
+    "reviewer_c": [
+      { "number": 103, "state": "open" },
+      { "number": 110, "state": "open" }
+    ],
+    "reviewer_d": [
+      { "number": 107, "state": "open" }
+    ],
+    "reviewer_off": [
+      { "number": 109, "state": "open" }
+    ],
+    "reviewer_break": []
+  }
+}

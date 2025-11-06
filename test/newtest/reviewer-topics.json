@@ -1,0 +1,62 @@
+[
+  {
+    "github_handle": "reviewer_a",
+    "zulip_handle": "reviewer_a@zulip",
+    "top_level": ["t-analysis"],
+    "free_form": "",
+    "maximum_capacity": 1,
+    "auto_assign": true,
+    "temporary_break": false,
+    "conflict_of_interest": []
+  },
+  {
+    "github_handle": "reviewer_b",
+    "zulip_handle": "reviewer_b@zulip",
+    "top_level": ["t-topology"],
+    "free_form": "",
+    "maximum_capacity": 10,
+    "auto_assign": true,
+    "temporary_break": false,
+    "conflict_of_interest": []
+  },
+  {
+    "github_handle": "reviewer_c",
+    "zulip_handle": "reviewer_c@zulip",
+    "top_level": ["t-algebra"],
+    "free_form": "",
+    "maximum_capacity": 5,
+    "auto_assign": true,
+    "temporary_break": false,
+    "conflict_of_interest": []
+  },
+  {
+    "github_handle": "reviewer_d",
+    "zulip_handle": "reviewer_d@zulip",
+    "top_level": ["tech debt"],
+    "free_form": "",
+    "maximum_capacity": 8,
+    "auto_assign": true,
+    "temporary_break": false,
+    "conflict_of_interest": []
+  },
+  {
+    "github_handle": "reviewer_off",
+    "zulip_handle": "reviewer_off@zulip",
+    "top_level": ["t-analysis"],
+    "free_form": "",
+    "maximum_capacity": 10,
+    "auto_assign": false,
+    "temporary_break": false,
+    "conflict_of_interest": []
+  },
+  {
+    "github_handle": "reviewer_break",
+    "zulip_handle": "reviewer_break@zulip",
+    "top_level": ["t-topology"],
+    "free_form": "",
+    "maximum_capacity": 10,
+    "auto_assign": true,
+    "temporary_break": true,
+    "conflict_of_interest": []
+  }
+]
