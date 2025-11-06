@@ -30,14 +30,24 @@
     <div><a href="./">Back to overview</a></div>
     <p></p>
     <div><span class="at-max-capacity">Orange shaded rows</span> are at maximum capacity -- the assignment algorithm cannot find a reviewer to assign to a new PR in this area.</div>
+    <div style="margin: 10px 0;">
+        <label>
+            <input type="checkbox" id="hideZeroOnQueue" checked>
+            Hide areas with no PRs on the queue
+        </label>
+    </div>
     <table id="areaTable" class="display">
         <thead>
             <tr>
                 <th>Area</th>
+                <th>Number of reviewers</th>
+                <th>Number of reviewers on rotation</th>
                 <th>PRs on the queue</th>
                 <th>PRs assigned to a reviewer</th>
                 <th>PRs not assigned to a reviewer</th>
                 <th>Ratio of PRs on the queue to<br>PRs assigned to a reviewer</th>
+                <th>Average days on the queue</th>
+                <th>Average days on the queue for assigned PRs</th>
             </tr>
         </thead>
         <tbody>
@@ -53,18 +63,43 @@
                     const tableData = Object.entries(data).map(([key, value]) => {
                         return {
                             area: key,
+                            at_max_capacity: value.at_max_capacity,
                             assigned: value.assigned || 0,
                             unassigned: value.unassigned || 0,
                             on_queue: value.on_queue || 0,
-                            fgcolor: value.fgcolor,
-                            bgcolor: value.bgcolor,
-                            ratio: value.ratio !== null ? value.ratio.toFixed(2) : '',
-                            atMaxCapacity: value.at_max_capacity
+                            ratio: value.ratio,
+                            // total_queue_time: value.total_queue_time || '',
+                            avg_queue_time: value.avg_queue_time,
+                            // assigned_queue_time: value.assigned_queue_time || '',
+                            avg_assigned_queue_time: value.avg_assigned_queue_time,
+                            num_reviewers: value.num_reviewers || 0,
+                            num_reviewers_on_rotation: value.num_reviewers_on_rotation || 0,
+                            fgcolor: value.fgcolor || '#000000',
+                            bgcolor: value.bgcolor || '#dddddd',
                         };
                     });
 
+                    // helper functions for rendering
+                    function renderRatio(data, type, row) {
+                        if (type === 'display') {
+                            return data !== null ? data.toFixed(2) : '';
+                        }
+                        return data;
+                    }
+                    function renderAvgQueueTime(data, type, row) {
+                        if (type === 'display') {
+                            // convert to days
+                            if (data === undefined || data === null)
+                                return '';
+                            const days = data / 86400;
+                            console.log(days);
+                            return days !== NaN ? days.toFixed(2) : '';
+                        }
+                        return (data !== undefined && data !== null) ? data : '';
+                    }
+
                     // Initialize DataTables
-                    $('#areaTable').DataTable({
+                    const table = $('#areaTable').DataTable({
                         data: tableData,
                         columns: [
                             {
@@ -77,20 +112,35 @@
                                     return data;
                                 }
                             },
+                            { data: 'num_reviewers' },
+                            { data: 'num_reviewers_on_rotation' },
                             { data: 'on_queue' },
                             { data: 'assigned' },
                             { data: 'unassigned' },
-                            { data: 'ratio' }
+                            { data: 'ratio', render: renderRatio },
+                            { data: 'avg_queue_time', render: renderAvgQueueTime },
+                            { data: 'avg_assigned_queue_time', render: renderAvgQueueTime },
                         ],
                         pageLength: tableData.length,
                         order: [[0, 'asc']], // Sort by Area column alphabetically
                         createdRow: function (row, data, dataIndex) {
                             // Add class to rows at max capacity
-                            if (data.atMaxCapacity) {
+                            if (data.at_max_capacity) {
                                 $(row).addClass('at-max-capacity');
                             }
                         }
                     });
+
+                    // Hide/show rows where on_queue === 0, default hidden
+                    function applyZeroFilter() {
+                        const hideZero = $('#hideZeroOnQueue').is(':checked');
+                        // Column index 3 is 'PRs on the queue'
+                        const regex = hideZero ? '^(?!0$).*' : '';
+                        table.column(3).search(regex, true, false).draw();
+                    }
+
+                    $('#hideZeroOnQueue').on('change', applyZeroFilter);
+                    applyZeroFilter();
                 })
                 .catch(error => {
                     console.error('Error loading data:', error);

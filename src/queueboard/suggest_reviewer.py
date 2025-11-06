@@ -339,10 +339,21 @@ def _isLight(r: int, g: int, b: int) -> bool:
 
 
 # generate list of topic labels for all open PRs
-# for each area, compute
+# for each area, compute:
 # - max_capacity: bool, whether the area is at maximum capacity
 # - assigned: int, number of assigned PRs on the queue
 # - unassigned: int, number of unassigned PRs on the queue
+# - on_queue: int, number of PRs on the queue
+# - ratio: float, the ratio on_queue / assigned
+# - total_queue_time: float, total time on the queue for all PRs in seconds
+# - avg_queue_time: float, avg time on the queue for all PRs in seconds
+# - assigned_queue_time: float, total time on the queue for assigned PRs in seconds
+# - avg_assigned_queue_time: float, avg time on the queue for assigned PRs in seconds
+# - num_reviewers: int, number of reviewers for this area
+# - num_reviewers_on_rotation: int, number of reviewers on rotation for this area
+# For styling the HTML:
+# - bgcolor, background color for the label element
+# - fgcolor, foreground color to use for text #000000 (black) or #ffffff (white), depending on the result of _isLight on bgcolor
 def compute_area_ratios(
     existing_assignments: dict[str, Tuple[List[int], float, int]],
     reviewers: List[ReviewerInfo],
@@ -357,6 +368,10 @@ def compute_area_ratios(
         for label in topic_labels:
             label_name = label.name
             data = area_data.get(label_name, {})
+
+            # note that the label data is stored with the PR data:
+            # labels which aren't assigned to PRs on the queue won't have their colors filled in
+            # TODO: fix? maybe better off doing in the v2 rewrite...
             if "bgcolor" not in data:
                 data["bgcolor"] = label.color
                 data["fgcolor"] = (
@@ -364,17 +379,48 @@ def compute_area_ratios(
                     if _isLight(int(label.color[:2], 16), int(label.color[2:4], 16), int(label.color[4:], 16))
                     else "FFFFFF"
                 )
+
+            # convert value_td (timedelta) to seconds; PRs that are missing data are assigned 0
+            total_queue_time = info.total_queue_time.value_td.total_seconds() if info.total_queue_time else 0
+            data["total_queue_time"] = data.get("total_queue_time", 0) + total_queue_time
+            # keep track of number of PRs missing queue time data
+            data["_prs_missing_queue_time"] = data.get("_prs_missing_queue_time", 0) + (0 if info.total_queue_time else 1)
             if any(assignee in reviewer_github_set for assignee in info.assignees):
                 data["assigned"] = data.get("assigned", 0) + 1
+                data["assigned_queue_time"] = data.get("assigned_queue_time", 0) + total_queue_time
+                # keep track of number of assigned PRs missing queue time data
+                data["_prs_missing_assigned_queue_time"] = data.get("_prs_missing_assigned_queue_time", 0) + (
+                    0 if info.total_queue_time else 1
+                )
             else:
                 data["unassigned"] = data.get("unassigned", 0) + 1
+
             data["on_queue"] = data.get("on_queue", 0) + 1
+
             area_data[label_name] = data
+
+    for reviewer in reviewers:
+        for area in reviewer.top_level:
+            data = area_data.get(area, {})
+
+            data["num_reviewers"] = data.get("num_reviewers", 0) + 1
+            data["num_reviewers_on_rotation"] = data.get("num_reviewers_on_rotation", 0) + (1 if reviewer.is_on_rotation else 0)
+
+            area_data[area] = data
 
     for label_name, data in area_data.items():
         data["at_max_capacity"] = is_at_maximum_capacity(existing_assignments, reviewers, all_info, label_name)
+
+        if "on_queue" in data and data["on_queue"] > data["_prs_missing_queue_time"]:
+            data["avg_queue_time"] = data["total_queue_time"] / (data["on_queue"] - data["_prs_missing_queue_time"])
+
         if "assigned" in data and data["assigned"] > 0:
             data["ratio"] = (data["on_queue"]) / data["assigned"]
+
+            if data["assigned"] > data["_prs_missing_assigned_queue_time"]:
+                data["avg_assigned_queue_time"] = data["assigned_queue_time"] / (
+                    data["assigned"] - data["_prs_missing_assigned_queue_time"]
+                )
         else:
             data["ratio"] = None
 
