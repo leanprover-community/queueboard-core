@@ -133,7 +133,7 @@ class TestGitHubClient(SimpleTestCase):
                             {"number": 8, "updatedAt": "2025-10-21T00:00:00Z", "state": "OPEN"},
                         ],
                     }
-                }
+                },
             }
         }
 
