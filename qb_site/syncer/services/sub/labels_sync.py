@@ -7,6 +7,7 @@ from core.models.repository import Repository
 from syncer.models.label_def import LabelDef
 from syncer.models.pr_label import PRLabel
 from syncer.models.pull_request import PullRequest
+from core.utils.db import update_if_changed
 
 
 @dataclass
@@ -38,11 +39,12 @@ def sync_label_catalog(repo: Repository, labels: Iterable[Dict[str, Any]]) -> La
             LabelDef.objects.create(repository=repo, name=name, color=color or "000000")
             created += 1
         else:
-            new_color = color or ld.color
-            if (ld.color or "").lower() != (new_color or "").lower():
-                ld.color = new_color
-                ld.save(update_fields=["color", "updated_at"])
-                updated += 1
+            new_color = (color or ld.color or "").lower()
+            cur_color = (ld.color or "").lower()
+            if cur_color != new_color:
+                _, fields = update_if_changed(ld, {"color": new_color})
+                if fields:
+                    updated += 1
     return LabelSyncResult(created=created, updated=updated, deleted=0)
 
 

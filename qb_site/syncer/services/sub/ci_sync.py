@@ -9,6 +9,7 @@ from django.utils import timezone
 from syncer.models.check_run import CheckRun
 from syncer.models.pull_request import PullRequest
 from syncer.models.status_context import StatusContext
+from core.utils.db import upsert_if_changed
 
 
 @dataclass
@@ -45,7 +46,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         gid = ctx.get("id")
         if not gid:
             continue
-        defaults = {
+        values = {
             "pull_request": pr,
             "head_sha": head_sha,
             "name": ctx.get("name") or "",
@@ -56,9 +57,9 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
             "gh_started_at": _parse_iso(ctx.get("startedAt")),
             "gh_completed_at": _parse_iso(ctx.get("completedAt")),
         }
-        obj, was_created = CheckRun.objects.update_or_create(github_node_id=gid, defaults=defaults)
+        _, was_created, was_updated, _ = upsert_if_changed(CheckRun, {"github_node_id": gid}, values)
         created += 1 if was_created else 0
-        updated += 0 if was_created else 1
+        updated += 1 if was_updated else 0
     return CISyncResult(created=created, updated=updated, deleted=0)
 
 
@@ -79,7 +80,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         gid = ctx.get("id")
         if not gid:
             continue
-        defaults = {
+        values = {
             "pull_request": pr,
             "head_sha": head_sha,
             "name": ctx.get("context") or "",
@@ -88,7 +89,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
             "description": ctx.get("description") or None,
             "gh_created_at": _parse_iso(ctx.get("createdAt")) or timezone.now(),
         }
-        obj, was_created = StatusContext.objects.update_or_create(github_node_id=gid, defaults=defaults)
+        _, was_created, was_updated, _ = upsert_if_changed(StatusContext, {"github_node_id": gid}, values)
         created += 1 if was_created else 0
-        updated += 0 if was_created else 1
+        updated += 1 if was_updated else 0
     return CISyncResult(created=created, updated=updated, deleted=0)

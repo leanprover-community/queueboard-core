@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from core.models import Repository, ReviewerPreference, User
+from core.utils.db import update_if_changed
 
 
 DEFAULT_REPO = "leanprover-community/mathlib4"
@@ -157,10 +158,12 @@ class Command(BaseCommand):
             else:
                 # Align casing if it changed
                 if user.github_login != gh_login:
-                    user.github_login = gh_login
-                    if not dry_run:
-                        user.save(update_fields=["github_login"])
-                    updated_users += 1
+                    if dry_run:
+                        updated_users += 1
+                    else:
+                        _, fields = update_if_changed(user, {"github_login": gh_login})
+                        if fields:
+                            updated_users += 1
 
             # Upsert ReviewerPreference
             # Only query for an existing preference if both repo and user are persisted
