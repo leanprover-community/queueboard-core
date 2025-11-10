@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from core.models.repository import Repository
 from core.models.user import User
+from core.utils.db import update_if_changed
 
 
 def upsert_repo_node_id(repo: Repository, repo_gid: Optional[str]) -> bool:
@@ -31,24 +32,20 @@ def upsert_repo_metadata(
 
     Returns: (changed_bool, updated_fields)
     """
-    updated: list[str] = []
-    if repo_gid and repo.github_node_id != repo_gid:
-        repo.github_node_id = repo_gid
-        updated.append("github_node_id")
-    if default_branch and repo.default_branch != default_branch:
-        repo.default_branch = default_branch
-        updated.append("default_branch")
+    values: Dict[str, Any] = {}
+    if repo_gid:
+        values["github_node_id"] = repo_gid
+    if default_branch:
+        values["default_branch"] = default_branch
     if allow_rename:
-        if owner_login and repo.owner != owner_login:
-            repo.owner = owner_login
-            updated.append("owner")
-        if name and repo.name != name:
-            repo.name = name
-            updated.append("name")
-    if updated:
-        updated.append("updated_at")
-        repo.save(update_fields=updated)
-    return (len(updated) > 0, tuple(f for f in updated if f != "updated_at"))
+        if owner_login:
+            values["owner"] = owner_login
+        if name:
+            values["name"] = name
+    if not values:
+        return False, ()
+    updated, fields = update_if_changed(repo, values)
+    return updated, fields
 
 
 def upsert_user_from_github(
@@ -108,19 +105,16 @@ def upsert_user_from_github(
     if user is None:
         return None, False, ()
 
+    values: Dict[str, Any] = {}
     if gid and not user.github_node_id:
-        user.github_node_id = gid
-        updated_fields.append("github_node_id")
+        values["github_node_id"] = gid
     if login and (user.github_login or "") != login:
-        user.github_login = login
-        updated_fields.append("github_login")
+        values["github_login"] = login
     if name is not None and (user.name or "") != (name or ""):
-        user.name = name or None
-        updated_fields.append("name")
+        values["name"] = name or None
     if avatar is not None and (user.avatar_url or "") != (avatar or ""):
-        user.avatar_url = avatar or None
-        updated_fields.append("avatar_url")
-    if updated_fields:
-        updated_fields.append("updated_at")
-        user.save(update_fields=updated_fields)
-    return user, created, tuple(f for f in updated_fields if f != "updated_at")
+        values["avatar_url"] = avatar or None
+    if values:
+        _, changed_fields = update_if_changed(user, values)
+        updated_fields.extend(changed_fields)
+    return user, created, tuple(updated_fields)
