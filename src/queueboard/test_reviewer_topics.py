@@ -171,7 +171,9 @@ def main() -> None:
         # Run the pipeline entirely within the temp dir
         _run_dashboard_pipeline(work)
         _assert_outputs(work)
-        print("test_reviewer_topics: OK — dashboard generated successfully using root reviewer-topics.json (no repo files modified)")
+        print(
+            "test_reviewer_topics: OK — dashboard generated successfully using root reviewer-topics.json (no repo files modified)"
+        )
 
 
 if __name__ == "__main__":
