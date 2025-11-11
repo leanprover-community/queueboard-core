@@ -766,6 +766,7 @@ def determine_pr_dashboards(
     prs_to_list[Dashboard.QueueTechDebt] = prs_with_any_label(queue, ["tech debt", "longest-pole"])
 
     a_day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+    three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
     a_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
     one_day_stale = [pr for pr in nondraft_PRs if aggregate_info[pr.number].last_updated < a_day_ago]
@@ -786,7 +787,7 @@ def determine_pr_dashboards(
         last_real_update = aggregate_info[pr.number].last_status_change
         if last_real_update is not None and last_real_update.time < two_weeks_ago:
             very_stale_queue.append(pr)
-        if last_real_update is not None and last_real_update.time < a_week_ago:
+        if last_real_update is not None and last_real_update.time < three_days_ago:
             stale_queue.append(pr)
     prs_to_list[Dashboard.QueueStaleUnassigned] = [pr for pr in stale_queue if not aggregate_info[pr.number].assignees]
     prs_to_list[Dashboard.QueueStaleAssigned] = [pr for pr in very_stale_queue if aggregate_info[pr.number].assignees]
