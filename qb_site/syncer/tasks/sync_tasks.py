@@ -14,6 +14,7 @@ from syncer.models import PullRequest
 from syncer.services.github_client import GitHubClient
 from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
+from syncer.services.rate_budget import debounce_repo_schedule
 
 
 log = logging.getLogger(__name__)
@@ -149,8 +150,17 @@ def sync_repo_since_task(  # type: ignore[no-redef]
 ) -> Dict[str, Any]:
     """Discover changed PRs since cutoff and enqueue per-PR sync tasks.
 
-    V1: simple implementation using a sliding window cutoff when since_iso is not provided.
-    Returns summary with counts and last seen rate limit snapshot.
+    Behavior
+    - Uses a sliding window cutoff (from settings) when ``since_iso`` is not provided.
+    - After discovery, reads the last ``rateLimit`` snapshot (captured during the call) and:
+      - if ``remaining <= SYNCER_RATE_REMAINING_MIN``: stops early and schedules a continuation
+        of this task at ``resetAt`` with a small jitter, debounced via Redis so only one
+        continuation is scheduled per repo/resetAt.
+      - otherwise enqueues one ``sync_pr_task`` per discovered PR number.
+    - Per-repo Postgres advisory lock prevents overlapping runs for the same repository.
+
+    Returns a summary including discovery/enqueue counts, the rate limit snapshot, and a
+    ``low_budget`` flag indicating whether a continuation was scheduled.
     """
     repo = Repository.objects.get(id=int(repo_id))
 
@@ -181,12 +191,62 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         cm = int(commitsM) if isinstance(commitsM, int) else int(getattr(settings, "SYNCER_COMMITS_M_DEFAULT", 15))
 
         numbers = client.get_changed_pr_numbers(owner=repo.owner, name=repo.name, since_iso=cutoff_iso, states=st, limit=lim)
-        enqueued = 0
-        for num in numbers:
-            sync_pr_task.delay(repo.id, int(num), timelineK=tk, commitsM=cm, dry_run=dry_run)
-            enqueued += 1
 
+        # Snapshot after discovery
         rl = client.get_last_rate_limit() or {}
+        remaining = rl.get("remaining") if isinstance(rl, dict) else None
+        reset_at = rl.get("resetAt") if isinstance(rl, dict) else None
+
+        enqueued = 0
+        threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+        low_budget = isinstance(remaining, int) and remaining <= threshold
+        if low_budget:
+            # Stop early; schedule a continuation at resetAt + small jitter if possible.
+            eta = None
+            if isinstance(reset_at, str):
+                try:
+                    rdt = dtparser.isoparse(reset_at)
+                    if timezone.is_naive(rdt):
+                        rdt = timezone.make_aware(rdt)
+                    # jitter of 5 seconds
+                    eta = rdt + timedelta(seconds=5)
+                except Exception:
+                    eta = None
+            if eta is not None and debounce_repo_schedule(repo.id, reset_at):
+                # schedule a continuation with same parameters
+                try:
+                    sync_repo_since_task.apply_async(
+                        kwargs={
+                            "repo_id": repo.id,
+                            "since_iso": cutoff_iso,
+                            "limit": lim,
+                            "states": st,
+                            "timelineK": tk,
+                            "commitsM": cm,
+                            "dry_run": dry_run,
+                        },
+                        eta=eta,
+                    )
+                except Exception:
+                    pass
+        else:
+            # Proceed to enqueue per-PR tasks in batches sized by remaining budget.
+            batch_max = int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))
+            est_cost = int(getattr(settings, "SYNCER_EST_COST_PER_PR", 150))
+            to_enqueue = len(numbers)
+            if isinstance(remaining, int):
+                allowed = max(0, remaining - threshold)
+                dynamic_cap = allowed // max(1, est_cost)
+                if dynamic_cap <= 0:
+                    to_enqueue = min(batch_max, len(numbers), 1)
+                else:
+                    to_enqueue = min(len(numbers), batch_max, int(dynamic_cap))
+            else:
+                to_enqueue = min(len(numbers), batch_max)
+
+            for num in numbers[:to_enqueue]:
+                sync_pr_task.delay(repo.id, int(num), timelineK=tk, commitsM=cm, dry_run=dry_run)
+                enqueued += 1
         log.info(
             "sync_repo_since: repo=%s/%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s",
             repo.owner,
@@ -204,6 +264,8 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             "discovered": len(numbers),
             "enqueued": enqueued,
             "rate_limit": rl,
+            "low_budget": bool(low_budget),
+            "batch_max": int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30)),
         }
 
 

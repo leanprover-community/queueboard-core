@@ -27,6 +27,12 @@ class GitHubClient:
         self._last_rate_limit: Optional[Dict[str, Any]] = None
 
     def execute(self, query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a GraphQL query against the GitHub v4 API.
+
+        Notes
+        - Writes any returned `rateLimit` snapshot to Redis via `set_rate_snapshot` for
+          cross-process token coordination (best-effort).
+        """
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
@@ -42,6 +48,13 @@ class GitHubClient:
         rl = (data.get("data") or {}).get("rateLimit")
         if isinstance(rl, dict):
             self._last_rate_limit = rl
+            # Persist to Redis for cross-process coordination (best-effort)
+            try:  # local import to avoid import-time Redis coupling in tests
+                from syncer.services.rate_budget import set_rate_snapshot
+
+                set_rate_snapshot(rl)
+            except Exception:
+                pass
         return data
 
     def _read_file(self, rel_path_from_repo_root: str) -> str:
