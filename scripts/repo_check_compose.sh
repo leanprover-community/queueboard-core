@@ -30,6 +30,7 @@ echo "[3/4] Dry-run makemigrations (compose)"
 docker compose exec -T web python qb_site/manage.py makemigrations --dry-run --check
 
 echo "[4/4] Run syncer tests (compose)"
-docker compose exec -T web python qb_site/manage.py test syncer
+# Use higher verbosity to list skipped tests with reasons.
+docker compose exec -T web python qb_site/manage.py test syncer # --verbosity 2
 
 echo "Compose checks completed."
