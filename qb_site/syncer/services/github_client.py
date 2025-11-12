@@ -224,3 +224,30 @@ class GitHubClient:
                 break
 
         return out
+
+    def get_prs_created_page(
+        self,
+        *,
+        owner: str,
+        name: str,
+        first: int,
+        after: Optional[str] = None,
+        states: Optional[Sequence[str]] = None,
+        query_path: str = "qb_site/syncer/queries/prs_created_page.graphql",
+    ) -> Dict[str, Any]:
+        """Fetch a page of PRs ordered by CREATED_AT ASC with minimal fields.
+
+        Returns the raw GraphQL response. Callers can read:
+          data.repository.pullRequests.nodes[] with fields
+            { number, createdAt, closedAt, mergedAt, isDraft, state }
+          and pageInfo { hasNextPage, endCursor }.
+        """
+        query = self._read_file(query_path)
+        variables: Dict[str, Any] = {
+            "owner": owner,
+            "name": name,
+            "first": int(max(1, min(first, 100))),
+            "after": after,
+            "states": list(states) if states else None,
+        }
+        return self.execute(query, variables)

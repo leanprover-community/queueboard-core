@@ -80,17 +80,21 @@ class PRSyncService:
         max_commit_pages: int = 0,
         dry_run: bool = False,
         rate_log: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        timeline_since_iso_override: Optional[str] = None,
     ) -> Dict[str, int]:
-        # Determine timeline since (use last_synced_at - epsilon if available)
-        existing = PullRequest.objects.filter(repository=repo, number=number).only("last_synced_at").first()
-        timeline_since_iso: Optional[str] = None
-        if existing and existing.last_synced_at:
-            # subtract a small epsilon to avoid boundary-equal misses
-            dt = existing.last_synced_at - timedelta(seconds=2)
-            if timezone.is_naive(dt):
-                dt = timezone.make_aware(dt)
-            dt_utc = dt.astimezone(pytimezone.utc)
-            timeline_since_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Determine timeline since cutoff.
+        # If an explicit override is provided (e.g., historical backfill), prefer it.
+        # Otherwise use last_synced_at - epsilon when available.
+        timeline_since_iso: Optional[str] = timeline_since_iso_override
+        if timeline_since_iso is None:
+            existing = PullRequest.objects.filter(repository=repo, number=number).only("last_synced_at").first()
+            if existing and existing.last_synced_at:
+                # subtract a small epsilon to avoid boundary-equal misses
+                dt = existing.last_synced_at - timedelta(seconds=2)
+                if timezone.is_naive(dt):
+                    dt = timezone.make_aware(dt)
+                dt_utc = dt.astimezone(pytimezone.utc)
+                timeline_since_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # Fetch bundle and delegate to bundle-based ingestion
         data = client.get_pr_bundle(

@@ -39,6 +39,7 @@ def sync_pr_task(  # type: ignore[no-redef]
     max_timeline_pages: int = 0,
     max_commit_pages: int = 0,
     dry_run: bool = False,
+    timeline_since_iso: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Sync a single PR by (repository id, number) using the GraphQL bundle.
 
@@ -93,6 +94,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         max_commit_pages=max_commit_pages,
         dry_run=dry_run,
         rate_log=rate_log,
+        timeline_since_iso_override=timeline_since_iso,
     )
     rl_final = client.get_last_rate_limit() or {}
     summary: Dict[str, Any] = {
