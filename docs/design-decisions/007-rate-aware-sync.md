@@ -36,6 +36,7 @@
 
 ## V1.1 Enhancements (Implemented)
 - Batch enqueue sizing: repo task enqueues up to `min(batch_max, floor((remaining-threshold)/est_cost))` PRs to make progress without overspending.
+- PR-level deferral: when a PR task hits a low-budget rate-limit during header or bundle, it returns a non-error result (`reason=deferred_low_budget`) and schedules a one-off retry at `resetAt + jitter`.
 
 ## Future
 - Optional global concurrency controls (single-flight lock or Redis semaphore) if we run multiple workers.
