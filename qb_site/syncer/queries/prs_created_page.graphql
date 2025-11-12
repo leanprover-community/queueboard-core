@@ -1,0 +1,23 @@
+# PR list page ordered by CREATED_AT (ascending)
+# Variables:
+#   $owner: String!, $name: String!
+#   $first: Int!, $after: String
+#   $states: [PullRequestState!]
+
+query PRsCreatedPage($owner: String!, $name: String!, $first: Int!, $after: String, $states: [PullRequestState!]) {
+  rateLimit { cost remaining resetAt used }
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: $states, orderBy: {field: CREATED_AT, direction: ASC}, first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        createdAt
+        closedAt
+        mergedAt
+        isDraft
+        state
+      }
+    }
+  }
+}
+
