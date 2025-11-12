@@ -6,6 +6,7 @@ from django.template.response import TemplateResponse
 from django import forms
 from django.utils.html import format_html
 from django.http import HttpResponseRedirect, HttpResponse
+from collections import OrderedDict
 import json
 
 from .models import Repository, ReviewerPreference, User
@@ -73,6 +74,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         timelineK = forms.IntegerField(label="timelineK", required=False, min_value=1)
         commitsM = forms.IntegerField(label="commitsM", required=False, min_value=1)
 
+    # Admin "Sync tools" view for a repository: quick enqueue, discovery, and toggles
     def sync_tools_view(self, request, object_id, *args, **kwargs):  # type: ignore[override]
         repo = self.get_object(request, object_id)
         if repo is None:
@@ -85,6 +87,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         submitted_action = None
         enqueued = []
         error = None
+        notice = None
         prs_initial = ""
         if request.method == "POST":
             submitted_action = request.POST.get("action")
@@ -110,35 +113,62 @@ class RepositoryAdmin(admin.ModelAdmin):
                         commitsM = form.cleaned_data.get("commitsM") or 15
                         for n in nums:
                             res = sync_pr_task.delay(repo.id, int(n), timelineK=timelineK, commitsM=commitsM, dry_run=dry_run)
-                            enqueued.append((n, res.id))
+                    enqueued.append((n, res.id))
                 else:
                     error = "Invalid form submission for PR numbers"
             elif submitted_action == "enqueue_repo_sync":
                 form = self.SyncPRsForm(prefix="prs")
-                repo_form = self.RepoSyncTaskForm(request.POST, prefix="repo")
-                if repo_form.is_valid():
+                # Determine which button was pressed in the repo form
+                submit_kind = request.POST.get("submit")
+                if submit_kind == "enqueue_defaults":
+                    # Bypass form values and use defaults entirely
                     from syncer.tasks.sync_tasks import sync_repo_since_task
 
-                    since = repo_form.cleaned_data.get("since") or None
-                    states = repo_form.cleaned_data.get("states") or None
-                    limit = repo_form.cleaned_data.get("limit") or None
-                    dry_run = bool(repo_form.cleaned_data.get("dry_run") or False)
-                    timelineK = repo_form.cleaned_data.get("timelineK") or None
-                    commitsM = repo_form.cleaned_data.get("commitsM") or None
-
-                    res = sync_repo_since_task.delay(
-                        repo.id,
-                        since_iso=since,
-                        limit=limit,
-                        states=states,
-                        timelineK=timelineK,
-                        commitsM=commitsM,
-                        dry_run=dry_run,
-                    )
-                    # Show one row indicating the repo-level task enqueued
+                    res = sync_repo_since_task.delay(repo.id)
                     enqueued.append((f"repo:{repo.pk}", res.id))
+                    repo_form = self.RepoSyncTaskForm(prefix="repo")
                 else:
-                    error = "Invalid repo sync form"
+                    # Use provided overrides from the form
+                    repo_form = self.RepoSyncTaskForm(request.POST, prefix="repo")
+                    if repo_form.is_valid():
+                        from syncer.tasks.sync_tasks import sync_repo_since_task
+
+                        since = repo_form.cleaned_data.get("since") or None
+                        states = repo_form.cleaned_data.get("states") or None
+                        limit = repo_form.cleaned_data.get("limit") or None
+                        dry_run = bool(repo_form.cleaned_data.get("dry_run") or False)
+                        timelineK = repo_form.cleaned_data.get("timelineK") or None
+                        commitsM = repo_form.cleaned_data.get("commitsM") or None
+
+                        res = sync_repo_since_task.delay(
+                            repo.id,
+                            since_iso=since,
+                            limit=limit,
+                            states=states,
+                            timelineK=timelineK,
+                            commitsM=commitsM,
+                            dry_run=dry_run,
+                        )
+                        # Show one row indicating the repo-level task enqueued
+                        enqueued.append((f"repo:{repo.pk}", res.id))
+                    else:
+                        error = "Invalid repo sync form"
+            elif submitted_action == "toggle_active":
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
+                to_state = request.POST.get("to_state")
+                if to_state in {"active", "inactive"}:
+                    new_val = to_state == "active"
+                    if repo.is_active != new_val:
+                        repo.is_active = new_val
+                        repo.save(update_fields=["is_active"])
+                    state_txt = "ACTIVE" if repo.is_active else "INACTIVE"
+                    notice = (
+                        f"Repository marked {state_txt}. Scheduled sync dispatcher will "
+                        f"{'include' if repo.is_active else 'exclude'} this repo."
+                    )
+                else:
+                    error = "Invalid toggle request"
             else:
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
@@ -154,6 +184,7 @@ class RepositoryAdmin(admin.ModelAdmin):
             "repo_form": repo_form,
             "enqueued": enqueued,
             "error": error,
+            "notice": notice,
             "submitted_action": submitted_action,
             "prs_initial": prs_initial,
             "changelist_url": reverse("admin:core_repository_changelist"),
@@ -188,6 +219,43 @@ class RepositoryAdmin(admin.ModelAdmin):
         return HttpResponse(html)
 
     open_sync_tools_action.short_description = "Open sync tools"  # type: ignore[attr-defined]
+
+    # Quick actions to toggle repository active state for scheduling
+    actions = ["open_sync_tools_action", "mark_active_action", "mark_inactive_action"]
+
+    def mark_active_action(self, request, queryset):  # type: ignore[override]
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"Marked {updated} repositories as active.")
+
+    mark_active_action.short_description = "Mark selected repositories as ACTIVE"  # type: ignore[attr-defined]
+
+    def mark_inactive_action(self, request, queryset):  # type: ignore[override]
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Marked {updated} repositories as inactive.")
+
+    mark_inactive_action.short_description = "Mark selected repositories as INACTIVE"  # type: ignore[attr-defined]
+
+    def get_actions(self, request):  # type: ignore[override]
+        """Return actions with 'delete_selected' moved to the end.
+
+        Keeps our custom actions in a predictable order and appends the built-in
+        delete action last to reduce accidental clicks.
+        """
+        actions = super().get_actions(request)
+        # Extract delete_selected if present
+        delete = actions.pop("delete_selected", None)
+        ordered = OrderedDict()
+        # Ensure our actions appear first in this order if available
+        for key in ("open_sync_tools_action", "mark_active_action", "mark_inactive_action"):
+            if key in actions:
+                ordered[key] = actions.pop(key)
+        # Append any remaining actions preserving their original order
+        for k, v in actions.items():
+            ordered[k] = v
+        # Finally append delete_selected
+        if delete is not None:
+            ordered["delete_selected"] = delete
+        return ordered
 
 
 @admin.register(User)
@@ -228,25 +296,44 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
 
 # Enhance django-celery-results TaskResult admin with repo/PR context for syncer tasks
 try:
-    from django_celery_results.models import TaskResult  # type: ignore
+    from django_celery_results.models import TaskResult, GroupResult  # type: ignore
     from django_celery_results.admin import TaskResultAdmin  # type: ignore
 
     try:  # Unregister default admin to replace with our enhanced version
         admin.site.unregister(TaskResult)
     except admin.sites.NotRegistered:  # pragma: no cover - depends on install order
         pass
+    try:  # Hide GroupResult from admin if not used
+        admin.site.unregister(GroupResult)
+    except admin.sites.NotRegistered:  # pragma: no cover
+        pass
 
     @admin.register(TaskResult)
     class EnhancedTaskResultAdmin(TaskResultAdmin):  # type: ignore[misc]
         list_display = (
-            "task_id",
+            "short_id",
             "task_name",
             "repo_pr",
             "status",
             "date_done",
         )
+        list_display_links = ("short_id", "task_name")
         list_filter = getattr(TaskResultAdmin, "list_filter", tuple()) + ("task_name",)
-        search_fields = getattr(TaskResultAdmin, "search_fields", tuple()) + ("result", "task_args", "task_kwargs")
+        search_fields = getattr(TaskResultAdmin, "search_fields", tuple()) + (
+            "task_id",
+            "result",
+            "task_args",
+            "task_kwargs",
+        )
+
+        def short_id(self, obj):  # type: ignore[override]
+            tid = getattr(obj, "task_id", "") or ""
+            return tid[:8]
+
+        short_id.short_description = "ID"  # type: ignore[attr-defined]
+
+        def has_add_permission(self, request):  # type: ignore[override]
+            return False
 
         def _json_load(self, raw):  # pragma: no cover - trivial helper
             if raw is None:

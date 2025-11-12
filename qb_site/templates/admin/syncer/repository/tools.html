@@ -5,6 +5,29 @@
   {% if error %}
     <p style="color:#b94a48; font-weight:bold;">{{ error }}</p>
   {% endif %}
+  {% if notice %}
+    <p style="color:#3a7f3a; font-weight:bold;">{{ notice }}</p>
+  {% endif %}
+
+  <h2>{% trans "Repository status" %}</h2>
+  <p>
+    {% if repo.is_active %}
+      <strong style="color:#3a7f3a;">ACTIVE</strong> — included in scheduled syncs.
+    {% else %}
+      <strong style="color:#b94a48;">INACTIVE</strong> — excluded from scheduled syncs.
+    {% endif %}
+  </p>
+  <form method="post" style="margin-bottom:2em;">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="toggle_active" />
+    {% if repo.is_active %}
+      <input type="hidden" name="to_state" value="inactive" />
+      <input type="submit" value="{% trans 'Disable scheduled sync' %}" />
+    {% else %}
+      <input type="hidden" name="to_state" value="active" />
+      <input type="submit" class="default" value="{% trans 'Enable scheduled sync' %}" />
+    {% endif %}
+  </form>
 
   <h2>{% trans "Sync specific PR numbers" %}</h2>
   <form method="post" style="margin-bottom:2em;">
@@ -63,7 +86,14 @@
         <td>{{ repo_form.commitsM }}</td>
       </tr>
     </table>
-    <p><input type="submit" value="{% trans 'Enqueue repo sync task' %}" /></p>
+    <p>
+      <input type="submit" name="submit" value="enqueue_custom" class="default" />
+      <input type="submit" name="submit" value="enqueue_defaults" />
+      <br/>
+      <small>
+        "enqueue_custom" uses the form values above; "enqueue_defaults" ignores the form and uses default settings (sliding lookback, OPEN state, batch size).
+      </small>
+    </p>
   </form>
 
   {% if enqueued %}
