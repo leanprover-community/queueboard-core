@@ -47,14 +47,77 @@ def sync_pr_task(  # type: ignore[no-redef]
 ) -> Dict[str, Any]:
     """Sync a single PR by (repository id, number) using the GraphQL bundle.
 
-    Returns a summary dict with counts and rate limit info. Skips the PR if
-    GitHub's updatedAt is not newer than PullRequest.last_synced_at.
+    Behavior
+    - Preflight header check to skip unchanged PRs based on GitHub ``updatedAt`` vs DB ``last_synced_at``.
+    - Executes the PR bundle (single page in V1) and persists labels, timeline, and CI snapshots.
+    - Rate-aware deferral: if a rate-limit/low-budget error occurs during the header or bundle call,
+      the task returns a non-error result (``reason=deferred_low_budget``) and schedules itself to
+      retry at ``resetAt`` (from the last rateLimit snapshot) plus a small jitter.
+
+    Returns a summary dict with counts and rate limit info. Skips the PR if up-to-date.
     """
     repo = Repository.objects.get(id=repo_id)
     client = GitHubClient()
 
-    # Preflight header to skip unchanged PRs
-    header = client.get_pr_header(owner=repo.owner, name=repo.name, number=int(number))
+    def _schedule_defer(reset_at: Optional[str], where: str) -> Dict[str, Any]:
+        """Schedule a retry of this PR task at resetAt (+ small jitter) and return a summary.
+
+        Behavior
+        - Parses the provided ``reset_at`` (ISO8601) and schedules this task with the same
+          parameters at that time plus a small jitter (5s).
+        - Returns a non-error summary so the task is not marked as a failure in Celery results.
+        """
+        eta = None
+        if isinstance(reset_at, str):
+            try:
+                rdt = dtparser.isoparse(reset_at)
+                if timezone.is_naive(rdt):
+                    rdt = timezone.make_aware(rdt)
+                eta = rdt + timedelta(seconds=5)
+            except Exception:
+                eta = None
+        if eta is not None:
+            try:
+                sync_pr_task.apply_async(
+                    args=(repo_id, int(number)),
+                    kwargs={
+                        "timelineK": timelineK,
+                        "commitsM": commitsM,
+                        "max_timeline_pages": max_timeline_pages,
+                        "max_commit_pages": max_commit_pages,
+                        "dry_run": dry_run,
+                        "timeline_since_iso": timeline_since_iso,
+                    },
+                    eta=eta,
+                )
+            except Exception:
+                pass
+        rl = client.get_last_rate_limit() or {}
+        return {
+            "skipped": True,
+            "reason": "deferred_low_budget",
+            "where": where,
+            "repo": f"{repo.owner}/{repo.name}",
+            "repo_id": repo.id,
+            "number": int(number),
+            "dry_run": dry_run,
+            "rate_limit": rl,
+            "retry_eta": eta.isoformat() if eta is not None else None,
+        }
+
+    # Preflight header to skip unchanged PRs (rate-aware: may defer on low budget error)
+    try:
+        header = client.get_pr_header(owner=repo.owner, name=repo.name, number=int(number))
+    except Exception:
+        # If we hit a rate-related error here, defer to resetAt rather than failing the task
+        rl0 = client.get_last_rate_limit() or {}
+        remaining0 = rl0.get("remaining") if isinstance(rl0, dict) else None
+        reset_at0 = rl0.get("resetAt") if isinstance(rl0, dict) else None
+        threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+        if isinstance(remaining0, int) and remaining0 <= threshold:
+            return _schedule_defer(reset_at0, where="header")
+        # Unknown error or missing snapshot → surface as failure
+        raise
     pr_node = ((header.get("data") or {}).get("repository") or {}).get("pullRequest")
     if pr_node:
         gh_updated = _parse_iso_awareness(pr_node.get("updatedAt"))
@@ -96,18 +159,28 @@ def sync_pr_task(  # type: ignore[no-redef]
         except Exception:  # pragma: no cover - defensive
             pass
 
-    res = svc.sync_pull_request(
-        repo,
-        number=int(number),
-        client=client,
-        timelineK=timelineK,
-        commitsM=commitsM,
-        max_timeline_pages=max_timeline_pages,
-        max_commit_pages=max_commit_pages,
-        dry_run=dry_run,
-        rate_log=rate_log,
-        timeline_since_iso_override=timeline_since_iso,
-    )
+    try:
+        res = svc.sync_pull_request(
+            repo,
+            number=int(number),
+            client=client,
+            timelineK=timelineK,
+            commitsM=commitsM,
+            max_timeline_pages=max_timeline_pages,
+            max_commit_pages=max_commit_pages,
+            dry_run=dry_run,
+            rate_log=rate_log,
+            timeline_since_iso_override=timeline_since_iso,
+        )
+    except Exception:
+        # If a rate-related error occurs mid-sync, prefer deferral over failure when snapshot indicates low budget
+        rl1 = client.get_last_rate_limit() or {}
+        remaining1 = rl1.get("remaining") if isinstance(rl1, dict) else None
+        reset_at1 = rl1.get("resetAt") if isinstance(rl1, dict) else None
+        threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+        if isinstance(remaining1, int) and remaining1 <= threshold:
+            return _schedule_defer(reset_at1, where="bundle")
+        raise
     rl_final = client.get_last_rate_limit() or {}
     summary: Dict[str, Any] = {
         "skipped": False,

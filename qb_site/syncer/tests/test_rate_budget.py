@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest import mock
 from datetime import datetime, timezone
+import json
 
 from django.test import TestCase
 
@@ -26,12 +27,7 @@ class TestRateBudget(TestCase):
 
         # Simulate get
         data = {"remaining": 50, "resetAt": "2025-01-01T01:00:00Z", "used": 10, "cost": 1, "updated_at": now.isoformat()}
-        fake.get.return_value = json_str = (str.__add__("", "")).join(
-            [
-                "",
-            ]
-        )  # dummy init
-        fake.get.return_value = json_str = ("%s" % __import__("json").dumps(data)).encode("utf-8")
+        fake.get.return_value = json.dumps(data).encode("utf-8")
 
         with mock.patch.object(rb, "_get_redis_client", return_value=fake):
             snap = rb.get_rate_snapshot()
