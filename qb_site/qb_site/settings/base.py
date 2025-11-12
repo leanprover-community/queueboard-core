@@ -140,3 +140,22 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_DEFAULT_QUEUE = "default"
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
+
+# Syncer scheduling defaults (env-overridable)
+SYNCER_DISCOVERY_LOOKBACK_MINUTES = int(os.getenv("SYNCER_DISCOVERY_LOOKBACK_MINUTES", 60))
+SYNCER_DISCOVERY_LIMIT = int(os.getenv("SYNCER_DISCOVERY_LIMIT", 30))
+SYNCER_DISCOVERY_STATES_DEFAULT = [
+    s.strip().upper() for s in os.getenv("SYNCER_DISCOVERY_STATES_DEFAULT", "OPEN").split(",") if s.strip()
+]
+SYNCER_RATE_REMAINING_MIN = int(os.getenv("SYNCER_RATE_REMAINING_MIN", 200))
+SYNCER_TIMELINE_K_DEFAULT = int(os.getenv("SYNCER_TIMELINE_K_DEFAULT", 150))
+SYNCER_COMMITS_M_DEFAULT = int(os.getenv("SYNCER_COMMITS_M_DEFAULT", 15))
+SYNCER_ACTIVE_REPOS_PERIOD_SECONDS = int(os.getenv("SYNCER_ACTIVE_REPOS_PERIOD_SECONDS", 300))
+
+# Beat schedule: periodically enqueue repo syncs for active repositories.
+CELERY_BEAT_SCHEDULE = {
+    "sync_active_repos": {
+        "task": "syncer.sync_active_repos",
+        "schedule": SYNCER_ACTIVE_REPOS_PERIOD_SECONDS,
+    }
+}

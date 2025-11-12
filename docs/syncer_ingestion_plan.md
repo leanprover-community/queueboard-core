@@ -244,3 +244,12 @@ Notes
   - Timeline types: `jq -r '.data.repository.pullRequest.timelineItems.nodes[].__typename' pr-30723.json | sort | uniq -c`
   - Commit oids: `jq -r '.data.repository.pullRequest.commits.nodes[].commit.oid' pr-30723.json`
   - Context types per commit: `jq -r '.data.repository.pullRequest.commits.nodes[].commit.statusCheckRollup.contexts.nodes[].__typename' pr-30723.json | sort | uniq -c`
+
+## Operational Notes (V1 additions)
+- Repo-level sync orchestration:
+  - Periodic dispatcher: `syncer.sync_active_repos` enqueues `syncer.sync_repo_since` per active repo.
+  - Admin tool: Repository → Tools → “Enqueue repo-level sync task”.
+  - CLI: `manage.py enqueue_repo_sync --repo owner/name [--since ... --limit ... --states ...]`.
+- Backfill helpers:
+  - `PRSyncService.sync_pull_request(..., timeline_since_iso_override=...)` allows ingesting from an explicit cutoff (historical windows).
+  - `qb_site/syncer/queries/prs_created_page.graphql` + `GitHubClient.get_prs_created_page(...)` support candidate discovery by createdAt.

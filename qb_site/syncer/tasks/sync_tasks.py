@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
+from datetime import timedelta
 
 from celery import shared_task
 from dateutil import parser as dtparser
 from django.utils import timezone
+from django.conf import settings
 
 from core.models import Repository
 from syncer.models import PullRequest
 from syncer.services.github_client import GitHubClient
 from syncer.services.pr_sync_service import PRSyncService
+from core.utils.locks import repo_advisory_lock
 
 
 log = logging.getLogger(__name__)
@@ -68,7 +71,15 @@ def sync_pr_task(  # type: ignore[no-redef]
             rl.get("remaining"),
             rl.get("resetAt"),
         )
-        return {"skipped": True, "reason": "up_to_date", "rate_limit": rl}
+        return {
+            "skipped": True,
+            "reason": "up_to_date",
+            "repo": f"{repo.owner}/{repo.name}",
+            "repo_id": repo.id,
+            "number": int(number),
+            "dry_run": dry_run,
+            "rate_limit": rl,
+        }
 
     svc = PRSyncService()
 
@@ -99,6 +110,16 @@ def sync_pr_task(  # type: ignore[no-redef]
     rl_final = client.get_last_rate_limit() or {}
     summary: Dict[str, Any] = {
         "skipped": False,
+        "repo": f"{repo.owner}/{repo.name}",
+        "repo_id": repo.id,
+        "number": int(number),
+        "dry_run": dry_run,
+        "params": {
+            "timelineK": timelineK,
+            "commitsM": commitsM,
+            "max_timeline_pages": max_timeline_pages,
+            "max_commit_pages": max_commit_pages,
+        },
         "counts": res,
         "rate_limit": rl_final,
     }
@@ -112,3 +133,89 @@ def sync_pr_task(  # type: ignore[no-redef]
         rl_final.get("resetAt"),
     )
     return summary
+
+
+@shared_task(name="syncer.sync_repo_since", bind=True)
+def sync_repo_since_task(  # type: ignore[no-redef]
+    self,
+    repo_id: int,
+    *,
+    since_iso: Optional[str] = None,
+    limit: Optional[int] = None,
+    states: Optional[Sequence[str]] = None,
+    timelineK: Optional[int] = None,
+    commitsM: Optional[int] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Discover changed PRs since cutoff and enqueue per-PR sync tasks.
+
+    V1: simple implementation using a sliding window cutoff when since_iso is not provided.
+    Returns summary with counts and last seen rate limit snapshot.
+    """
+    repo = Repository.objects.get(id=int(repo_id))
+
+    with repo_advisory_lock(repo.id) as acquired:
+        if not acquired:
+            log.info("sync_repo_since: lock not acquired; skipping repo=%s/%s", repo.owner, repo.name)
+            return {"skipped": True, "reason": "lock_not_acquired"}
+
+        client = GitHubClient()
+        # Determine cutoff
+        if since_iso:
+            cutoff_iso = since_iso
+        else:
+            lookback_min = int(getattr(settings, "SYNCER_DISCOVERY_LOOKBACK_MINUTES", 60))
+            cutoff_dt = timezone.now() - timedelta(minutes=lookback_min)
+            if timezone.is_naive(cutoff_dt):
+                cutoff_dt = timezone.make_aware(cutoff_dt)
+            cutoff_iso = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Parameters
+        lim = int(limit) if isinstance(limit, int) else int(getattr(settings, "SYNCER_DISCOVERY_LIMIT", 30))
+        st: list[str]
+        if states is None:
+            st = [s for s in getattr(settings, "SYNCER_DISCOVERY_STATES_DEFAULT", ["OPEN"]) if s]
+        else:
+            st = [str(s).upper() for s in states]
+        tk = int(timelineK) if isinstance(timelineK, int) else int(getattr(settings, "SYNCER_TIMELINE_K_DEFAULT", 150))
+        cm = int(commitsM) if isinstance(commitsM, int) else int(getattr(settings, "SYNCER_COMMITS_M_DEFAULT", 15))
+
+        numbers = client.get_changed_pr_numbers(owner=repo.owner, name=repo.name, since_iso=cutoff_iso, states=st, limit=lim)
+        enqueued = 0
+        for num in numbers:
+            sync_pr_task.delay(repo.id, int(num), timelineK=tk, commitsM=cm, dry_run=dry_run)
+            enqueued += 1
+
+        rl = client.get_last_rate_limit() or {}
+        log.info(
+            "sync_repo_since: repo=%s/%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s",
+            repo.owner,
+            repo.name,
+            cutoff_iso,
+            len(numbers),
+            enqueued,
+            rl.get("remaining"),
+            rl.get("resetAt"),
+        )
+        return {
+            "skipped": False,
+            "repo": f"{repo.owner}/{repo.name}",
+            "since": cutoff_iso,
+            "discovered": len(numbers),
+            "enqueued": enqueued,
+            "rate_limit": rl,
+        }
+
+
+@shared_task(name="syncer.sync_active_repos")
+def sync_active_repos_task() -> Dict[str, Any]:
+    """Enumerate active repositories and enqueue repo-level sync tasks.
+
+    Returns a summary with count of repos considered and tasks enqueued.
+    """
+    repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
+    enqueued = 0
+    for r in repos:
+        sync_repo_since_task.delay(r.id)
+        enqueued += 1
+    return {"repos": len(repos), "enqueued": enqueued}

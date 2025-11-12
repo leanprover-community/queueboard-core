@@ -38,15 +38,26 @@ docker compose exec -T web python qb_site/manage.py list_changed_prs \
 docker compose exec -T web python qb_site/manage.py sync_repo \
   --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --limit 50
 
+# Enqueue a repo-level sync task (locks per repo; runs discovery and enqueues per‑PR tasks)
+docker compose exec -T web python qb_site/manage.py enqueue_repo_sync \
+  --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --limit 50 --states OPEN
+
 ### Celery results in admin
 - We use `django-celery-results` to persist task outcomes to the Django DB when `CELERY_RESULT_BACKEND=django-db`.
 - Enable by ensuring `.env` has `CELERY_RESULT_BACKEND=django-db` and then run migrations (Compose will run them via the `migrate` service).
 - View results in admin under “Task results” (app: `django_celery_results`). Our `sync_pr_task` returns a compact summary dict in the `result` field.
+- Admin enhancement: a “Repo/PR” column is shown for `syncer.sync_pr` (e.g., `owner/name#123`) and for `syncer.sync_repo_since` (e.g., `owner/name (since …)`).
 
 ### Admin utilities
 - Repository list includes a “Tools” link (and an “Open sync tools” action) to a page where you can:
   - Enqueue sync for specific PR numbers (dry‑run or real; optional `timelineK`/`commitsM`).
-  - Discover & sync changed PRs since a cutoff (states, limit; dry‑run or real).
+  - Enqueue a repo‑level sync task with optional cutoff/states/limit (uses the Celery task with per‑repo locking).
+
+### Scheduled syncs
+- Beat runs `syncer.sync_active_repos` every `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS` (default: 300s) which enqueues `syncer.sync_repo_since` per active repo.
+- The repo task discovers changed PRs since a sliding lookback (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`, default 60), capped by `SYNCER_DISCOVERY_LIMIT`.
+- Default bundle sizes come from `SYNCER_TIMELINE_K_DEFAULT` and `SYNCER_COMMITS_M_DEFAULT`.
+- See `.env.example` for all `SYNCER_*` knobs.
 ```
 
 Notes
