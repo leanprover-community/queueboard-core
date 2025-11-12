@@ -31,37 +31,39 @@
     <p><input type="submit" class="default" value="{% trans 'Enqueue sync' %}" /></p>
   </form>
 
-  <h2>{% trans "Discover & sync since cutoff" %}</h2>
-  <form method="post">
+  
+
+  <h2>{% trans "Enqueue repo-level sync task" %}</h2>
+  <form method="post" style="margin-bottom:2em;">
     {% csrf_token %}
-    <input type="hidden" name="action" value="discover_sync" />
+    <input type="hidden" name="action" value="enqueue_repo_sync" />
     <table>
       <tr>
-        <th>{{ discover_form.since.label_tag }}</th>
-        <td>{{ discover_form.since }}<br/><small>{{ discover_form.since.help_text }}</small></td>
+        <th>{{ repo_form.since.label_tag }}</th>
+        <td>{{ repo_form.since }}<br/><small>{{ repo_form.since.help_text }}</small></td>
       </tr>
       <tr>
-        <th>{{ discover_form.states.label_tag }}</th>
-        <td>{{ discover_form.states }}</td>
+        <th>{{ repo_form.states.label_tag }}</th>
+        <td>{{ repo_form.states }}</td>
       </tr>
       <tr>
-        <th>{{ discover_form.limit.label_tag }}</th>
-        <td>{{ discover_form.limit }}</td>
+        <th>{{ repo_form.limit.label_tag }}</th>
+        <td>{{ repo_form.limit }}</td>
       </tr>
       <tr>
-        <th>{{ discover_form.dry_run.label_tag }}</th>
-        <td>{{ discover_form.dry_run }}</td>
+        <th>{{ repo_form.dry_run.label_tag }}</th>
+        <td>{{ repo_form.dry_run }}</td>
       </tr>
       <tr>
-        <th>{{ discover_form.timelineK.label_tag }}</th>
-        <td>{{ discover_form.timelineK }}</td>
+        <th>{{ repo_form.timelineK.label_tag }}</th>
+        <td>{{ repo_form.timelineK }}</td>
       </tr>
       <tr>
-        <th>{{ discover_form.commitsM.label_tag }}</th>
-        <td>{{ discover_form.commitsM }}</td>
+        <th>{{ repo_form.commitsM.label_tag }}</th>
+        <td>{{ repo_form.commitsM }}</td>
       </tr>
     </table>
-    <p><input type="submit" value="{% trans 'Discover and enqueue sync' %}" /></p>
+    <p><input type="submit" value="{% trans 'Enqueue repo sync task' %}" /></p>
   </form>
 
   {% if enqueued %}

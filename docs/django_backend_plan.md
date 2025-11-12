@@ -241,11 +241,18 @@ Developer utilities (current)
     - 6.1 Define `PRCIStatusEvent` and a derivation service using snapshots.
     - 6.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
 
-## Syncer Scheduling (Planned)
-- Single-token, rate-aware orchestration:
-  - Beat schedules a `sync_repo_since(repo_id, since)` task every few minutes per active repo.
-  - The task discovers changed PRs since a watermark, preflights, and ingests bundles.
-  - Use a per-repo lock (and optionally a global token lock) to avoid overlap; stop early when `rateLimit.remaining` nears a threshold and enqueue a continuation at `resetAt`.
+## Syncer Scheduling (V1 Implemented)
+- Dispatcher + per-repo tasks:
+  - Celery beat schedules `syncer.sync_active_repos` every `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS` (default 300s).
+  - The dispatcher enqueues `syncer.sync_repo_since(repo_id)` for each active repository.
+  - The repo task discovers changed PRs since a sliding lookback (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`) and enqueues `syncer.sync_pr` for each number. Discovery states and limits are configurable.
+- Concurrency controls:
+  - Per-repo Postgres advisory lock ensures no overlapping runs for the same repo.
+  - Global token coordination is deferred; we will add rate-aware continuation (stop early when budget low and resume at `resetAt`) in a follow-up.
 - State and watermarks:
-  - Per repo: last discovery time; per PR: `PullRequest.last_synced_at`.
-  - Optional SyncJob row for long backfills/resume; deferred for v1 thanks to idempotency.
+  - V1 uses a sliding discovery window; per PR, `PullRequest.last_synced_at` remains the single watermark.
+  - No persisted discovery cursors in V1; idempotent upserts and repeated windows are acceptable.
+- Interfaces:
+  - Admin: Repository → Tools → “Enqueue repo-level sync task” form.
+  - CLI: `manage.py enqueue_repo_sync --repo owner/name [--since ... --limit ... --states ...]`.
+  - Periodic: driven by beat as configured in settings.

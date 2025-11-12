@@ -6,6 +6,7 @@ from django.template.response import TemplateResponse
 from django import forms
 from django.utils.html import format_html
 from django.http import HttpResponseRedirect, HttpResponse
+import json
 
 from .models import Repository, ReviewerPreference, User
 
@@ -54,23 +55,23 @@ class RepositoryAdmin(admin.ModelAdmin):
         timelineK = forms.IntegerField(label="timelineK", required=False, initial=150, min_value=1)
         commitsM = forms.IntegerField(label="commitsM", required=False, initial=15, min_value=1)
 
-    class DiscoverForm(forms.Form):
+    class RepoSyncTaskForm(forms.Form):
         since = forms.CharField(
-            label="Since (ISO8601)",
-            help_text="e.g., 2025-10-20T00:00:00Z or 2025-10-20",
+            required=False,
+            label="Since (optional)",
+            help_text="Leave blank to use default sliding lookback",
             widget=forms.TextInput(attrs={"size": 30}),
         )
         states = forms.MultipleChoiceField(
             label="States",
             required=False,
-            initial=["OPEN"],
             choices=[("OPEN", "OPEN"), ("MERGED", "MERGED"), ("CLOSED", "CLOSED")],
             widget=forms.CheckboxSelectMultiple,
         )
-        limit = forms.IntegerField(label="Limit", required=False, initial=20, min_value=1, max_value=200)
+        limit = forms.IntegerField(label="Limit", required=False, min_value=1, max_value=200)
         dry_run = forms.BooleanField(label="Dry-run", required=False, initial=False)
-        timelineK = forms.IntegerField(label="timelineK", required=False, initial=150, min_value=1)
-        commitsM = forms.IntegerField(label="commitsM", required=False, initial=15, min_value=1)
+        timelineK = forms.IntegerField(label="timelineK", required=False, min_value=1)
+        commitsM = forms.IntegerField(label="commitsM", required=False, min_value=1)
 
     def sync_tools_view(self, request, object_id, *args, **kwargs):  # type: ignore[override]
         repo = self.get_object(request, object_id)
@@ -88,8 +89,8 @@ class RepositoryAdmin(admin.ModelAdmin):
         if request.method == "POST":
             submitted_action = request.POST.get("action")
             if submitted_action == "enqueue_prs":
-                form = self.SyncPRsForm(request.POST)
-                discover_form = self.DiscoverForm()
+                form = self.SyncPRsForm(request.POST, prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
                 if form.is_valid():
                     raw = form.cleaned_data["pr_numbers"]
                     prs_initial = raw
@@ -112,47 +113,45 @@ class RepositoryAdmin(admin.ModelAdmin):
                             enqueued.append((n, res.id))
                 else:
                     error = "Invalid form submission for PR numbers"
-            elif submitted_action == "discover_sync":
-                form = self.SyncPRsForm()
-                discover_form = self.DiscoverForm(request.POST)
-                if discover_form.is_valid():
-                    from syncer.services.github_client import GitHubClient
-                    from syncer.tasks.sync_tasks import sync_pr_task
+            elif submitted_action == "enqueue_repo_sync":
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(request.POST, prefix="repo")
+                if repo_form.is_valid():
+                    from syncer.tasks.sync_tasks import sync_repo_since_task
 
-                    since = discover_form.cleaned_data["since"]
-                    states = discover_form.cleaned_data.get("states") or ["OPEN"]
-                    limit = discover_form.cleaned_data.get("limit") or 20
-                    dry_run = bool(discover_form.cleaned_data.get("dry_run") or False)
-                    timelineK = discover_form.cleaned_data.get("timelineK") or 150
-                    commitsM = discover_form.cleaned_data.get("commitsM") or 15
-                    try:
-                        gh = GitHubClient()
-                        numbers = gh.get_changed_pr_numbers(
-                            owner=repo.owner, name=repo.name, since_iso=since, states=states, limit=int(limit)
-                        )
-                        if not numbers:
-                            error = "No changed PRs discovered for the given cutoff/states"
-                        else:
-                            for n in numbers:
-                                res = sync_pr_task.delay(repo.id, int(n), timelineK=timelineK, commitsM=commitsM, dry_run=dry_run)
-                                enqueued.append((n, res.id))
-                    except Exception as e:  # pragma: no cover - external dependency
-                        error = f"Discovery failed: {e}"
+                    since = repo_form.cleaned_data.get("since") or None
+                    states = repo_form.cleaned_data.get("states") or None
+                    limit = repo_form.cleaned_data.get("limit") or None
+                    dry_run = bool(repo_form.cleaned_data.get("dry_run") or False)
+                    timelineK = repo_form.cleaned_data.get("timelineK") or None
+                    commitsM = repo_form.cleaned_data.get("commitsM") or None
+
+                    res = sync_repo_since_task.delay(
+                        repo.id,
+                        since_iso=since,
+                        limit=limit,
+                        states=states,
+                        timelineK=timelineK,
+                        commitsM=commitsM,
+                        dry_run=dry_run,
+                    )
+                    # Show one row indicating the repo-level task enqueued
+                    enqueued.append((f"repo:{repo.pk}", res.id))
                 else:
-                    error = "Invalid discovery form"
+                    error = "Invalid repo sync form"
             else:
-                form = self.SyncPRsForm()
-                discover_form = self.DiscoverForm()
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
         else:
-            form = self.SyncPRsForm()
-            discover_form = self.DiscoverForm()
+            form = self.SyncPRsForm(prefix="prs")
+            repo_form = self.RepoSyncTaskForm(prefix="repo")
 
         context = {
             **self.admin_site.each_context(request),
             "title": f"Sync tools for {repo}",
             "repo": repo,
             "form": form,
-            "discover_form": discover_form,
+            "repo_form": repo_form,
             "enqueued": enqueued,
             "error": error,
             "submitted_action": submitted_action,
@@ -225,3 +224,73 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("repository", "user")
+
+
+# Enhance django-celery-results TaskResult admin with repo/PR context for syncer tasks
+try:
+    from django_celery_results.models import TaskResult  # type: ignore
+    from django_celery_results.admin import TaskResultAdmin  # type: ignore
+
+    try:  # Unregister default admin to replace with our enhanced version
+        admin.site.unregister(TaskResult)
+    except admin.sites.NotRegistered:  # pragma: no cover - depends on install order
+        pass
+
+    @admin.register(TaskResult)
+    class EnhancedTaskResultAdmin(TaskResultAdmin):  # type: ignore[misc]
+        list_display = (
+            "task_id",
+            "task_name",
+            "repo_pr",
+            "status",
+            "date_done",
+        )
+        list_filter = getattr(TaskResultAdmin, "list_filter", tuple()) + ("task_name",)
+        search_fields = getattr(TaskResultAdmin, "search_fields", tuple()) + ("result", "task_args", "task_kwargs")
+
+        def _json_load(self, raw):  # pragma: no cover - trivial helper
+            if raw is None:
+                return None
+            if isinstance(raw, (dict, list)):
+                return raw
+            try:
+                return json.loads(raw)
+            except Exception:
+                return None
+
+        def repo_pr(self, obj):  # type: ignore[override]
+            name = getattr(obj, "task_name", "") or ""
+            if name == "syncer.sync_pr":
+                res = self._json_load(getattr(obj, "result", None))
+                if isinstance(res, dict) and res.get("repo") and res.get("number") is not None:
+                    return f"{res.get('repo')}#{res.get('number')}"
+                # Fallback to args (repo_id, number)
+                args = self._json_load(getattr(obj, "task_args", None))
+                if isinstance(args, list) and len(args) >= 2:
+                    repo_id, number = args[0], args[1]
+                    try:
+                        repo = Repository.objects.only("owner", "name").get(id=int(repo_id))
+                        return f"{repo.owner}/{repo.name}#{number}"
+                    except Exception:  # pragma: no cover - best-effort
+                        return f"repo_id={repo_id}#{number}"
+                return "-"
+            if name == "syncer.sync_repo_since":
+                res = self._json_load(getattr(obj, "result", None))
+                if isinstance(res, dict) and res.get("repo"):
+                    since = res.get("since")
+                    return f"{res.get('repo')} (since {since})"
+                # Fallback to kwargs
+                kwargs = self._json_load(getattr(obj, "task_kwargs", None))
+                if isinstance(kwargs, dict) and kwargs.get("repo_id"):
+                    try:
+                        repo = Repository.objects.only("owner", "name").get(id=int(kwargs["repo_id"]))
+                        return f"{repo.owner}/{repo.name}"
+                    except Exception:  # pragma: no cover
+                        return f"repo_id={kwargs.get('repo_id')}"
+                return "-"
+            return "-"
+
+        repo_pr.short_description = "Repo/PR"  # type: ignore[attr-defined]
+
+except Exception:  # pragma: no cover - django-celery-results not installed
+    pass
