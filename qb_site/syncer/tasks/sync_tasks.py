@@ -147,6 +147,48 @@ def sync_pr_task(  # type: ignore[no-redef]
         commit_pages_used = 0
         checkruns_upserted = 0
         statusctx_upserted = 0
+        # Rate guard: skip backfill when remaining budget is low
+        try:
+            rl_now = client.get_last_rate_limit() or {}
+            remaining_now = rl_now.get("remaining") if isinstance(rl_now, dict) else None
+            threshold_now = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+            if isinstance(remaining_now, int) and remaining_now <= threshold_now:
+                rl = rl_now
+                log.info(
+                    "sync_pr_task: status=no_work (guarded) repo=%s/%s pr=%s remaining=%s resetAt=%s",
+                    repo.owner,
+                    repo.name,
+                    number,
+                    rl.get("remaining"),
+                    rl.get("resetAt"),
+                )
+                return {
+                    "skipped": True,
+                    "status": "no_work",
+                    "reason": "up_to_date",
+                    "repo": f"{repo.owner}/{repo.name}",
+                    "repo_id": repo.id,
+                    "number": int(number),
+                    "dry_run": dry_run,
+                    "rate_limit": rl,
+                    "rate_events": rate_events,
+                    "backfill": {
+                        "pages_used": 0,
+                        "commit_pages_used": 0,
+                        "done_after": bool(pr_db.timeline_backfill_done),
+                        "commits_done_after": bool(pr_db.commits_backfill_done),
+                    },
+                    "params": {
+                        "timelineK": timelineK,
+                        "commitsM": commitsM,
+                        "max_timeline_pages": max_timeline_pages,
+                        "max_commit_pages": max_commit_pages,
+                        "backfill_timeline_pages": backfill_timeline_pages,
+                        "backfill_commit_pages": backfill_commit_pages,
+                    },
+                }
+        except Exception:
+            pass
         if backfill_timeline_pages and not pr_db.timeline_backfill_done:
             from syncer.services.sub.timeline_sync import sync_timeline_events
 
@@ -204,7 +246,10 @@ def sync_pr_task(  # type: ignore[no-redef]
         if backfill_commit_pages and int(backfill_commit_pages) > 0:
             from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 
-            before: Optional[str] = None  # seed by fetching the most recent page
+            # Continue from the saved backfill cursor when available; this ensures
+            # successive up-to-date runs progress older pages instead of refetching
+            # the newest page each time.
+            before: Optional[str] = pr_db.commits_backfill_cursor
             used = 0
             has_prev: Optional[bool] = True
             while used < int(backfill_commit_pages) and has_prev:
@@ -304,6 +349,7 @@ def sync_pr_task(  # type: ignore[no-redef]
                 "pages_used": pages_used,
                 "commit_pages_used": commit_pages_used,
                 "done_after": bool(pr_db.timeline_backfill_done),
+                "commits_done_after": bool(pr_db.commits_backfill_done),
             },
             "params": {
                 "timelineK": timelineK,
