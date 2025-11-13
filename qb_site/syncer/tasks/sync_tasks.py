@@ -96,6 +96,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         rl = client.get_last_rate_limit() or {}
         return {
             "skipped": True,
+            "status": "deferred",
             "reason": "deferred_low_budget",
             "where": where,
             "repo": f"{repo.owner}/{repo.name}",
@@ -138,24 +139,94 @@ def sync_pr_task(  # type: ignore[no-redef]
 
     pr_db = PullRequest.objects.filter(repository=repo, number=int(number)).first()
     if pr_db and pr_db.last_synced_at and gh_updated and gh_updated <= pr_db.last_synced_at:
+        # PR unchanged, but we may still spend backfill budget on older timeline pages.
+        pages_used = 0
+        events_created = 0
+        if backfill_timeline_pages and not pr_db.timeline_backfill_done:
+            from syncer.services.sub.timeline_sync import sync_timeline_events
+
+            before = pr_db.timeline_backfill_cursor  # may be None to seed
+            while pages_used < int(backfill_timeline_pages) and not pr_db.timeline_backfill_done:
+                tdata = client.get_timeline_page_back(
+                    owner=repo.owner,
+                    name=repo.name,
+                    number=int(number),
+                    last=timelineK,
+                    before=before,
+                )
+                tpr = ((tdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+                titems = tpr.get("timelineItems") or {}
+                nodes = titems.get("nodes") or []
+                tl_res = sync_timeline_events(pr_db, nodes)
+                events_created += tl_res.created
+                # Update earliest timestamp if present
+                if nodes:
+                    try:
+                        times = [n.get("createdAt") for n in nodes if isinstance(n, dict) and n.get("createdAt")]
+                        if times:
+                            ts = [dtparser.isoparse(x) for x in times]
+                            ts = [timezone.make_aware(t) if timezone.is_naive(t) else t for t in ts]
+                            mn = min(ts)
+                            if not pr_db.timeline_earliest_synced_at or mn < pr_db.timeline_earliest_synced_at:
+                                pr_db.timeline_earliest_synced_at = mn
+                    except Exception:  # pragma: no cover
+                        pass
+                # Update cursor/done flags
+                pinfo = titems.get("pageInfo") or {}
+                pr_db.timeline_backfill_done = not bool(pinfo.get("hasPreviousPage"))
+                before = pinfo.get("startCursor")
+                pr_db.timeline_backfill_cursor = before
+                pr_db.save(
+                    update_fields=[
+                        "timeline_backfill_cursor",
+                        "timeline_backfill_done",
+                        "timeline_earliest_synced_at",
+                    ]
+                )
+                rl_page = client.get_last_rate_limit() or {}
+                if isinstance(rl_page, dict):
+                    rate_events.append(
+                        {
+                            "label": "timeline_page_back",
+                            "cost": rl_page.get("cost"),
+                            "remaining": rl_page.get("remaining"),
+                            "resetAt": rl_page.get("resetAt"),
+                        }
+                    )
+                pages_used += 1
+
         rl = client.get_last_rate_limit() or {}
+        status = "backfill_only" if (events_created > 0 or pages_used > 0) else "no_work"
         log.info(
-            "sync_pr_task: up-to-date; skipping repo=%s/%s pr=%s remaining=%s resetAt=%s",
+            "sync_pr_task: status=%s repo=%s/%s pr=%s backfill_pages=%s created_events=%s done_after=%s remaining=%s resetAt=%s",
+            status,
             repo.owner,
             repo.name,
             number,
+            pages_used,
+            events_created,
+            bool(pr_db.timeline_backfill_done),
             rl.get("remaining"),
             rl.get("resetAt"),
         )
         return {
-            "skipped": True,
-            "reason": "up_to_date",
+            "skipped": status == "no_work",
+            "status": status,
+            "reason": "up_to_date" if status == "no_work" else None,
             "repo": f"{repo.owner}/{repo.name}",
             "repo_id": repo.id,
             "number": int(number),
             "dry_run": dry_run,
             "rate_limit": rl,
             "rate_events": rate_events,
+            "backfill": {"pages_used": pages_used, "done_after": bool(pr_db.timeline_backfill_done)},
+            "params": {
+                "timelineK": timelineK,
+                "commitsM": commitsM,
+                "max_timeline_pages": max_timeline_pages,
+                "max_commit_pages": max_commit_pages,
+                "backfill_timeline_pages": backfill_timeline_pages,
+            },
         }
 
     svc = PRSyncService()
@@ -207,6 +278,7 @@ def sync_pr_task(  # type: ignore[no-redef]
     rl_final = client.get_last_rate_limit() or {}
     summary: Dict[str, Any] = {
         "skipped": False,
+        "status": "synced",
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
         "number": int(number),
@@ -216,17 +288,32 @@ def sync_pr_task(  # type: ignore[no-redef]
             "commitsM": commitsM,
             "max_timeline_pages": max_timeline_pages,
             "max_commit_pages": max_commit_pages,
+            "backfill_timeline_pages": backfill_timeline_pages,
         },
         "counts": res,
         "rate_limit": rl_final,
         "rate_events": rate_events,
     }
+    # Derive backfill pages used from rate_events labels (if any), and include whether backfill is done now
+    try:
+        backfill_pages_used = sum(1 for ev in rate_events if isinstance(ev, dict) and ev.get("label") == "timeline_page_back")
+    except Exception:
+        backfill_pages_used = 0
+    # Reload PR to check backfill_done flag after run
+    try:
+        pr_now = PullRequest.objects.filter(repository=repo, number=int(number)).only("timeline_backfill_done").first()
+        backfill_done_now = bool(pr_now.timeline_backfill_done) if pr_now else None
+    except Exception:
+        backfill_done_now = None
     log.info(
-        "sync_pr_task: done repo=%s/%s pr=%s counts=%s remaining=%s resetAt=%s",
+        "sync_pr_task: status=%s repo=%s/%s pr=%s counts=%s backfill_pages=%s done_after=%s remaining=%s resetAt=%s",
+        "synced",
         repo.owner,
         repo.name,
         number,
         res,
+        backfill_pages_used,
+        backfill_done_now,
         rl_final.get("remaining"),
         rl_final.get("resetAt"),
     )
