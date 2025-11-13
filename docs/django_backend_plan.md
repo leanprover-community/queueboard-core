@@ -220,35 +220,29 @@ Developer utilities (current)
   about a refused DB connection or missing password. This is harmless and migrations are still created;
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
-## Immediate Next Steps
-1. Repo‑level sync task + scheduling.
-    - 1.1 Implement `sync_repo_since_task(repo_id, since, limit, states)` with preflight, rate‑budget stop, and continuation at `resetAt`.
-    - 1.2 Add a per‑repo lock (and optional global single‑token lock) to avoid overlap.
-    - 1.3 Add a lightweight beat schedule to kick active repos every few minutes (staggered by jitter).
-2. Paging & cutoffs.
-    - 2.1 Timeline: already uses `since = last_synced_at − ε` and pages forward; add tests for multi‑page paths.
-    - 2.2 Commits: keep fixed window (`last: M`) with small capped extra pages; no time‑based cutoffs in V1.
-3. Force‑push boundaries.
-    - 3.1 Analyzer: treat `HEAD_FORCE_PUSHED` events as hard boundaries; segment queue intervals by `after_sha`.
-    - 3.2 Optional fallback: detect head SHA drift between syncs when events fall outside the window.
-4. Admin polish.
-    - 4.1 Link enqueued task IDs from admin result pages to django‑celery‑results TaskResult detail.
-    - 4.2 Show “recent task results” on the repo Sync tools page; add a preflight‑only report.
-5. Tests and CI.
-    - 5.1 Add tests for timeline multi‑page and commit capped paging; extend admin view/form tests.
-    - 5.2 Keep Compose checks; optionally add ruff to CI once cache perms are stable.
-6. Analyzer stub for CI transitions (unchanged).
-    - 6.1 Define `PRCIStatusEvent` and a derivation service using snapshots.
-    - 6.2 Add a small test verifying computed queue entry/exit timestamps for a sample PR.
+## Remaining Work (near‑term)
+1. CI backfill across force‑pushes (Analyzer‑driven)
+    - Build `PRRevision` windows from force‑push events and head state.
+    - Identify historical SHAs missing CI and enqueue Syncer CI fetches (rate‑aware scheduling remains in Syncer).
+    - Add query helpers for “CI at time T” and “who was on the queue at T”.
+2. Metrics and observability
+    - Keep token usage from `rate_events`; consider adding rollups for commit/timeline backfill pages if needed.
+    - Small admin summary for per‑repo task volumes and token cost over selectable windows.
+3. Admin ergonomics
+    - Optional per‑run overrides for backfill budgets on PR enqueue.
+    - Quick links from PR admin to filtered Task Results (already present; iterate as needed).
+4. Tests
+    - Extend backfill tests (commit + timeline) and rate‑guard paths.
+    - Add Analyzer unit tests for revision windows and CI reconstruction.
 
-## Syncer Scheduling (V1 Implemented)
+## Syncer Scheduling (Current Functionality)
 - Dispatcher + per-repo tasks:
   - Celery beat schedules `syncer.sync_active_repos` every `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS` (default 300s).
   - The dispatcher enqueues `syncer.sync_repo_since(repo_id)` for each active repository.
   - The repo task discovers changed PRs since a sliding lookback (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`) and enqueues `syncer.sync_pr` for each number. Discovery states and limits are configurable.
 - Concurrency controls:
   - Per-repo Postgres advisory lock ensures no overlapping runs for the same repo.
-  - Global token coordination is deferred; we will add rate-aware continuation (stop early when budget low and resume at `resetAt`) in a follow-up.
+  - Rate-aware continuation implemented; when budget is low we stop early and schedule continuation at `resetAt` (debounced via Redis). A global single‑token lock is not used in the current design.
 - State and watermarks:
   - V1 uses a sliding discovery window; per PR, `PullRequest.last_synced_at` remains the single watermark.
   - No persisted discovery cursors in V1; idempotent upserts and repeated windows are acceptable.
@@ -256,3 +250,27 @@ Developer utilities (current)
   - Admin: Repository → Tools → “Enqueue repo-level sync task” form.
   - CLI: `manage.py enqueue_repo_sync --repo owner/name [--since ... --limit ... --states ...]`.
   - Periodic: driven by beat as configured in settings.
+
+## Syncer: Current Functionality
+- Rate-aware continuation and guards
+  - `syncer.sync_repo_since` stops early when `remaining <= SYNCER_RATE_REMAINING_MIN` and schedules a continuation at `resetAt + jitter` (debounced).
+  - `syncer.sync_pr` guards optional pagination/backfill when budget is low; on mid-sync low budget it defers to `resetAt` instead of failing.
+- Backfill improvements
+  - Timeline backfill on up-to-date runs with `SYNCER_TIMELINE_BACKFILL_PAGES`; persists `timeline_backfill_cursor/done/earliest_synced_at`.
+  - Commit backfill on both up-to-date and synced runs with `SYNCER_COMMITS_BACKFILL_PAGES`; persists `commits_backfill_cursor/done/earliest_synced_at`.
+- Admin polish
+  - PR page shows backfill fields and inlines for associated events/checks/statuses; object tools to enqueue sync (respects backfill defaults).
+  - Task Results list shortens IDs, hides unused group results, and removes Add.
+- Metrics
+  - `SyncerMetricsSnapshot` (15-minute) captures task counts and token usage; an admin button triggers ad-hoc collection.
+
+## Environment
+- `SYNCER_RATE_REMAINING_MIN`, `SYNCER_TIMELINE_K_DEFAULT`, `SYNCER_COMMITS_M_DEFAULT`
+- `SYNCER_TIMELINE_BACKFILL_PAGES`, `SYNCER_COMMITS_BACKFILL_PAGES`
+- `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`
+- `SYNCER_REPO_ENQUEUE_BATCH_MAX`, `SYNCER_EST_COST_PER_PR`
+
+## Planned Additions
+- Analyzer-managed `PRRevision` windows across force-pushes and CI-at-time rollups.
+- Analyzer enqueues targeted Syncer CI fetches for historical SHAs under Syncer’s rate-aware scheduler.
+- Admin/CLI tools for “who was on the queue at T” and historical backfill windows.

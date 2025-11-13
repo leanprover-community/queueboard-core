@@ -1,4 +1,4 @@
-# Syncer Ingestion Plan (v1)
+# Syncer Ingestion Plan
 
 This document outlines the v1 GitHub ingestion architecture that powers the raw data tables in `syncer`. It optimizes for:
 - Parity with the current queueboard (labels + CI + key timeline events)
@@ -205,20 +205,6 @@ Notes
   - Full commit history storage (Commits/PRCommit tables) and CI change history via REST/checkSuites.
 - Time‑based commit cutoffs (e.g., by commit timestamps) are unreliable across rebases/force‑pushes; V1 avoids them in favor of a fixed commit window with caps.
 
-## Next Steps
-- Page‑until‑cutoff loops
-  - Use cutoff (`last_synced_at` or `--since`) to stop paging as soon as we cross the boundary (with small page caps for safety).
-  - Log page counts and truncation flags for tuning.
-- Repo‑level task + scheduling
-  - Implement `sync_repo_since_task(repo_id, since, limit, states)` with per‑repo lock and rate‑budget stop; enqueue continuation at `resetAt`.
-  - Add a lightweight “kick all repos” beat schedule and global single‑token guard if needed.
-- Admin polish
-  - Link enqueued Task IDs to Task Results; show recent results on the repo tools page.
-  - Optional: add a “preflight only” report (no enqueue) summarizing updatedAt vs last_synced_at.
-- Tests
-  - Orchestrator paging tests; repo‑task budget/continuation tests (once added).
-  - Admin view/form tests (basic GET/POST flows).
-
 ### Generating a Bundle (dev)
 - Authenticate gh: `gh auth status` (or set `GH_TOKEN`).
 - Run the bundle query for a single PR and write to JSON:
@@ -245,11 +231,50 @@ Notes
   - Commit oids: `jq -r '.data.repository.pullRequest.commits.nodes[].commit.oid' pr-30723.json`
   - Context types per commit: `jq -r '.data.repository.pullRequest.commits.nodes[].commit.statusCheckRollup.contexts.nodes[].__typename' pr-30723.json | sort | uniq -c`
 
-## Operational Notes (V1 additions)
-- Repo-level sync orchestration:
-  - Periodic dispatcher: `syncer.sync_active_repos` enqueues `syncer.sync_repo_since` per active repo.
-  - Admin tool: Repository → Tools → “Enqueue repo-level sync task”.
-  - CLI: `manage.py enqueue_repo_sync --repo owner/name [--since ... --limit ... --states ...]`.
-- Backfill helpers:
-  - `PRSyncService.sync_pull_request(..., timeline_since_iso_override=...)` allows ingesting from an explicit cutoff (historical windows).
-  - `qb_site/syncer/queries/prs_created_page.graphql` + `GitHubClient.get_prs_created_page(...)` support candidate discovery by createdAt.
+## Current Functionality: Orchestration and Timeline Backfill
+- Repo-level tasks
+  - `syncer.sync_active_repos`: beat-dispatched, enqueues `syncer.sync_repo_since` for each active repo.
+  - `syncer.sync_repo_since`: discovers updated PRs since a moving cutoff and enqueues `syncer.sync_pr` with conservative batching.
+  - Rate guard/continuation: after discovery, if `remaining <= SYNCER_RATE_REMAINING_MIN`, the task defers and schedules a continuation at `resetAt + jitter`, debounced via Redis.
+- PR-level task
+  - `syncer.sync_pr`: header preflight skip when unchanged; otherwise ingests one bundle page and persists labels, key timeline events, and CI snapshots for the head commit window.
+  - Backfill-only on skip: when unchanged, spends a small budget on older timeline pages (backward) and marks `timeline_backfill_cursor/done` and `timeline_earliest_synced_at`.
+  - Rate guard: both the skip-path and the post-bundle pagination respect `SYNCER_RATE_REMAINING_MIN` and avoid backfill/pagination when budget is low.
+- Settings (selected)
+  - `SYNCER_RATE_REMAINING_MIN` (int): low budget threshold for deferral/guard.
+  - `SYNCER_TIMELINE_K_DEFAULT`, `SYNCER_COMMITS_M_DEFAULT`: bundle sizes.
+  - `SYNCER_REPO_ENQUEUE_BATCH_MAX`, `SYNCER_EST_COST_PER_PR`: repo batching knobs.
+  - `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`.
+
+## Current Functionality: Commit Backfill (head-window history)
+- Behavior
+  - Adds a small, budgeted backfill for commits, mirroring timeline backfill.
+  - Runs in two places:
+    - Up-to-date path ("backfill_only"): page the PR’s commits connection backward by N pages and persist CI contexts for each commit on those pages.
+    - Synced path: after normal bundle ingest, optionally spend N pages on older commits.
+  - Per-PR state for visibility in admin:
+    - `PullRequest.commits_backfill_cursor`
+    - `PullRequest.commits_backfill_done`
+    - `PullRequest.commits_earliest_synced_at` (min of page timestamps observed from CheckRun.completedAt/startedAt and StatusContext.createdAt).
+  - Backfill is guarded by `SYNCER_RATE_REMAINING_MIN` in both paths.
+- Settings
+  - `SYNCER_COMMITS_BACKFILL_PAGES` (int, default 0): pages of older commits to fetch per run (up-to-date or synced). Set to 1–2 to enable.
+- Admin
+  - PR list shows `timeline_backfill_done` and `commits_backfill_done`.
+  - PR detail shows the backfill cursors/done flags and earliest timestamps; also inlines for recent timeline events, check runs, and status contexts; object tools to "Enqueue sync" (respects backfill settings).
+
+## Current Functionality: Metrics
+- `SyncerMetricsSnapshot` stored every 15 minutes (Celery beat):
+  - Counts of repo/PR tasks, deferrals/failures, coarse token usage (from `rate_events`), and DB size.
+  - Admin list shows snapshots; a repository tools page includes a "Collect metrics now" button for ad-hoc sampling.
+
+## Environment Knobs (summary)
+- Backfill budgets: `SYNCER_TIMELINE_BACKFILL_PAGES`, `SYNCER_COMMITS_BACKFILL_PAGES`.
+- Bundle defaults: `SYNCER_TIMELINE_K_DEFAULT`, `SYNCER_COMMITS_M_DEFAULT`.
+- Rate/batching: `SYNCER_RATE_REMAINING_MIN`, `SYNCER_REPO_ENQUEUE_BATCH_MAX`, `SYNCER_EST_COST_PER_PR`.
+- Discovery: `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`.
+
+## Planned Additions: CI Backfill Across Force-Pushes
+- Derived “head revision windows” in Analyzer (tentative model `PRRevision` with `{pr, head_sha, from_ts, to_ts}`) built from force-push timeline events and header state.
+- Analyzer computes which historical SHAs lack CI and enqueues Syncer requests to fetch CI for those SHAs over time (decoupled coordination).
+- Query helpers in Analyzer reconstruct CI state “as of T” for a PR by picking the head SHA window covering `T` and joining the closest per-context CI records.
