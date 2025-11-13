@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, List
 
 from dateutil import parser as dtparser
 from django.utils import timezone
+from django.conf import settings
 
 from syncer.models.check_run import CheckRun
 from syncer.models.pull_request import PullRequest
@@ -28,6 +29,13 @@ def _parse_iso(val: str | None):
     return dt
 
 
+def _parse_allowlist(val: Any) -> List[str]:
+    if not val:
+        return []
+    s = str(val)
+    return [tok.strip().lower() for tok in s.split(",") if tok.strip()]
+
+
 def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sha: str) -> CISyncResult:
     """Upsert snapshot CheckRun rows from a commit's status.contexts entries.
 
@@ -40,12 +48,18 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     """
     created = 0
     updated = 0
+    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_CHECKRUN_NAMES", ""))
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
         gid = ctx.get("id")
         if not gid:
             continue
+        # Optional allow-list filter by name (case-insensitive substring)
+        if allow:
+            nm = (ctx.get("name") or "").lower()
+            if not any(pat in nm for pat in allow):
+                continue
         values = {
             "pull_request": pr,
             "head_sha": head_sha,
@@ -74,12 +88,18 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     """
     created = 0
     updated = 0
+    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", ""))
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
         gid = ctx.get("id")
         if not gid:
             continue
+        # Optional allow-list filter by context name (case-insensitive substring)
+        if allow:
+            nm = (ctx.get("context") or "").lower()
+            if not any(pat in nm for pat in allow):
+                continue
         values = {
             "pull_request": pr,
             "head_sha": head_sha,

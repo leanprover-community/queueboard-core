@@ -159,6 +159,12 @@ SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES",
 SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 0))
 SYNCER_CI_BY_SHA_PAGES = int(os.getenv("SYNCER_CI_BY_SHA_PAGES", 1))
 
+# CI filter (simple global allow-lists; empty = allow all)
+# Comma-separated substrings matched case-insensitively against CheckRun.name
+SYNCER_CI_ALLOW_CHECKRUN_NAMES = os.getenv("SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")
+# Comma-separated substrings matched case-insensitively against StatusContext.context
+SYNCER_CI_ALLOW_STATUS_NAMES = os.getenv("SYNCER_CI_ALLOW_STATUS_NAMES", "")
+
 # Beat schedule: periodically enqueue repo syncs for active repositories.
 CELERY_BEAT_SCHEDULE = {
     "sync_active_repos": {
