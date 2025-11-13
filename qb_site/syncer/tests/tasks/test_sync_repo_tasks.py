@@ -7,11 +7,12 @@ from django.utils import timezone
 
 from core.models import Repository
 from syncer.tasks.sync_tasks import sync_repo_since_task, sync_active_repos_task
+from syncer.tests.factories import make_repo
 
 
 class TestSyncRepoTasks(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")

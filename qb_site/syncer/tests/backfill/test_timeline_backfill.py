@@ -7,15 +7,16 @@ from django.test import TestCase
 from core.models import Repository
 from syncer.models import PullRequest, PRTimelineEvent
 from syncer.services.pr_sync_service import PRSyncService
+from syncer.tests.factories import make_repo, make_pr
 
 
 class TestTimelineBackfill(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
         # Minimal PR row to target by number
-        PullRequest.objects.create(
-            repository=self.repo,
-            number=99,
+        make_pr(
+            self.repo,
+            99,
             author=None,
             state="open",
             is_draft=False,

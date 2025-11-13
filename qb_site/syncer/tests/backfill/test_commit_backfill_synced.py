@@ -9,15 +9,16 @@ from syncer.models import PullRequest
 from syncer.models.check_run import CheckRun
 from syncer.models.status_context import StatusContext
 from syncer.services.pr_sync_service import PRSyncService
+from syncer.tests.factories import make_repo, make_pr
 
 
 class TestCommitBackfillSynced(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
         # Seed a minimal PR row so service can look it up by number
-        PullRequest.objects.create(
-            repository=self.repo,
-            number=101,
+        make_pr(
+            self.repo,
+            101,
             author=None,
             state="open",
             is_draft=False,

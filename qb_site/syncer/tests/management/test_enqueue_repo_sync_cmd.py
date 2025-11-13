@@ -7,11 +7,12 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from core.models import Repository
+from syncer.tests.factories import make_repo
 
 
 class TestEnqueueRepoSyncCommand(TestCase):
     def setUp(self) -> None:
-        Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        make_repo()
 
     @mock.patch("syncer.management.commands.enqueue_repo_sync.sync_repo_since_task")
     def test_enqueue_repo_sync_minimal(self, mock_task) -> None:

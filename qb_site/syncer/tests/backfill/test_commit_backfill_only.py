@@ -10,33 +10,17 @@ from syncer.models import PullRequest
 from syncer.models.check_run import CheckRun
 from syncer.models.status_context import StatusContext
 from syncer.tasks.sync_tasks import sync_pr_task
+from syncer.tests.factories import make_repo, make_pr
 
 
 class TestCommitBackfillOnly(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
 
     def _mk_pr(self, number: int, last_synced_at=None):
         if last_synced_at is None:
             last_synced_at = timezone.now()
-        return PullRequest.objects.create(
-            repository=self.repo,
-            number=number,
-            state="open",
-            is_draft=False,
-            gh_created_at=timezone.now(),
-            gh_updated_at=timezone.now(),
-            base_ref_name="master",
-            head_ref_name="b",
-            head_repo_owner_login="o",
-            head_repo_name="fork",
-            title="t",
-            body="",
-            additions=0,
-            deletions=0,
-            changed_files_count=0,
-            last_synced_at=last_synced_at,
-        )
+        return make_pr(self.repo, number, last_synced_at=last_synced_at)
 
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     def test_commit_backfill_runs_when_up_to_date(self, MockClient) -> None:

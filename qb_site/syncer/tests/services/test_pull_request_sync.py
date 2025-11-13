@@ -6,11 +6,12 @@ from core.models.repository import Repository
 from core.models import User
 from syncer.services.sub.pull_request_sync import upsert_pull_request
 from syncer.models import PullRequest
+from syncer.tests.factories import make_repo
 
 
 class TestPullRequestSync(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
 
     def test_create_and_update(self) -> None:
         bundle = {

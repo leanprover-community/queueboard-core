@@ -8,23 +8,11 @@ from django.test import TestCase
 from core.models.repository import Repository
 from syncer.models import PullRequest, PRTimelineEvent, CheckRun, StatusContext
 from syncer.services.pr_sync_service import PRSyncService
-
-
-def _supported_timeline(nodes: list[dict]) -> list[dict]:
-    supported = {
-        "LabeledEvent",
-        "UnlabeledEvent",
-        "ReadyForReviewEvent",
-        "ConvertToDraftEvent",
-        "ReopenedEvent",
-        "ClosedEvent",
-        "HeadRefForcePushedEvent",
-    }
-    return [n for n in nodes if isinstance(n, dict) and n.get("__typename") in supported]
+from syncer.tests.helpers import supported_timeline, fixtures_dir
 
 
 class TestPagingSmoke(TestCase):
-    fixtures_dir = Path(__file__).resolve().parent / "fixtures"
+    fixtures_dir = fixtures_dir()
 
     def test_real_timeline_paging_files(self) -> None:
         """Smoke test: replay timeline paging from real files if present.
@@ -53,7 +41,7 @@ class TestPagingSmoke(TestCase):
             .get("timelineItems", {})
             .get("nodes", [])
         )
-        supported_total = len(_supported_timeline(b_nodes) + _supported_timeline(p_nodes))
+        supported_total = len(supported_timeline(b_nodes) + supported_timeline(p_nodes))
         if supported_total < 2:
             self.skipTest("not enough supported timeline events to exercise paging")
 

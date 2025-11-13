@@ -6,11 +6,12 @@ from django.test import TestCase, override_settings
 
 from core.models import Repository
 from syncer.tasks.sync_tasks import sync_repo_since_task
+from syncer.tests.factories import make_repo
 
 
 class TestSyncRepoTasksBatching(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
 
     @override_settings(SYNCER_RATE_REMAINING_MIN=200, SYNCER_REPO_ENQUEUE_BATCH_MAX=30, SYNCER_EST_COST_PER_PR=150)
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
