@@ -321,6 +321,7 @@ try:
 
     @admin.register(TaskResult)
     class EnhancedTaskResultAdmin(TaskResultAdmin):  # type: ignore[misc]
+        change_form_template = "admin/django_celery_results/taskresult/change_form.html"
         list_display = (
             "short_id",
             "task_name",

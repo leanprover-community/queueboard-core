@@ -60,6 +60,15 @@ class PullRequest(TimestampedModel):
     # Ingestion metadata
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
+    # Timeline backfill state (optional V1.1 feature)
+    # - timeline_backfill_cursor: oldest cursor reached so far when paging backward
+    #   using last/before. Seeded from the bundle's pageInfo.startCursor.
+    # - timeline_backfill_done: set True when hasPreviousPage==False (no older pages).
+    # - timeline_earliest_synced_at: convenience timestamp of earliest event persisted.
+    timeline_backfill_cursor = models.TextField(null=True, blank=True)
+    timeline_backfill_done = models.BooleanField(default=False)
+    timeline_earliest_synced_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["repository", "number"], name="syncer_pullrequest_repo_number_unique"),

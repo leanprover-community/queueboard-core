@@ -54,10 +54,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
           HEAD_REF_FORCE_PUSHED_EVENT
         ]
       ) {
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
+        pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
         nodes {
           __typename
           ... on LabeledEvent { id createdAt label { name } }

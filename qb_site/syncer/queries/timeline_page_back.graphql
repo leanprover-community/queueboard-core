@@ -1,17 +1,15 @@
-# Timeline items page for a single PR
+# Timeline items page (older pages via before/last)
 # Variables:
 #   $owner: String!, $name: String!, $number: Int!
-#   $first: Int!, $after: String
-#   $since: DateTime (optional lower bound)
+#   $last: Int!, $before: String
 
-query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String, $since: DateTime) {
+query PRTimelinePageBack($owner: String!, $name: String!, $number: Int!, $last: Int!, $before: String) {
   rateLimit { cost remaining resetAt used }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       timelineItems(
-        first: $first
-        after: $after
-        since: $since
+        last: $last
+        before: $before
         itemTypes: [
           LABELED_EVENT
           UNLABELED_EVENT
@@ -22,7 +20,7 @@ query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int
           HEAD_REF_FORCE_PUSHED_EVENT
         ]
       ) {
-        pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
+        pageInfo { hasPreviousPage startCursor }
         nodes {
           __typename
           ... on LabeledEvent { id createdAt label { name } }
@@ -37,3 +35,4 @@ query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int
     }
   }
 }
+
