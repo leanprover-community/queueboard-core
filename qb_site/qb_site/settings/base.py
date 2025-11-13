@@ -159,5 +159,9 @@ CELERY_BEAT_SCHEDULE = {
     "sync_active_repos": {
         "task": "syncer.sync_active_repos",
         "schedule": SYNCER_ACTIVE_REPOS_PERIOD_SECONDS,
-    }
+    },
+    "collect_syncer_metrics": {
+        "task": "syncer.collect_metrics",
+        "schedule": 900,  # 15 minutes
+    },
 }

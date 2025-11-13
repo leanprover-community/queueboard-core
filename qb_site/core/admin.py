@@ -153,6 +153,16 @@ class RepositoryAdmin(admin.ModelAdmin):
                         enqueued.append((f"repo:{repo.pk}", res.id))
                     else:
                         error = "Invalid repo sync form"
+            elif submitted_action == "collect_metrics":
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
+                try:
+                    from syncer.tasks.metrics_tasks import collect_metrics_task
+
+                    async_res = collect_metrics_task.delay()
+                    notice = f"Enqueued metrics collection task: {async_res.id}"
+                except Exception as e:  # pragma: no cover - external dependency
+                    error = f"Failed to enqueue metrics collection: {e}"
             elif submitted_action == "toggle_active":
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
@@ -188,6 +198,7 @@ class RepositoryAdmin(admin.ModelAdmin):
             "submitted_action": submitted_action,
             "prs_initial": prs_initial,
             "changelist_url": reverse("admin:core_repository_changelist"),
+            "metrics_list_url": reverse("admin:syncer_syncermetricssnapshot_changelist"),
         }
         return TemplateResponse(request, "admin/syncer/repository/tools.html", context)
 

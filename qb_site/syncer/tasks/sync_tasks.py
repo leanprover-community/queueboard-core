@@ -105,6 +105,9 @@ def sync_pr_task(  # type: ignore[no-redef]
             "retry_eta": eta.isoformat() if eta is not None else None,
         }
 
+    # Initialize rate event capture list (include header/bundle/page costs)
+    rate_events: list[dict] = []
+
     # Preflight header to skip unchanged PRs (rate-aware: may defer on low budget error)
     try:
         header = client.get_pr_header(owner=repo.owner, name=repo.name, number=int(number))
@@ -119,6 +122,14 @@ def sync_pr_task(  # type: ignore[no-redef]
         # Unknown error or missing snapshot → surface as failure
         raise
     pr_node = ((header.get("data") or {}).get("repository") or {}).get("pullRequest")
+
+    # Capture header rate snapshot as an event if present (immediately after header call)
+    rlh = client.get_last_rate_limit() or {}
+    if isinstance(rlh, dict):
+        re = {k: rlh.get(k) for k in ("cost", "remaining", "resetAt")}
+        re["label"] = "pr_header"
+        rate_events.append(re)  # type: ignore[arg-type]
+
     if pr_node:
         gh_updated = _parse_iso_awareness(pr_node.get("updatedAt"))
     else:
@@ -143,6 +154,7 @@ def sync_pr_task(  # type: ignore[no-redef]
             "number": int(number),
             "dry_run": dry_run,
             "rate_limit": rl,
+            "rate_events": rate_events,
         }
 
     svc = PRSyncService()
@@ -155,6 +167,15 @@ def sync_pr_task(  # type: ignore[no-redef]
                 rl_snap.get("cost"),
                 rl_snap.get("remaining"),
                 rl_snap.get("resetAt"),
+            )
+            # Also capture in summary for metrics aggregation
+            rate_events.append(
+                {
+                    "label": label,
+                    "cost": rl_snap.get("cost"),
+                    "remaining": rl_snap.get("remaining"),
+                    "resetAt": rl_snap.get("resetAt"),
+                }
             )
         except Exception:  # pragma: no cover - defensive
             pass
@@ -196,6 +217,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         },
         "counts": res,
         "rate_limit": rl_final,
+        "rate_events": rate_events,
     }
     log.info(
         "sync_pr_task: done repo=%s/%s pr=%s counts=%s remaining=%s resetAt=%s",
@@ -339,6 +361,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             "rate_limit": rl,
             "low_budget": bool(low_budget),
             "batch_max": int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30)),
+            "discovery_cost": rl.get("cost") if isinstance(rl, dict) else None,
         }
 
 
