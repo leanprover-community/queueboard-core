@@ -172,6 +172,31 @@ class GitHubClient:
         }
         return self.execute(query, variables)
 
+    def get_ci_by_commit(
+        self,
+        *,
+        owner: str,
+        name: str,
+        sha: str,
+        first: int = 100,
+        after: Optional[str] = None,
+        query_path: str = "qb_site/syncer/queries/ci_by_commit.graphql",
+    ) -> Dict[str, Any]:
+        """Fetch CI contexts (CheckRuns and StatusContexts) for a commit SHA.
+
+        The caller should inspect data.repository.object; when null or not a Commit,
+        there is no data for that (owner,name,sha) tuple.
+        """
+        query = self._read_file(query_path)
+        variables = {
+            "owner": owner,
+            "name": name,
+            "sha": sha,
+            "first": int(max(1, min(first, 100))),
+            "after": after,
+        }
+        return self.execute(query, variables)
+
     def get_changed_pr_numbers(
         self,
         *,

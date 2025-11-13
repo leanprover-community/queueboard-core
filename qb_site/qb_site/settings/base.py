@@ -157,6 +157,7 @@ SYNCER_EST_COST_PER_PR = int(os.getenv("SYNCER_EST_COST_PER_PR", 150))
 SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES", 0))
 # Commit backfill per up-to-date run (pages of the commits connection to walk backward)
 SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 0))
+SYNCER_CI_BY_SHA_PAGES = int(os.getenv("SYNCER_CI_BY_SHA_PAGES", 1))
 
 # Beat schedule: periodically enqueue repo syncs for active repositories.
 CELERY_BEAT_SCHEDULE = {

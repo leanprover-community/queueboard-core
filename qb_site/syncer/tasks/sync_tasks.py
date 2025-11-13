@@ -15,6 +15,7 @@ from syncer.services.github_client import GitHubClient
 from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
+from syncer.services.ci_by_sha_service import sync_ci_for_sha
 
 
 log = logging.getLogger(__name__)
@@ -608,3 +609,128 @@ def sync_active_repos_task() -> Dict[str, Any]:
         sync_repo_since_task.delay(r.id)
         enqueued += 1
     return {"repos": len(repos), "enqueued": enqueued}
+
+
+@shared_task(name="syncer.sync_ci_for_shas", bind=True)
+def sync_ci_for_shas_task(  # type: ignore[no-redef]
+    self,
+    repo_id: int,
+    number: int,
+    *,
+    shas: Sequence[str],
+    max_pages_per_sha: Optional[int] = None,
+    dry_run: bool = False,
+    require_pr_association: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Fetch CI for a list of commit SHAs for a PR.
+
+    Behavior
+    - Respects the global rate budget; if remaining <= SYNCER_RATE_REMAINING_MIN, defers to resetAt.
+    - Processes SHAs in order with a per-SHA page cap; stops early on low budget and schedules a continuation for remaining SHAs.
+    - Returns a summary with counts and rate snapshots.
+    """
+    repo = Repository.objects.get(id=int(repo_id))
+    pr = PullRequest.objects.get(repository=repo, number=int(number))
+    client = GitHubClient()
+
+    rate_events: list[dict] = []
+
+    def rate_log(label: str, rl_snap: dict) -> None:
+        try:
+            rate_events.append(
+                {
+                    "label": label,
+                    "cost": rl_snap.get("cost"),
+                    "remaining": rl_snap.get("remaining"),
+                    "resetAt": rl_snap.get("resetAt"),
+                }
+            )
+        except Exception:
+            pass
+
+    def _defer(reset_at: Optional[str], remaining_shas: Sequence[str]) -> Dict[str, Any]:
+        eta = None
+        if isinstance(reset_at, str):
+            try:
+                rdt = dtparser.isoparse(reset_at)
+                if timezone.is_naive(rdt):
+                    rdt = timezone.make_aware(rdt)
+                eta = rdt + timedelta(seconds=5)
+            except Exception:
+                eta = None
+        if eta is not None and remaining_shas:
+            try:
+                sync_ci_for_shas_task.apply_async(
+                    kwargs={
+                        "repo_id": repo.id,
+                        "number": int(number),
+                        "shas": list(remaining_shas),
+                        "max_pages_per_sha": max_pages_per_sha,
+                        "dry_run": dry_run,
+                    },
+                    eta=eta,
+                )
+            except Exception:
+                pass
+        rl = client.get_last_rate_limit() or {}
+        return {
+            "status": "deferred",
+            "repo": f"{repo.owner}/{repo.name}",
+            "number": int(number),
+            "remaining_shas": list(remaining_shas),
+            "rate_limit": rl,
+            "rate_events": rate_events,
+        }
+
+    # Guard on budget before starting
+    rl0 = client.get_rate_limit() or {}
+    remaining0 = rl0.get("remaining") if isinstance(rl0, dict) else None
+    reset0 = rl0.get("resetAt") if isinstance(rl0, dict) else None
+    threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+    if isinstance(remaining0, int) and remaining0 <= threshold:
+        return _defer(reset0, shas)
+
+    max_pages = (
+        int(max_pages_per_sha) if isinstance(max_pages_per_sha, int) else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
+    )
+    require_assoc = bool(require_pr_association) if require_pr_association is not None else False
+
+    done: list[str] = []
+    todo: list[str] = [s for s in shas if s]
+    total_counts = {"checkruns_created": 0, "checkruns_updated": 0, "status_created": 0, "status_updated": 0}
+
+    for sha in todo:
+        # Check budget before each SHA
+        rl_now = client.get_last_rate_limit() or {}
+        remaining_now = rl_now.get("remaining") if isinstance(rl_now, dict) else None
+        reset_at = rl_now.get("resetAt") if isinstance(rl_now, dict) else None
+        if isinstance(remaining_now, int) and remaining_now <= threshold:
+            remaining = [s for s in todo if s not in done]
+            return _defer(reset_at, remaining)
+
+        if dry_run:
+            done.append(sha)
+            continue
+
+        res = sync_ci_for_sha(
+            pr,
+            sha,
+            client=client,
+            max_pages=max_pages,
+            rate_log=rate_log,
+            require_pr_association=require_assoc,
+        )
+        for k in total_counts.keys():
+            total_counts[k] += int(res.get(k, 0))
+        done.append(sha)
+
+    rl_final = client.get_last_rate_limit() or {}
+    return {
+        "status": "ok",
+        "repo": f"{repo.owner}/{repo.name}",
+        "number": int(number),
+        "shas_done": done,
+        "counts": total_counts,
+        "rate_limit": rl_final,
+        "rate_events": rate_events,
+    }
