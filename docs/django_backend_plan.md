@@ -270,7 +270,15 @@ Developer utilities (current)
 - `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`
 - `SYNCER_REPO_ENQUEUE_BATCH_MAX`, `SYNCER_EST_COST_PER_PR`
 
-## Planned Additions
-- Analyzer-managed `PRRevision` windows across force-pushes and CI-at-time rollups.
-- Analyzer enqueues targeted Syncer CI fetches for historical SHAs under Syncer’s rate-aware scheduler.
-- Admin/CLI tools for “who was on the queue at T” and historical backfill windows.
+## Planned Additions (Analyzer)
+- PR revision windows across force-pushes (PRRevision) and CI-at-time helpers.
+- Analyzer enqueues targeted Syncer CI fetches (syncer.sync_ci_for_shas) for historical SHAs using revision windows as ground truth; Syncer remains the rate-aware gate.
+- Admin/CLI tools for “who was on the queue at T” and targeted backfills.
+
+## Analyzer Progress
+- Models/services in place:
+  - `PRRevision` model with indexes and ordering.
+  - `rebuild_pr_revisions(pr)` builds windows from timeline events (seeding from CI when needed).
+  - `next_revision_backfill_shas(pr, limit)` identifies missing CI by head SHA.
+- Syncer counterpart ready to consume requests:
+  - `sync_ci_for_shas(repo_id, number, shas=[...], max_pages_per_sha=?, require_pr_association=?)` with rate guard and continuation.
