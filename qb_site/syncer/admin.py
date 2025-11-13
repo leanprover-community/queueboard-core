@@ -12,6 +12,7 @@ from .models import (
     PRTimelineEvent,
     CheckRun,
     StatusContext,
+    SyncerMetricsSnapshot,
 )
 
 
@@ -212,3 +213,27 @@ class StatusContextAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(SyncerMetricsSnapshot)
+class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
+    list_display = (
+        "window_start",
+        "window_seconds",
+        "pr_tasks",
+        "pr_deferred",
+        "pr_failures",
+        "pr_token_cost",
+        "repo_tasks",
+        "repo_low_budget",
+        "repo_discovered",
+        "repo_enqueued",
+        "db_size_bytes",
+    )
+    date_hierarchy = "window_start"
+    ordering = ("-window_start",)
+    search_fields = ("window_start",)
+    readonly_fields = [
+        f.name
+        for f in SyncerMetricsSnapshot._meta.fields  # type: ignore[attr-defined]
+    ]

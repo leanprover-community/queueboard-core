@@ -29,6 +29,16 @@
     {% endif %}
   </form>
 
+  <h2>{% trans "Metrics" %}</h2>
+  <p>
+    <a href="{{ metrics_list_url }}">{% trans "View metrics snapshots" %}</a>
+  </p>
+  <form method="post" style="margin-bottom:2em;">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="collect_metrics" />
+    <input type="submit" value="{% trans 'Collect snapshot now' %}" />
+  </form>
+
   <h2>{% trans "Sync specific PR numbers" %}</h2>
   <form method="post" style="margin-bottom:2em;">
     {% csrf_token %}

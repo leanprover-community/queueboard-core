@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+from unittest import mock
+
+from django.test import TestCase
+from django.utils import timezone
+
+from core.models import Repository
+from syncer.models import PullRequest
+from syncer.tasks.sync_tasks import sync_pr_task
+
+
+class TestSyncPrTaskSkip(TestCase):
+    def setUp(self) -> None:
+        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+
+    def _make_pr(self, number: int, last_synced_at=None):
+        if last_synced_at is None:
+            last_synced_at = timezone.now()
+        return PullRequest.objects.create(
+            repository=self.repo,
+            number=number,
+            state="open",
+            is_draft=False,
+            gh_created_at=timezone.now(),
+            gh_updated_at=timezone.now(),
+            base_ref_name="master",
+            head_ref_name="b",
+            head_repo_owner_login="o",
+            head_repo_name="fork",
+            title="t",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+            last_synced_at=last_synced_at,
+        )
+
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_up_to_date_skip_includes_rate_events(self, MockClient) -> None:
+        # Existing PR with a recent last_synced_at
+        pr = self._make_pr(7, last_synced_at=timezone.now())
+
+        gh = MockClient.return_value
+        # Header updatedAt earlier than or equal to last_synced_at -> skip
+        gh.get_pr_header.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 7,
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=1)).isoformat(),
+                    }
+                }
+            }
+        }
+        gh.get_last_rate_limit.return_value = {"remaining": 4990, "cost": 1, "resetAt": "2030-01-01T00:00:00Z"}
+
+        res = sync_pr_task.apply(kwargs={"repo_id": self.repo.id, "number": 7}).get()
+        self.assertTrue(res.get("skipped"))
+        self.assertEqual(res.get("reason"), "up_to_date")
+        # Ensure rate_events exists and is a list (header snapshot captured)
+        self.assertIn("rate_events", res)
+        self.assertIsInstance(res.get("rate_events"), list)
