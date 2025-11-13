@@ -62,20 +62,45 @@ Stage C: Compute windows and sets
 ## Current Preliminaries
 - Client query: `prs_created_page.graphql` and `GitHubClient.get_prs_created_page(...)`.
 - Timeline override plumbing: `PRSyncService.sync_pull_request(..., timeline_since_iso_override=...)` and `sync_pr_task(..., timeline_since_iso=...)` to ingest history from a requested cutoff (used by backfills).
+- Head revision windows are implemented:
+  - Model: `analyzer.PRRevision(pr, head_sha, from_ts, to_ts, seq)` with indexes for time and SHA.
+  - Service: `analyzer.services.revisions.rebuild_pr_revisions(pr)` builds windows from force‑push events (seeding from CI when no events exist) and replaces rows atomically.
+  - Targeting: `analyzer.services.revisions.next_revision_backfill_shas(pr, limit)` returns head SHAs missing any CI in Syncer tables.
+  - Tests: see `qb_site/analyzer/tests/test_pr_revisions.py`.
+- Syncer support for historical CI by SHA exists and is rate‑aware:
+  - Query: `syncer/queries/ci_by_commit.graphql` (includes `associatedPullRequests` for optional safeties).
+  - Service/Task: `syncer.services.ci_by_sha_service.sync_ci_for_sha`, `syncer.tasks.sync_tasks.sync_ci_for_shas`.
+  - Admin tool: "Enqueue CI by SHA" under PRs (with an optional strict association guard).
 
 ## Planned Work (incremental)
-1) Analyzer services skeletons with docstrings and TODOs; unit tests with synthetic fixtures.
-2) Management command `backfill_window` (Analyzer):
-   - `--repo owner/name --from ISO --to ISO [--include-ci] [--limit N]`.
-   - Stage A: enumerate candidates via created‑at pages.
-   - Stage B: enqueue `syncer.sync_pr` tasks with `timeline_since_iso` and optional commit paging caps.
-   - Optional: rate‑aware batching; resume at `resetAt`.
-3) Optional model: `PRCIStatusEvent` (if not yet present) with compact transitions; small test to validate window derivation.
-4) Admin/CLI utilities: quick reporting of "who was on the queue at T" using DB‑only reads after backfill.
+1) Management commands (Analyzer)
+   - `rebuild_revisions --repo owner/name [--pr N...] [--all-open]`: rebuilds `PRRevision` for selected PRs.
+   - `plan_ci_backfill --repo owner/name [--pr N...] [--limit M] [--pages-per-sha K] [--dry-run]`:
+     - lists or enqueues `syncer.sync_ci_for_shas` for missing revision head SHAs (uses revision windows as ground truth).
+     - by default call with `require_pr_association=false` and rely on revision membership to avoid false negatives after force‑pushes.
+   - Optional: `backfill_window --repo owner/name --from ISO --to ISO [--include-ci]` to drive timeline ingest and CI selectively for a historical window.
+2) Coordinator (optional periodic)
+   - Periodically rebuild revisions for PRs with recent timeline changes.
+   - Identify `next_revision_backfill_shas(pr)` and enqueue limited `syncer.sync_ci_for_shas` per PR under rate‑aware caps.
+3) CI state and queue queries
+   - `ci_state_at_time(pr, T)` helper that selects the closest per‑context records (CheckRun completedAt > startedAt > StatusContext createdAt) at or before `T` for the head SHA active at `T`.
+   - `queue_state_at_time(repo, T)` combines open/not‑draft + required labels + CI rules.
+4) Admin/CLI utilities
+   - Read‑only admin for `PRRevision` and a simple “rebuild revisions” button per PR.
+   - CLI for “who was on the queue at T” (for sampling and verification).
+5) Optional: compact CI rollups
+   - If needed for speed, add `CommitCIRollup` to store one latest record per `(repo, sha, context)` and derive historical lookups from it.
 
 ## Scheduling Notes
 - Keep per‑repo periodic sync in Syncer beat schedule (OPEN since recent cutoff).
 - Run backfills ad‑hoc via the Analyzer command or a temporary periodic task disabled by default.
+
+## Integration Notes
+- Association guard and force‑pushes
+  - GitHub’s `associatedPullRequests` reflects current inclusion; after a force‑push, older heads may no longer appear even though they were part of the PR historically.
+  - For Analyzer‑driven backfills, pass `require_pr_association=false` to `syncer.sync_ci_for_shas` and instead verify that the SHA belongs to the PR via `PRRevision`.
+- Rate‑awareness remains in Syncer
+  - Analyzer only enqueues work; Syncer’s task will guard on `SYNCER_RATE_REMAINING_MIN` and schedule continuation at `resetAt`.
 
 ## Testing Strategy
 - Unit: interval builders (labels, CI) with edge cases (boundary equality, overlapping events).

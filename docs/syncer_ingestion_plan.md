@@ -263,6 +263,16 @@ Notes
   - PR list shows `timeline_backfill_done` and `commits_backfill_done`.
   - PR detail shows the backfill cursors/done flags and earliest timestamps; also inlines for recent timeline events, check runs, and status contexts; object tools to "Enqueue sync" (respects backfill settings).
 
+## Current Functionality: CI by SHA (for Analyzer/ad‑hoc backfill)
+- API surface
+  - Query: `syncer/queries/ci_by_commit.graphql` (contexts by commit SHA, includes `associatedPullRequests`).
+  - Service: `syncer.services.ci_by_sha_service.sync_ci_for_sha(pr, sha, max_pages=..., require_pr_association=False)`.
+  - Task: `syncer.sync_ci_for_shas(repo_id, number, shas=[...], max_pages_per_sha=?, require_pr_association=?)` with rate guard + continuation.
+- Admin
+  - PR page tool “Enqueue CI by SHA” accepts SHAs, optional pages per SHA and dry‑run; defaults to a strict PR‑association guard.
+- Notes
+  - The strict association guard is conservative and may exclude old heads after force‑pushes; Analyzer backfills should disable it and rely on PRRevision membership instead.
+
 ## Current Functionality: Metrics
 - `SyncerMetricsSnapshot` stored every 15 minutes (Celery beat):
   - Counts of repo/PR tasks, deferrals/failures, coarse token usage (from `rate_events`), and DB size.
