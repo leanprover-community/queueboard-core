@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.contrib import admin
 from django.template.response import TemplateResponse
-from django.urls import reverse
+from django.urls import reverse, path
 from django.utils.html import format_html
 
 from .models import (
@@ -38,8 +38,38 @@ class PRLabelInline(admin.TabularInline):
     raw_id_fields = ("label_def",)
 
 
+class PRTimelineEventInline(admin.TabularInline):
+    model = PRTimelineEvent
+    extra = 0
+    can_delete = False
+    fields = ("type", "occurred_at", "label_name", "before_sha", "after_sha")
+    readonly_fields = ("type", "occurred_at", "label_name", "before_sha", "after_sha")
+    ordering = ("-occurred_at",)
+
+
+class CheckRunInline(admin.TabularInline):
+    model = CheckRun
+    extra = 0
+    can_delete = False
+    fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "details_url")
+    readonly_fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "details_url")
+    ordering = ("-gh_completed_at",)
+    show_change_link = True
+
+
+class StatusContextInline(admin.TabularInline):
+    model = StatusContext
+    extra = 0
+    can_delete = False
+    fields = ("name", "state", "head_sha", "gh_created_at", "target_url")
+    readonly_fields = ("name", "state", "head_sha", "gh_created_at", "target_url")
+    ordering = ("-gh_created_at",)
+    show_change_link = True
+
+
 @admin.register(PullRequest)
 class PullRequestAdmin(ReadOnlyAdmin):
+    change_form_template = "admin/syncer/pullrequest/change_form.html"
     list_display = (
         "repository",
         "number",
@@ -47,9 +77,10 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "is_draft",
         "gh_updated_at",
         "last_synced_at",
+        "timeline_backfill_done",
         "author",
     )
-    list_filter = ("repository", "state", "is_draft")
+    list_filter = ("repository", "state", "is_draft", "timeline_backfill_done")
     search_fields = ("title", "number", "author__github_login")
     date_hierarchy = "gh_updated_at"
     raw_id_fields = ("repository", "author")
@@ -73,10 +104,104 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "deletions",
         "changed_files_count",
         "last_synced_at",
+        "timeline_backfill_cursor",
+        "timeline_backfill_done",
+        "timeline_earliest_synced_at",
         "created_at",
         "updated_at",
     )
-    inlines = [PRLabelInline]
+    inlines = [PRLabelInline, PRTimelineEventInline, CheckRunInline, StatusContextInline]
+
+    def get_urls(self):  # type: ignore[override]
+        urls = super().get_urls()
+        custom = [
+            path(
+                "<path:object_id>/enqueue-sync/",
+                self.admin_site.admin_view(self.enqueue_sync_view),
+                name="syncer_pullrequest_enqueue_sync",
+            ),
+            path(
+                "<path:object_id>/enqueue-sync-dry/",
+                self.admin_site.admin_view(self.enqueue_sync_dry_view),
+                name="syncer_pullrequest_enqueue_sync_dry",
+            ),
+        ]
+        return custom + urls
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):  # type: ignore[override]
+        extra = extra_context or {}
+        pr = self.get_object(request, object_id)
+        if pr is not None:
+            try:
+                from django_celery_results.models import TaskResult  # type: ignore
+
+                owner = pr.repository.owner
+                name = pr.repository.name
+                number = pr.number
+                recent = (
+                    TaskResult.objects.filter(task_name="syncer.sync_pr")
+                    .filter(result__contains=f'"repo": "{owner}/{name}"')
+                    .filter(result__contains=f'"number": {int(number)}')
+                    .order_by("-date_done")[:10]
+                )
+                extra.update(
+                    {
+                        "recent_task_results": recent,
+                        "task_results_changelist_url": reverse("admin:django_celery_results_taskresult_changelist"),
+                        "task_results_filter_query": f"?task_name=syncer.sync_pr&q={owner}/{name} {int(number)}",
+                    }
+                )
+            except Exception:  # pragma: no cover - optional dependency
+                pass
+        return super().change_view(request, object_id, form_url, extra_context=extra)
+
+    def enqueue_sync_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": False},
+            )
+        from syncer.tasks.sync_tasks import sync_pr_task
+
+        async_result = sync_pr_task.delay(pr.repository_id, pr.number)
+        self.message_user(request, f"Enqueued sync for PR #{pr.number}: task_id={async_result.id}")
+        return TemplateResponse(
+            request,
+            "admin/syncer/pullrequest/enqueue_sync.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Enqueued PR sync",
+                "enqueued": [(pr, async_result.id)],
+                "dry_run": False,
+                "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+            },
+        )
+
+    def enqueue_sync_dry_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": True},
+            )
+        from syncer.tasks.sync_tasks import sync_pr_task
+
+        async_result = sync_pr_task.delay(pr.repository_id, pr.number, dry_run=True)
+        self.message_user(request, f"Enqueued DRY-RUN sync for PR #{pr.number}: task_id={async_result.id}")
+        return TemplateResponse(
+            request,
+            "admin/syncer/pullrequest/enqueue_sync.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Enqueued DRY-RUN PR sync",
+                "enqueued": [(pr, async_result.id)],
+                "dry_run": True,
+                "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+            },
+        )
 
     actions = ["action_enqueue_sync", "action_enqueue_sync_dry_run"]
 

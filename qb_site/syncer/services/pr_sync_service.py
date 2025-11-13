@@ -81,6 +81,7 @@ class PRSyncService:
         dry_run: bool = False,
         rate_log: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         timeline_since_iso_override: Optional[str] = None,
+        backfill_timeline_pages: int = 0,
     ) -> Dict[str, int]:
         # Determine timeline since cutoff.
         # If an explicit override is provided (e.g., historical backfill), prefer it.
@@ -122,16 +123,25 @@ class PRSyncService:
             raise RuntimeError("GraphQL response missing data.repository.pullRequest")
         # First page ingestion
         result = self.sync_pull_request_bundle(repo, pr, dry_run=dry_run)
+        # Load PR object for possible paging/backfill steps
+        pr_obj = PullRequest.objects.get(repository=repo, number=number)
+        # Seed timeline backfill state from bundle pageInfo if missing
+        tl_conn0 = pr.get("timelineItems") or {}
+        page0 = tl_conn0.get("pageInfo") or {}
+        if not pr_obj.timeline_backfill_cursor:
+            start_cur = page0.get("startCursor")
+            if start_cur:
+                pr_obj.timeline_backfill_cursor = start_cur
+                pr_obj.timeline_backfill_done = not bool(page0.get("hasPreviousPage"))
+                pr_obj.save(update_fields=["timeline_backfill_cursor", "timeline_backfill_done"])
         # Log bundle query cost if available
         if rate_log is not None:
             rl = client.get_last_rate_limit()
             if isinstance(rl, dict):
                 rate_log("pr_bundle", rl)
 
-        # Optional pagination (capped)
-        if max_timeline_pages > 0 or max_commit_pages > 0:
-            pr_obj = PullRequest.objects.get(repository=repo, number=number)
-
+        # Optional pagination/backfill (capped)
+        if max_timeline_pages > 0 or max_commit_pages > 0 or backfill_timeline_pages > 0:
             # Timeline paging
             if max_timeline_pages > 0:
                 tl_conn = pr.get("timelineItems") or {}
@@ -160,6 +170,51 @@ class PRSyncService:
                     pinfo = titems.get("pageInfo") or {}
                     has_next = bool(pinfo.get("hasNextPage"))
                     after = pinfo.get("endCursor")
+                    pages += 1
+
+            # Backfill older timeline pages with a fixed budget
+            if backfill_timeline_pages > 0 and not pr_obj.timeline_backfill_done:
+                before = pr_obj.timeline_backfill_cursor
+                pages = 0
+                while pages < backfill_timeline_pages and before and not pr_obj.timeline_backfill_done:
+                    tdata = client.get_timeline_page_back(
+                        owner=repo.owner,
+                        name=repo.name,
+                        number=number,
+                        last=timelineK,
+                        before=before,
+                    )
+                    tpr = ((tdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+                    titems = tpr.get("timelineItems") or {}
+                    nodes = titems.get("nodes") or []
+                    tl_res = sync_timeline_events(pr_obj, nodes)
+                    result["events_created"] += tl_res.created
+                    # Update earliest timestamp if present
+                    if nodes:
+                        try:
+                            times = [n.get("createdAt") for n in nodes if isinstance(n, dict) and n.get("createdAt")]
+                            if times:
+                                from dateutil import parser as _dtp
+
+                                ts = [_dtp.isoparse(x) for x in times]
+                                ts = [timezone.make_aware(t) if timezone.is_naive(t) else t for t in ts]
+                                mn = min(ts)
+                                if not pr_obj.timeline_earliest_synced_at or mn < pr_obj.timeline_earliest_synced_at:
+                                    pr_obj.timeline_earliest_synced_at = mn
+                        except Exception:
+                            pass
+                    # Update cursor/done flags
+                    pinfo = titems.get("pageInfo") or {}
+                    pr_obj.timeline_backfill_done = not bool(pinfo.get("hasPreviousPage"))
+                    before = pinfo.get("startCursor")
+                    pr_obj.timeline_backfill_cursor = before
+                    pr_obj.save(
+                        update_fields=["timeline_backfill_cursor", "timeline_backfill_done", "timeline_earliest_synced_at"]
+                    )
+                    if rate_log is not None:
+                        rl = client.get_last_rate_limit()
+                        if isinstance(rl, dict):
+                            rate_log("timeline_page_back", rl)
                     pages += 1
 
             # Commits paging (older via before) — capped pages only (no time-based cutoff in V1)

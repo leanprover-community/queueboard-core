@@ -122,6 +122,27 @@ class GitHubClient:
         }
         return self.execute(query, variables)
 
+    def get_timeline_page_back(
+        self,
+        *,
+        owner: str,
+        name: str,
+        number: int,
+        last: int,
+        before: Optional[str] = None,
+        query_path: str = "qb_site/syncer/queries/timeline_page_back.graphql",
+    ) -> Dict[str, Any]:
+        """Fetch an older page of timeline items using last/before for backfill."""
+        query = self._read_file(query_path)
+        variables = {
+            "owner": owner,
+            "name": name,
+            "number": int(number),
+            "last": int(last),
+            "before": before,
+        }
+        return self.execute(query, variables)
+
     def get_last_rate_limit(self) -> Optional[Dict[str, Any]]:
         """Return the last seen rateLimit snapshot (if any)."""
         return self._last_rate_limit

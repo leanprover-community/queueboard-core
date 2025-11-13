@@ -44,6 +44,7 @@ def sync_pr_task(  # type: ignore[no-redef]
     max_commit_pages: int = 0,
     dry_run: bool = False,
     timeline_since_iso: Optional[str] = None,
+    backfill_timeline_pages: int = 0,
 ) -> Dict[str, Any]:
     """Sync a single PR by (repository id, number) using the GraphQL bundle.
 
@@ -192,6 +193,7 @@ def sync_pr_task(  # type: ignore[no-redef]
             dry_run=dry_run,
             rate_log=rate_log,
             timeline_since_iso_override=timeline_since_iso,
+            backfill_timeline_pages=backfill_timeline_pages,
         )
     except Exception:
         # If a rate-related error occurs mid-sync, prefer deferral over failure when snapshot indicates low budget
@@ -340,7 +342,14 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 to_enqueue = min(len(numbers), batch_max)
 
             for num in numbers[:to_enqueue]:
-                sync_pr_task.delay(repo.id, int(num), timelineK=tk, commitsM=cm, dry_run=dry_run)
+                sync_pr_task.delay(
+                    repo.id,
+                    int(num),
+                    timelineK=tk,
+                    commitsM=cm,
+                    dry_run=dry_run,
+                    backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+                )
                 enqueued += 1
         log.info(
             "sync_repo_since: repo=%s/%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s",
