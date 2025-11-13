@@ -1,42 +1,48 @@
 {% extends "admin/change_form.html" %}
 
 {% block object-tools-items %}
-  <li>
-    <a href="{% url 'admin:syncer_pullrequest_enqueue_sync' original.pk %}">Enqueue sync</a>
-  </li>
-  <li>
-    <a href="{% url 'admin:syncer_pullrequest_enqueue_sync_dry' original.pk %}">Enqueue DRY-RUN sync</a>
-  </li>
+<li>
+  <a href="{% url 'admin:syncer_pullrequest_enqueue_sync' original.pk %}">Enqueue sync</a>
+</li>
+<li>
+  <a href="{% url 'admin:syncer_pullrequest_enqueue_sync_dry' original.pk %}">Enqueue DRY-RUN sync</a>
+</li>
+<li>
+  <a href="{% url 'admin:syncer_pullrequest_enqueue_ci_sha' original.pk %}">Enqueue CI by SHA</a>
+</li>
 {% endblock %}
 
 {% block after_field_sets %}
-  {{ block.super }}
-  <h2>Recent sync tasks</h2>
-  <p>
-    <a href="{{ task_results_changelist_url }}{{ task_results_filter_query }}">View all Task results filtered to this PR</a>
-  </p>
-  {% if recent_task_results %}
-    <table class="listing" style="max-width:100%; table-layout:fixed;">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Status</th>
-          <th>Date done</th>
-          <th>Result</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for tr in recent_task_results %}
-        <tr>
-          <td><code>{{ tr.task_id|slice:":8" }}</code></td>
-          <td>{{ tr.status }}</td>
-          <td>{{ tr.date_done }}</td>
-          <td><code style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ tr.result }}</code></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p>No recent task results for this PR in the last few pages.</p>
-  {% endif %}
+{{ block.super }}
+<h2>Recent sync tasks</h2>
+<p>
+  <a href="{{ task_results_changelist_url }}{{ task_results_filter_query }}">View all Task results filtered to this
+    PR</a>
+</p>
+{% if recent_task_results %}
+<table class="listing" style="max-width:100%; table-layout:fixed;">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Status</th>
+      <th>Date done</th>
+      <th>Result</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for tr in recent_task_results %}
+    <tr>
+      <td><code>{{ tr.task_id|slice:":8" }}</code></td>
+      <td>{{ tr.status }}</td>
+      <td>{{ tr.date_done }}</td>
+      <td><code
+          style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ tr.result }}</code>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No recent task results for this PR in the last few pages.</p>
+{% endif %}
 {% endblock %}

@@ -1,0 +1,34 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+<h1>{% trans "Enqueue CI by SHA" %}</h1>
+<p>
+  {% trans "Enter one or more commit SHAs (separated by spaces or commas)." %}
+</p>
+<form method="post">
+  {% csrf_token %}
+  <fieldset class="module aligned">
+    <div class="form-row">
+      <label for="id_shas"><strong>{% trans "SHAs" %}</strong></label>
+      <textarea id="id_shas" name="shas" rows="4" cols="80" placeholder="abc123, def456"></textarea>
+    </div>
+    <div class="form-row">
+      <label for="id_pages">{% trans "Pages per SHA (optional)" %}</label>
+      <input id="id_pages" type="number" min="1" name="pages" value="{{ default_pages }}" />
+    </div>
+      <div class="form-row">
+        <label for="id_dry_run">{% trans "Dry run" %}</label>
+        <input id="id_dry_run" type="checkbox" name="dry_run" />
+      </div>
+      <div class="form-row">
+        <label for="id_require_assoc">{% trans "Require PR association" %}</label>
+        <input id="id_require_assoc" type="checkbox" name="require_assoc" checked />
+      </div>
+    </fieldset>
+  <div class="submit-row">
+    <input type="submit" class="default" value="{% trans " Enqueue" %}" />
+    <a class="button" href="{{ changelist_url }}">{% trans "Cancel" %}</a>
+  </div>
+</form>
+{% endblock %}

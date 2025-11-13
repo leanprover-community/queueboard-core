@@ -129,6 +129,11 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 self.admin_site.admin_view(self.enqueue_sync_dry_view),
                 name="syncer_pullrequest_enqueue_sync_dry",
             ),
+            path(
+                "<path:object_id>/enqueue-ci-sha/",
+                self.admin_site.admin_view(self.enqueue_ci_sha_view),
+                name="syncer_pullrequest_enqueue_ci_sha",
+            ),
         ]
         return custom + urls
 
@@ -219,6 +224,67 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
             },
         )
+
+    def enqueue_ci_sha_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        from django.conf import settings
+        from syncer.tasks.sync_tasks import sync_ci_for_shas_task
+
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": False},
+            )
+
+        if request.method == "POST":
+            raw = request.POST.get("shas", "")
+            pages = request.POST.get("pages")
+            dry_run = bool(request.POST.get("dry_run"))
+            require_assoc = bool(request.POST.get("require_assoc", "on"))
+            # Parse SHAs (split by comma/whitespace) and dedupe order-preserving
+            toks = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
+            seen = set()
+            shas = []
+            for t in toks:
+                if t not in seen:
+                    seen.add(t)
+                    shas.append(t)
+            max_pages = int(pages) if pages and pages.isdigit() else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
+            if shas:
+                async_result = sync_ci_for_shas_task.delay(
+                    repo_id=pr.repository_id,
+                    number=int(pr.number),
+                    shas=shas,
+                    max_pages_per_sha=max_pages,
+                    dry_run=dry_run,
+                    require_pr_association=require_assoc,
+                )
+                self.message_user(
+                    request,
+                    f"Enqueued CI-by-SHA for PR #{pr.number} (n={len(shas)} SHAs): task_id={async_result.id}",
+                )
+                return TemplateResponse(
+                    request,
+                    "admin/syncer/pullrequest/enqueue_sync.html",
+                    {
+                        **self.admin_site.each_context(request),
+                        "title": "Enqueued CI-by-SHA",
+                        "enqueued": [(pr, async_result.id)],
+                        "dry_run": dry_run,
+                        "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+                    },
+                )
+
+        # GET or invalid post → render form
+        context = {
+            **self.admin_site.each_context(request),
+            "title": f"Enqueue CI by SHA for {pr}",
+            "pr": pr,
+            "default_pages": int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
+            "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+        }
+        return TemplateResponse(request, "admin/syncer/pullrequest/enqueue_ci_sha.html", context)
 
     actions = ["action_enqueue_sync", "action_enqueue_sync_dry_run"]
 
