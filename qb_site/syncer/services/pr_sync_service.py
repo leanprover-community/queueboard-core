@@ -174,9 +174,10 @@ class PRSyncService:
 
             # Backfill older timeline pages with a fixed budget
             if backfill_timeline_pages > 0 and not pr_obj.timeline_backfill_done:
+                # Allow seeding when cursor is missing by calling with before=None
                 before = pr_obj.timeline_backfill_cursor
                 pages = 0
-                while pages < backfill_timeline_pages and before and not pr_obj.timeline_backfill_done:
+                while pages < backfill_timeline_pages and not pr_obj.timeline_backfill_done:
                     tdata = client.get_timeline_page_back(
                         owner=repo.owner,
                         name=repo.name,

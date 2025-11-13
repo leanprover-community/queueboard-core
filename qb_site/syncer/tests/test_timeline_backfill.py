@@ -122,3 +122,72 @@ class TestTimelineBackfill(TestCase):
         self.assertEqual(pr.timeline_backfill_cursor, "CUR-2")
         # Events persisted
         self.assertGreaterEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 2)
+
+    @mock.patch("syncer.services.pr_sync_service.GitHubClient")
+    def test_backfill_seeds_when_cursor_missing(self, MockClient) -> None:
+        svc = PRSyncService()
+        gh = MockClient.return_value
+
+        # Bundle with empty timeline page and no startCursor (e.g., since window too recent)
+        gh.get_pr_bundle.return_value = {
+            "data": {
+                "repository": {
+                    "id": "R_repo",
+                    "name": "r",
+                    "owner": {"login": "o"},
+                    "defaultBranchRef": {"name": "master"},
+                    "pullRequest": {
+                        "timelineItems": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                        "commits": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                    },
+                }
+            }
+        }
+
+        # First backfill call with before=None should return a page and set cursor
+        gh.get_timeline_page_back.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "timelineItems": {
+                            "pageInfo": {"hasPreviousPage": True, "startCursor": "CUR-SEED"},
+                            "nodes": [
+                                {
+                                    "__typename": "LabeledEvent",
+                                    "id": "e2",
+                                    "createdAt": "2023-02-01T00:00:00Z",
+                                    "label": {"name": "Y"},
+                                },
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+
+        with mock.patch.object(
+            PRSyncService,
+            "sync_pull_request_bundle",
+            return_value={
+                "labels_created": 0,
+                "labels_updated": 0,
+                "prlabels_created": 0,
+                "prlabels_deleted": 0,
+                "events_created": 0,
+                "checkruns_upserted": 0,
+                "statusctx_upserted": 0,
+            },
+        ):
+            svc.sync_pull_request(
+                self.repo,
+                number=99,
+                client=gh,
+                timelineK=2,
+                commitsM=0,
+                max_timeline_pages=0,
+                max_commit_pages=0,
+                backfill_timeline_pages=1,
+            )
+
+        pr = PullRequest.objects.get(repository=self.repo, number=99)
+        self.assertEqual(pr.timeline_backfill_cursor, "CUR-SEED")
