@@ -59,11 +59,11 @@ Stage B: Targeted detail ingest
 Stage C: Compute windows and sets
 - Build label/CI/open/draft intervals and derive queue windows. Compute set at T and durations over [T0, T1].
 
-## Preliminaries Implemented (now)
+## Current Preliminaries
 - Client query: `prs_created_page.graphql` and `GitHubClient.get_prs_created_page(...)`.
 - Timeline override plumbing: `PRSyncService.sync_pull_request(..., timeline_since_iso_override=...)` and `sync_pr_task(..., timeline_since_iso=...)` to ingest history from a requested cutoff (used by backfills).
 
-## Next Steps (incremental work)
+## Planned Work (incremental)
 1) Analyzer services skeletons with docstrings and TODOs; unit tests with synthetic fixtures.
 2) Management command `backfill_window` (Analyzer):
    - `--repo owner/name --from ISO --to ISO [--include-ci] [--limit N]`.
@@ -82,3 +82,30 @@ Stage C: Compute windows and sets
 - Integration: backfill flow over small fixtures; snapshot queue sets at known timestamps.
 - Performance: sanity check candidate discovery page counts and bundle volumes on a large repo.
 
+## Planned: Head Revision Windows and CI Backfill Across Force-Pushes
+
+To make CI-at-time reconstructions robust to force-pushes, we plan to anchor CI history to head-SHA windows.
+
+### Model (Analyzer)
+- `PRRevision`:
+  - Fields: `pr` (FK), `head_sha` (str), `from_ts` (datetime), `to_ts` (nullable datetime), `seq` (int, descending by time).
+  - Built from timeline `HEAD_REF_FORCE_PUSHED` events and header fields; the first window seeds from PR header at `createdAt`.
+- Optional `CommitCIRollup` (if/when we want compact per-context records):
+  - Unique by `(repo_id, sha, context_key)`; fields include `status`, `conclusion`, `createdAt/startedAt/completedAt` and `source`.
+
+### Flow
+1) Build/refresh `PRRevision` after Syncer ingests timeline pages for a PR.
+2) Identify the next N historical SHAs missing CI and enqueue Syncer requests to fetch CI for those SHAs (steady, budgeted progress).
+3) For a query at time T:
+   - Resolve head SHA via the revision window containing T.
+   - Evaluate labels/open/draft from timeline intervals as of T.
+   - Read CI state as of T for that SHA from snapshots/rollups and apply repo rules.
+
+### Coordination
+- Keep Syncer autonomous for rate budgeting; Analyzer writes requests (or directly enqueues tasks) and lets Syncer apply rate guards and continuation.
+- Requests should be idempotent/deduplicated (unique `(repo, sha, kind)`), with optional `not_before=resetAt` for polite rescheduling.
+
+### Deliverables
+- Models + migrations for `PRRevision` (and optional rollups).
+- Services with clear docstrings and small, focused tests.
+- A lightweight admin or CLI to inspect revision windows and probe CI-at-time for a PR at T.
