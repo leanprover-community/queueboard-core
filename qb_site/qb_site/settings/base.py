@@ -147,6 +147,7 @@ SYNCER_DISCOVERY_LIMIT = int(os.getenv("SYNCER_DISCOVERY_LIMIT", 30))
 SYNCER_DISCOVERY_STATES_DEFAULT = [
     s.strip().upper() for s in os.getenv("SYNCER_DISCOVERY_STATES_DEFAULT", "OPEN").split(",") if s.strip()
 ]
+# Rate and paging defaults
 SYNCER_RATE_REMAINING_MIN = int(os.getenv("SYNCER_RATE_REMAINING_MIN", 200))
 SYNCER_TIMELINE_K_DEFAULT = int(os.getenv("SYNCER_TIMELINE_K_DEFAULT", 150))
 SYNCER_COMMITS_M_DEFAULT = int(os.getenv("SYNCER_COMMITS_M_DEFAULT", 15))
@@ -154,6 +155,8 @@ SYNCER_ACTIVE_REPOS_PERIOD_SECONDS = int(os.getenv("SYNCER_ACTIVE_REPOS_PERIOD_S
 SYNCER_REPO_ENQUEUE_BATCH_MAX = int(os.getenv("SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))
 SYNCER_EST_COST_PER_PR = int(os.getenv("SYNCER_EST_COST_PER_PR", 150))
 SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES", 0))
+# Commit backfill per up-to-date run (pages of the commits connection to walk backward)
+SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 0))
 
 # Beat schedule: periodically enqueue repo syncs for active repositories.
 CELERY_BEAT_SCHEDULE = {

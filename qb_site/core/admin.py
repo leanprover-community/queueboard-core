@@ -111,8 +111,18 @@ class RepositoryAdmin(admin.ModelAdmin):
                         dry_run = bool(form.cleaned_data.get("dry_run") or False)
                         timelineK = form.cleaned_data.get("timelineK") or 150
                         commitsM = form.cleaned_data.get("commitsM") or 15
+                        from django.conf import settings
+
                         for n in nums:
-                            res = sync_pr_task.delay(repo.id, int(n), timelineK=timelineK, commitsM=commitsM, dry_run=dry_run)
+                            res = sync_pr_task.delay(
+                                repo.id,
+                                int(n),
+                                timelineK=timelineK,
+                                commitsM=commitsM,
+                                dry_run=dry_run,
+                                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+                                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+                            )
                     enqueued.append((n, res.id))
                 else:
                     error = "Invalid form submission for PR numbers"

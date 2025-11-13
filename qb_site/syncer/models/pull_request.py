@@ -69,6 +69,13 @@ class PullRequest(TimestampedModel):
     timeline_backfill_done = models.BooleanField(default=False)
     timeline_earliest_synced_at = models.DateTimeField(null=True, blank=True)
 
+    # Commits backfill state (optional V1.1.1 feature)
+    # Mirrors the timeline backfill tracking to enable admin visibility and paging continuity
+    # when walking the commits connection backward.
+    commits_backfill_cursor = models.TextField(null=True, blank=True)
+    commits_backfill_done = models.BooleanField(default=False)
+    commits_earliest_synced_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["repository", "number"], name="syncer_pullrequest_repo_number_unique"),
