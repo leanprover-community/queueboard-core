@@ -6,11 +6,12 @@ from django.test import TestCase
 
 from core.models import Repository
 from syncer.tasks.sync_tasks import sync_pr_task
+from syncer.tests.factories import make_repo
 
 
 class TestSyncPrTaskBudget(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
 
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     def test_header_rate_limit_defers(self, MockClient) -> None:

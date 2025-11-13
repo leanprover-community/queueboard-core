@@ -6,28 +6,13 @@ from django.utils import timezone
 from core.models.repository import Repository
 from syncer.models import PullRequest, PRTimelineEvent
 from syncer.services.sub.timeline_sync import sync_timeline_events
+from syncer.tests.factories import make_repo, make_pr
 
 
 class TestTimelineSync(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
-        self.pr = PullRequest.objects.create(
-            repository=self.repo,
-            number=1,
-            state="open",
-            is_draft=False,
-            gh_created_at=timezone.now(),
-            gh_updated_at=timezone.now(),
-            base_ref_name="master",
-            head_ref_name="b",
-            head_repo_owner_login="o",
-            head_repo_name="fork",
-            title="t",
-            body="",
-            additions=0,
-            deletions=0,
-            changed_files_count=0,
-        )
+        self.repo = make_repo()
+        self.pr = make_pr(self.repo, 1)
 
     def test_insert_and_dedupe(self) -> None:
         nodes = [

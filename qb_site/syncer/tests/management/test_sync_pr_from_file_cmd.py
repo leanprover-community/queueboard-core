@@ -7,15 +7,15 @@ from django.test import TestCase
 
 from core.models.repository import Repository
 from syncer.models import PullRequest, LabelDef, PRLabel, PRTimelineEvent, CheckRun, StatusContext
+from syncer.tests.factories import make_repo
+from syncer.tests.helpers import fixtures_dir
 
 
 class TestSyncFromFileCommand(TestCase):
     def setUp(self) -> None:
         # Pre-create repository to avoid side effects outside transaction
-        self.repo = Repository.objects.create(
-            owner="leanprover-community", name="mathlib4", default_branch="master", is_active=True
-        )
-        self.fixture = Path(__file__).resolve().parent / "fixtures" / "pr_bundle_min.json"
+        self.repo = make_repo(owner="leanprover-community", name="mathlib4")
+        self.fixture = fixtures_dir() / "pr_bundle_min.json"
 
     def test_dry_run_no_changes(self) -> None:
         # Ensure empty state

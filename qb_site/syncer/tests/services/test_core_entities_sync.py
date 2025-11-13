@@ -5,11 +5,12 @@ from django.test import TestCase
 from core.models.repository import Repository
 from core.models import User
 from syncer.services.sub.core_entities_sync import upsert_repo_node_id, upsert_user_from_github
+from syncer.tests.factories import make_repo
 
 
 class TestCoreEntitiesSync(TestCase):
     def setUp(self) -> None:
-        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.repo = make_repo()
 
     def test_upsert_repo_node_id(self) -> None:
         changed = upsert_repo_node_id(self.repo, None)
