@@ -5,6 +5,7 @@ from datetime import timedelta, timezone as pytimezone
 
 from django.db import transaction
 from django.utils import timezone
+from django.conf import settings
 
 from core.models.repository import Repository
 from syncer.services.github_client import GitHubClient
@@ -152,6 +153,15 @@ class PRSyncService:
 
         # Optional pagination/backfill (capped)
         if max_timeline_pages > 0 or max_commit_pages > 0 or backfill_timeline_pages > 0 or backfill_commit_pages > 0:
+            # Rate guard: skip pagination/backfill when remaining budget is low
+            try:
+                rl_now = client.get_last_rate_limit() or {}
+                remaining_now = rl_now.get("remaining") if isinstance(rl_now, dict) else None
+                threshold_now = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+                if isinstance(remaining_now, int) and remaining_now <= threshold_now:
+                    return result
+            except Exception:
+                pass
             # Timeline paging
             if max_timeline_pages > 0:
                 tl_conn = pr.get("timelineItems") or {}

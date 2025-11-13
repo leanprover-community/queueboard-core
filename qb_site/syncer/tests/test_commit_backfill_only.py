@@ -41,6 +41,10 @@ class TestCommitBackfillOnly(TestCase):
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     def test_commit_backfill_runs_when_up_to_date(self, MockClient) -> None:
         pr = self._mk_pr(11, last_synced_at=timezone.now())
+        # Seed a saved cursor so subsequent runs continue from it
+        pr.commits_backfill_cursor = "CURX0"
+        pr.commits_backfill_done = False
+        pr.save(update_fields=["commits_backfill_cursor", "commits_backfill_done"])
         gh = MockClient.return_value
 
         # Header older than last_synced_at → up-to-date path
@@ -57,50 +61,60 @@ class TestCommitBackfillOnly(TestCase):
         gh.get_last_rate_limit.return_value = {"remaining": 4990, "cost": 1, "resetAt": "2030-01-01T00:00:00Z"}
 
         # One commits page with a single commit containing both a CheckRun and a StatusContext
-        gh.get_commits_page.return_value = {
-            "data": {
-                "repository": {
-                    "pullRequest": {
-                        "commits": {
-                            "pageInfo": {"hasPreviousPage": False, "startCursor": "CURC"},
-                            "nodes": [
-                                {
-                                    "commit": {
-                                        "oid": "abc123",
-                                        "statusCheckRollup": {
-                                            "contexts": {
-                                                "nodes": [
-                                                    {
-                                                        "__typename": "CheckRun",
-                                                        "id": "CR1",
-                                                        "name": "ci/test",
-                                                        "status": "COMPLETED",
-                                                        "conclusion": "SUCCESS",
-                                                        "startedAt": "2024-01-01T00:00:00Z",
-                                                        "completedAt": "2024-01-01T00:05:00Z",
-                                                        "detailsUrl": None,
-                                                        "externalId": None,
-                                                    },
-                                                    {
-                                                        "__typename": "StatusContext",
-                                                        "id": "SC1",
-                                                        "context": "lint",
-                                                        "state": "SUCCESS",
-                                                        "targetUrl": None,
-                                                        "description": "ok",
-                                                        "createdAt": "2024-01-01T00:01:00Z",
-                                                    },
-                                                ]
-                                            }
-                                        },
+        # Capture and assert that we seed from the saved cursor
+        commits_calls: list[dict] = []
+
+        def _get_commits_page(**kwargs):  # type: ignore[no-redef]
+            commits_calls.append(kwargs)
+            # First call should start from the saved cursor
+            if len(commits_calls) == 1:
+                assert kwargs.get("before") == "CURX0"
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "commits": {
+                                "pageInfo": {"hasPreviousPage": False, "startCursor": "CURC"},
+                                "nodes": [
+                                    {
+                                        "commit": {
+                                            "oid": "abc123",
+                                            "statusCheckRollup": {
+                                                "contexts": {
+                                                    "nodes": [
+                                                        {
+                                                            "__typename": "CheckRun",
+                                                            "id": "CR1",
+                                                            "name": "ci/test",
+                                                            "status": "COMPLETED",
+                                                            "conclusion": "SUCCESS",
+                                                            "startedAt": "2024-01-01T00:00:00Z",
+                                                            "completedAt": "2024-01-01T00:05:00Z",
+                                                            "detailsUrl": None,
+                                                            "externalId": None,
+                                                        },
+                                                        {
+                                                            "__typename": "StatusContext",
+                                                            "id": "SC1",
+                                                            "context": "lint",
+                                                            "state": "SUCCESS",
+                                                            "targetUrl": None,
+                                                            "description": "ok",
+                                                            "createdAt": "2024-01-01T00:01:00Z",
+                                                        },
+                                                    ]
+                                                }
+                                            },
+                                        }
                                     }
-                                }
-                            ],
+                                ],
+                            }
                         }
                     }
                 }
             }
-        }
+
+        gh.get_commits_page.side_effect = _get_commits_page
 
         res = sync_pr_task.apply(
             kwargs={
@@ -120,3 +134,5 @@ class TestCommitBackfillOnly(TestCase):
         pr.refresh_from_db()
         self.assertTrue(pr.commits_backfill_cursor)
         self.assertIsNotNone(pr.commits_earliest_synced_at)
+        # And we used the saved cursor to seed
+        self.assertGreaterEqual(len(commits_calls), 1)
