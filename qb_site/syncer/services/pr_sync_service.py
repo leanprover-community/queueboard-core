@@ -82,6 +82,7 @@ class PRSyncService:
         rate_log: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         timeline_since_iso_override: Optional[str] = None,
         backfill_timeline_pages: int = 0,
+        backfill_commit_pages: int = 0,
     ) -> Dict[str, int]:
         # Determine timeline since cutoff.
         # If an explicit override is provided (e.g., historical backfill), prefer it.
@@ -134,6 +135,15 @@ class PRSyncService:
                 pr_obj.timeline_backfill_cursor = start_cur
                 pr_obj.timeline_backfill_done = not bool(page0.get("hasPreviousPage"))
                 pr_obj.save(update_fields=["timeline_backfill_cursor", "timeline_backfill_done"])
+        # Seed commits backfill state from bundle pageInfo if missing
+        c_conn0 = pr.get("commits") or {}
+        c_page0 = c_conn0.get("pageInfo") or {}
+        if not pr_obj.commits_backfill_cursor:
+            c_start = c_page0.get("startCursor")
+            if c_start:
+                pr_obj.commits_backfill_cursor = c_start
+                pr_obj.commits_backfill_done = not bool(c_page0.get("hasPreviousPage"))
+                pr_obj.save(update_fields=["commits_backfill_cursor", "commits_backfill_done"])
         # Log bundle query cost if available
         if rate_log is not None:
             rl = client.get_last_rate_limit()
@@ -141,7 +151,7 @@ class PRSyncService:
                 rate_log("pr_bundle", rl)
 
         # Optional pagination/backfill (capped)
-        if max_timeline_pages > 0 or max_commit_pages > 0 or backfill_timeline_pages > 0:
+        if max_timeline_pages > 0 or max_commit_pages > 0 or backfill_timeline_pages > 0 or backfill_commit_pages > 0:
             # Timeline paging
             if max_timeline_pages > 0:
                 tl_conn = pr.get("timelineItems") or {}
@@ -230,6 +240,7 @@ class PRSyncService:
                     cpr = ((cdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
                     commits = cpr.get("commits") or {}
                     nodes = commits.get("nodes") or []
+                    earliest_candidates: list[str] = []
                     for cnode in nodes:
                         commit = (cnode or {}).get("commit") or {}
                         sha = commit.get("oid") or ""
@@ -240,6 +251,16 @@ class PRSyncService:
                         sc_res = sync_status_contexts(pr_obj, sc_contexts, sha)
                         result["checkruns_upserted"] += cr_res.created + cr_res.updated
                         result["statusctx_upserted"] += sc_res.created + sc_res.updated
+                        # collect earliest CI timestamps on this page
+                        for ctx in cr_contexts:
+                            if isinstance(ctx, dict):
+                                if ctx.get("completedAt"):
+                                    earliest_candidates.append(ctx.get("completedAt"))
+                                elif ctx.get("startedAt"):
+                                    earliest_candidates.append(ctx.get("startedAt"))
+                        for ctx in sc_contexts:
+                            if isinstance(ctx, dict) and ctx.get("createdAt"):
+                                earliest_candidates.append(ctx.get("createdAt"))
                     if rate_log is not None:
                         rl = client.get_last_rate_limit()
                         if isinstance(rl, dict):
@@ -247,6 +268,94 @@ class PRSyncService:
                     pinfo = commits.get("pageInfo") or {}
                     has_prev = bool(pinfo.get("hasPreviousPage"))
                     before = pinfo.get("startCursor")
+                    # Update PR commit backfill flags and earliest timestamp
+                    try:
+                        pr_obj.commits_backfill_done = not bool(pinfo.get("hasPreviousPage"))
+                        pr_obj.commits_backfill_cursor = before
+                        if earliest_candidates:
+                            from dateutil import parser as _dtp
+
+                            ts = [_dtp.isoparse(x) for x in earliest_candidates if x]
+                            ts = [timezone.make_aware(t) if timezone.is_naive(t) else t for t in ts]
+                            mn = min(ts) if ts else None
+                            if mn is not None and (
+                                pr_obj.commits_earliest_synced_at is None or mn < pr_obj.commits_earliest_synced_at
+                            ):
+                                pr_obj.commits_earliest_synced_at = mn
+                        pr_obj.save(
+                            update_fields=[
+                                "commits_backfill_cursor",
+                                "commits_backfill_done",
+                                "commits_earliest_synced_at",
+                            ]
+                        )
+                    except Exception:
+                        pass
+                    pages += 1
+
+            # Backfill older commit pages with a fixed budget
+            if backfill_commit_pages > 0 and not pr_obj.commits_backfill_done:
+                before = pr_obj.commits_backfill_cursor
+                pages = 0
+                while pages < backfill_commit_pages and not pr_obj.commits_backfill_done:
+                    cdata = client.get_commits_page(
+                        owner=repo.owner,
+                        name=repo.name,
+                        number=number,
+                        last=commitsM,
+                        before=before,
+                    )
+                    cpr = ((cdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+                    commits = cpr.get("commits") or {}
+                    nodes = commits.get("nodes") or []
+                    earliest_candidates: list[str] = []
+                    for cnode in nodes:
+                        commit = (cnode or {}).get("commit") or {}
+                        sha = commit.get("oid") or ""
+                        contexts = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
+                        cr_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "CheckRun"]
+                        sc_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "StatusContext"]
+                        cr_res = sync_check_runs(pr_obj, cr_contexts, sha)
+                        sc_res = sync_status_contexts(pr_obj, sc_contexts, sha)
+                        result["checkruns_upserted"] += cr_res.created + cr_res.updated
+                        result["statusctx_upserted"] += sc_res.created + sc_res.updated
+                        for ctx in cr_contexts:
+                            if isinstance(ctx, dict):
+                                if ctx.get("completedAt"):
+                                    earliest_candidates.append(ctx.get("completedAt"))
+                                elif ctx.get("startedAt"):
+                                    earliest_candidates.append(ctx.get("startedAt"))
+                        for ctx in sc_contexts:
+                            if isinstance(ctx, dict) and ctx.get("createdAt"):
+                                earliest_candidates.append(ctx.get("createdAt"))
+                    if rate_log is not None:
+                        rl = client.get_last_rate_limit()
+                        if isinstance(rl, dict):
+                            rate_log("commits_page", rl)
+                    pinfo = commits.get("pageInfo") or {}
+                    pr_obj.commits_backfill_done = not bool(pinfo.get("hasPreviousPage"))
+                    before = pinfo.get("startCursor")
+                    pr_obj.commits_backfill_cursor = before
+                    try:
+                        if earliest_candidates:
+                            from dateutil import parser as _dtp
+
+                            ts = [_dtp.isoparse(x) for x in earliest_candidates if x]
+                            ts = [timezone.make_aware(t) if timezone.is_naive(t) else t for t in ts]
+                            mn = min(ts) if ts else None
+                            if mn is not None and (
+                                pr_obj.commits_earliest_synced_at is None or mn < pr_obj.commits_earliest_synced_at
+                            ):
+                                pr_obj.commits_earliest_synced_at = mn
+                    except Exception:
+                        pass
+                    pr_obj.save(
+                        update_fields=[
+                            "commits_backfill_cursor",
+                            "commits_backfill_done",
+                            "commits_earliest_synced_at",
+                        ]
+                    )
                     pages += 1
 
         return result

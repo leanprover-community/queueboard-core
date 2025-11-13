@@ -78,9 +78,10 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "gh_updated_at",
         "last_synced_at",
         "timeline_backfill_done",
+        "commits_backfill_done",
         "author",
     )
-    list_filter = ("repository", "state", "is_draft", "timeline_backfill_done")
+    list_filter = ("repository", "state", "is_draft", "timeline_backfill_done", "commits_backfill_done")
     search_fields = ("title", "number", "author__github_login")
     date_hierarchy = "gh_updated_at"
     raw_id_fields = ("repository", "author")
@@ -107,6 +108,9 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "timeline_backfill_cursor",
         "timeline_backfill_done",
         "timeline_earliest_synced_at",
+        "commits_backfill_cursor",
+        "commits_backfill_done",
+        "commits_earliest_synced_at",
         "created_at",
         "updated_at",
     )
@@ -164,8 +168,14 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": False},
             )
         from syncer.tasks.sync_tasks import sync_pr_task
+        from django.conf import settings
 
-        async_result = sync_pr_task.delay(pr.repository_id, pr.number)
+        async_result = sync_pr_task.delay(
+            pr.repository_id,
+            pr.number,
+            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+        )
         self.message_user(request, f"Enqueued sync for PR #{pr.number}: task_id={async_result.id}")
         return TemplateResponse(
             request,
@@ -188,8 +198,15 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": True},
             )
         from syncer.tasks.sync_tasks import sync_pr_task
+        from django.conf import settings
 
-        async_result = sync_pr_task.delay(pr.repository_id, pr.number, dry_run=True)
+        async_result = sync_pr_task.delay(
+            pr.repository_id,
+            pr.number,
+            dry_run=True,
+            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+        )
         self.message_user(request, f"Enqueued DRY-RUN sync for PR #{pr.number}: task_id={async_result.id}")
         return TemplateResponse(
             request,
@@ -207,11 +224,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
 
     def action_enqueue_sync(self, request, queryset):  # type: ignore[override]
         from syncer.tasks.sync_tasks import sync_pr_task
+        from django.conf import settings
 
         enqueued: list[tuple[PullRequest, str]] = []
         for pr in queryset.select_related("repository"):
             # Enqueue Celery task per PR
-            async_result = sync_pr_task.delay(pr.repository_id, pr.number)
+            async_result = sync_pr_task.delay(
+                pr.repository_id,
+                pr.number,
+                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+            )
             enqueued.append((pr, async_result.id))
 
         context = {
@@ -227,10 +250,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
 
     def action_enqueue_sync_dry_run(self, request, queryset):  # type: ignore[override]
         from syncer.tasks.sync_tasks import sync_pr_task
+        from django.conf import settings
 
         enqueued: list[tuple[PullRequest, str]] = []
         for pr in queryset.select_related("repository"):
-            async_result = sync_pr_task.delay(pr.repository_id, pr.number, dry_run=True)
+            async_result = sync_pr_task.delay(
+                pr.repository_id,
+                pr.number,
+                dry_run=True,
+                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+            )
             enqueued.append((pr, async_result.id))
 
         context = {

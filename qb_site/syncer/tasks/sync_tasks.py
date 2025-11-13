@@ -45,6 +45,7 @@ def sync_pr_task(  # type: ignore[no-redef]
     dry_run: bool = False,
     timeline_since_iso: Optional[str] = None,
     backfill_timeline_pages: int = 0,
+    backfill_commit_pages: int = 0,
 ) -> Dict[str, Any]:
     """Sync a single PR by (repository id, number) using the GraphQL bundle.
 
@@ -88,6 +89,7 @@ def sync_pr_task(  # type: ignore[no-redef]
                         "max_commit_pages": max_commit_pages,
                         "dry_run": dry_run,
                         "timeline_since_iso": timeline_since_iso,
+                        "backfill_commit_pages": backfill_commit_pages,
                     },
                     eta=eta,
                 )
@@ -142,6 +144,9 @@ def sync_pr_task(  # type: ignore[no-redef]
         # PR unchanged, but we may still spend backfill budget on older timeline pages.
         pages_used = 0
         events_created = 0
+        commit_pages_used = 0
+        checkruns_upserted = 0
+        statusctx_upserted = 0
         if backfill_timeline_pages and not pr_db.timeline_backfill_done:
             from syncer.services.sub.timeline_sync import sync_timeline_events
 
@@ -195,17 +200,93 @@ def sync_pr_task(  # type: ignore[no-redef]
                     )
                 pages_used += 1
 
+        # Commit paging backfill: walk the commits connection backward by a small budget
+        if backfill_commit_pages and int(backfill_commit_pages) > 0:
+            from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
+
+            before: Optional[str] = None  # seed by fetching the most recent page
+            used = 0
+            has_prev: Optional[bool] = True
+            while used < int(backfill_commit_pages) and has_prev:
+                cdata = client.get_commits_page(
+                    owner=repo.owner,
+                    name=repo.name,
+                    number=int(number),
+                    last=int(commitsM),
+                    before=before,
+                )
+                cpr = ((cdata.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+                commits = cpr.get("commits") or {}
+                nodes = commits.get("nodes") or []
+                earliest_candidates: list[str] = []
+                for cnode in nodes:
+                    commit = (cnode or {}).get("commit") or {}
+                    sha = commit.get("oid") or ""
+                    contexts = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
+                    cr_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "CheckRun"]
+                    sc_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "StatusContext"]
+                    cr_res = sync_check_runs(pr_db, cr_contexts, sha)
+                    sc_res = sync_status_contexts(pr_db, sc_contexts, sha)
+                    checkruns_upserted += cr_res.created + cr_res.updated
+                    statusctx_upserted += sc_res.created + sc_res.updated
+                    for ctx in cr_contexts:
+                        if isinstance(ctx, dict):
+                            if ctx.get("completedAt"):
+                                earliest_candidates.append(ctx.get("completedAt"))
+                            elif ctx.get("startedAt"):
+                                earliest_candidates.append(ctx.get("startedAt"))
+                    for ctx in sc_contexts:
+                        if isinstance(ctx, dict) and ctx.get("createdAt"):
+                            earliest_candidates.append(ctx.get("createdAt"))
+                # rate log snapshot for this commit page
+                rl_page = client.get_last_rate_limit() or {}
+                if isinstance(rl_page, dict):
+                    rate_events.append(
+                        {
+                            "label": "commits_page",
+                            "cost": rl_page.get("cost"),
+                            "remaining": rl_page.get("remaining"),
+                            "resetAt": rl_page.get("resetAt"),
+                        }
+                    )
+                pinfo = commits.get("pageInfo") or {}
+                has_prev = bool(pinfo.get("hasPreviousPage"))
+                before = pinfo.get("startCursor")
+                # Update commit backfill flags on the PR for admin visibility and earliest timestamp
+                try:
+                    pr_db.commits_backfill_done = not bool(pinfo.get("hasPreviousPage"))
+                    pr_db.commits_backfill_cursor = before
+                    if earliest_candidates:
+                        from dateutil import parser as _dtp
+
+                        ts = [_dtp.isoparse(x) for x in earliest_candidates if x]
+                        ts = [timezone.make_aware(t) if timezone.is_naive(t) else t for t in ts]
+                        mn = min(ts) if ts else None
+                        if mn is not None and (pr_db.commits_earliest_synced_at is None or mn < pr_db.commits_earliest_synced_at):
+                            pr_db.commits_earliest_synced_at = mn
+                    pr_db.save(
+                        update_fields=[
+                            "commits_backfill_cursor",
+                            "commits_backfill_done",
+                            "commits_earliest_synced_at",
+                        ]
+                    )
+                except Exception:
+                    pass
+                used += 1
+                commit_pages_used += 1
+
         rl = client.get_last_rate_limit() or {}
-        status = "backfill_only" if (events_created > 0 or pages_used > 0) else "no_work"
+        status = "backfill_only" if (events_created > 0 or pages_used > 0 or commit_pages_used > 0) else "no_work"
         log.info(
-            "sync_pr_task: status=%s repo=%s/%s pr=%s backfill_pages=%s created_events=%s done_after=%s remaining=%s resetAt=%s",
+            "sync_pr_task: status=%s repo=%s/%s pr=%s backfill_pages=%s created_events=%s commit_pages=%s remaining=%s resetAt=%s",
             status,
             repo.owner,
             repo.name,
             number,
             pages_used,
             events_created,
-            bool(pr_db.timeline_backfill_done),
+            commit_pages_used,
             rl.get("remaining"),
             rl.get("resetAt"),
         )
@@ -219,13 +300,18 @@ def sync_pr_task(  # type: ignore[no-redef]
             "dry_run": dry_run,
             "rate_limit": rl,
             "rate_events": rate_events,
-            "backfill": {"pages_used": pages_used, "done_after": bool(pr_db.timeline_backfill_done)},
+            "backfill": {
+                "pages_used": pages_used,
+                "commit_pages_used": commit_pages_used,
+                "done_after": bool(pr_db.timeline_backfill_done),
+            },
             "params": {
                 "timelineK": timelineK,
                 "commitsM": commitsM,
                 "max_timeline_pages": max_timeline_pages,
                 "max_commit_pages": max_commit_pages,
                 "backfill_timeline_pages": backfill_timeline_pages,
+                "backfill_commit_pages": backfill_commit_pages,
             },
         }
 
@@ -265,6 +351,7 @@ def sync_pr_task(  # type: ignore[no-redef]
             rate_log=rate_log,
             timeline_since_iso_override=timeline_since_iso,
             backfill_timeline_pages=backfill_timeline_pages,
+            backfill_commit_pages=backfill_commit_pages,
         )
     except Exception:
         # If a rate-related error occurs mid-sync, prefer deferral over failure when snapshot indicates low budget
@@ -289,6 +376,7 @@ def sync_pr_task(  # type: ignore[no-redef]
             "max_timeline_pages": max_timeline_pages,
             "max_commit_pages": max_commit_pages,
             "backfill_timeline_pages": backfill_timeline_pages,
+            "backfill_commit_pages": backfill_commit_pages,
         },
         "counts": res,
         "rate_limit": rl_final,
@@ -436,6 +524,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                     commitsM=cm,
                     dry_run=dry_run,
                     backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
+                    backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
                 )
                 enqueued += 1
         log.info(
