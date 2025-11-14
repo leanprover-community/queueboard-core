@@ -72,24 +72,31 @@ Stage C: Compute windows and sets
   - Service/Task: `syncer.services.ci_by_sha_service.sync_ci_for_sha`, `syncer.tasks.sync_tasks.sync_ci_for_shas`.
   - Admin tool: "Enqueue CI by SHA" under PRs (with an optional strict association guard).
 
+## Current Admin & Commands
+- Admin
+  - Read‑only PRRevision list view (searchable by PR number/head SHA; date hierarchy on from_ts).
+  - PR detail shows PRRevision inline (read‑only) alongside timeline, check runs, and status contexts.
+  - PR detail object tools:
+    - Analyzer: Rebuild revisions (gated on `timeline_backfill_done`).
+    - Analyzer: Enqueue missing CI (uses revision windows to select missing head SHAs and enqueues Syncer CI‑by‑SHA).
+- Commands
+  - `manage.py rebuild_revisions --repo o/name [--pr N ...]` — rebuilds PRRevision windows; skips PRs without full timeline backfill; idempotent reconcile.
+  - `manage.py plan_ci_backfill --repo o/name [--pr N ...] [--limit M] [--pages-per-sha K] [--enqueue] [--require-assoc]` — lists/enqueues CI‑by‑SHA for missing revision heads.
+
 ## Planned Work (incremental)
-1) Management commands (Analyzer)
-   - `rebuild_revisions --repo owner/name [--pr N...] [--all-open]`: rebuilds `PRRevision` for selected PRs.
-   - `plan_ci_backfill --repo owner/name [--pr N...] [--limit M] [--pages-per-sha K] [--dry-run]`:
-     - lists or enqueues `syncer.sync_ci_for_shas` for missing revision head SHAs (uses revision windows as ground truth).
-     - by default call with `require_pr_association=false` and rely on revision membership to avoid false negatives after force‑pushes.
-   - Optional: `backfill_window --repo owner/name --from ISO --to ISO [--include-ci]` to drive timeline ingest and CI selectively for a historical window.
-2) Coordinator (optional periodic)
+1) Coordinator (optional periodic)
    - Periodically rebuild revisions for PRs with recent timeline changes.
    - Identify `next_revision_backfill_shas(pr)` and enqueue limited `syncer.sync_ci_for_shas` per PR under rate‑aware caps.
-3) CI state and queue queries
-   - `ci_state_at_time(pr, T)` helper that selects the closest per‑context records (CheckRun completedAt > startedAt > StatusContext createdAt) at or before `T` for the head SHA active at `T`.
+2) CI state and queue queries
+   - `ci_state_at_time(pr, T)` helper (essentials only; unknown‑CI policy via rules).
    - `queue_state_at_time(repo, T)` combines open/not‑draft + required labels + CI rules.
-4) Admin/CLI utilities
-   - Read‑only admin for `PRRevision` and a simple “rebuild revisions” button per PR.
-   - CLI for “who was on the queue at T” (for sampling and verification).
-5) Optional: compact CI rollups
-   - If needed for speed, add `CommitCIRollup` to store one latest record per `(repo, sha, context)` and derive historical lookups from it.
+   - CLI for “who was on the queue at T” and sampling utilities.
+3) Daily results and rules versioning
+   - Models: `QueueDailySnapshot` and `PRQueueDailySpan`, stamped with `rules_version`.
+   - Batch jobs to compute EOD snapshots and backfill ranges (idempotent upserts).
+   - `QueueRuleSet` model (per‑repo, versioned) and admin to manage rule changes going forward.
+4) Optional: compact CI rollups
+   - If needed for speed, add `CommitCIRollup` to store a latest record per `(repo, sha, context)` to accelerate historical lookups.
 
 ## Scheduling Notes
 - Keep per‑repo periodic sync in Syncer beat schedule (OPEN since recent cutoff).
