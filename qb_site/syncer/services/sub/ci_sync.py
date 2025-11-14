@@ -48,7 +48,8 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     """
     created = 0
     updated = 0
-    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_CHECKRUN_NAMES", ""))
+    mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
+    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")) if mode == "allowlist" else []
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -88,7 +89,8 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     """
     created = 0
     updated = 0
-    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", ""))
+    mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
+    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", "")) if mode == "allowlist" else []
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue

@@ -13,7 +13,7 @@ class TestCIFilter(TestCase):
         self.pr = make_pr(self.repo, 42)
         self.sha = "abc123"
 
-    @override_settings(SYNCER_CI_ALLOW_CHECKRUN_NAMES="build, test")
+    @override_settings(SYNCER_CI_FILTER_MODE="allowlist", SYNCER_CI_ALLOW_CHECKRUN_NAMES="build, test")
     def test_checkrun_allow_filters_by_substring(self) -> None:
         ctxs = [
             {
@@ -52,7 +52,7 @@ class TestCIFilter(TestCase):
         self.assertEqual(CheckRun.objects.filter(pull_request=self.pr).count(), 2)
         self.assertEqual(res.created, 2)
 
-    @override_settings(SYNCER_CI_ALLOW_STATUS_NAMES="bors, required")
+    @override_settings(SYNCER_CI_FILTER_MODE="allowlist", SYNCER_CI_ALLOW_STATUS_NAMES="bors, required")
     def test_status_allow_filters_by_substring(self) -> None:
         ctxs = [
             {
