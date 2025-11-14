@@ -221,13 +221,6 @@ Developer utilities (current)
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Remaining Work (near‑term)
-0. Misc admin improvements:
-    - add metrics collection button on metrics table page
-    - add links to PR on github
-    - cleanup tables on PR page (show top N, link to full search)
-    - add analyzer actions on PR table page
-    - better ordering for checkruns / other tables
-    - filtering by foreign keys in timeline events, check runs, status contexts
 1. CI backfill across force‑pushes (Analyzer‑driven)
     - Build `PRRevision` windows from force‑push events and head state.
     - Identify historical SHAs missing CI and enqueue Syncer CI fetches (rate‑aware scheduling remains in Syncer).
