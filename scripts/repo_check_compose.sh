@@ -31,6 +31,6 @@ docker compose exec -T web python qb_site/manage.py makemigrations --dry-run --c
 
 echo "[4/4] Run syncer tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
-docker compose exec -T web python qb_site/manage.py test syncer # --verbosity 2
+docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer # --verbosity 2
 
 echo "Compose checks completed."

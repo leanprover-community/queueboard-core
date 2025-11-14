@@ -159,7 +159,9 @@ SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES",
 SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 0))
 SYNCER_CI_BY_SHA_PAGES = int(os.getenv("SYNCER_CI_BY_SHA_PAGES", 1))
 
-# CI filter (simple global allow-lists; empty = allow all)
+# CI filter (opt-in allowlist mode)
+# Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
+SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
 # Comma-separated substrings matched case-insensitively against CheckRun.name
 SYNCER_CI_ALLOW_CHECKRUN_NAMES = os.getenv("SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")
 # Comma-separated substrings matched case-insensitively against StatusContext.context
