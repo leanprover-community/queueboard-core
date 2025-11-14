@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.contrib import admin
+from django.http import HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.urls import reverse, path
 from django.utils.html import format_html
@@ -40,6 +41,17 @@ class PRLabelInline(admin.TabularInline):
     readonly_fields = ("label_def", "created_at", "updated_at")
     raw_id_fields = ("label_def",)
 
+    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
+        FormSet = super().get_formset(request, obj, **kwargs)
+
+        class LimitedFormSet(FormSet):  # type: ignore[misc]
+            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
+                super().__init__(*args, **kwargs)
+                qs = self_inner.queryset.order_by("-created_at")
+                self_inner.queryset = qs[:10]
+
+        return LimitedFormSet
+
 
 class PRTimelineEventInline(admin.TabularInline):
     model = PRTimelineEvent
@@ -48,6 +60,17 @@ class PRTimelineEventInline(admin.TabularInline):
     fields = ("type", "occurred_at", "label_name", "before_sha", "after_sha")
     readonly_fields = ("type", "occurred_at", "label_name", "before_sha", "after_sha")
     ordering = ("-occurred_at",)
+
+    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
+        FormSet = super().get_formset(request, obj, **kwargs)
+
+        class LimitedFormSet(FormSet):  # type: ignore[misc]
+            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
+                super().__init__(*args, **kwargs)
+                qs = self_inner.queryset.order_by("-occurred_at")
+                self_inner.queryset = qs[:10]
+
+        return LimitedFormSet
 
 
 class CheckRunInline(admin.TabularInline):
@@ -59,6 +82,17 @@ class CheckRunInline(admin.TabularInline):
     ordering = ("-gh_completed_at",)
     show_change_link = True
 
+    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
+        FormSet = super().get_formset(request, obj, **kwargs)
+
+        class LimitedFormSet(FormSet):  # type: ignore[misc]
+            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
+                super().__init__(*args, **kwargs)
+                qs = self_inner.queryset.order_by("-gh_completed_at")
+                self_inner.queryset = qs[:10]
+
+        return LimitedFormSet
+
 
 class StatusContextInline(admin.TabularInline):
     model = StatusContext
@@ -69,6 +103,17 @@ class StatusContextInline(admin.TabularInline):
     ordering = ("-gh_created_at",)
     show_change_link = True
 
+    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
+        FormSet = super().get_formset(request, obj, **kwargs)
+
+        class LimitedFormSet(FormSet):  # type: ignore[misc]
+            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
+                super().__init__(*args, **kwargs)
+                qs = self_inner.queryset.order_by("-gh_created_at")
+                self_inner.queryset = qs[:10]
+
+        return LimitedFormSet
+
 
 class PRRevisionInline(admin.TabularInline):
     model = PRRevision
@@ -78,13 +123,24 @@ class PRRevisionInline(admin.TabularInline):
     readonly_fields = ("head_sha", "from_ts", "to_ts", "seq")
     ordering = ("from_ts",)
 
+    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
+        FormSet = super().get_formset(request, obj, **kwargs)
+
+        class LimitedFormSet(FormSet):  # type: ignore[misc]
+            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
+                super().__init__(*args, **kwargs)
+                qs = self_inner.queryset.order_by("from_ts")
+                self_inner.queryset = qs[:10]
+
+        return LimitedFormSet
+
 
 @admin.register(PullRequest)
 class PullRequestAdmin(ReadOnlyAdmin):
     change_form_template = "admin/syncer/pullrequest/change_form.html"
     list_display = (
         "repository",
-        "number",
+        "number_link",
         "state",
         "is_draft",
         "gh_updated_at",
@@ -94,12 +150,13 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "author",
     )
     list_filter = ("repository", "state", "is_draft", "timeline_backfill_done", "commits_backfill_done")
-    search_fields = ("title", "number", "author__github_login")
     date_hierarchy = "gh_updated_at"
     raw_id_fields = ("repository", "author")
+    # number_link is a readonly helper that links to GitHub
+    # and replaces the raw number field in the admin detail.
     readonly_fields = (
         "repository",
-        "number",
+        "number_link",
         "author",
         "state",
         "is_draft",
@@ -126,7 +183,21 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
-    inlines = [PRLabelInline, PRTimelineEventInline, PRRevisionInline, CheckRunInline, StatusContextInline]
+    inlines: list[type[admin.TabularInline]] = []
+
+    search_fields = (
+        "title",
+        "number",
+        "author__github_login",
+        "repository__owner",
+        "repository__name",
+    )
+
+    def number_link(self, obj: PullRequest) -> str:  # pragma: no cover - simple formatting
+        url = f"https://github.com/{obj.repository.owner}/{obj.repository.name}/pull/{obj.number}"
+        return format_html("<a href='{}' target='_blank'>{}</a>", url, obj.number)
+
+    number_link.short_description = "Number"  # type: ignore[attr-defined]
 
     def get_urls(self):  # type: ignore[override]
         urls = super().get_urls()
@@ -175,11 +246,25 @@ class PullRequestAdmin(ReadOnlyAdmin):
                     .filter(result__contains=f'"number": {int(number)}')
                     .order_by("-date_done")[:10]
                 )
+                labels = PRLabel.objects.filter(pull_request=pr).select_related("label_def").order_by("-created_at")[:10]
+                timeline_events = PRTimelineEvent.objects.filter(pull_request=pr).order_by("-occurred_at", "-id")[:10]
+                revisions = PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id")[:10]
+                check_runs = CheckRun.objects.filter(pull_request=pr).order_by("-gh_completed_at", "-id")[:10]
+                status_contexts = StatusContext.objects.filter(pull_request=pr).order_by("-gh_created_at", "-id")[:10]
                 extra.update(
                     {
                         "recent_task_results": recent,
                         "task_results_changelist_url": reverse("admin:django_celery_results_taskresult_changelist"),
                         "task_results_filter_query": f"?task_name=syncer.sync_pr&q={owner}/{name} {int(number)}",
+                        "labels": labels,
+                        "timeline_events": timeline_events,
+                        "revisions": revisions,
+                        "check_runs": check_runs,
+                        "status_contexts": status_contexts,
+                        "timeline_list_url": f"{reverse('admin:syncer_prtimelineevent_changelist')}?pull_request__id__exact={pr.id}",
+                        "checkrun_list_url": f"{reverse('admin:syncer_checkrun_changelist')}?pull_request__id__exact={pr.id}",
+                        "statuscontext_list_url": f"{reverse('admin:syncer_statuscontext_changelist')}?pull_request__id__exact={pr.id}",
+                        "prrevision_list_url": f"{reverse('admin:analyzer_prrevision_changelist')}?pull_request__id__exact={pr.id}",
                     }
                 )
             except Exception:  # pragma: no cover - optional dependency
@@ -212,6 +297,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 "title": "Enqueued PR sync",
                 "enqueued": [(pr, async_result.id)],
                 "dry_run": False,
+                "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
                 "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
             },
         )
@@ -243,6 +329,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 "title": "Enqueued DRY-RUN PR sync",
                 "enqueued": [(pr, async_result.id)],
                 "dry_run": True,
+                "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
                 "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
             },
         )
@@ -294,6 +381,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
                         "title": "Enqueued CI-by-SHA",
                         "enqueued": [(pr, async_result.id)],
                         "dry_run": dry_run,
+                        "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
                         "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
                     },
                 )
@@ -341,7 +429,12 @@ class PullRequestAdmin(ReadOnlyAdmin):
         self.message_user(request, f"Analyzer: enqueued CI by SHA for {len(shas)} head(s); task_id={task_id}")
         return self.change_view(request, object_id)
 
-    actions = ["action_enqueue_sync", "action_enqueue_sync_dry_run"]
+    actions = [
+        "action_enqueue_sync",
+        "action_enqueue_sync_dry_run",
+        "action_analyzer_rebuild_revisions",
+        "action_analyzer_enqueue_missing_ci",
+    ]
 
     def action_enqueue_sync(self, request, queryset):  # type: ignore[override]
         from syncer.tasks.sync_tasks import sync_pr_task
@@ -395,6 +488,57 @@ class PullRequestAdmin(ReadOnlyAdmin):
 
     action_enqueue_sync_dry_run.short_description = "Enqueue DRY-RUN sync for selected PRs"  # type: ignore[attr-defined]
 
+    def action_analyzer_rebuild_revisions(self, request, queryset):  # type: ignore[override]
+        total = queryset.count()
+        created_total = 0
+        deleted_total = 0
+        skipped = 0
+        for pr in queryset.select_related("repository"):
+            if not pr.timeline_backfill_done:
+                skipped += 1
+                continue
+            res = rebuild_pr_revisions(pr)
+            created_total += res.created
+            deleted_total += res.deleted
+        self.message_user(
+            request,
+            (
+                "Analyzer: rebuild revisions for "
+                f"{total} PR(s); created={created_total}, deleted={deleted_total}, "
+                f"skipped_no_backfill={skipped}"
+            ),
+        )
+
+    action_analyzer_rebuild_revisions.short_description = "Analyzer: rebuild revisions for selected PRs"  # type: ignore[attr-defined]
+
+    def action_analyzer_enqueue_missing_ci(self, request, queryset):  # type: ignore[override]
+        from django.conf import settings
+
+        total = queryset.count()
+        prs_with_ci = 0
+        total_shas = 0
+        for pr in queryset.select_related("repository"):
+            plan = plan_missing_ci_shas(repo=pr.repository, pr_numbers=[pr.number], limit_per_pr=2)
+            if not plan:
+                continue
+            shas = plan[0].shas
+            if not shas:
+                continue
+            enqueue_ci_by_shas(
+                pr=pr,
+                shas=shas,
+                pages_per_sha=int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
+                require_pr_association=False,
+            )
+            prs_with_ci += 1
+            total_shas += len(shas)
+        self.message_user(
+            request,
+            (f"Analyzer: enqueued CI-by-SHA for {prs_with_ci} of {total} PR(s); total_shas={total_shas}"),
+        )
+
+    action_analyzer_enqueue_missing_ci.short_description = "Analyzer: enqueue missing CI for selected PRs"  # type: ignore[attr-defined]
+
 
 @admin.register(LabelDef)
 class LabelDefAdmin(ReadOnlyAdmin):
@@ -417,9 +561,10 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
     short_after_sha.short_description = "after_sha"  # type: ignore[attr-defined]
 
     list_display = ("pull_request", "type", "occurred_at", "label_name", "short_before_sha", "short_after_sha")
-    list_filter = ("type",)
+    list_filter = ("pull_request__repository", "type")
     search_fields = ("label_name", "pull_request__number", "before_sha", "after_sha")
     date_hierarchy = "occurred_at"
+    ordering = ("-occurred_at", "-id")
     raw_id_fields = ("pull_request",)
     readonly_fields = (
         "pull_request",
@@ -442,9 +587,10 @@ class CheckRunAdmin(ReadOnlyAdmin):
     short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
 
     list_display = ("pull_request", "name", "status", "conclusion", "short_sha", "gh_completed_at")
-    list_filter = ("status", "conclusion")
+    list_filter = ("pull_request__repository", "status", "conclusion")
     search_fields = ("name", "head_sha", "pull_request__number")
     date_hierarchy = "gh_completed_at"
+    ordering = ("-gh_completed_at", "-id")
     raw_id_fields = ("pull_request",)
     readonly_fields = (
         "pull_request",
@@ -471,9 +617,10 @@ class StatusContextAdmin(ReadOnlyAdmin):
     short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
 
     list_display = ("pull_request", "name", "state", "short_sha", "gh_created_at")
-    list_filter = ("state",)
+    list_filter = ("pull_request__repository", "state")
     search_fields = ("name", "head_sha", "pull_request__number")
     date_hierarchy = "gh_created_at"
+    ordering = ("-gh_created_at", "-id")
     raw_id_fields = ("pull_request",)
     readonly_fields = (
         "pull_request",
@@ -513,3 +660,18 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         f.name
         for f in SyncerMetricsSnapshot._meta.fields  # type: ignore[attr-defined]
     ]
+
+    change_list_template = "admin/syncer/syncermetricssnapshot/change_list.html"
+
+    def changelist_view(self, request, extra_context=None):  # type: ignore[override]
+        extra = extra_context or {}
+        if request.method == "POST" and request.POST.get("action") == "collect_metrics":
+            try:
+                from syncer.tasks.metrics_tasks import collect_metrics_task
+
+                async_res = collect_metrics_task.delay()
+                self.message_user(request, f"Enqueued metrics collection task: {async_res.id}")
+            except Exception as exc:  # pragma: no cover - external dependency
+                self.message_user(request, f"Failed to enqueue metrics collection: {exc}")
+            return HttpResponseRedirect(request.path)
+        return super().changelist_view(request, extra_context=extra)

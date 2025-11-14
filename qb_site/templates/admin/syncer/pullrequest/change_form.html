@@ -1,22 +1,21 @@
 {% extends "admin/change_form.html" %}
 
-{% block object-tools-items %}
-<li>
-  <a href="{% url 'admin:syncer_pullrequest_enqueue_sync' original.pk %}">Enqueue sync</a>
-</li>
-<li>
-  <a href="{% url 'admin:syncer_pullrequest_enqueue_sync_dry' original.pk %}">Enqueue DRY-RUN sync</a>
-</li>
-<li>
-  <a href="{% url 'admin:syncer_pullrequest_enqueue_ci_sha' original.pk %}">Enqueue CI by SHA</a>
-</li>
-<li>
-  <a href="{% url 'admin:syncer_pullrequest_analyzer_rebuild' original.pk %}">Analyzer: Rebuild revisions</a>
-</li>
-<li>
-  <a href="{% url 'admin:syncer_pullrequest_analyzer_enqueue_missing_ci' original.pk %}">Analyzer: Enqueue missing
-    CI</a>
-</li>
+{% block object-tools %}
+{% if change %}
+<div style="margin-bottom: 1em;">
+  <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.25rem;">
+    <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_sync' original.pk %}">Enqueue sync</a>
+    <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_sync_dry' original.pk %}">Enqueue DRY-RUN sync</a>
+    <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_ci_sha' original.pk %}">Enqueue CI by SHA</a>
+  </div>
+  <div style="display:flex; flex-wrap:wrap; gap:0.5rem;">
+    <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_rebuild' original.pk %}">Analyzer: Rebuild
+      revisions</a>
+    <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_enqueue_missing_ci' original.pk %}">Analyzer:
+      Enqueue missing CI</a>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block after_field_sets %}
@@ -43,7 +42,7 @@
       <td>{{ tr.status }}</td>
       <td>{{ tr.date_done }}</td>
       <td><code
-          style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ tr.result }}</code>
+          style="display:block; max-height:10em; overflow:auto; white-space:pre-wrap; word-break:break-word;">{{ tr.result }}</code>
       </td>
     </tr>
     {% endfor %}
@@ -51,5 +50,162 @@
 </table>
 {% else %}
 <p>No recent task results for this PR in the last few pages.</p>
+{% endif %}
+<h2>Labels (latest 10)</h2>
+{% if labels %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Label</th>
+      <th>Attached at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for lbl in labels %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:syncer_labeldef_change' lbl.label_def.id %}">
+          {{ lbl.label_def }}
+        </a>
+      </td>
+      <td>{{ lbl.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No labels for this PR yet.</p>
+{% endif %}
+<h2>Timeline events (latest 10)</h2>
+{% if timeline_list_url %}
+<p>
+  <a href="{{ timeline_list_url }}">View all timeline events for this PR</a>
+</p>
+{% endif %}
+{% if timeline_events %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Type</th>
+      <th>Occurred at</th>
+      <th>Label</th>
+      <th>Before SHA</th>
+      <th>After SHA</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ev in timeline_events %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:syncer_prtimelineevent_change' ev.id %}">{{ ev.type }}</a>
+      </td>
+      <td>{{ ev.occurred_at }}</td>
+      <td>{{ ev.label_name }}</td>
+      <td>{{ ev.before_sha }}</td>
+      <td>{{ ev.after_sha }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No timeline events for this PR yet.</p>
+{% endif %}
+<h2>Revisions (latest 10)</h2>
+{% if prrevision_list_url %}
+<p>
+  <a href="{{ prrevision_list_url }}">View all revisions for this PR</a>
+</p>
+{% endif %}
+{% if revisions %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Head SHA</th>
+      <th>From</th>
+      <th>To</th>
+      <th>Seq</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for rev in revisions %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:analyzer_prrevision_change' rev.id %}">{{ rev.head_sha }}</a>
+      </td>
+      <td>{{ rev.from_ts }}</td>
+      <td>{{ rev.to_ts }}</td>
+      <td>{{ rev.seq }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No revisions for this PR yet.</p>
+{% endif %}
+<h2>Check runs (latest 10)</h2>
+{% if checkrun_list_url %}
+<p>
+  <a href="{{ checkrun_list_url }}">View all check runs for this PR</a>
+</p>
+{% endif %}
+{% if check_runs %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Conclusion</th>
+      <th>Head SHA</th>
+      <th>Completed at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for cr in check_runs %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:syncer_checkrun_change' cr.id %}">{{ cr.name }}</a>
+      </td>
+      <td>{{ cr.status }}</td>
+      <td>{{ cr.conclusion }}</td>
+      <td>{{ cr.head_sha }}</td>
+      <td>{{ cr.gh_completed_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No check runs for this PR yet.</p>
+{% endif %}
+<h2>Status contexts (latest 10)</h2>
+{% if statuscontext_list_url %}
+<p>
+  <a href="{{ statuscontext_list_url }}">View all status contexts for this PR</a>
+</p>
+{% endif %}
+{% if status_contexts %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>State</th>
+      <th>Head SHA</th>
+      <th>Created at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for sc in status_contexts %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:syncer_statuscontext_change' sc.id %}">{{ sc.name }}</a>
+      </td>
+      <td>{{ sc.state }}</td>
+      <td>{{ sc.head_sha }}</td>
+      <td>{{ sc.gh_created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No status contexts for this PR yet.</p>
 {% endif %}
 {% endblock %}
