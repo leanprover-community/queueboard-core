@@ -14,6 +14,9 @@ from .models import (
     StatusContext,
     SyncerMetricsSnapshot,
 )
+from analyzer.models import PRRevision
+from analyzer.services.revisions import rebuild_pr_revisions
+from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -67,6 +70,15 @@ class StatusContextInline(admin.TabularInline):
     show_change_link = True
 
 
+class PRRevisionInline(admin.TabularInline):
+    model = PRRevision
+    extra = 0
+    can_delete = False
+    fields = ("head_sha", "from_ts", "to_ts", "seq")
+    readonly_fields = ("head_sha", "from_ts", "to_ts", "seq")
+    ordering = ("from_ts",)
+
+
 @admin.register(PullRequest)
 class PullRequestAdmin(ReadOnlyAdmin):
     change_form_template = "admin/syncer/pullrequest/change_form.html"
@@ -114,7 +126,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
-    inlines = [PRLabelInline, PRTimelineEventInline, CheckRunInline, StatusContextInline]
+    inlines = [PRLabelInline, PRTimelineEventInline, PRRevisionInline, CheckRunInline, StatusContextInline]
 
     def get_urls(self):  # type: ignore[override]
         urls = super().get_urls()
@@ -133,6 +145,16 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 "<path:object_id>/enqueue-ci-sha/",
                 self.admin_site.admin_view(self.enqueue_ci_sha_view),
                 name="syncer_pullrequest_enqueue_ci_sha",
+            ),
+            path(
+                "<path:object_id>/analyzer-rebuild-revisions/",
+                self.admin_site.admin_view(self.analyzer_rebuild_revisions_view),
+                name="syncer_pullrequest_analyzer_rebuild",
+            ),
+            path(
+                "<path:object_id>/analyzer-enqueue-missing-ci/",
+                self.admin_site.admin_view(self.analyzer_enqueue_missing_ci_view),
+                name="syncer_pullrequest_analyzer_enqueue_missing_ci",
             ),
         ]
         return custom + urls
@@ -285,6 +307,39 @@ class PullRequestAdmin(ReadOnlyAdmin):
             "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
         }
         return TemplateResponse(request, "admin/syncer/pullrequest/enqueue_ci_sha.html", context)
+
+    def analyzer_rebuild_revisions_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            self.message_user(request, "PR not found")
+            return self.change_view(request, object_id)
+        if not pr.timeline_backfill_done:
+            self.message_user(request, "Timeline backfill not complete; skipping revisions rebuild")
+            return self.change_view(request, object_id)
+        res = rebuild_pr_revisions(pr)
+        self.message_user(request, f"Analyzer: revisions rebuilt (created={res.created}, deleted={res.deleted})")
+        return self.change_view(request, object_id)
+
+    def analyzer_enqueue_missing_ci_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        from django.conf import settings
+
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            self.message_user(request, "PR not found")
+            return self.change_view(request, object_id)
+        plan = plan_missing_ci_shas(repo=pr.repository, pr_numbers=[pr.number], limit_per_pr=2)
+        if not plan:
+            self.message_user(request, "Analyzer: no missing CI heads found for this PR")
+            return self.change_view(request, object_id)
+        shas = plan[0].shas
+        task_id = enqueue_ci_by_shas(
+            pr=pr,
+            shas=shas,
+            pages_per_sha=int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
+            require_pr_association=False,
+        )
+        self.message_user(request, f"Analyzer: enqueued CI by SHA for {len(shas)} head(s); task_id={task_id}")
+        return self.change_view(request, object_id)
 
     actions = ["action_enqueue_sync", "action_enqueue_sync_dry_run"]
 

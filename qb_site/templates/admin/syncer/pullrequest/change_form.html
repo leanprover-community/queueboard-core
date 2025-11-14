@@ -10,6 +10,13 @@
 <li>
   <a href="{% url 'admin:syncer_pullrequest_enqueue_ci_sha' original.pk %}">Enqueue CI by SHA</a>
 </li>
+<li>
+  <a href="{% url 'admin:syncer_pullrequest_analyzer_rebuild' original.pk %}">Analyzer: Rebuild revisions</a>
+</li>
+<li>
+  <a href="{% url 'admin:syncer_pullrequest_analyzer_enqueue_missing_ci' original.pk %}">Analyzer: Enqueue missing
+    CI</a>
+</li>
 {% endblock %}
 
 {% block after_field_sets %}
