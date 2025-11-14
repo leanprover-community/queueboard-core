@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Optional, Tuple
+from datetime import datetime
 
 from django.db import transaction
 from django.utils import timezone
@@ -42,43 +43,66 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
 def rebuild_pr_revisions(pr: PullRequest) -> RebuildResult:
     """Rebuild head revision windows for a PR from timeline events.
 
-    Expected behavior
-    - Reads HEAD_FORCE_PUSHED events in chronological order and constructs windows:
-      [created_at, first_event) with head=first.before_sha, then [event_i, event_{i+1}) with
-      head=event_i.after_sha, and a final open-ended window [last_event, None).
-    - If there are no force-push events, attempts to seed a single open-ended window from
-      the most recent CI snapshot head_sha. If no seed SHA can be inferred, no rows are created.
-    - Replaces existing PRRevision rows for this PR in a single transaction.
+    Preconditions
+    - Requires full timeline backfill (`pr.timeline_backfill_done is True`). If not met,
+      performs no work and returns created=deleted=0.
+
+    Behavior (idempotent)
+    - Computes the complete window set from HEAD_FORCE_PUSHED events and `gh_created_at`:
+      [created_at, first.occurred_at) with head=first.before_sha; then [ev_i, ev_{i+1}) with
+      head=ev_i.after_sha; final window [last.occurred_at, None) with head=last.after_sha.
+    - If no events exist, seeds a single open-ended window from the most recent CI snapshot head_sha
+      (CheckRun preferred, else StatusContext). If no CI exists, no rows are created.
+    - Upserts windows keyed by (pull_request, from_ts) and deletes any stale rows whose from_ts
+      is not in the computed set. Only updates head_sha/to_ts/seq when they changed.
     """
-    # Delete existing windows for idempotency
-    deleted, _ = PRRevision.objects.filter(pull_request=pr).delete()
+    if not getattr(pr, "timeline_backfill_done", False):
+        return RebuildResult(created=0, deleted=0)
 
     fps: List[PRTimelineEvent] = list(
         PRTimelineEvent.objects.filter(pull_request=pr, type=PRTimelineEventType.HEAD_FORCE_PUSHED).order_by("occurred_at", "id")
     )
-    created = 0
-    seq = 0
+    expected: List[Tuple[datetime, str, Optional[datetime]]] = []
     if fps:
-        # Initial window from PR created_at to first force-push with before_sha
         start = pr.gh_created_at if pr.gh_created_at else timezone.now()
-        PRRevision.objects.create(
-            pull_request=pr, head_sha=fps[0].before_sha or "", from_ts=start, to_ts=fps[0].occurred_at, seq=seq
-        )
-        created += 1
-        seq += 1
-        # Windows for each force-push, head becomes after_sha
+        expected.append((start, fps[0].before_sha or "", fps[0].occurred_at))
         for i, ev in enumerate(fps):
             end = fps[i + 1].occurred_at if i + 1 < len(fps) else None
-            PRRevision.objects.create(pull_request=pr, head_sha=ev.after_sha or "", from_ts=ev.occurred_at, to_ts=end, seq=seq)
-            created += 1
-            seq += 1
+            expected.append((ev.occurred_at, ev.after_sha or "", end))
     else:
-        # Seed from CI if possible
         seed = _infer_seed_sha(pr)
         if seed:
             start = pr.gh_created_at if pr.gh_created_at else timezone.now()
-            PRRevision.objects.create(pull_request=pr, head_sha=seed, from_ts=start, to_ts=None, seq=0)
-            created = 1
+            expected.append((start, seed, None))
+
+    created = 0
+    for seq, (from_ts, head_sha, to_ts) in enumerate(expected):
+        obj, was_created = PRRevision.objects.get_or_create(
+            pull_request=pr,
+            from_ts=from_ts,
+            defaults={"head_sha": head_sha, "to_ts": to_ts, "seq": seq},
+        )
+        if was_created:
+            created += 1
+        else:
+            changed = False
+            if obj.head_sha != head_sha:
+                obj.head_sha = head_sha
+                changed = True
+            if obj.to_ts != to_ts:
+                obj.to_ts = to_ts
+                changed = True
+            if obj.seq != seq:
+                obj.seq = seq
+                changed = True
+            if changed:
+                obj.save(update_fields=["head_sha", "to_ts", "seq"])
+
+    expected_starts = [ft for (ft, _, _) in expected]
+    qs = PRRevision.objects.filter(pull_request=pr)
+    if expected_starts:
+        qs = qs.exclude(from_ts__in=expected_starts)
+    deleted, _ = qs.delete()
 
     return RebuildResult(created=created, deleted=deleted)
 

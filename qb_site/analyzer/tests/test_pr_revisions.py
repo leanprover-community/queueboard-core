@@ -32,6 +32,7 @@ class TestPRRevisions(TestCase):
             additions=0,
             deletions=0,
             changed_files_count=0,
+            timeline_backfill_done=True,
         )
 
     def test_build_from_force_push_events(self) -> None:
@@ -90,6 +91,15 @@ class TestPRRevisions(TestCase):
         self.assertEqual(len(revs), 1)
         self.assertEqual(revs[0].head_sha, "zzz999")
         self.assertIsNone(revs[0].to_ts)
+
+    def test_noop_when_not_backfilled(self) -> None:
+        pr = self._mk_pr(4)
+        # Mark as not backfilled
+        pr.timeline_backfill_done = False
+        pr.save(update_fields=["timeline_backfill_done"])
+        res = rebuild_pr_revisions(pr)
+        self.assertEqual(res.created, 0)
+        self.assertEqual(res.deleted, 0)
 
     def test_next_backfill_targets_picks_missing_ci_shas(self) -> None:
         pr = self._mk_pr(3)
