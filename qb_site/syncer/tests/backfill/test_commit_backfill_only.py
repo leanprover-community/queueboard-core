@@ -120,3 +120,44 @@ class TestCommitBackfillOnly(TestCase):
         self.assertIsNotNone(pr.commits_earliest_synced_at)
         # And we used the saved cursor to seed
         self.assertGreaterEqual(len(commits_calls), 1)
+
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_commit_backfill_skips_when_done(self, MockClient) -> None:
+        pr = self._mk_pr(12, last_synced_at=timezone.now())
+        pr.commits_backfill_cursor = "CURX0"
+        pr.commits_backfill_done = True
+        pr.save(update_fields=["commits_backfill_cursor", "commits_backfill_done"])
+        gh = MockClient.return_value
+
+        # Header older than last_synced_at → up-to-date path
+        gh.get_pr_header.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 12,
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=1)).isoformat(),
+                    }
+                }
+            }
+        }
+        gh.get_last_rate_limit.return_value = {"remaining": 4990, "cost": 1, "resetAt": "2030-01-01T00:00:00Z"}
+
+        # Commit backfill should be skipped entirely when commits_backfill_done is already True
+        gh.get_commits_page.side_effect = AssertionError("commit backfill should not run when already done")
+
+        res = sync_pr_task.apply(
+            kwargs={
+                "repo_id": self.repo.id,
+                "number": 12,
+                "backfill_commit_pages": 1,
+                "commitsM": 1,
+            }
+        ).get()
+
+        # Still treated as an up-to-date run
+        self.assertTrue(res.get("skipped"))
+        self.assertEqual(res.get("reason"), "up_to_date")
+        # And commit backfill fields remain unchanged
+        pr.refresh_from_db()
+        self.assertTrue(pr.commits_backfill_done)
+        self.assertEqual(pr.commits_backfill_cursor, "CURX0")

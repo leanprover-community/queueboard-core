@@ -43,6 +43,7 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
       - Store label_name for label events
     """
     created = 0
+    reset_commits_backfill = False
     type_map = {
         "LabeledEvent": PRTimelineEventType.LABELED,
         "UnlabeledEvent": PRTimelineEventType.UNLABELED,
@@ -74,7 +75,7 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         ev_type = type_map.get(typename)
         if ev_type is None:
             continue
-        _, was_created = PRTimelineEvent.objects.get_or_create(
+        obj, was_created = PRTimelineEvent.objects.get_or_create(
             pull_request=pr,
             github_node_id=gid,
             defaults={
@@ -87,4 +88,13 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         )
         if was_created:
             created += 1
+            if ev_type == PRTimelineEventType.HEAD_FORCE_PUSHED:
+                reset_commits_backfill = True
+
+    if reset_commits_backfill:
+        pr.commits_backfill_done = False
+        pr.commits_backfill_cursor = None
+        pr.commits_earliest_synced_at = None
+        pr.save(update_fields=["commits_backfill_done", "commits_backfill_cursor", "commits_earliest_synced_at"])
+
     return TimelineSyncResult(created=created, updated=0, deleted=0)

@@ -136,14 +136,18 @@ class PRSyncService:
                 pr_obj.timeline_backfill_cursor = start_cur
                 pr_obj.timeline_backfill_done = not bool(page0.get("hasPreviousPage"))
                 pr_obj.save(update_fields=["timeline_backfill_cursor", "timeline_backfill_done"])
-        # Seed commits backfill state from bundle pageInfo if missing
+        # Seed commits backfill state from bundle pageInfo if missing.
+        # Note: we only mark commits_backfill_done=True here when the bundle
+        # already includes the entire commits connection (hasPreviousPage=False),
+        # and never force it back to False (monotone semantics).
         c_conn0 = pr.get("commits") or {}
         c_page0 = c_conn0.get("pageInfo") or {}
         if not pr_obj.commits_backfill_cursor:
             c_start = c_page0.get("startCursor")
             if c_start:
                 pr_obj.commits_backfill_cursor = c_start
-                pr_obj.commits_backfill_done = not bool(c_page0.get("hasPreviousPage"))
+                if not bool(c_page0.get("hasPreviousPage")) and not pr_obj.commits_backfill_done:
+                    pr_obj.commits_backfill_done = True
                 pr_obj.save(update_fields=["commits_backfill_cursor", "commits_backfill_done"])
         # Log bundle query cost if available
         if rate_log is not None:
@@ -239,7 +243,7 @@ class PRSyncService:
                     pages += 1
 
             # Commits paging (older via before) — capped pages only (no time-based cutoff in V1)
-            if max_commit_pages > 0:
+            if max_commit_pages > 0 and not pr_obj.commits_backfill_done:
                 c_conn = pr.get("commits") or {}
                 c_page = c_conn.get("pageInfo") or {}
                 before = c_page.get("startCursor")
@@ -278,10 +282,11 @@ class PRSyncService:
                     pinfo = commits.get("pageInfo") or {}
                     has_prev = bool(pinfo.get("hasPreviousPage"))
                     before = pinfo.get("startCursor")
-                    # Update PR commit backfill flags and earliest timestamp
+                    # Update PR commit backfill flags and earliest timestamp (monotone done flag)
                     try:
-                        pr_obj.commits_backfill_done = not bool(pinfo.get("hasPreviousPage"))
                         pr_obj.commits_backfill_cursor = before
+                        if not has_prev and not pr_obj.commits_backfill_done:
+                            pr_obj.commits_backfill_done = True
                         if earliest_candidates:
                             from dateutil import parser as _dtp
 
@@ -307,6 +312,7 @@ class PRSyncService:
             if backfill_commit_pages > 0 and not pr_obj.commits_backfill_done:
                 before = pr_obj.commits_backfill_cursor
                 pages = 0
+                has_prev = True
                 while pages < backfill_commit_pages and not pr_obj.commits_backfill_done:
                     cdata = client.get_commits_page(
                         owner=repo.owner,
@@ -343,7 +349,7 @@ class PRSyncService:
                         if isinstance(rl, dict):
                             rate_log("commits_page", rl)
                     pinfo = commits.get("pageInfo") or {}
-                    pr_obj.commits_backfill_done = not bool(pinfo.get("hasPreviousPage"))
+                    has_prev = bool(pinfo.get("hasPreviousPage"))
                     before = pinfo.get("startCursor")
                     pr_obj.commits_backfill_cursor = before
                     try:
@@ -359,6 +365,8 @@ class PRSyncService:
                                 pr_obj.commits_earliest_synced_at = mn
                     except Exception:
                         pass
+                    if not has_prev and not pr_obj.commits_backfill_done:
+                        pr_obj.commits_backfill_done = True
                     pr_obj.save(
                         update_fields=[
                             "commits_backfill_cursor",
