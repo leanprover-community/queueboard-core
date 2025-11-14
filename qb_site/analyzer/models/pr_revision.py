@@ -28,7 +28,8 @@ class PRRevision(models.Model):
             models.Index(fields=["pull_request", "head_sha"], name="prrev_pr_sha_idx"),
         ]
         constraints = [
-            models.UniqueConstraint(fields=("pull_request", "seq"), name="prrev_pr_seq_unique"),
+            # Windows are keyed by their start timestamp within a PR
+            models.UniqueConstraint(fields=("pull_request", "from_ts"), name="prrev_pr_from_unique"),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
