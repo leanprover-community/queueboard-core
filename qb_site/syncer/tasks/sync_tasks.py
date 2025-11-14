@@ -244,7 +244,7 @@ def sync_pr_task(  # type: ignore[no-redef]
                 pages_used += 1
 
         # Commit paging backfill: walk the commits connection backward by a small budget
-        if backfill_commit_pages and int(backfill_commit_pages) > 0:
+        if backfill_commit_pages and int(backfill_commit_pages) > 0 and not pr_db.commits_backfill_done:
             from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 
             # Continue from the saved backfill cursor when available; this ensures
@@ -298,10 +298,11 @@ def sync_pr_task(  # type: ignore[no-redef]
                 pinfo = commits.get("pageInfo") or {}
                 has_prev = bool(pinfo.get("hasPreviousPage"))
                 before = pinfo.get("startCursor")
-                # Update commit backfill flags on the PR for admin visibility and earliest timestamp
+                # Update commit backfill flags on the PR for admin visibility and earliest timestamp (monotone done flag)
                 try:
-                    pr_db.commits_backfill_done = not bool(pinfo.get("hasPreviousPage"))
                     pr_db.commits_backfill_cursor = before
+                    if not has_prev and not pr_db.commits_backfill_done:
+                        pr_db.commits_backfill_done = True
                     if earliest_candidates:
                         from dateutil import parser as _dtp
 
