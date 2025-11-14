@@ -97,3 +97,11 @@ Notes
 - Align new models with the migration plan in `docs/django_backend_plan.md`; coordinate raw vs. analytics tables with the future Postgres schema.
 - Add observability hooks (structured logging, metrics) through Django settings rather than ad-hoc prints.
 - See scheduler rationale in `docs/design-decisions/002-beat-scheduler-choice.md`.
+
+## Agent Notes (for AI assistants)
+- Database migrations
+  - Do not hand‑write migration files. If a code change requires migrations, ask the user to run `uv run python qb_site/manage.py makemigrations <app>` and `migrate`, then commit the generated files. Explain which app(s) need migrations and why.
+  - Avoid attempting to run migration commands yourself; in many environments you will not have permission to start Docker or access the DB.
+- Test runner permissions
+  - The canonical test script `scripts/repo_check_compose.sh` starts Docker containers and may not be runnable in restricted environments.
+  - If you cannot run it due to permissions or sandboxing, ask the user to run it and share the output, or run individual Django tests via `uv run python qb_site/manage.py test <app>`.

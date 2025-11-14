@@ -270,6 +270,7 @@ Notes
   - Task: `syncer.sync_ci_for_shas(repo_id, number, shas=[...], max_pages_per_sha=?, require_pr_association=?)` with rate guard + continuation.
 - Admin
   - PR page tool “Enqueue CI by SHA” accepts SHAs, optional pages per SHA and dry‑run; defaults to a strict PR‑association guard.
+  - Additional Analyzer tools on PR page: “Rebuild revisions” and “Enqueue missing CI” leverage Analyzer services (read‑only actions; Syncer remains rate‑aware gate for CI fetches).
 - Notes
   - The strict association guard is conservative and may exclude old heads after force‑pushes; Analyzer backfills should disable it and rely on PRRevision membership instead.
 
