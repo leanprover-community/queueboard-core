@@ -240,7 +240,9 @@ Developer utilities (current)
   - Celery beat schedules `syncer.sync_active_repos` every `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS` (default 300s).
   - The dispatcher enqueues `syncer.sync_repo_since(repo_id)` for each active repository.
   - The repo task discovers changed PRs since a sliding lookback (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`) and enqueues `syncer.sync_pr` for each number. Discovery states and limits are configurable.
-  - Celery beat also schedules `syncer.backfill_repo_history_active` (default hourly) which enqueues createdAt-based history backfill for all active repositories.
+  - Celery beat also schedules:
+    - `syncer.backfill_repo_history_active` (default hourly) which enqueues createdAt-based history backfill for all active repositories.
+    - `syncer.backfill_repo_incomplete_prs_active` (default hourly, small per-repo limit) which enqueues incomplete-PR backfill for all active repositories.
 - Concurrency controls:
   - Per-repo Postgres advisory lock ensures no overlapping runs for the same repo.
   - Rate-aware continuation implemented; when budget is low we stop early and schedule continuation at `resetAt` (debounced via Redis). A global single‑token lock is not used in the current design.
@@ -274,7 +276,13 @@ Developer utilities (current)
 ## Environment
 - `SYNCER_RATE_REMAINING_MIN`, `SYNCER_TIMELINE_K_DEFAULT`, `SYNCER_COMMITS_M_DEFAULT`
 - `SYNCER_TIMELINE_BACKFILL_PAGES`, `SYNCER_COMMITS_BACKFILL_PAGES`
-- `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`
+- History backfill:
+  - `SYNCER_HISTORY_BACKFILL_PAGE_SIZE`, `SYNCER_HISTORY_BACKFILL_MAX_PAGES`
+  - `SYNCER_HISTORY_BACKFILL_STATES_DEFAULT`, `SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS`
+- Incomplete-PR backfill:
+  - `SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS`, `SYNCER_INCOMPLETE_BACKFILL_LIMIT`
+- Discovery:
+  - `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`
 - `SYNCER_REPO_ENQUEUE_BATCH_MAX`, `SYNCER_EST_COST_PER_PR`
 
 ## Planned Additions (Analyzer)

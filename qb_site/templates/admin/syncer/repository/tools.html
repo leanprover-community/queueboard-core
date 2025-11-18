@@ -2,139 +2,150 @@
 {% load i18n %}
 
 {% block content %}
-  {% if error %}
-    <p style="color:#b94a48; font-weight:bold;">{{ error }}</p>
+{% if error %}
+<p style="color:#b94a48; font-weight:bold;">{{ error }}</p>
+{% endif %}
+{% if notice %}
+<p style="color:#3a7f3a; font-weight:bold;">{{ notice }}</p>
+{% endif %}
+
+<h2>{% trans "Repository status" %}</h2>
+<p>
+  {% if repo.is_active %}
+  <strong style="color:#3a7f3a;">ACTIVE</strong> — included in scheduled syncs.
+  {% else %}
+  <strong style="color:#b94a48;">INACTIVE</strong> — excluded from scheduled syncs.
   {% endif %}
-  {% if notice %}
-    <p style="color:#3a7f3a; font-weight:bold;">{{ notice }}</p>
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="toggle_active" />
+  {% if repo.is_active %}
+  <input type="hidden" name="to_state" value="inactive" />
+  <input type="submit" value="{% trans 'Disable scheduled sync' %}" />
+  {% else %}
+  <input type="hidden" name="to_state" value="active" />
+  <input type="submit" class="default" value="{% trans 'Enable scheduled sync' %}" />
   {% endif %}
+</form>
 
-  <h2>{% trans "Repository status" %}</h2>
+<h2>{% trans "Metrics" %}</h2>
+<p>
+  <a href="{{ metrics_list_url }}">{% trans "View metrics snapshots" %}</a>
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="collect_metrics" />
+  <input type="submit" value="{% trans 'Collect snapshot now' %}" />
+</form>
+
+<h2>{% trans "History backfill" %}</h2>
+<p>
+  {% trans "Enqueue a createdAt-based PR history backfill for this repository." %}
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="backfill_history" />
+  <input type="submit" value="{% trans 'Enqueue history backfill' %}" />
+</form>
+
+<h2>{% trans "Incomplete PR backfill" %}</h2>
+<p>
+  {% trans "Enqueue a backfill for PRs in this repository that have not completed timeline or commits backfill." %}
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="backfill_incomplete" />
+  <input type="submit" value="{% trans 'Enqueue incomplete-PR backfill' %}" />
+</form>
+
+<h2>{% trans "Sync specific PR numbers" %}</h2>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="enqueue_prs" />
+  <table>
+    <tr>
+      <th>{{ form.pr_numbers.label_tag }}</th>
+      <td>{{ form.pr_numbers }}<br /><small>{{ form.pr_numbers.help_text }}</small></td>
+    </tr>
+    <tr>
+      <th>{{ form.dry_run.label_tag }}</th>
+      <td>{{ form.dry_run }}</td>
+    </tr>
+    <tr>
+      <th>{{ form.timelineK.label_tag }}</th>
+      <td>{{ form.timelineK }}</td>
+    </tr>
+    <tr>
+      <th>{{ form.commitsM.label_tag }}</th>
+      <td>{{ form.commitsM }}</td>
+    </tr>
+  </table>
+  <p><input type="submit" class="default" value="{% trans 'Enqueue sync' %}" /></p>
+</form>
+
+
+
+<h2>{% trans "Enqueue repo-level sync task" %}</h2>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="enqueue_repo_sync" />
+  <table>
+    <tr>
+      <th>{{ repo_form.since.label_tag }}</th>
+      <td>{{ repo_form.since }}<br /><small>{{ repo_form.since.help_text }}</small></td>
+    </tr>
+    <tr>
+      <th>{{ repo_form.states.label_tag }}</th>
+      <td>{{ repo_form.states }}</td>
+    </tr>
+    <tr>
+      <th>{{ repo_form.limit.label_tag }}</th>
+      <td>{{ repo_form.limit }}</td>
+    </tr>
+    <tr>
+      <th>{{ repo_form.dry_run.label_tag }}</th>
+      <td>{{ repo_form.dry_run }}</td>
+    </tr>
+    <tr>
+      <th>{{ repo_form.timelineK.label_tag }}</th>
+      <td>{{ repo_form.timelineK }}</td>
+    </tr>
+    <tr>
+      <th>{{ repo_form.commitsM.label_tag }}</th>
+      <td>{{ repo_form.commitsM }}</td>
+    </tr>
+  </table>
   <p>
-    {% if repo.is_active %}
-      <strong style="color:#3a7f3a;">ACTIVE</strong> — included in scheduled syncs.
-    {% else %}
-      <strong style="color:#b94a48;">INACTIVE</strong> — excluded from scheduled syncs.
-    {% endif %}
+    <input type="submit" name="submit" value="enqueue_custom" class="default" />
+    <input type="submit" name="submit" value="enqueue_defaults" />
+    <br />
+    <small>
+      "enqueue_custom" uses the form values above; "enqueue_defaults" ignores the form and uses default settings
+      (sliding lookback, OPEN state, batch size).
+    </small>
   </p>
-  <form method="post" style="margin-bottom:2em;">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="toggle_active" />
-    {% if repo.is_active %}
-      <input type="hidden" name="to_state" value="inactive" />
-      <input type="submit" value="{% trans 'Disable scheduled sync' %}" />
-    {% else %}
-      <input type="hidden" name="to_state" value="active" />
-      <input type="submit" class="default" value="{% trans 'Enable scheduled sync' %}" />
-    {% endif %}
-  </form>
+</form>
 
-  <h2>{% trans "Metrics" %}</h2>
-  <p>
-    <a href="{{ metrics_list_url }}">{% trans "View metrics snapshots" %}</a>
-  </p>
-  <form method="post" style="margin-bottom:2em;">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="collect_metrics" />
-    <input type="submit" value="{% trans 'Collect snapshot now' %}" />
-  </form>
+{% if enqueued %}
+<h2>{% trans "Enqueued tasks" %}</h2>
+<table class="listing">
+  <thead>
+    <tr>
+      <th>{% trans "PR #" %}</th>
+      <th>{% trans "Task ID" %}</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for n, task_id in enqueued %}
+    <tr>
+      <td>{{ n }}</td>
+      <td><code>{{ task_id }}</code></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 
-  <h2>{% trans "History backfill" %}</h2>
-  <p>
-    {% trans "Enqueue a createdAt-based PR history backfill for this repository." %}
-  </p>
-  <form method="post" style="margin-bottom:2em;">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="backfill_history" />
-    <input type="submit" value="{% trans 'Enqueue history backfill' %}" />
-  </form>
-
-  <h2>{% trans "Sync specific PR numbers" %}</h2>
-  <form method="post" style="margin-bottom:2em;">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="enqueue_prs" />
-    <table>
-      <tr>
-        <th>{{ form.pr_numbers.label_tag }}</th>
-        <td>{{ form.pr_numbers }}<br/><small>{{ form.pr_numbers.help_text }}</small></td>
-      </tr>
-      <tr>
-        <th>{{ form.dry_run.label_tag }}</th>
-        <td>{{ form.dry_run }}</td>
-      </tr>
-      <tr>
-        <th>{{ form.timelineK.label_tag }}</th>
-        <td>{{ form.timelineK }}</td>
-      </tr>
-      <tr>
-        <th>{{ form.commitsM.label_tag }}</th>
-        <td>{{ form.commitsM }}</td>
-      </tr>
-    </table>
-    <p><input type="submit" class="default" value="{% trans 'Enqueue sync' %}" /></p>
-  </form>
-
-  
-
-  <h2>{% trans "Enqueue repo-level sync task" %}</h2>
-  <form method="post" style="margin-bottom:2em;">
-    {% csrf_token %}
-    <input type="hidden" name="action" value="enqueue_repo_sync" />
-    <table>
-      <tr>
-        <th>{{ repo_form.since.label_tag }}</th>
-        <td>{{ repo_form.since }}<br/><small>{{ repo_form.since.help_text }}</small></td>
-      </tr>
-      <tr>
-        <th>{{ repo_form.states.label_tag }}</th>
-        <td>{{ repo_form.states }}</td>
-      </tr>
-      <tr>
-        <th>{{ repo_form.limit.label_tag }}</th>
-        <td>{{ repo_form.limit }}</td>
-      </tr>
-      <tr>
-        <th>{{ repo_form.dry_run.label_tag }}</th>
-        <td>{{ repo_form.dry_run }}</td>
-      </tr>
-      <tr>
-        <th>{{ repo_form.timelineK.label_tag }}</th>
-        <td>{{ repo_form.timelineK }}</td>
-      </tr>
-      <tr>
-        <th>{{ repo_form.commitsM.label_tag }}</th>
-        <td>{{ repo_form.commitsM }}</td>
-      </tr>
-    </table>
-    <p>
-      <input type="submit" name="submit" value="enqueue_custom" class="default" />
-      <input type="submit" name="submit" value="enqueue_defaults" />
-      <br/>
-      <small>
-        "enqueue_custom" uses the form values above; "enqueue_defaults" ignores the form and uses default settings (sliding lookback, OPEN state, batch size).
-      </small>
-    </p>
-  </form>
-
-  {% if enqueued %}
-    <h2>{% trans "Enqueued tasks" %}</h2>
-    <table class="listing">
-      <thead>
-        <tr>
-          <th>{% trans "PR #" %}</th>
-          <th>{% trans "Task ID" %}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for n, task_id in enqueued %}
-        <tr>
-          <td>{{ n }}</td>
-          <td><code>{{ task_id }}</code></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% endif %}
-
-  <p><a href="{{ changelist_url }}">{% trans "Return to Repositories" %}</a></p>
+<p><a href="{{ changelist_url }}">{% trans "Return to Repositories" %}</a></p>
 {% endblock %}
