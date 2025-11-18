@@ -202,6 +202,16 @@ class RepositoryAdmin(admin.ModelAdmin):
                     notice = f"Enqueued incomplete-PR backfill task for {repo.owner}/{repo.name}: {async_res.id}"
                 except Exception as e:  # pragma: no cover - external dependency
                     error = f"Failed to enqueue incomplete-PR backfill: {e}"
+            elif submitted_action == "refresh_pending_ci":
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
+                try:
+                    from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task
+
+                    async_res = refresh_pending_ci_for_repo_task.delay(repo.id)
+                    notice = f"Enqueued pending-CI refresh task for {repo.owner}/{repo.name}: {async_res.id}"
+                except Exception as e:  # pragma: no cover - external dependency
+                    error = f"Failed to enqueue pending-CI refresh: {e}"
             elif submitted_action == "toggle_active":
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
@@ -248,6 +258,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         "mark_inactive_action",
         "backfill_history_action",
         "backfill_incomplete_action",
+        "refresh_pending_ci_action",
     ]
 
     def open_sync_tools_action(self, request, queryset):  # type: ignore[override]
@@ -310,6 +321,17 @@ class RepositoryAdmin(admin.ModelAdmin):
 
     backfill_incomplete_action.short_description = "Enqueue incomplete-PR backfill for selected repositories"  # type: ignore[attr-defined]
 
+    def refresh_pending_ci_action(self, request, queryset):  # type: ignore[override]
+        from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task
+
+        count = 0
+        for repo in queryset:
+            refresh_pending_ci_for_repo_task.delay(repo.id)
+            count += 1
+        self.message_user(request, f"Enqueued pending-CI refresh for {count} repositories.")
+
+    refresh_pending_ci_action.short_description = "Enqueue pending-CI refresh for selected repositories"  # type: ignore[attr-defined]
+
     def get_actions(self, request):  # type: ignore[override]
         """Return actions with 'delete_selected' moved to the end.
 
@@ -327,6 +349,7 @@ class RepositoryAdmin(admin.ModelAdmin):
             "mark_inactive_action",
             "backfill_history_action",
             "backfill_incomplete_action",
+            "refresh_pending_ci_action",
         ):
             if key in actions:
                 ordered[key] = actions.pop(key)
@@ -508,7 +531,67 @@ try:
                     except Exception:  # pragma: no cover
                         return f"repo_id={kwargs.get('repo_id')}"
                 return "-"
-            if name in {"syncer.backfill_repo_history", "syncer.backfill_repo_incomplete_prs"}:
+            if name == "syncer.sync_ci_for_shas":
+                # CI-by-SHA tasks: show owner/name#number and link to the PR/admin when possible.
+                res = self._json_load(getattr(obj, "result", None))
+                if isinstance(res, dict) and res.get("repo") and res.get("number") is not None:
+                    repo_label = f"{res.get('repo')}#{res.get('number')}"
+                    try:
+                        owner, name_part = str(res.get("repo")).split("/", 1)
+                        number = int(res.get("number"))
+                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
+                        pr = PullRequest.objects.filter(repository=repo, number=number).only("id").first()
+                        if pr is not None:
+                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+                            return format_html("<a href='{}'>{}</a>", url, repo_label)
+                    except Exception:  # pragma: no cover
+                        return repo_label
+                    return repo_label
+                # Fallback to kwargs (repo_id, number)
+                kwargs = self._json_load(getattr(obj, "task_kwargs", None))
+                if isinstance(kwargs, dict) and kwargs.get("repo_id") is not None and kwargs.get("number") is not None:
+                    repo_id = kwargs.get("repo_id")
+                    number = kwargs.get("number")
+                    try:
+                        repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                        label = f"{repo.owner}/{repo.name}#{number}"
+                        pr = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
+                        if pr is not None:
+                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+                        else:
+                            url = "{}?repository__id__exact={}&number={}".format(
+                                reverse("admin:syncer_pullrequest_changelist"),
+                                repo.id,
+                                int(number),
+                            )
+                        return format_html("<a href='{}'>{}</a>", url, label)
+                    except Exception:  # pragma: no cover
+                        return f"repo_id={repo_id}#{number}"
+                # Fallback to args (repo_id, number)
+                args = self._json_load(getattr(obj, "task_args", None))
+                if isinstance(args, list) and len(args) >= 2:
+                    repo_id, number = args[0], args[1]
+                    try:
+                        repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                        label = f"{repo.owner}/{repo.name}#{number}"
+                        pr = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
+                        if pr is not None:
+                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+                        else:
+                            url = "{}?repository__id__exact={}&number={}".format(
+                                reverse("admin:syncer_pullrequest_changelist"),
+                                repo.id,
+                                int(number),
+                            )
+                        return format_html("<a href='{}'>{}</a>", url, label)
+                    except Exception:  # pragma: no cover
+                        return f"repo_id={repo_id}#{number}"
+                return "-"
+            if name in {
+                "syncer.backfill_repo_history",
+                "syncer.backfill_repo_incomplete_prs",
+                "syncer.refresh_pending_ci_for_repo",
+            }:
                 # Per-repo backfill tasks: prefer the 'repo' string from the result,
                 # fall back to resolving repo_id from kwargs or args.
                 res = self._json_load(getattr(obj, "result", None))

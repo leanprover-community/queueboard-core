@@ -212,6 +212,7 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         "repo_id": repo.id,
         "enqueued": enqueued,
         "remaining": remaining_after,
+        "backlog": total_incomplete,
         "states": result_states,
     }
 

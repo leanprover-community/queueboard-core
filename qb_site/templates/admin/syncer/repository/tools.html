@@ -59,6 +59,16 @@
   <input type="submit" value="{% trans 'Enqueue incomplete-PR backfill' %}" />
 </form>
 
+<h2>{% trans "Pending-CI refresh" %}</h2>
+<p>
+  {% trans "Enqueue a refresh for commits whose check runs or status contexts remain pending." %}
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="refresh_pending_ci" />
+  <input type="submit" value="{% trans 'Enqueue pending-CI refresh' %}" />
+</form>
+
 <h2>{% trans "Sync specific PR numbers" %}</h2>
 <form method="post" style="margin-bottom:2em;">
   {% csrf_token %}
