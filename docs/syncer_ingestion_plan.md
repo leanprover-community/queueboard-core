@@ -88,6 +88,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - `GitHubClient.execute(...)`
   - `GitHubClient.get_changed_pr_numbers(owner, name, since)`
   - `GitHubClient.get_pr_bundle(owner, name, number, limits)`
+  - `GitHubClient.get_prs_created_page(owner, name, first, after, states)` for historical PR backfill ordered by `CREATED_AT ASC`.
 - `syncer/queries/pr_bundle.graphql` (single source of truth for the bundle)
 - `syncer/services/pr_sync_service.py`
   - `PRSyncService.sync_repository(repo, since, limits)`
@@ -100,19 +101,29 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - `services/sub/ci_sync.py`: `sync_check_runs(...)` (snapshots) and `sync_status_contexts(...)` (snapshots)
 - Tasks & CLI:
   - `syncer/tasks/sync_tasks.py`: `sync_repo_task`, `sync_pr_task`
+  - `syncer/tasks/backfill_tasks.py`:
+    - `backfill_repo_history_task(repo_id, page_size, max_pages, states)` for createdAt-based history backfill.
+    - `backfill_repo_history_active_task()` to enqueue history backfill for all active repositories (used by Celery beat).
   - `syncer/management/commands/sync_repo.py`: repo runner with `--since` and bundle limits
+  - `syncer/management/commands/backfill_repo_history.py`: repo-level history backfill runner (sync or `--async` Celery enqueue)
 
 ## Incremental & Backfills
 - Incremental discovery
   - Use a lightweight listing on `repository.pullRequests` ordered by `UPDATED_AT DESC` to enumerate candidate PR numbers since a cutoff. Stop paging when `updatedAt < since`.
-  - Method: `GitHubClient.get_changed_pr_numbers(owner, name, since_iso, states=[OPEN], limit=N)`
-  - Typical usage: `states=[OPEN]` for ongoing sync; broaden to `MERGED,CLOSED` when backfilling.
+  - Method: `GitHubClient.get_changed_pr_numbers(owner, name, since_iso, states=[OPEN,MERGED,CLOSED], limit=N)`.
+  - Typical usage: default `states` come from `SYNCER_DISCOVERY_STATES_DEFAULT` (`OPEN,MERGED,CLOSED` by default); narrow to `OPEN` or broaden further via settings or per-call overrides when needed.
 - Ingestion gating
   - Before fetching a bundle, optionally compare the PR's GraphQL `updatedAt` to our `PullRequest.last_synced_at` and skip when unchanged.
-- Backfill phases (v1)
-  - Phase A: all OPEN PRs + CLOSED/MERGED from the past ~90 days for dashboard parity.
-  - Phase B: extend the window to 6–12 months if historical analytics requires it.
-  - Phase C (optional later): CI history backfill via REST if we decide to track multiple transitions per commit SHA.
+- Historical PR backfill (createdAt-based, v1.1)
+  - Use `get_prs_created_page(owner, name, first, after, states=[OPEN,MERGED,CLOSED])` ordered by `CREATED_AT ASC` to discover PRs that may never have been synced.
+  - Store a per-repo cursor in `syncer.RepoBackfillCursor` (`created_cursor`, `oldest_created_at`, `completed`, `last_run_at`) to resume between runs.
+  - Task: `backfill_repo_history_task(repo_id, page_size, max_pages, states)`:
+    - Pages PRs by createdAt starting from `created_cursor`,
+    - Enqueues `sync_pr_task` for each discovered PR number,
+    - Treats `completed` as “no more PRs as of last run” but continues to follow newly created PRs on subsequent runs.
+  - This complements incremental discovery:
+    - Ensures every PR is eventually synced at least once, even if created before the current discovery lookback window.
+    - Sliding updatedAt-based discovery (`sync_repo_since`) keeps recently changed PRs fresh once they exist in the DB.
 - Resume & idempotency
   - Keep a small JSON resume file (per repo) storing pagination cursor and counters, or later add a `SyncJob` table to persist job metadata.
   - Ingestion is idempotent by design (unique constraints on PR identity, label defs, attachments, timeline event ids, and CI snapshot ids).

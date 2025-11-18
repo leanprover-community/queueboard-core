@@ -173,6 +173,16 @@ class RepositoryAdmin(admin.ModelAdmin):
                     notice = f"Enqueued metrics collection task: {async_res.id}"
                 except Exception as e:  # pragma: no cover - external dependency
                     error = f"Failed to enqueue metrics collection: {e}"
+            elif submitted_action == "backfill_history":
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
+                try:
+                    from syncer.tasks.backfill_tasks import backfill_repo_history_task
+
+                    async_res = backfill_repo_history_task.delay(repo.id)
+                    notice = f"Enqueued history backfill task for {repo.owner}/{repo.name}: {async_res.id}"
+                except Exception as e:  # pragma: no cover - external dependency
+                    error = f"Failed to enqueue history backfill: {e}"
             elif submitted_action == "toggle_active":
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
@@ -212,8 +222,8 @@ class RepositoryAdmin(admin.ModelAdmin):
         }
         return TemplateResponse(request, "admin/syncer/repository/tools.html", context)
 
-    # Convenience action to open the tools page from the changelist
-    actions = ["open_sync_tools_action"]
+    # Convenience actions on the changelist
+    actions = ["open_sync_tools_action", "mark_active_action", "mark_inactive_action", "backfill_history_action"]
 
     def open_sync_tools_action(self, request, queryset):  # type: ignore[override]
         count = queryset.count()
@@ -241,9 +251,6 @@ class RepositoryAdmin(admin.ModelAdmin):
 
     open_sync_tools_action.short_description = "Open sync tools"  # type: ignore[attr-defined]
 
-    # Quick actions to toggle repository active state for scheduling
-    actions = ["open_sync_tools_action", "mark_active_action", "mark_inactive_action"]
-
     def mark_active_action(self, request, queryset):  # type: ignore[override]
         updated = queryset.update(is_active=True)
         self.message_user(request, f"Marked {updated} repositories as active.")
@@ -256,6 +263,17 @@ class RepositoryAdmin(admin.ModelAdmin):
 
     mark_inactive_action.short_description = "Mark selected repositories as INACTIVE"  # type: ignore[attr-defined]
 
+    def backfill_history_action(self, request, queryset):  # type: ignore[override]
+        from syncer.tasks.backfill_tasks import backfill_repo_history_task
+
+        count = 0
+        for repo in queryset:
+            backfill_repo_history_task.delay(repo.id)
+            count += 1
+        self.message_user(request, f"Enqueued history backfill for {count} repositories.")
+
+    backfill_history_action.short_description = "Enqueue history backfill for selected repositories"  # type: ignore[attr-defined]
+
     def get_actions(self, request):  # type: ignore[override]
         """Return actions with 'delete_selected' moved to the end.
 
@@ -267,7 +285,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         delete = actions.pop("delete_selected", None)
         ordered = OrderedDict()
         # Ensure our actions appear first in this order if available
-        for key in ("open_sync_tools_action", "mark_active_action", "mark_inactive_action"):
+        for key in ("open_sync_tools_action", "mark_active_action", "mark_inactive_action", "backfill_history_action"):
             if key in actions:
                 ordered[key] = actions.pop(key)
         # Append any remaining actions preserving their original order

@@ -39,6 +39,16 @@
     <input type="submit" value="{% trans 'Collect snapshot now' %}" />
   </form>
 
+  <h2>{% trans "History backfill" %}</h2>
+  <p>
+    {% trans "Enqueue a createdAt-based PR history backfill for this repository." %}
+  </p>
+  <form method="post" style="margin-bottom:2em;">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="backfill_history" />
+    <input type="submit" value="{% trans 'Enqueue history backfill' %}" />
+  </form>
+
   <h2>{% trans "Sync specific PR numbers" %}</h2>
   <form method="post" style="margin-bottom:2em;">
     {% csrf_token %}
