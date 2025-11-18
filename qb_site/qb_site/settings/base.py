@@ -177,4 +177,8 @@ CELERY_BEAT_SCHEDULE = {
         "task": "syncer.collect_metrics",
         "schedule": 900,  # 15 minutes
     },
+    "backfill_repo_history": {
+        "task": "syncer.backfill_repo_history_active",
+        "schedule": 3600,  # every hour
+    },
 }

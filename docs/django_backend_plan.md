@@ -240,6 +240,7 @@ Developer utilities (current)
   - Celery beat schedules `syncer.sync_active_repos` every `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS` (default 300s).
   - The dispatcher enqueues `syncer.sync_repo_since(repo_id)` for each active repository.
   - The repo task discovers changed PRs since a sliding lookback (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`) and enqueues `syncer.sync_pr` for each number. Discovery states and limits are configurable.
+  - Celery beat also schedules `syncer.backfill_repo_history_active` (default hourly) which enqueues createdAt-based history backfill for all active repositories.
 - Concurrency controls:
   - Per-repo Postgres advisory lock ensures no overlapping runs for the same repo.
   - Rate-aware continuation implemented; when budget is low we stop early and schedule continuation at `resetAt` (debounced via Redis). A global single‑token lock is not used in the current design.
@@ -258,9 +259,15 @@ Developer utilities (current)
 - Backfill improvements
   - Timeline backfill on up-to-date runs with `SYNCER_TIMELINE_BACKFILL_PAGES`; persists `timeline_backfill_cursor/done/earliest_synced_at`.
   - Commit backfill on both up-to-date and synced runs with `SYNCER_COMMITS_BACKFILL_PAGES`; persists `commits_backfill_cursor/done/earliest_synced_at`.
+  - Repository history backfill via `syncer.backfill_repo_history`:
+    - Uses `GitHubClient.get_prs_created_page` ordered by `CREATED_AT ASC` and a per-repo `RepoBackfillCursor` to ensure every PR in a repository is eventually synced at least once.
+    - Continues to run even after initially reaching the end of history so that newly created PRs (e.g., during downtime) are picked up once createdAt-based backfill resumes.
 - Admin polish
   - PR page shows backfill fields and inlines for associated events/checks/statuses; object tools to enqueue sync (respects backfill defaults).
   - Task Results list shortens IDs, hides unused group results, and removes Add.
+  - Repository admin:
+    - “Sync tools” page adds a “History backfill” button to enqueue a `backfill_repo_history_task` for a single repository.
+    - Changelist includes an action “Enqueue history backfill for selected repositories” which enqueues `backfill_repo_history_task` per selected repo.
 - Metrics
   - `SyncerMetricsSnapshot` (15-minute) captures task counts and token usage; an admin button triggers ad-hoc collection.
 

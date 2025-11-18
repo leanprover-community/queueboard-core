@@ -14,6 +14,7 @@ from .models import (
     CheckRun,
     StatusContext,
     SyncerMetricsSnapshot,
+    RepoBackfillCursor,
 )
 from analyzer.models import PRRevision
 from analyzer.services.revisions import rebuild_pr_revisions
@@ -675,3 +676,33 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
                 self.message_user(request, f"Failed to enqueue metrics collection: {exc}")
             return HttpResponseRedirect(request.path)
         return super().changelist_view(request, extra_context=extra)
+
+
+@admin.register(RepoBackfillCursor)
+class RepoBackfillCursorAdmin(ReadOnlyAdmin):
+    list_display = (
+        "repository",
+        "created_cursor_short",
+        "oldest_created_at",
+        "completed",
+        "last_run_at",
+        "created_at",
+        "updated_at",
+    )
+    search_fields = ("repository__owner", "repository__name")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "created_cursor",
+        "oldest_created_at",
+        "completed",
+        "last_run_at",
+        "created_at",
+        "updated_at",
+    )
+
+    def created_cursor_short(self, obj: RepoBackfillCursor) -> str:  # pragma: no cover - simple formatting
+        cur = obj.created_cursor or ""
+        return cur[:16] + "…" if len(cur) > 16 else cur
+
+    created_cursor_short.short_description = "created_cursor"  # type: ignore[attr-defined]
