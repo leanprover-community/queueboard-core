@@ -50,6 +50,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     updated = 0
     mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
     allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")) if mode == "allowlist" else []
+    now = timezone.now()
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -72,7 +73,14 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
             "gh_started_at": _parse_iso(ctx.get("startedAt")),
             "gh_completed_at": _parse_iso(ctx.get("completedAt")),
         }
-        _, was_created, was_updated, _ = upsert_if_changed(CheckRun, {"github_node_id": gid}, values)
+        obj, was_created, was_updated, _ = upsert_if_changed(
+            CheckRun,
+            {"github_node_id": gid},
+            values,
+        )
+        # Always record when we last heard about this CheckRun from GitHub,
+        # even if the status snapshot itself did not change.
+        CheckRun.objects.filter(pk=obj.pk).update(last_synced_at=now)
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
     return CISyncResult(created=created, updated=updated, deleted=0)
@@ -91,6 +99,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     updated = 0
     mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
     allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", "")) if mode == "allowlist" else []
+    now = timezone.now()
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -111,7 +120,12 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
             "description": ctx.get("description") or None,
             "gh_created_at": _parse_iso(ctx.get("createdAt")) or timezone.now(),
         }
-        _, was_created, was_updated, _ = upsert_if_changed(StatusContext, {"github_node_id": gid}, values)
+        obj, was_created, was_updated, _ = upsert_if_changed(
+            StatusContext,
+            {"github_node_id": gid},
+            values,
+        )
+        StatusContext.objects.filter(pk=obj.pk).update(last_synced_at=now)
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
     return CISyncResult(created=created, updated=updated, deleted=0)
