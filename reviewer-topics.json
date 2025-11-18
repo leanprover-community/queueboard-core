@@ -247,7 +247,8 @@
    "github_handle": "robertylewis",
    "zulip_handle": "@**Rob Lewis**",
    "top_level": ["t-meta", "CI"],
-   "free_form": ""
+   "free_form": "",
+    "auto_assign": false
   },
   {
     "github_handle": "EtienneC30",
