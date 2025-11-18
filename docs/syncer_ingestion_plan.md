@@ -19,7 +19,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - Minimize API calls while staying robust and easy to reason about.
 
 ## Discovery & Preflight
-- Discovery (incremental): `GitHubClient.get_changed_pr_numbers(owner, name, since_iso, states=[OPEN], limit=N)` pages the PR list ordered by `UPDATED_AT` and stops at the cutoff or limit.
+- Discovery (incremental): `GitHubClient.get_changed_pr_numbers(owner, name, since_iso, states=[OPEN,MERGED,CLOSED], limit=N)` pages the PR list ordered by `UPDATED_AT` and stops at the cutoff or limit. The default discovery states are `OPEN,MERGED,CLOSED` (via `SYNCER_DISCOVERY_STATES_DEFAULT`); you can narrow this (e.g., to `OPEN` only) via settings or per-call overrides when needed.
 - Preflight (per PR): `GitHubClient.get_pr_header(owner, name, number)` fetches `updatedAt`; skip ingestion when `updatedAt <= PullRequest.last_synced_at`.
 - Commands:
   - `list_changed_prs` lists PR numbers for manual testing.
@@ -50,7 +50,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 
 ## Ingestion Flow (Per Repository)
 1) Discover changed PRs
-- GraphQL search for open PRs, ordered by `updatedAt`, gated by `last_synced_at` (or a moving window).
+- GraphQL search for recently updated PRs (by default in states `OPEN,MERGED,CLOSED`), ordered by `updatedAt`, gated by a moving cutoff.
 
 2) Fetch bundle per PR (changed only)
 - Execute the PR bundle; cap using K/M.

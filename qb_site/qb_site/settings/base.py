@@ -145,7 +145,7 @@ CELERY_ACCEPT_CONTENT = ["json"]
 SYNCER_DISCOVERY_LOOKBACK_MINUTES = int(os.getenv("SYNCER_DISCOVERY_LOOKBACK_MINUTES", 60))
 SYNCER_DISCOVERY_LIMIT = int(os.getenv("SYNCER_DISCOVERY_LIMIT", 30))
 SYNCER_DISCOVERY_STATES_DEFAULT = [
-    s.strip().upper() for s in os.getenv("SYNCER_DISCOVERY_STATES_DEFAULT", "OPEN").split(",") if s.strip()
+    s.strip().upper() for s in os.getenv("SYNCER_DISCOVERY_STATES_DEFAULT", "OPEN,MERGED,CLOSED").split(",") if s.strip()
 ]
 # Rate and paging defaults
 SYNCER_RATE_REMAINING_MIN = int(os.getenv("SYNCER_RATE_REMAINING_MIN", 200))
