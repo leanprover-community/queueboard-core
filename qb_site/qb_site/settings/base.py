@@ -159,6 +159,18 @@ SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES",
 SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 0))
 SYNCER_CI_BY_SHA_PAGES = int(os.getenv("SYNCER_CI_BY_SHA_PAGES", 1))
 
+# History backfill defaults (createdAt-based)
+SYNCER_HISTORY_BACKFILL_PAGE_SIZE = int(os.getenv("SYNCER_HISTORY_BACKFILL_PAGE_SIZE", 50))
+SYNCER_HISTORY_BACKFILL_MAX_PAGES = int(os.getenv("SYNCER_HISTORY_BACKFILL_MAX_PAGES", 1))
+SYNCER_HISTORY_BACKFILL_STATES_DEFAULT = [
+    s.strip().upper() for s in os.getenv("SYNCER_HISTORY_BACKFILL_STATES_DEFAULT", "OPEN,MERGED,CLOSED").split(",") if s.strip()
+]
+SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS", 3600))
+
+# Incomplete-PR backfill defaults (DB-based)
+SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS", 3600))
+SYNCER_INCOMPLETE_BACKFILL_LIMIT = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_LIMIT", 20))
+
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
@@ -179,6 +191,13 @@ CELERY_BEAT_SCHEDULE = {
     },
     "backfill_repo_history": {
         "task": "syncer.backfill_repo_history_active",
-        "schedule": 3600,  # every hour
+        "schedule": SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS,
+    },
+    "backfill_repo_incomplete_prs": {
+        "task": "syncer.backfill_repo_incomplete_prs_active",
+        "schedule": SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS,
+        "kwargs": {
+            "limit": SYNCER_INCOMPLETE_BACKFILL_LIMIT,
+        },
     },
 }

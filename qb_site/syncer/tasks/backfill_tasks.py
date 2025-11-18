@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Sequence
 
 from celery import shared_task
+from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import RepoBackfillCursor
+from syncer.models import PullRequest, RepoBackfillCursor
 from syncer.services.github_client import GitHubClient
 from .sync_tasks import sync_pr_task
 
@@ -15,8 +17,8 @@ from .sync_tasks import sync_pr_task
 def backfill_repo_history_task(  # type: ignore[no-redef]
     repo_id: int,
     *,
-    page_size: int = 50,
-    max_pages: int = 1,
+    page_size: Optional[int] = None,
+    max_pages: Optional[int] = None,
     states: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Backfill PR history for a repository by createdAt (oldest first).
@@ -36,20 +38,28 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
     used_pages = 0
     enqueued = 0
 
+    # Resolve effective page_size and max_pages from settings when not explicitly provided.
+    eff_page_size = int(page_size) if page_size is not None else int(getattr(settings, "SYNCER_HISTORY_BACKFILL_PAGE_SIZE", 50))
+    eff_max_pages = int(max_pages) if max_pages is not None else int(getattr(settings, "SYNCER_HISTORY_BACKFILL_MAX_PAGES", 1))
+
     # Determine which states to backfill; default to full history coverage.
     if states is None:
-        st: list[str] = ["OPEN", "MERGED", "CLOSED"]
+        raw_states = getattr(settings, "SYNCER_HISTORY_BACKFILL_STATES_DEFAULT", ["OPEN", "MERGED", "CLOSED"])
+        if isinstance(raw_states, (list, tuple, set)):
+            st: list[str] = [str(s).upper() for s in raw_states if s]
+        else:
+            st = [s.strip().upper() for s in str(raw_states).split(",") if s.strip()]
     else:
         st = [str(s).upper() for s in states if s]
 
     after: Optional[str] = cursor.created_cursor
     oldest_seen_created_at = cursor.oldest_created_at
 
-    while used_pages < int(max_pages):
+    while used_pages < eff_max_pages:
         data = client.get_prs_created_page(
             owner=repo.owner,
             name=repo.name,
-            first=int(max(1, min(page_size, 100))),
+            first=int(max(1, min(eff_page_size, 100))),
             after=after,
             states=st,
         )
@@ -116,11 +126,105 @@ def backfill_repo_history_active_task() -> Dict[str, Any]:  # type: ignore[no-re
     Intended for periodic scheduling via Celery beat; iterates active repositories
     and runs a small slice of createdAt-based backfill for each.
     """
-    from core.models import Repository  # local import to avoid circulars
-
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     enqueued = 0
     for r in repos:
         backfill_repo_history_task.delay(r.id)
         enqueued += 1
     return {"repos": len(repos), "enqueued": enqueued}
+
+
+@shared_task(name="syncer.backfill_repo_incomplete_prs")
+def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
+    repo_id: int,
+    *,
+    limit: int = 50,
+    states: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Backfill incomplete PRs for a repository.
+
+    Behavior
+    - Select PullRequest rows that have either timeline or commits backfill incomplete.
+    - Optionally filter by coarse PR state using a GitHub-style states list
+      (OPEN/MERGED/CLOSED), mapped onto the local `state` field (`open`/`closed`).
+    - Order by most recently updated first and enqueue a bounded number of `sync_pr`
+      tasks per run, using the configured backfill page budgets.
+    """
+    repo = Repository.objects.get(id=int(repo_id))
+
+    # Normalize requested states (OPEN / MERGED / CLOSED) to local DB values (open / closed)
+    if states is None:
+        result_states: list[str] = ["OPEN", "MERGED", "CLOSED"]
+        db_states: Optional[set[str]] = None
+    else:
+        result_states = [str(s).upper() for s in states if s]
+        db_states = set()
+        for raw in result_states:
+            if raw == "OPEN":
+                db_states.add("open")
+            elif raw in {"CLOSED", "MERGED"}:
+                db_states.add("closed")
+        if not db_states:
+            # Caller requested only unsupported states; nothing to do.
+            return {
+                "repo": f"{repo.owner}/{repo.name}",
+                "repo_id": repo.id,
+                "enqueued": 0,
+                "remaining": 0,
+                "states": result_states,
+            }
+
+    queryset = PullRequest.objects.filter(repository=repo)
+    if db_states is not None:
+        queryset = queryset.filter(state__in=list(db_states))
+
+    queryset = queryset.filter(Q(timeline_backfill_done=False) | Q(commits_backfill_done=False))
+    total_incomplete = queryset.count()
+
+    limit_int = int(limit)
+    if limit_int <= 0 or total_incomplete == 0:
+        return {
+            "repo": f"{repo.owner}/{repo.name}",
+            "repo_id": repo.id,
+            "enqueued": 0,
+            "remaining": total_incomplete,
+            "states": result_states,
+        }
+
+    candidates = list(queryset.order_by("-gh_updated_at", "-id")[:limit_int])
+
+    backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0))
+    backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0))
+
+    enqueued = 0
+    for pr in candidates:
+        sync_pr_task.delay(
+            repo.id,
+            int(pr.number),
+            backfill_timeline_pages=backfill_timeline_pages,
+            backfill_commit_pages=backfill_commit_pages,
+        )
+        enqueued += 1
+
+    remaining_after = max(total_incomplete - enqueued, 0)
+    return {
+        "repo": f"{repo.owner}/{repo.name}",
+        "repo_id": repo.id,
+        "enqueued": enqueued,
+        "remaining": remaining_after,
+        "states": result_states,
+    }
+
+
+@shared_task(name="syncer.backfill_repo_incomplete_prs_active")
+def backfill_repo_incomplete_prs_active_task(  # type: ignore[no-redef]
+    limit: int = 50,
+    states: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Enqueue incomplete PR backfill for all active repositories."""
+    repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
+    enqueued = 0
+    for repo in repos:
+        backfill_repo_incomplete_prs_task.delay(repo.id, limit=limit, states=states)
+        enqueued += 1
+    return {"repos": len(repos), "enqueued": enqueued, "limit": int(limit)}

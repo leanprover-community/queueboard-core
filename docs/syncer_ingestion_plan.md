@@ -104,8 +104,11 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - `syncer/tasks/backfill_tasks.py`:
     - `backfill_repo_history_task(repo_id, page_size, max_pages, states)` for createdAt-based history backfill.
     - `backfill_repo_history_active_task()` to enqueue history backfill for all active repositories (used by Celery beat).
+    - `backfill_repo_incomplete_prs_task(repo_id, limit, states)` for incomplete-PR backfill (timeline/commits not yet marked done).
+    - `backfill_repo_incomplete_prs_active_task(limit, states)` to enqueue incomplete-PR backfill for all active repositories (used by Celery beat).
   - `syncer/management/commands/sync_repo.py`: repo runner with `--since` and bundle limits
   - `syncer/management/commands/backfill_repo_history.py`: repo-level history backfill runner (sync or `--async` Celery enqueue)
+  - `syncer/management/commands/backfill_incomplete_prs.py`: repo-level incomplete-PR backfill runner (sync or `--async` Celery enqueue)
 
 ## Incremental & Backfills
 - Incremental discovery
@@ -124,6 +127,18 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - This complements incremental discovery:
     - Ensures every PR is eventually synced at least once, even if created before the current discovery lookback window.
     - Sliding updatedAt-based discovery (`sync_repo_since`) keeps recently changed PRs fresh once they exist in the DB.
+- Incomplete PR backfill (DB-based, v1.2)
+  - Use the existing `PullRequest` table to find PRs whose backfill flags are still incomplete:
+    - `timeline_backfill_done == False` or `commits_backfill_done == False`.
+  - Task: `backfill_repo_incomplete_prs_task(repo_id, limit, states)`:
+    - Filters by repository and optional GitHub-style states list (`OPEN`, `MERGED`, `CLOSED`, mapped onto the local `state` field).
+    - Orders candidates by `gh_updated_at DESC, id DESC` and enqueues up to `limit` `sync_pr_task` runs per repository.
+    - Uses `SYNCER_TIMELINE_BACKFILL_PAGES` / `SYNCER_COMMITS_BACKFILL_PAGES` as the page budgets passed through to `sync_pr_task`.
+  - Coordinator: `backfill_repo_incomplete_prs_active_task(limit, states)`:
+    - Iterates active repositories and enqueues a small slice of incomplete-PR backfill for each (periodically driven by Celery beat).
+  - This complements createdAt-based history backfill:
+    - History backfill ensures that every PR number is seen and synced at least once.
+    - Incomplete-PR backfill gradually drives existing PRs to `timeline_backfill_done == True` and `commits_backfill_done == True`, even if they fall outside the discovery lookback window or were only partially backfilled before a low-budget run or downtime.
 - Resume & idempotency
   - Keep a small JSON resume file (per repo) storing pagination cursor and counters, or later add a `SyncJob` table to persist job metadata.
   - Ingestion is idempotent by design (unique constraints on PR identity, label defs, attachments, timeline event ids, and CI snapshot ids).
