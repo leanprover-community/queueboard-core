@@ -469,68 +469,137 @@ try:
                 except Exception:
                     return None
 
+        def _decode_repo_and_number(self, obj):
+            """Best-effort decode (repo, number, label) from a TaskResult.
+
+            Intended for per-PR tasks like sync_pr and sync_ci_for_shas.
+            """
+            repo = None
+            number = None
+            label = "-"
+
+            # Preferred: result payload with "repo" and "number".
+            res = self._json_load(getattr(obj, "result", None))
+            if isinstance(res, dict) and res.get("repo") and res.get("number") is not None:
+                try:
+                    number = int(res.get("number"))
+                except Exception:
+                    number = None
+                repo_str = str(res.get("repo"))
+                label = f"{repo_str}#{number}" if number is not None else repo_str
+                try:
+                    owner, name_part = repo_str.split("/", 1)
+                    repo = Repository.objects.only("owner", "name", "id").get(owner=owner, name=name_part)
+                except Exception:  # pragma: no cover - best-effort
+                    pass
+                return repo, number, label
+
+            # Next: kwargs with repo_id and number.
+            kwargs = self._json_load(getattr(obj, "task_kwargs", None))
+            if isinstance(kwargs, dict) and kwargs.get("repo_id") is not None and kwargs.get("number") is not None:
+                repo_id = kwargs.get("repo_id")
+                number = kwargs.get("number")
+                try:
+                    repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                    label = f"{repo.owner}/{repo.name}#{number}"
+                except Exception:  # pragma: no cover
+                    label = f"repo_id={repo_id}#{number}"
+                try:
+                    number = int(number)
+                except Exception:
+                    number = None
+                return repo, number, label
+
+            # Finally: args with [repo_id, number, ...].
+            args = self._json_load(getattr(obj, "task_args", None))
+            if isinstance(args, list) and len(args) >= 2:
+                repo_id, number = args[0], args[1]
+                try:
+                    repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                    label = f"{repo.owner}/{repo.name}#{number}"
+                except Exception:  # pragma: no cover
+                    label = f"repo_id={repo_id}#{number}"
+                try:
+                    number = int(number)
+                except Exception:
+                    number = None
+                return repo, number, label
+
+            return repo, number, label
+
+        def _decode_repo_only(self, obj):
+            """Best-effort decode (repo, label) from a TaskResult for repo-scoped tasks."""
+            repo = None
+            label = "-"
+
+            res = self._json_load(getattr(obj, "result", None))
+            if isinstance(res, dict) and res.get("repo"):
+                repo_str = str(res.get("repo"))
+                label = repo_str
+                try:
+                    owner, name_part = repo_str.split("/", 1)
+                    repo = Repository.objects.only("owner", "name", "id").get(owner=owner, name=name_part)
+                except Exception:  # pragma: no cover
+                    pass
+                return repo, label
+
+            kwargs = self._json_load(getattr(obj, "task_kwargs", None))
+            if isinstance(kwargs, dict) and kwargs.get("repo_id") is not None:
+                repo_id = kwargs.get("repo_id")
+                try:
+                    repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                    label = f"{repo.owner}/{repo.name}"
+                except Exception:  # pragma: no cover
+                    label = f"repo_id={repo_id}"
+                return repo, label
+
+            args = self._json_load(getattr(obj, "task_args", None))
+            if isinstance(args, list) and args:
+                repo_id = args[0]
+                try:
+                    repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                    label = f"{repo.owner}/{repo.name}"
+                except Exception:  # pragma: no cover
+                    label = f"repo_id={repo_id}"
+                return repo, label
+
+            return repo, label
+
+        def _format_pr_link(self, repo, number, label):
+            """Format a link to a PR admin page when possible."""
+            if repo is None or number is None:
+                return label
+            pr = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
+            if pr is not None:
+                url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+            else:
+                url = "{}?repository__id__exact={}&number={}".format(
+                    reverse("admin:syncer_pullrequest_changelist"),
+                    repo.id,
+                    int(number),
+                )
+            return format_html("<a href='{}'>{}</a>", url, label)
+
+        def _format_repo_link(self, repo, label):
+            """Format a link to a Repository admin page when possible."""
+            if repo is None:
+                return label
+            url = reverse("admin:core_repository_change", args=[repo.pk])
+            return format_html("<a href='{}'>{}</a>", url, label)
+
         def repo_pr(self, obj):  # type: ignore[override]
             name = getattr(obj, "task_name", "") or ""
             if name == "syncer.sync_pr":
-                res = self._json_load(getattr(obj, "result", None))
-                if isinstance(res, dict) and res.get("repo") and res.get("number") is not None:
-                    repo_label = f"{res.get('repo')}#{res.get('number')}"
-                    # Best-effort link to PR admin if possible
-                    try:
-                        owner, name_part = str(res.get("repo")).split("/", 1)
-                        number = int(res.get("number"))
-                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
-                        pr = PullRequest.objects.filter(repository=repo, number=number).only("id").first()
-                        if pr is not None:
-                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
-                            return format_html("<a href='{}'>{}</a>", url, repo_label)
-                    except Exception:  # pragma: no cover - best-effort
-                        pass
-                    return repo_label
-                # Fallback to args (repo_id, number) when result is missing/failed
-                args = self._json_load(getattr(obj, "task_args", None))
-                if isinstance(args, list) and len(args) >= 2:
-                    repo_id, number = args[0], args[1]
-                    try:
-                        repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
-                        label = f"{repo.owner}/{repo.name}#{number}"
-                        # Try to link directly to the PR change page; if missing, link to filtered PR list.
-                        pr = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
-                        if pr is not None:
-                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
-                        else:
-                            url = "{}?repository__id__exact={}&number={}".format(
-                                reverse("admin:syncer_pullrequest_changelist"),
-                                repo.id,
-                                int(number),
-                            )
-                        return format_html("<a href='{}'>{}</a>", url, label)
-                    except Exception:  # pragma: no cover - best-effort
-                        return f"repo_id={repo_id}#{number}"
-                return "-"
+                repo, number, label = self._decode_repo_and_number(obj)
+                return self._format_pr_link(repo, number, label)
             if name == "syncer.sync_repo_since":
                 res = self._json_load(getattr(obj, "result", None))
-                if isinstance(res, dict) and res.get("repo"):
-                    since = res.get("since")
-                    label = f"{res.get('repo')} (since {since})"
-                    try:
-                        owner, name_part = str(res.get("repo")).split("/", 1)
-                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
-                        url = reverse("admin:core_repository_change", args=[repo.pk])
-                        return format_html("<a href='{}'>{}</a>", url, label)
-                    except Exception:  # pragma: no cover
-                        return label
-                # Fallback to kwargs
-                kwargs = self._json_load(getattr(obj, "task_kwargs", None))
-                if isinstance(kwargs, dict) and kwargs.get("repo_id"):
-                    try:
-                        repo = Repository.objects.only("owner", "name").get(id=int(kwargs["repo_id"]))
-                        label = f"{repo.owner}/{repo.name}"
-                        url = reverse("admin:core_repository_change", args=[repo.pk])
-                        return format_html("<a href='{}'>{}</a>", url, label)
-                    except Exception:  # pragma: no cover
-                        return f"repo_id={kwargs.get('repo_id')}"
-                return "-"
+                since = res.get("since") if isinstance(res, dict) else None
+                repo, base_label = self._decode_repo_only(obj)
+                label = base_label
+                if since and base_label and base_label != "-":
+                    label = f"{base_label} (since {since})"
+                return self._format_repo_link(repo, label)
             if name == "syncer.sync_ci_for_shas":
                 # CI-by-SHA tasks: show owner/name#number and link to the PR/admin when possible.
                 res = self._json_load(getattr(obj, "result", None))
@@ -592,40 +661,11 @@ try:
                 "syncer.backfill_repo_incomplete_prs",
                 "syncer.refresh_pending_ci_for_repo",
             }:
-                # Per-repo backfill tasks: prefer the 'repo' string from the result,
-                # fall back to resolving repo_id from kwargs or args.
-                res = self._json_load(getattr(obj, "result", None))
-                if isinstance(res, dict) and res.get("repo"):
-                    label = str(res.get("repo"))
-                    try:
-                        owner, name_part = label.split("/", 1)
-                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
-                        url = reverse("admin:core_repository_change", args=[repo.pk])
-                        return format_html("<a href='{}'>{}</a>", url, label)
-                    except Exception:  # pragma: no cover
-                        return label
-                # Fallback to kwargs
-                kwargs = self._json_load(getattr(obj, "task_kwargs", None))
-                if isinstance(kwargs, dict) and kwargs.get("repo_id"):
-                    try:
-                        repo = Repository.objects.only("owner", "name").get(id=int(kwargs["repo_id"]))
-                        label = f"{repo.owner}/{repo.name}"
-                        url = reverse("admin:core_repository_change", args=[repo.pk])
-                        return format_html("<a href='{}'>{}</a>", url, label)
-                    except Exception:  # pragma: no cover
-                        return f"repo_id={kwargs.get('repo_id')}"
-                # Fallback to args (first positional is repo_id)
-                args = self._json_load(getattr(obj, "task_args", None))
-                if isinstance(args, list) and args:
-                    repo_id = args[0]
-                    try:
-                        repo = Repository.objects.only("owner", "name").get(id=int(repo_id))
-                        label = f"{repo.owner}/{repo.name}"
-                        url = reverse("admin:core_repository_change", args=[repo.pk])
-                        return format_html("<a href='{}'>{}</a>", url, label)
-                    except Exception:  # pragma: no cover
-                        return f"repo_id={repo_id}"
-                return "-"
+                repo, label = self._decode_repo_only(obj)
+                return self._format_repo_link(repo, label)
+            if name == "syncer.sync_ci_for_shas":
+                repo, number, label = self._decode_repo_and_number(obj)
+                return self._format_pr_link(repo, number, label)
             return "-"
 
         repo_pr.short_description = "Repo/PR"  # type: ignore[attr-defined]
