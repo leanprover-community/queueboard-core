@@ -144,11 +144,12 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "number_link",
         "state",
         "is_draft",
+        "gh_created_at",
         "gh_updated_at",
         "last_synced_at",
         "timeline_backfill_done",
         "commits_backfill_done",
-        "author",
+        "author_link",
     )
     list_filter = ("repository", "state", "is_draft", "timeline_backfill_done", "commits_backfill_done")
     date_hierarchy = "gh_updated_at"
@@ -199,6 +200,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
         return format_html("<a href='{}' target='_blank'>{}</a>", url, obj.number)
 
     number_link.short_description = "Number"  # type: ignore[attr-defined]
+    number_link.admin_order_field = "number"  # type: ignore[attr-defined]
+
+    def author_link(self, obj: PullRequest) -> str:  # pragma: no cover - simple formatting
+        if obj.author_id is None:
+            return "-"
+        url = reverse("admin:core_user_change", args=[obj.author_id])
+        label = getattr(obj.author, "github_login", None) or str(obj.author)
+        return format_html("<a href='{}'>{}</a>", url, label)
+
+    author_link.short_description = "Author"  # type: ignore[attr-defined]
+    author_link.admin_order_field = "author"  # type: ignore[attr-defined]
 
     def get_urls(self):  # type: ignore[override]
         urls = super().get_urls()
