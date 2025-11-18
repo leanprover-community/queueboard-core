@@ -599,7 +599,7 @@ class CheckRunAdmin(ReadOnlyAdmin):
 
     short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
 
-    list_display = ("pull_request", "name", "status", "conclusion", "short_sha", "gh_completed_at")
+    list_display = ("pull_request", "name", "status", "conclusion", "short_sha", "gh_completed_at", "last_synced_at")
     list_filter = ("pull_request__repository", "status", "conclusion")
     search_fields = ("name", "head_sha", "pull_request__number")
     date_hierarchy = "gh_completed_at"
@@ -629,7 +629,7 @@ class StatusContextAdmin(ReadOnlyAdmin):
 
     short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
 
-    list_display = ("pull_request", "name", "state", "short_sha", "gh_created_at")
+    list_display = ("pull_request", "name", "state", "short_sha", "gh_created_at", "last_synced_at")
     list_filter = ("pull_request__repository", "state")
     search_fields = ("name", "head_sha", "pull_request__number")
     date_hierarchy = "gh_created_at"
