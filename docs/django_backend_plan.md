@@ -147,7 +147,7 @@ Reviewer preferences import (management command)
 - Notes:
   - We intentionally avoid an FK from `label_name` to `LabelDef` to keep ingestion fast, tolerate gaps, and preserve historical names independent of label catalog renames; classification will canonicalize names as needed.
 
--### Syncer Model: CheckRun
+### Syncer Model: CheckRun
 - Purpose: snapshot of the latest check runs per commit context (via GraphQL statusCheckRollup) used to classify current CI; run-level history (multiple attempts) can be added later.
 - Fields:
   - `pull_request` (FK → syncer.PullRequest)
@@ -157,7 +157,7 @@ Reviewer preferences import (management command)
   - `details_url` (url, nullable), `external_id` (str, nullable)
   - Timestamps: `gh_started_at` (nullable), `gh_completed_at` (nullable)
     - Note: GitHub GraphQL CheckRun does not expose `updatedAt`; we omit `gh_updated_at` and rely on `gh_completed_at` for ordering.
-  - Ingestion: `last_synced_at` (nullable)
+  - Ingestion: `last_synced_at` (nullable, updated on every CI ingest/refresh so we know when we last heard about this run from GitHub)
 - Indexes:
   - `(pull_request, gh_completed_at)` for chronological scans
 
@@ -169,7 +169,7 @@ Reviewer preferences import (management command)
   - `head_sha` (str), `name` (context name), `state` (SUCCESS/FAILURE/ERROR/PENDING)
   - `target_url` (url, nullable), `description` (text, nullable)
   - Timestamp: `gh_created_at` (datetime)
-  - Ingestion: `last_synced_at` (nullable)
+  - Ingestion: `last_synced_at` (nullable, updated on every CI ingest/refresh so we know when we last heard about this context from GitHub)
 - Indexes:
   - `(pull_request, gh_created_at)` for chronological scans
 
@@ -243,6 +243,7 @@ Developer utilities (current)
   - Celery beat also schedules:
     - `syncer.backfill_repo_history_active` (default hourly) which enqueues createdAt-based history backfill for all active repositories.
     - `syncer.backfill_repo_incomplete_prs_active` (default hourly, small per-repo limit) which enqueues incomplete-PR backfill for all active repositories.
+    - `syncer.refresh_pending_ci_for_active_repos` (default hourly, small per-repo limit) which enqueues pending-CI refresh for all active repositories.
 - Concurrency controls:
   - Per-repo Postgres advisory lock ensures no overlapping runs for the same repo.
   - Rate-aware continuation implemented; when budget is low we stop early and schedule continuation at `resetAt` (debounced via Redis). A global single‑token lock is not used in the current design.
@@ -283,6 +284,11 @@ Developer utilities (current)
   - `SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS`, `SYNCER_INCOMPLETE_BACKFILL_LIMIT`
 - Discovery:
   - `SYNCER_DISCOVERY_LOOKBACK_MINUTES`, `SYNCER_DISCOVERY_LIMIT`, `SYNCER_DISCOVERY_STATES_DEFAULT`
+ - Pending-CI refresh:
+   - `SYNCER_PENDING_CI_MAX_AGE_HOURS`
+   - `SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS`
+   - `SYNCER_PENDING_CI_REFRESH_MAX_PRS`
+   - `SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR`
 - `SYNCER_REPO_ENQUEUE_BATCH_MAX`, `SYNCER_EST_COST_PER_PR`
 
 ## Planned Additions (Analyzer)

@@ -16,6 +16,7 @@ from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
+from syncer.models import CheckRun, StatusContext
 
 
 log = logging.getLogger(__name__)
@@ -735,3 +736,157 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
         "rate_limit": rl_final,
         "rate_events": rate_events,
     }
+
+
+@shared_task(name="syncer.refresh_pending_ci_for_repo")
+def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
+    repo_id: int,
+    *,
+    max_prs: int = 20,
+    max_shas_per_pr: int = 5,
+    max_pending_hours: int | None = None,
+) -> Dict[str, Any]:
+    """Refresh CI for SHAs whose CheckRuns/StatusContexts are stuck pending.
+
+    Selection
+    - Consider PRs in the given repo that currently have any non-terminal CI:
+      - CheckRun.status != COMPLETED
+      - or StatusContext.state == PENDING
+    - For each such PR, collect head_shas for "eligible" pending CI rows:
+      - If last_synced_at is NULL: always eligible (never refreshed explicitly).
+      - Else, compute how long GitHub has been reporting this row as pending:
+        pending_duration = last_synced_at - origin
+        where origin is:
+          - CheckRun: gh_started_at or gh_completed_at or created_at
+          - StatusContext: gh_created_at
+        Only include rows where pending_duration < max_pending_hours.
+    - From those rows, take up to `max_shas_per_pr` distinct SHAs and enqueue a
+      `sync_ci_for_shas_task` to refresh CI for that PR.
+
+    Returns a summary dict with counts and per-PR task ids.
+    """
+    repo = Repository.objects.get(id=int(repo_id))
+    from django.db.models import Exists, OuterRef, Q
+
+    max_prs_int = int(max_prs)
+    max_shas_int = int(max_shas_per_pr)
+    if max_prs_int <= 0 or max_shas_int <= 0:
+        return {
+            "repo": f"{repo.owner}/{repo.name}",
+            "repo_id": repo.id,
+            "prs_considered": 0,
+            "prs_enqueued": 0,
+            "shas_enqueued": 0,
+            "max_prs": max_prs_int,
+            "max_shas_per_pr": max_shas_int,
+        }
+
+    # Identify PRs that currently have any pending CI.
+    pending_cr = CheckRun.objects.filter(pull_request=OuterRef("pk")).exclude(status="COMPLETED")
+    pending_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), state="PENDING")
+
+    prs_qs = (
+        PullRequest.objects.filter(repository=repo)
+        .annotate(
+            has_pending_ci=Exists(pending_cr) | Exists(pending_sc),
+        )
+        .filter(has_pending_ci=True)
+        .order_by("gh_updated_at", "id")
+    )
+
+    from django.utils import timezone
+    from datetime import timedelta
+
+    # Max age GitHub is allowed to report a CI row as pending before we stop polling it.
+    if max_pending_hours is None:
+        max_pending_hours = int(getattr(settings, "SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
+    max_age = timedelta(hours=max_pending_hours)
+
+    total_pending_prs = prs_qs.count()
+    prs = list(prs_qs[:max_prs_int])
+    prs_enqueued = 0
+    shas_enqueued = 0
+    per_pr: list[dict[str, Any]] = []
+
+    now = timezone.now()
+
+    for pr in prs:
+        # Pending CheckRuns with acceptable "pending duration".
+        cr_qs = CheckRun.objects.filter(pull_request=pr).exclude(status="COMPLETED")
+        eligible_cr_shas: set[str] = set()
+        for cr in cr_qs:
+            origin = cr.gh_started_at or cr.gh_completed_at or cr.created_at
+            if origin is None:
+                origin = now
+            if cr.last_synced_at is None or (cr.last_synced_at - origin) < max_age:
+                if cr.head_sha:
+                    eligible_cr_shas.add(cr.head_sha)
+
+        # Pending StatusContexts with acceptable "pending duration".
+        sc_qs = StatusContext.objects.filter(pull_request=pr, state="PENDING")
+        eligible_sc_shas: set[str] = set()
+        for sc in sc_qs:
+            origin_sc = sc.gh_created_at or sc.created_at
+            if origin_sc is None:
+                origin_sc = now
+            if sc.last_synced_at is None or (sc.last_synced_at - origin_sc) < max_age:
+                if sc.head_sha:
+                    eligible_sc_shas.add(sc.head_sha)
+
+        shas = list(eligible_cr_shas | eligible_sc_shas)
+        if not shas:
+            continue
+        shas = shas[:max_shas_int]
+
+        # Enqueue CI refresh for these SHAs.
+        pages_per_sha = int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
+        async_res = sync_ci_for_shas_task.delay(
+            repo_id=repo.id,
+            number=int(pr.number),
+            shas=shas,
+            max_pages_per_sha=pages_per_sha,
+            dry_run=False,
+            require_pr_association=False,
+        )
+        prs_enqueued += 1
+        shas_enqueued += len(shas)
+        per_pr.append(
+            {
+                "number": int(pr.number),
+                "shas": shas,
+                "task_id": async_res.id,
+            }
+        )
+
+    return {
+        "repo": f"{repo.owner}/{repo.name}",
+        "repo_id": repo.id,
+        "prs_considered": len(prs),
+        "prs_enqueued": prs_enqueued,
+        "shas_enqueued": shas_enqueued,
+        "backlog_prs": total_pending_prs,
+        "max_prs": max_prs_int,
+        "max_shas_per_pr": max_shas_int,
+        "max_pending_hours": int(max_pending_hours),
+        "items": per_pr,
+    }
+
+
+@shared_task(name="syncer.refresh_pending_ci_for_active_repos")
+def refresh_pending_ci_for_active_repos_task(  # type: ignore[no-redef]
+    max_prs_per_repo: int = 5,
+    max_shas_per_pr: int = 3,
+    max_pending_hours: int | None = None,
+) -> Dict[str, Any]:
+    """Enqueue pending-CI refresh for all active repositories."""
+    repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
+    enqueued = 0
+    for repo in repos:
+        refresh_pending_ci_for_repo_task.delay(
+            repo.id,
+            max_prs=max_prs_per_repo,
+            max_shas_per_pr=max_shas_per_pr,
+            max_pending_hours=max_pending_hours,
+        )
+        enqueued += 1
+    return {"repos": len(repos), "enqueued": enqueued}

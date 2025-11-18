@@ -171,6 +171,12 @@ SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_HISTORY_BACKFILL_
 SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS", 3600))
 SYNCER_INCOMPLETE_BACKFILL_LIMIT = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_LIMIT", 20))
 
+# Pending-CI refresh defaults
+SYNCER_PENDING_CI_MAX_AGE_HOURS = int(os.getenv("SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
+SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS = int(os.getenv("SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS", 3600))
+SYNCER_PENDING_CI_REFRESH_MAX_PRS = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_PRS", 5))
+SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR", 3))
+
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
@@ -198,6 +204,15 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS,
         "kwargs": {
             "limit": SYNCER_INCOMPLETE_BACKFILL_LIMIT,
+        },
+    },
+    "refresh_pending_ci_for_active_repos": {
+        "task": "syncer.refresh_pending_ci_for_active_repos",
+        "schedule": SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS,
+        "kwargs": {
+            "max_prs_per_repo": SYNCER_PENDING_CI_REFRESH_MAX_PRS,
+            "max_shas_per_pr": SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR,
+            "max_pending_hours": SYNCER_PENDING_CI_MAX_AGE_HOURS,
         },
     },
 }

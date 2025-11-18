@@ -101,6 +101,8 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - `services/sub/ci_sync.py`: `sync_check_runs(...)` (snapshots) and `sync_status_contexts(...)` (snapshots)
 - Tasks & CLI:
   - `syncer/tasks/sync_tasks.py`: `sync_repo_task`, `sync_pr_task`
+    - `refresh_pending_ci_for_repo_task(repo_id, max_prs, max_shas_per_pr, max_pending_hours)` to re-poll CI for SHAs whose CheckRuns/StatusContexts remain pending.
+    - `refresh_pending_ci_for_active_repos_task(max_prs_per_repo, max_shas_per_pr, max_pending_hours)` to enqueue pending-CI refresh for all active repositories (used by Celery beat).
   - `syncer/tasks/backfill_tasks.py`:
     - `backfill_repo_history_task(repo_id, page_size, max_pages, states)` for createdAt-based history backfill.
     - `backfill_repo_history_active_task()` to enqueue history backfill for all active repositories (used by Celery beat).
@@ -109,6 +111,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - `syncer/management/commands/sync_repo.py`: repo runner with `--since` and bundle limits
   - `syncer/management/commands/backfill_repo_history.py`: repo-level history backfill runner (sync or `--async` Celery enqueue)
   - `syncer/management/commands/backfill_incomplete_prs.py`: repo-level incomplete-PR backfill runner (sync or `--async` Celery enqueue)
+  - `syncer/management/commands/refresh_pending_ci.py`: repo-level pending-CI refresh runner (sync or `--async` Celery enqueue)
 
 ## Incremental & Backfills
 - Incremental discovery
