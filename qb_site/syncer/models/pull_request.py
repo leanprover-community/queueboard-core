@@ -10,6 +10,7 @@ from core.models.user import User
 class PullRequestState(models.TextChoices):
     OPEN = "open", "open"
     CLOSED = "closed", "closed"
+    MERGED = "merged", "merged"
 
 
 class PullRequest(TimestampedModel):

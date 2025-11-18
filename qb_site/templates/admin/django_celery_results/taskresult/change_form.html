@@ -3,3 +3,13 @@
 {# Hide default object tools (History, View on site) for Task results #}
 {% block object-tools-items %}{% endblock %}
 
+{# Surface Repo/PR context prominently on the detail page when available #}
+{% block content %}
+  {% if repo_pr_value and repo_pr_value != "-" %}
+    <div class="module" style="margin-bottom: 1em;">
+      <h2>Repo/PR</h2>
+      <p>{{ repo_pr_value }}</p>
+    </div>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

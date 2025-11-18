@@ -8,8 +8,10 @@ from django.utils.html import format_html
 from django.http import HttpResponseRedirect, HttpResponse
 from collections import OrderedDict
 import json
+import ast
 
 from .models import Repository, ReviewerPreference, User
+from syncer.models import PullRequest  # type: ignore
 
 
 @admin.register(Repository)
@@ -18,6 +20,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         "owner",
         "name",
         "sync_tools_link",
+        "github_link",
         "default_branch",
         "is_active",
         "github_node_id",
@@ -45,6 +48,12 @@ class RepositoryAdmin(admin.ModelAdmin):
 
     sync_tools_link.short_description = "Tools"  # type: ignore[attr-defined]
     sync_tools_link.allow_tags = True  # type: ignore[attr-defined]
+
+    def github_link(self, obj):  # pragma: no cover - simple link
+        url = f"https://github.com/{obj.owner}/{obj.name}"
+        return format_html("<a href='{}' target='_blank'>GitHub</a>", url)
+
+    github_link.short_description = "GitHub"  # type: ignore[attr-defined]
 
     class SyncPRsForm(forms.Form):
         pr_numbers = forms.CharField(
@@ -385,12 +394,12 @@ try:
         change_form_template = "admin/django_celery_results/taskresult/change_form.html"
         list_display = (
             "short_id",
-            "task_name",
+            "task_name_link",
             "repo_pr",
             "status",
             "date_done",
         )
-        list_display_links = ("short_id", "task_name")
+        list_display_links = ("short_id",)
         list_filter = getattr(TaskResultAdmin, "list_filter", tuple()) + ("task_name",)
         search_fields = getattr(TaskResultAdmin, "search_fields", tuple()) + (
             "task_id",
@@ -408,29 +417,71 @@ try:
         def has_add_permission(self, request):  # type: ignore[override]
             return False
 
+        def task_name_link(self, obj):  # type: ignore[override]
+            name = getattr(obj, "task_name", "") or ""
+            changelist_url = reverse("admin:django_celery_results_taskresult_changelist")
+            # Filter by this task_name; preserve existing GET parameters if any.
+            url = f"{changelist_url}?task_name={name}"
+            return format_html("<a href='{}'>{}</a>", url, name)
+
+        task_name_link.short_description = "Task name"  # type: ignore[attr-defined]
+        task_name_link.admin_order_field = "task_name"  # type: ignore[attr-defined]
+
         def _json_load(self, raw):  # pragma: no cover - trivial helper
             if raw is None:
                 return None
             if isinstance(raw, (dict, list)):
                 return raw
             try:
+                # Primary: JSON (TaskResult often stores JSON-encoded payloads)
                 return json.loads(raw)
             except Exception:
-                return None
+                # Fallback: Python literals (e.g., "{'a': 1}" or "['x', 'y']")
+                try:
+                    val = ast.literal_eval(raw)
+                    # Normalize tuples so callers can treat list/tuple similarly.
+                    if isinstance(val, tuple):
+                        return list(val)
+                    return val
+                except Exception:
+                    return None
 
         def repo_pr(self, obj):  # type: ignore[override]
             name = getattr(obj, "task_name", "") or ""
             if name == "syncer.sync_pr":
                 res = self._json_load(getattr(obj, "result", None))
                 if isinstance(res, dict) and res.get("repo") and res.get("number") is not None:
-                    return f"{res.get('repo')}#{res.get('number')}"
-                # Fallback to args (repo_id, number)
+                    repo_label = f"{res.get('repo')}#{res.get('number')}"
+                    # Best-effort link to PR admin if possible
+                    try:
+                        owner, name_part = str(res.get("repo")).split("/", 1)
+                        number = int(res.get("number"))
+                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
+                        pr = PullRequest.objects.filter(repository=repo, number=number).only("id").first()
+                        if pr is not None:
+                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+                            return format_html("<a href='{}'>{}</a>", url, repo_label)
+                    except Exception:  # pragma: no cover - best-effort
+                        pass
+                    return repo_label
+                # Fallback to args (repo_id, number) when result is missing/failed
                 args = self._json_load(getattr(obj, "task_args", None))
                 if isinstance(args, list) and len(args) >= 2:
                     repo_id, number = args[0], args[1]
                     try:
-                        repo = Repository.objects.only("owner", "name").get(id=int(repo_id))
-                        return f"{repo.owner}/{repo.name}#{number}"
+                        repo = Repository.objects.only("owner", "name", "id").get(id=int(repo_id))
+                        label = f"{repo.owner}/{repo.name}#{number}"
+                        # Try to link directly to the PR change page; if missing, link to filtered PR list.
+                        pr = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
+                        if pr is not None:
+                            url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+                        else:
+                            url = "{}?repository__id__exact={}&number={}".format(
+                                reverse("admin:syncer_pullrequest_changelist"),
+                                repo.id,
+                                int(number),
+                            )
+                        return format_html("<a href='{}'>{}</a>", url, label)
                     except Exception:  # pragma: no cover - best-effort
                         return f"repo_id={repo_id}#{number}"
                 return "-"
@@ -438,19 +489,79 @@ try:
                 res = self._json_load(getattr(obj, "result", None))
                 if isinstance(res, dict) and res.get("repo"):
                     since = res.get("since")
-                    return f"{res.get('repo')} (since {since})"
+                    label = f"{res.get('repo')} (since {since})"
+                    try:
+                        owner, name_part = str(res.get("repo")).split("/", 1)
+                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
+                        url = reverse("admin:core_repository_change", args=[repo.pk])
+                        return format_html("<a href='{}'>{}</a>", url, label)
+                    except Exception:  # pragma: no cover
+                        return label
                 # Fallback to kwargs
                 kwargs = self._json_load(getattr(obj, "task_kwargs", None))
                 if isinstance(kwargs, dict) and kwargs.get("repo_id"):
                     try:
                         repo = Repository.objects.only("owner", "name").get(id=int(kwargs["repo_id"]))
-                        return f"{repo.owner}/{repo.name}"
+                        label = f"{repo.owner}/{repo.name}"
+                        url = reverse("admin:core_repository_change", args=[repo.pk])
+                        return format_html("<a href='{}'>{}</a>", url, label)
                     except Exception:  # pragma: no cover
                         return f"repo_id={kwargs.get('repo_id')}"
+                return "-"
+            if name in {"syncer.backfill_repo_history", "syncer.backfill_repo_incomplete_prs"}:
+                # Per-repo backfill tasks: prefer the 'repo' string from the result,
+                # fall back to resolving repo_id from kwargs or args.
+                res = self._json_load(getattr(obj, "result", None))
+                if isinstance(res, dict) and res.get("repo"):
+                    label = str(res.get("repo"))
+                    try:
+                        owner, name_part = label.split("/", 1)
+                        repo = Repository.objects.only("id").get(owner=owner, name=name_part)
+                        url = reverse("admin:core_repository_change", args=[repo.pk])
+                        return format_html("<a href='{}'>{}</a>", url, label)
+                    except Exception:  # pragma: no cover
+                        return label
+                # Fallback to kwargs
+                kwargs = self._json_load(getattr(obj, "task_kwargs", None))
+                if isinstance(kwargs, dict) and kwargs.get("repo_id"):
+                    try:
+                        repo = Repository.objects.only("owner", "name").get(id=int(kwargs["repo_id"]))
+                        label = f"{repo.owner}/{repo.name}"
+                        url = reverse("admin:core_repository_change", args=[repo.pk])
+                        return format_html("<a href='{}'>{}</a>", url, label)
+                    except Exception:  # pragma: no cover
+                        return f"repo_id={kwargs.get('repo_id')}"
+                # Fallback to args (first positional is repo_id)
+                args = self._json_load(getattr(obj, "task_args", None))
+                if isinstance(args, list) and args:
+                    repo_id = args[0]
+                    try:
+                        repo = Repository.objects.only("owner", "name").get(id=int(repo_id))
+                        label = f"{repo.owner}/{repo.name}"
+                        url = reverse("admin:core_repository_change", args=[repo.pk])
+                        return format_html("<a href='{}'>{}</a>", url, label)
+                    except Exception:  # pragma: no cover
+                        return f"repo_id={repo_id}"
                 return "-"
             return "-"
 
         repo_pr.short_description = "Repo/PR"  # type: ignore[attr-defined]
+
+        def changeform_view(  # type: ignore[override]
+            self,
+            request,
+            object_id=None,
+            form_url="",
+            extra_context=None,
+        ):
+            extra = extra_context or {}
+            obj = self.get_object(request, object_id)
+            if obj is not None:
+                try:
+                    extra["repo_pr_value"] = self.repo_pr(obj)
+                except Exception:  # pragma: no cover - best-effort
+                    extra["repo_pr_value"] = None
+            return super().changeform_view(request, object_id, form_url, extra)
 
 except Exception:  # pragma: no cover - django-celery-results not installed
     pass
