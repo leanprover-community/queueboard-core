@@ -356,11 +356,13 @@ def compare_data_aggressive() -> List[int]:
     rest_data: List[RESTData] = []
     with open("all-open-PRs-1.json", "r") as fi:
         data1 = json.load(fi)
-    with open("all-open-PRs-2.json", "r") as fi:
-        data2 = json.load(fi)
+    with open("all-open-PRs-2a.json", "r") as fi:
+        data2a = json.load(fi)
+    with open("all-open-PRs-2b.json", "r") as fi:
+        data2b = json.load(fi)
     with open("all-open-PRs-3.json", "r") as fi:
         data3 = json.load(fi)
-    for data in [data1, data2, data3]:
+    for data in [data1, data2a, data2b, data3]:
         for page in data["output"]:
             for pr in page["data"]["search"]["nodes"]:
                 parsed_labels = [Label(lab["name"], lab["color"], lab["url"]) for lab in pr["labels"]["nodes"]]
