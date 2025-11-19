@@ -72,7 +72,7 @@ class TestPRRevisions(TestCase):
 
     def test_seed_from_ci_when_no_force_push(self) -> None:
         pr = self._mk_pr(2)
-        # No HEAD_FORCE_PUSHED events; seed from most recent CI snapshot
+        # No HEAD_FORCE_PUSHED events; seed from CI snapshots (single head)
         CheckRun.objects.create(
             pull_request=pr,
             github_node_id="CR1",
@@ -92,6 +92,52 @@ class TestPRRevisions(TestCase):
         self.assertEqual(revs[0].head_sha, "zzz999")
         self.assertIsNone(revs[0].to_ts)
 
+    def test_multiple_heads_from_ci_when_no_force_push(self) -> None:
+        pr = self._mk_pr(5)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=2)
+        t2 = pr.gh_created_at + timezone.timedelta(hours=5)
+        # CI snapshots for two different head SHAs; expect two windows ordered by earliest timestamp.
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR1",
+            head_sha="aaa111",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=pr.gh_created_at + timezone.timedelta(hours=1),
+            gh_completed_at=t1,
+        )
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR2",
+            head_sha="bbb222",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=pr.gh_created_at + timezone.timedelta(hours=4),
+            gh_completed_at=t2,
+        )
+
+        res = rebuild_pr_revisions(pr)
+        self.assertEqual(res.deleted, 0)
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 2)
+        # First head is aaa111 from PR creation until we first see bbb222; second
+        # head is bbb222 from that point onward.
+        self.assertEqual(revs[0].head_sha, "aaa111")
+        self.assertEqual(revs[0].from_ts, pr.gh_created_at)
+        self.assertEqual(revs[0].to_ts, revs[1].from_ts)
+        # Second head is bbb222 from its first CI onward
+        self.assertEqual(revs[1].head_sha, "bbb222")
+        # The exact boundary comes from the earliest CI timestamp for bbb222; we
+        # only assert that it starts after creation and that the window is open-ended.
+        self.assertGreater(revs[1].from_ts, pr.gh_created_at)
+        self.assertIsNone(revs[1].to_ts)
+
     def test_noop_when_not_backfilled(self) -> None:
         pr = self._mk_pr(4)
         # Mark as not backfilled
@@ -100,6 +146,67 @@ class TestPRRevisions(TestCase):
         res = rebuild_pr_revisions(pr)
         self.assertEqual(res.created, 0)
         self.assertEqual(res.deleted, 0)
+
+    def test_force_push_takes_precedence_over_ci_heads(self) -> None:
+        pr = self._mk_pr(6)
+        t0 = pr.gh_created_at + timezone.timedelta(hours=1)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=2)
+        # Force-push events define the head windows.
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="aaa111",
+            after_sha="bbb222",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t1,
+            before_sha="bbb222",
+            after_sha="ccc333",
+        )
+        # CI snapshots suggest additional heads, but they should not change the
+        # revision windows when force-push events are present.
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CRX1",
+            head_sha="xxx000",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=pr.gh_created_at + timezone.timedelta(minutes=10),
+            gh_completed_at=pr.gh_created_at + timezone.timedelta(minutes=20),
+        )
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CRX2",
+            head_sha="yyy000",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=pr.gh_created_at + timezone.timedelta(hours=3),
+            gh_completed_at=pr.gh_created_at + timezone.timedelta(hours=3, minutes=30),
+        )
+
+        res = rebuild_pr_revisions(pr)
+        self.assertEqual(res.deleted, 0)
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        # Still expect three windows driven purely by force-push events.
+        self.assertEqual(len(revs), 3)
+        self.assertEqual(revs[0].head_sha, "aaa111")
+        self.assertEqual(revs[0].from_ts, pr.gh_created_at)
+        self.assertEqual(revs[0].to_ts, t0)
+        self.assertEqual(revs[1].head_sha, "bbb222")
+        self.assertEqual(revs[1].from_ts, t0)
+        self.assertEqual(revs[1].to_ts, t1)
+        self.assertEqual(revs[2].head_sha, "ccc333")
+        self.assertEqual(revs[2].from_ts, t1)
+        self.assertIsNone(revs[2].to_ts)
 
     def test_next_backfill_targets_picks_missing_ci_shas(self) -> None:
         pr = self._mk_pr(3)

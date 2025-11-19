@@ -39,8 +39,12 @@
 ## Operational Notes
 - Implementation steps
   - Extend `analyzer.services.revisions.rebuild_pr_revisions` to:
-    - Continue to use `HEAD_FORCE_PUSHED` events as primary boundaries.
-    - Optionally incorporate additional signals (e.g., commit/CI data) to infer head changes when no force-push events are present.
+    - Continue to use `HEAD_FORCE_PUSHED` events as primary, hard boundaries.
+    - Within each segment:
+      - Before the first force-push (from `gh_created_at` to first `HEAD_FORCE_PUSHED.occurred_at`),
+      - Between successive force-push events, and
+      - After the last force-push (from last `HEAD_FORCE_PUSHED.occurred_at` onward),
+      incorporate additional head-change signals (e.g., CI/commit data) to infer when the head SHA changes and create additional `PRRevision` windows for those heads.
     - Preserve idempotency and atomic replacement of the window set per PR.
   - Ensure that `PRRevision` remains rebuildable end-to-end from Syncer tables (`PullRequest`, `PRTimelineEvent`, `CheckRun`, `StatusContext`).
 - Recompute strategy
@@ -62,4 +66,3 @@
 - **Compute head windows on the fly without PRRevision**
   - Pros: avoids another table.
   - Cons: repeated expensive work on every queue computation; less control over backfill and visibility in admin.
-
