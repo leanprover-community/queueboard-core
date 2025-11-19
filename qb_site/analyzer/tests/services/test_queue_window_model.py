@@ -5,7 +5,7 @@ from datetime import datetime, timezone as dt_timezone
 from django.test import TestCase
 
 from core.models import Repository
-from analyzer.models import QueueRuleSet, PRQueueWindow
+from analyzer.models import QueueRuleSet, PRQueueWindow, PRRevision
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
 from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
 
@@ -47,10 +47,21 @@ class TestPRQueueWindowModel(TestCase):
             additions=0,
             deletions=0,
             changed_files_count=0,
+            timeline_backfill_done=True,
         )
 
     def test_rebuild_persists_queue_windows_with_cycles(self) -> None:
         pr = self._mk_pr(1)
+        # For CI-gated rulesets, we require PRRevision to exist; for this
+        # label-only ruleset we do not, but we add one here to exercise the
+        # gating logic symmetrically.
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha1",
+            from_ts=_dt(2024, 9, 1),
+            to_ts=None,
+            seq=0,
+        )
         # Blocked from Sep 1–6, then unblocked, then blocked again on Sep 12.
         PRTimelineEvent.objects.create(
             pull_request=pr,

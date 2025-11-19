@@ -36,7 +36,8 @@
 - Queue windows
   - Implement a queue window builder in Analyzer that:
     - Reads `PullRequest` + `PRTimelineEvent` + CI snapshots from Syncer.
-    - Applies a `QueueRuleSet` (labels, CI gating, draft/open rules) to produce `[enter, exit)` queue windows and an optional `cycle_index`.
+    - Applies a `QueueRuleSet` (labels, CI gating, draft/open rules) to produce `[enter, exit)` queue windows.
+    - Treat each queue window as a single “queue cycle” for now; `cycle_index` is the window index per `(pr, rule_set)`.
   - Store queue windows in an Analyzer model keyed by `(pr, rule_set, from_ts, to_ts)` with a `rules_version` column or a FK to `QueueRuleSet`.
   - Treat `QueueRuleSet` as append‑only; do not mutate existing rows. New rules mean new rows, not in‑place edits.
   - Derive daily aggregates (`QueueDailySnapshot`, `PRQueueDailySpan`) from queue windows for selected rulesets as needed.
@@ -52,4 +53,3 @@
 - **Never store queue windows; compute on read only**
   - Pros: simplest storage; no queue‑specific tables.
   - Cons: makes “review cycle” analysis and historical backfills more expensive; harder to version by ruleset and to support daily snapshots efficiently.
-
