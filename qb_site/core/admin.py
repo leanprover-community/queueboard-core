@@ -592,6 +592,10 @@ try:
             if name == "syncer.sync_pr":
                 repo, number, label = self._decode_repo_and_number(obj)
                 return self._format_pr_link(repo, number, label)
+            if name == "analyzer.process_pr":
+                # Analyzer per-PR follow-up: decode repo/number from task kwargs/args.
+                repo, number, label = self._decode_repo_and_number(obj)
+                return self._format_pr_link(repo, number, label)
             if name == "syncer.sync_repo_since":
                 res = self._json_load(getattr(obj, "result", None))
                 since = res.get("since") if isinstance(res, dict) else None

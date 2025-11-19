@@ -375,7 +375,7 @@ def queue_windows_for_pr(pr: PullRequest, *, as_of: Optional[datetime] = None) -
     """Return [enter, exit) windows when ``pr`` was on the queue, using QueueRuleSet."""
     if as_of is None:
         as_of = timezone.now()
-    rules = load_rules_for_repo(pr.repository)
+    rules = load_rules_for_repo(pr.repository, at=as_of)
     return _queue_windows_with_rules(pr, rules=rules, as_of=as_of)
 
 
@@ -390,7 +390,7 @@ def total_queue_time_for_pr(pr: PullRequest, *, as_of: Optional[datetime] = None
 
 def is_on_queue_at(pr: PullRequest, *, at: datetime) -> bool:
     """Return True if ``pr`` was on the queue at instant ``at``."""
-    rules = load_rules_for_repo(pr.repository)
+    rules = load_rules_for_repo(pr.repository, at=at)
     state = _state_at_time(pr, at=at)
     ci_ok = _ci_required_contexts_ok(pr, rules, at)
     return rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=ci_ok)
