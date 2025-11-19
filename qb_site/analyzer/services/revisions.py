@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
 from datetime import datetime
+from typing import Iterable, List, Optional, Tuple
 
 from django.db import transaction
 from django.utils import timezone
 
-from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType, CheckRun, StatusContext
+from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType, StatusContext
 from analyzer.models import PRRevision
 
 
@@ -39,6 +39,75 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
     return None
 
 
+def _build_ci_head_windows(pr: PullRequest) -> List[Tuple[datetime, str, Optional[datetime]]]:
+    """Build head windows from CI snapshots when no force-push events exist.
+
+    Heuristics (best-effort):
+    - Group CheckRun/StatusContext rows by head_sha.
+    - For each head_sha, take the earliest provider timestamp as the "first seen" time.
+    - Sort distinct head_shas by that time and build windows:
+      [created_at, first_ts(next_sha)) for the first head; then [first_ts(sha_i), first_ts(sha_{i+1})) and
+      finally [first_ts(last_sha), None).
+
+    Notes
+    - Only used when no HEAD_FORCE_PUSHED events exist for the PR.
+    - If no CI snapshots exist, returns an empty list.
+    """
+    # Collect earliest timestamps per head_sha from CheckRun and StatusContext.
+    first_seen: dict[str, datetime] = {}
+
+    def _update_first(head_sha: str, ts: Optional[datetime]) -> None:
+        if not head_sha or ts is None:
+            return
+        if timezone.is_naive(ts):
+            ts = timezone.make_aware(ts)
+        cur = first_seen.get(head_sha)
+        if cur is None or ts < cur:
+            first_seen[head_sha] = ts
+
+    for cr in (
+        CheckRun.objects.filter(pull_request=pr)
+        .exclude(head_sha="")
+        .only(
+            "head_sha",
+            "gh_started_at",
+            "gh_completed_at",
+        )
+    ):
+        ts = cr.gh_started_at or cr.gh_completed_at
+        _update_first(cr.head_sha, ts)
+
+    for sc in (
+        StatusContext.objects.filter(pull_request=pr)
+        .exclude(head_sha="")
+        .only(
+            "head_sha",
+            "gh_created_at",
+        )
+    ):
+        _update_first(sc.head_sha, sc.gh_created_at)
+
+    if not first_seen:
+        return []
+
+    start = pr.gh_created_at if pr.gh_created_at else timezone.now()
+    # Sort head_shas by earliest timestamp.
+    ordered = sorted(first_seen.items(), key=lambda item: item[1])
+    windows: List[Tuple[datetime, str, Optional[datetime]]] = []
+    for i, (sha, ts) in enumerate(ordered):
+        if i == 0:
+            from_ts = start
+        else:
+            from_ts = ts
+        if i + 1 < len(ordered):
+            next_ts = ordered[i + 1][1]
+            to_ts: Optional[datetime] = next_ts
+        else:
+            to_ts = None
+        windows.append((from_ts, sha, to_ts))
+    return windows
+
+
 @transaction.atomic
 def rebuild_pr_revisions(pr: PullRequest) -> RebuildResult:
     """Rebuild head revision windows for a PR from timeline events.
@@ -60,7 +129,10 @@ def rebuild_pr_revisions(pr: PullRequest) -> RebuildResult:
         return RebuildResult(created=0, deleted=0)
 
     fps: List[PRTimelineEvent] = list(
-        PRTimelineEvent.objects.filter(pull_request=pr, type=PRTimelineEventType.HEAD_FORCE_PUSHED).order_by("occurred_at", "id")
+        PRTimelineEvent.objects.filter(pull_request=pr, type=PRTimelineEventType.HEAD_FORCE_PUSHED).order_by(
+            "occurred_at",
+            "id",
+        )
     )
     expected: List[Tuple[datetime, str, Optional[datetime]]] = []
     if fps:
@@ -70,10 +142,18 @@ def rebuild_pr_revisions(pr: PullRequest) -> RebuildResult:
             end = fps[i + 1].occurred_at if i + 1 < len(fps) else None
             expected.append((ev.occurred_at, ev.after_sha or "", end))
     else:
-        seed = _infer_seed_sha(pr)
-        if seed:
-            start = pr.gh_created_at if pr.gh_created_at else timezone.now()
-            expected.append((start, seed, None))
+        # When no force-push events exist, attempt to build head windows from CI
+        # snapshots grouped by head_sha. If no CI is available, fall back to the
+        # previous heuristic of seeding a single open-ended window from the most
+        # recent snapshot.
+        ci_windows = _build_ci_head_windows(pr)
+        if ci_windows:
+            expected.extend(ci_windows)
+        else:
+            seed = _infer_seed_sha(pr)
+            if seed:
+                start = pr.gh_created_at if pr.gh_created_at else timezone.now()
+                expected.append((start, seed, None))
 
     created = 0
     for seq, (from_ts, head_sha, to_ts) in enumerate(expected):
