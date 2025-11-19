@@ -1,6 +1,6 @@
 # Analyzer Plan: Queue Windows, Historical Snapshots, and Backfill
 
-This plan captures how the Analyzer app will compute "who was on the queue at time T" and metrics like "total time on the queue" while keeping token usage bounded. It builds on the Syncer v1 ingestion (labels, key timeline events, CI snapshots) without adding heavy state early.
+This plan captures how the Analyzer app will compute "who was on the queue at time T" and metrics like "total time on the queue" while keeping token usage bounded. It builds on the Syncer v1 ingestion (labels, key timeline events, CI snapshots) without adding heavy state early. See also `docs/design-decisions/010-queue-windows-first.md` for the decision to ship queue windows first and defer other interval tables.
 
 ## Goals
 - Compute queue membership at an instant T and over an interval [T0, T1].
@@ -8,16 +8,16 @@ This plan captures how the Analyzer app will compute "who was on the queue at ti
 - Support historical backfills for dates before the scheduler was running, efficiently.
 
 ## Definitions (initial)
-- Queue membership rules (subject to refinement/config):
+- Queue membership rules (per‑repo, versioned via `QueueRuleSet`):
   - PR is open (not closed/merged) and not draft.
-  - PR has required queue labels (e.g., `prio:high`, `waiting-for-review`, etc.).
-  - Optional: PR passes CI (derive from Analyzer events below); rules configurable per repo.
+  - PR has all required queue labels (e.g., `prio:high`, `waiting-for-review`, etc.) and none of the forbidden labels.
+  - PR passes required CI contexts for that ruleset (derived from Analyzer CI helpers; wiring is incremental).
 
 ## Data Inputs
 - `syncer.PullRequest`: createdAt, updatedAt, closedAt, mergedAt, is_draft, base/head refs.
 - `syncer.PRTimelineEvent`: label add/remove, draft toggles, reopen/closed, head ref force‑push (already modeled).
 - `syncer.CheckRun` and `syncer.StatusContext`: snapshots per head commit via statusCheckRollup.
-- Derived (Analyzer): `PRCIStatusEvent` stream (pass/fail/running/missing) from the above snapshots.
+- Derived (Analyzer, planned): `PRCIStatusEvent` stream (pass/fail/running/missing) from the above snapshots.
 
 ## Core Outputs
 - Queue windows per PR: list of [enter_at, exit_at) intervals with reason(s).
@@ -25,25 +25,44 @@ This plan captures how the Analyzer app will compute "who was on the queue at ti
 - Duration metrics: total time on queue per PR over [T0, T1]; aggregations per repo/author/day.
 
 ## Services (Analyzer)
-1) `queue_rules.py` (config + helpers)
-   - Encapsulate per‑repo label sets and CI rules.
-   - Provide predicates: `is_open_not_draft(pr_at_t)`, `has_required_labels(labels_at_t)`, `ci_ok(ci_state_at_t)`.
 
-2) `label_state_builder.py`
+1) `queue_rules.py` (config + helpers) — **implemented**
+   - Encapsulates per‑repo queue rules and CI requirements, backed by `analyzer.QueueRuleSet`.
+   - Provides predicates via `QueueRules.is_on_queue(...)`, combining:
+     - `require_open` / `require_not_draft`.
+     - `required_label_names` (all must be present) and `forbidden_label_names` (none may be present).
+     - `require_ci_success` and `required_ci_contexts` (CI gating to be wired via helpers).
+   - Helpers:
+     - `load_rules_for_repo(repo)` → latest rules for a repository.
+     - `rules_for_rule_set(rule_set)` → in‑memory rules for a specific `QueueRuleSet`.
+
+2) `label_state_builder.py` — **planned, deferred**
    - Build label presence intervals from `PRTimelineEvent` add/remove events (case preserved, normalized compare).
    - Expose: `labels_active_at(t)`, `label_intervals(name)`.
+   - Deferred per `010-queue-windows-first`: initial rollout will replay labels directly from `PRTimelineEvent` inside the queue window builder.
 
-3) `ci_events.py`
-   - Transform `CheckRun`/`StatusContext` snapshots into coarse `PRCIStatusEvent` transitions (pass/fail/running/missing), using repo config for inessential jobs.
+3) `ci_events.py` — **planned**
+   - Transform `CheckRun`/`StatusContext` snapshots into coarse `PRCIStatusEvent` transitions (pass/fail/running/missing), using repo config and ruleset CI requirements.
    - Expose: `ci_state_at(t)`, `ci_windows()`.
 
-4) `queue_window_builder.py`
-   - Combine open/not‑draft intervals, required label intervals, and optional CI pass intervals to produce queue windows.
-   - Expose: `queue_windows(pr)`, `contains(t)`, `duration_between(t0, t1)`.
+4) `queue_window_builder.py` — **implemented (first version)**
+   - Implemented as `analyzer.services.queue_windows`:
+     - In‑memory helpers compute queue windows directly from `PullRequest` + `PRTimelineEvent` and `QueueRules`:
+       - `queue_windows_for_pr(pr, as_of)` → `[enter, exit)` windows.
+       - `total_queue_time_for_pr(pr, as_of)` → total seconds on queue.
+       - `is_on_queue_at(pr, at)` → membership at instant `T`.
+       - `who_was_on_queue_at(repo, at)` → PRs whose window contains `T` under the repo’s latest ruleset.
+     - Persistence helper:
+       - `rebuild_queue_windows_for_ruleset(pr, rule_set, as_of)` → writes `PRQueueWindow` rows keyed by `(pr, rule_set, from_ts)` with `cycle_index`.
+   - Current implementation gates on open/not‑draft + labels; CI gating will be layered in via CI helpers.
 
-5) Query utilities
-   - `who_was_on_queue_at(repo, t)` → list of PRs and reasons.
-   - `queue_time_by_pr(repo, t0, t1)` → per‑PR durations; `queue_time_aggregate(repo, t0, t1)` → totals.
+5) Query utilities — **partially implemented**
+   - Instant membership:
+     - `who_was_on_queue_at(repo, t)` implemented via `queue_windows.is_on_queue_at`.
+   - Per‑PR durations:
+     - `queue_time_by_pr(repo, t0, t1)` and `queue_time_aggregate(repo, t0, t1)` remain planned; initial version focuses on:
+       - `total_queue_time_for_pr(pr, as_of)` and
+       - `PRQueueWindow` windows (with `cycle_index`) for cycle‑count analysis.
 
 ## Historical Backfill Flow
 Backfills need detail around T for PRs that could have been on the queue. Avoid per‑PR bundles until we confirm candidates.
@@ -72,6 +91,24 @@ Stage C: Compute windows and sets
   - Service/Task: `syncer.services.ci_by_sha_service.sync_ci_for_sha`, `syncer.tasks.sync_tasks.sync_ci_for_shas`.
   - Admin tool: "Enqueue CI by SHA" under PRs (with an optional strict association guard).
 
+- Queue rules and windows (Analyzer) are implemented:
+  - Models:
+    - `analyzer.QueueRuleSet` (per‑repo, versioned queue rules) with:
+      - `require_open`, `require_not_draft`, `require_ci_success`.
+      - `required_label_names`, `forbidden_label_names` (label gates).
+      - `required_ci_contexts` (CI contexts this ruleset requires; CI wiring is incremental).
+    - `analyzer.PRQueueWindow` (per‑PR, per‑ruleset queue windows):
+      - `pull_request`, `rule_set`, `from_ts`, `to_ts`, `cycle_index`.
+      - `cycle_index` groups consecutive on‑queue segments to support “number of review cycles before merge”.
+  - Services:
+    - `analyzer.services.queue_rules` to materialize `QueueRules` from `QueueRuleSet` or per‑repo defaults.
+    - `analyzer.services.queue_windows`:
+      - In‑memory queue windows and membership helpers (see above).
+      - `rebuild_queue_windows_for_ruleset` to persist windows to `PRQueueWindow` for a given `(PR, QueueRuleSet)`.
+  - Tests:
+    - `qb_site/analyzer/tests/services/test_queue_windows.py`.
+    - `qb_site/analyzer/tests/services/test_queue_window_model.py`.
+
 ## Current Admin & Commands
 - Admin
   - Read‑only PRRevision list view (searchable by PR number/head SHA; date hierarchy on from_ts).
@@ -88,13 +125,13 @@ Stage C: Compute windows and sets
    - Periodically rebuild revisions for PRs with recent timeline changes.
    - Identify `next_revision_backfill_shas(pr)` and enqueue limited `syncer.sync_ci_for_shas` per PR under rate‑aware caps.
 2) CI state and queue queries
-   - `ci_state_at_time(pr, T)` helper (essentials only; unknown‑CI policy via rules).
-   - `queue_state_at_time(repo, T)` combines open/not‑draft + required labels + CI rules.
-   - CLI for “who was on the queue at T” and sampling utilities.
+   - `ci_state_at_time(pr, T)` helper (essentials only; unknown‑CI policy via rules and `required_ci_contexts`).
+   - Refine `queue_state_at_time(repo, T)` / `who_was_on_queue_at` to incorporate CI gating once CI helpers are in place.
+   - CLI for “who was on the queue at T” and sampling utilities, backed by `PRQueueWindow` where available and in‑memory computation otherwise.
 3) Daily results and rules versioning
-   - Models: `QueueDailySnapshot` and `PRQueueDailySpan`, stamped with `rules_version`.
+   - Models: `QueueDailySnapshot` and `PRQueueDailySpan`, stamped with `rules_version` / `QueueRuleSet`.
    - Batch jobs to compute EOD snapshots and backfill ranges (idempotent upserts).
-   - `QueueRuleSet` model (per‑repo, versioned) and admin to manage rule changes going forward.
+   - Admin and tooling for `QueueRuleSet` (queue rules) and `PRQueueWindow` (per‑PR windows and cycles).
 4) Optional: compact CI rollups
    - If needed for speed, add `CommitCIRollup` to store a latest record per `(repo, sha, context)` to accelerate historical lookups.
 

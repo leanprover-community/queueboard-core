@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, Optional, Set
+
+from core.models import Repository
+from analyzer.models import QueueRuleSet
+
+
+def _normalize_label(name: str) -> str:
+    return name.strip().lower()
+
+
+@dataclass
+class QueueRules:
+    """In-memory representation of queue rules for a repository."""
+
+    require_open: bool = True
+    require_not_draft: bool = True
+    require_ci_success: bool = False
+    # All of these labels must be present (AND semantics).
+    required_labels: Set[str] | None = None
+    # None of these labels may be present.
+    forbidden_labels: Set[str] | None = None
+    # CI contexts that must succeed for this rule set. Interpretation is delegated
+    # to CI helper services; QueueRules treats ``ci_ok`` as an aggregate boolean.
+    required_ci_contexts: Set[str] | None = None
+
+    def is_on_queue(
+        self,
+        *,
+        is_open: bool,
+        is_draft: bool,
+        labels: Iterable[str],
+        ci_ok: Optional[bool] = None,
+    ) -> bool:
+        """Return True if the given state satisfies the queue rules."""
+        if self.require_open and not is_open:
+            return False
+        if self.require_not_draft and is_draft:
+            return False
+
+        label_set = {_normalize_label(l) for l in labels}
+
+        if self.required_labels:
+            # Require every configured label to be present.
+            if not self.required_labels.issubset(label_set):
+                return False
+        if self.forbidden_labels:
+            # No forbidden labels may be present.
+            if label_set & self.forbidden_labels:
+                return False
+
+        if self.require_ci_success:
+            # Until CI-at-time is implemented, treat unknown CI as not ok when required.
+            if ci_ok is not True:
+                return False
+
+        return True
+
+
+def rules_for_rule_set(obj: QueueRuleSet) -> QueueRules:
+    required = {_normalize_label(n) for n in (obj.required_label_names or []) if isinstance(n, str) and n.strip()}
+    forbidden = {_normalize_label(n) for n in (obj.forbidden_label_names or []) if isinstance(n, str) and n.strip()}
+    required_ci = {_normalize_label(n) for n in (obj.required_ci_contexts or []) if isinstance(n, str) and n.strip()}
+    return QueueRules(
+        require_open=obj.require_open,
+        require_not_draft=obj.require_not_draft,
+        require_ci_success=obj.require_ci_success,
+        required_labels=required or None,
+        forbidden_labels=forbidden or None,
+        required_ci_contexts=required_ci or None,
+    )
+
+
+def load_rules_for_repo(repo: Repository) -> QueueRules:
+    """Load the latest QueueRuleSet for a repository, or return defaults."""
+    qs = QueueRuleSet.objects.filter(repository=repo).order_by("-version", "-id")
+    obj = qs.first()
+    if obj is None:
+        return QueueRules()
+    return rules_for_rule_set(obj)
+
+
+__all__ = ["QueueRules", "load_rules_for_repo", "rules_for_rule_set"]
