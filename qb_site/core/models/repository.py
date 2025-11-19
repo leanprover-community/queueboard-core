@@ -31,6 +31,12 @@ class Repository(TimestampedModel):
     # Operational toggle for future use (e.g., filter for active repos in schedulers/UIs).
     is_active = models.BooleanField(default=True)
 
+    # Optional per-repo CI tracking filters. When non-empty, these act as allowlists
+    # for Syncer ingestion, matched case-insensitively against CheckRun.name and
+    # StatusContext.context respectively. If empty, global SYNCER_CI_* settings apply.
+    ci_tracked_checkrun_names = models.JSONField(default=list, blank=True)
+    ci_tracked_status_names = models.JSONField(default=list, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["owner", "name"], name="core_repository_owner_name_unique"),

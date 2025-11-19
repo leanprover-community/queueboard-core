@@ -36,6 +36,28 @@ def _parse_allowlist(val: Any) -> List[str]:
     return [tok.strip().lower() for tok in s.split(",") if tok.strip()]
 
 
+def _effective_allowlist_for_checkruns(pr: PullRequest) -> List[str]:
+    """Return the allowlist patterns for CheckRun contexts for a PR's repository."""
+    repo_patterns = getattr(pr.repository, "ci_tracked_checkrun_names", None) or []
+    if repo_patterns:
+        return [str(p).strip().lower() for p in repo_patterns if str(p).strip()]
+    mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
+    if mode == "allowlist":
+        return _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_CHECKRUN_NAMES", ""))
+    return []
+
+
+def _effective_allowlist_for_status(pr: PullRequest) -> List[str]:
+    """Return the allowlist patterns for StatusContext contexts for a PR's repository."""
+    repo_patterns = getattr(pr.repository, "ci_tracked_status_names", None) or []
+    if repo_patterns:
+        return [str(p).strip().lower() for p in repo_patterns if str(p).strip()]
+    mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
+    if mode == "allowlist":
+        return _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", ""))
+    return []
+
+
 def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sha: str) -> CISyncResult:
     """Upsert snapshot CheckRun rows from a commit's status.contexts entries.
 
@@ -48,8 +70,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     """
     created = 0
     updated = 0
-    mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
-    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")) if mode == "allowlist" else []
+    allow = _effective_allowlist_for_checkruns(pr)
     now = timezone.now()
     for ctx in contexts:
         if not isinstance(ctx, dict):
@@ -97,8 +118,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     """
     created = 0
     updated = 0
-    mode = getattr(settings, "SYNCER_CI_FILTER_MODE", "all")
-    allow = _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", "")) if mode == "allowlist" else []
+    allow = _effective_allowlist_for_status(pr)
     now = timezone.now()
     for ctx in contexts:
         if not isinstance(ctx, dict):
