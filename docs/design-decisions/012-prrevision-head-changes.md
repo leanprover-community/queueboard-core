@@ -1,9 +1,12 @@
 # PRRevision Refinement: Head Changes Beyond Force-Pushes
 
 ## Context
-- `analyzer.PRRevision` currently models head windows per PR:
+- `analyzer.PRRevision` models head windows per PR:
   - Each row represents a contiguous interval `[from_ts, to_ts)` during which the PR's head SHA was `head_sha`.
-  - Windows are built from `syncer.PRTimelineEvent` `HEAD_FORCE_PUSHED` events (plus an optional seed from the latest CI snapshot when no events exist).
+  - Windows are built from `syncer.PRTimelineEvent` `HEAD_FORCE_PUSHED` events combined with CI / commit evidence about head changes:
+    - Force-push events define hard segment boundaries and baseline heads.
+    - Within each segment, earliest CI timestamps per `head_sha` introduce additional revision windows when the head advances without a force-push.
+    - When no force-push events exist for a PR, windows are inferred solely from CI snapshots grouped by `head_sha`, with a best-effort seed from the latest CI snapshot when CI is sparse.
 - Queue windows for CI-gated rulesets use PRRevision to:
   - Resolve the head SHA at time `T`.
   - Add revision boundaries as potential queue window boundaries.
@@ -46,6 +49,11 @@
       - After the last force-push (from last `HEAD_FORCE_PUSHED.occurred_at` onward),
       incorporate additional head-change signals (e.g., CI/commit data) to infer when the head SHA changes and create additional `PRRevision` windows for those heads.
     - Preserve idempotency and atomic replacement of the window set per PR.
+  - Status:
+    - Implemented in `qb_site/analyzer/services/revisions.py`:
+      - `_collect_ci_first_seen`, `_build_ci_head_windows`, and `_build_force_push_head_windows` combine force-push segments with CI-derived head changes.
+      - `rebuild_pr_revisions` now uses these helpers for both force-push and no-force-push cases.
+    - Tested via `qb_site/analyzer/tests/test_pr_revisions.py`, including multi-segment scenarios with both baseline and non-baseline CI heads.
   - Ensure that `PRRevision` remains rebuildable end-to-end from Syncer tables (`PullRequest`, `PRTimelineEvent`, `CheckRun`, `StatusContext`).
 - Recompute strategy
   - Treat `PRRevision` and `PRQueueWindow` as derived artifacts:

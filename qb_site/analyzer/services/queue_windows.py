@@ -142,7 +142,7 @@ def _head_sha_at_time(pr: PullRequest, *, at: datetime) -> tuple[Optional[str], 
 def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -> bool:
     """Return True iff CI satisfies rules.required_ci_contexts for this PR.
 
-    Semantics (v1)
+    Semantics
     - If CI is not required (`require_ci_success` is False), CI always counts as ok.
     - If `required_ci_contexts` is empty, CI gating is treated as disabled for now.
     - If PRRevision rows exist for this PR, we use the head SHA at time ``at`` and
@@ -157,9 +157,10 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
       treated as not ok.
 
     Notes
-    - This is a coarse, per-PR view that does not distinguish different head SHAs
-      or historical CI transitions. It is sufficient for "CI must be green now"
-      style gating and can be refined later using PRRevision and CI rollups.
+    - When PRRevision exists, this function is head- and time-aware: CI snapshots
+      are evaluated against the head SHA that was current at ``at``.
+    - We still approximate intra-head flapping by using the latest snapshot per
+      context at or before ``at``.
     """
     if not rules.require_ci_success:
         return True
