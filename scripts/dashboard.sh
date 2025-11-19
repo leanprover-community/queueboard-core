@@ -35,12 +35,18 @@ query(\$endCursor: String) {
 }
 
 # Query Github API for all open pull requests:
-# split in three as the REST-based API only returns up to 1000 items.
+# split in three as the REST-based API only returns up to 1000 items for a
+# single search; we further split the "merge-conflict" bucket into two
+# disjoint queries on creation date so that each stays under the limit.
+CONFLICT_BASE_QUERY='sort:updated-asc is:pr state:open label:merge-conflict -label:blocked-by-other-PR'
+CONFLICT_SPLIT_DATE='2025-01-01'  # adjust to keep 2a/2b roughly balanced
 QUERY_ALLOPEN1=$(prepare_query 'sort:updated-asc is:pr state:open -label:merge-conflict -label:blocked-by-other-PR')
-QUERY_ALLOPEN2=$(prepare_query 'sort:updated-asc is:pr state:open label:merge-conflict -label:blocked-by-other-PR')
+QUERY_ALLOPEN2a=$(prepare_query "$CONFLICT_BASE_QUERY created:<$CONFLICT_SPLIT_DATE")
+QUERY_ALLOPEN2b=$(prepare_query "$CONFLICT_BASE_QUERY created:>=$CONFLICT_SPLIT_DATE")
 QUERY_ALLOPEN3=$(prepare_query 'sort:updated-asc is:pr state:open label:blocked-by-other-PR')
 gh api graphql --paginate --slurp -f query="$QUERY_ALLOPEN1" | jq '{"output": .}' > all-open-PRs-1.json
-gh api graphql --paginate --slurp -f query="$QUERY_ALLOPEN2" | jq '{"output": .}' > all-open-PRs-2.json
+gh api graphql --paginate --slurp -f query="$QUERY_ALLOPEN2a" | jq '{"output": .}' > all-open-PRs-2a.json
+gh api graphql --paginate --slurp -f query="$QUERY_ALLOPEN2b" | jq '{"output": .}' > all-open-PRs-2b.json
 gh api graphql --paginate --slurp -f query="$QUERY_ALLOPEN3" | jq '{"output": .}' > all-open-PRs-3.json
 
 # TEMPORARILY download the old files for the queue and "just a merge conflict", to compare results.

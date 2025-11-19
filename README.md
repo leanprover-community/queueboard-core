@@ -38,7 +38,7 @@ To test the API file generation, visit [the queueboard actions](https://github.c
 ```bash
 cd test/pre-api-artifact
 cp ../../reviewer-topics.json .
-uv run python -m queueboard.dashboard_data "all-open-PRs-1.json" "all-open-PRs-2.json" "all-open-PRs-3.json"
+uv run python -m queueboard.dashboard_data "all-open-PRs-1.json" "all-open-PRs-2a.json" "all-open-PRs-2b.json" "all-open-PRs-3.json"
 ```
 
 To test the dashboard generation from here, simply run:

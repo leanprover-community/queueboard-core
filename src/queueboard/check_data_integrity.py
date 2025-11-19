@@ -30,15 +30,20 @@ def extract_last_update_from_input() -> dict[int, str]:
     output = dict()
     with (
         open("all-open-PRs-1.json", "r") as file1,
-        open("all-open-PRs-2.json", "r") as file2,
+        open("all-open-PRs-2a.json", "r") as file2a,
+        open("all-open-PRs-2b.json", "r") as file2b,
         open("all-open-PRs-3.json", "r") as file3,
     ):
         data = json.load(file1)
         for page in data["output"]:
             for entry in page["data"]["search"]["nodes"]:
                 output[entry["number"]] = entry["updatedAt"]
-        data2 = json.load(file2)
-        for page in data2["output"]:
+        data2a = json.load(file2a)
+        for page in data2a["output"]:
+            for entry in page["data"]["search"]["nodes"]:
+                output[entry["number"]] = entry["updatedAt"]
+        data2b = json.load(file2b)
+        for page in data2b["output"]:
             for entry in page["data"]["search"]["nodes"]:
                 output[entry["number"]] = entry["updatedAt"]
         data3 = json.load(file3)
