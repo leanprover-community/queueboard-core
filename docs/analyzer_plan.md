@@ -158,30 +158,43 @@ Stage C: Compute windows and sets
 - Integration: backfill flow over small fixtures; snapshot queue sets at known timestamps.
 - Performance: sanity check candidate discovery page counts and bundle volumes on a large repo.
 
-## Planned: Head Revision Windows and CI Backfill Across Force-Pushes
+## Planned: PRRevision Refinement and CI Backfill Across Head Changes
 
-To make CI-at-time reconstructions robust to force-pushes, we plan to anchor CI history to head-SHA windows.
+To make CI-at-time reconstructions robust to more than just force-pushes, we plan to refine head revision windows and CI backfill while keeping `PRRevision` as the canonical "head window" model.
 
 ### Model (Analyzer)
-- `PRRevision`:
-  - Fields: `pr` (FK), `head_sha` (str), `from_ts` (datetime), `to_ts` (nullable datetime), `seq` (int, descending by time).
-  - Built from timeline `HEAD_REF_FORCE_PUSHED` events and header fields; the first window seeds from PR header at `createdAt`.
+- `PRRevision` (already implemented):
+  - Fields: `pr` (FK), `head_sha` (str), `from_ts` (datetime), `to_ts` (nullable datetime), `seq` (int).
+  - Currently built from timeline `HEAD_REF_FORCE_PUSHED` events (and optionally seeded from CI when no events exist).
 - Optional `CommitCIRollup` (if/when we want compact per-context records):
   - Unique by `(repo_id, sha, context_key)`; fields include `status`, `conclusion`, `createdAt/startedAt/completedAt` and `source`.
 
-### Flow
-1) Build/refresh `PRRevision` after Syncer ingests timeline pages for a PR.
-2) Identify the next N historical SHAs missing CI and enqueue Syncer requests to fetch CI for those SHAs (steady, budgeted progress).
-3) For a query at time T:
-   - Resolve head SHA via the revision window containing T.
-   - Evaluate labels/open/draft from timeline intervals as of T.
-   - Read CI state as of T for that SHA from snapshots/rollups and apply repo rules.
+### Flow (target state)
+1) **Refine PRRevision windows**
+   - Extend `rebuild_pr_revisions(pr)` to incorporate additional head-change signals (beyond `HEAD_FORCE_PUSHED`), while preserving:
+     - Non-overlapping windows per PR.
+     - `[from_ts, to_ts)` semantics.
+   - Rebuild `PRRevision` for PRs whose timeline/CI has been fully backfilled.
+2) **Drive CI backfill per revision head**
+   - Use `next_revision_backfill_shas(pr)` and `plan_missing_ci_shas(...)` to identify head SHAs with missing CI.
+   - Enqueue `syncer.sync_ci_for_shas` for those SHAs under rate-aware limits until required contexts are populated (where possible).
+3) **Compute CI-aware queue state at time T**
+   - Resolve head SHA via the refined `PRRevision` window containing T.
+   - Evaluate labels/open/draft from timeline events as of T.
+   - Evaluate CI state as of T for that head SHA and the ruleset's `required_ci_contexts`.
+   - Apply `QueueRuleSet` to decide whether the PR is on the queue at T.
+4) **Rebuild CI-gated queue windows**
+   - For CI-gated rulesets, feed the refined head windows and CI into the queue window builder to produce more accurate `[enter, exit)` windows across both force-push and non–force-push head changes.
 
 ### Coordination
-- Keep Syncer autonomous for rate budgeting; Analyzer writes requests (or directly enqueues tasks) and lets Syncer apply rate guards and continuation.
-- Requests should be idempotent/deduplicated (unique `(repo, sha, kind)`), with optional `not_before=resetAt` for polite rescheduling.
+- Keep Syncer autonomous for rate budgeting; Analyzer uses CI backfill tasks (`sync_ci_for_shas`) and revision rebuilds but does not manage rate limits directly.
+- Requests should remain idempotent and deduplicated per `(repo, sha, kind)`, with optional `not_before=resetAt` for polite rescheduling (as described in `docs/syncer_ingestion_plan.md`).
 
 ### Deliverables
-- Models + migrations for `PRRevision` (and optional rollups).
-- Services with clear docstrings and small, focused tests.
-- A lightweight admin or CLI to inspect revision windows and probe CI-at-time for a PR at T.
+- Refined `rebuild_pr_revisions` implementation with tests that cover:
+  - Force-push only PRs.
+  - PRs with head changes inferred from CI/commits without explicit `HEAD_REF_FORCE_PUSHED` events.
+- Rebuild commands/tasks:
+  - Use existing `rebuild_revisions` and `analyzer.process_pr` (or a dedicated Analyzer backfill task) to recompute `PRRevision` and `PRQueueWindow` for affected PRs.
+- Updated docs:
+  - `docs/design-decisions/012-prrevision-head-changes.md` describing the refined semantics and recompute strategy.
