@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Iterable, Optional, Set
+
+from django.db import models
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet
@@ -73,10 +76,25 @@ def rules_for_rule_set(obj: QueueRuleSet) -> QueueRules:
     )
 
 
-def load_rules_for_repo(repo: Repository) -> QueueRules:
-    """Load the latest QueueRuleSet for a repository, or return defaults."""
-    qs = QueueRuleSet.objects.filter(repository=repo).order_by("-version", "-id")
-    obj = qs.first()
+def load_rules_for_repo(repo: Repository, at: Optional[datetime] = None) -> QueueRules:
+    """Load the appropriate QueueRuleSet for a repository at time ``at``.
+
+    Behavior
+    - If ``at`` is provided, prefer the latest ruleset whose effective window
+      contains ``at`` (effective_from <= at < effective_to when set).
+    - If no such ruleset exists, fall back to the latest ruleset by version/id.
+    - If no rulesets exist at all, return default rules (open/not-draft only).
+    """
+    qs = QueueRuleSet.objects.filter(repository=repo)
+    obj = None
+    if at is not None:
+        qs_eff = qs.filter(
+            models.Q(effective_from__isnull=True) | models.Q(effective_from__lte=at),
+            models.Q(effective_to__isnull=True) | models.Q(effective_to__gt=at),
+        ).order_by("-version", "-id")
+        obj = qs_eff.first()
+    if obj is None:
+        obj = qs.order_by("-version", "-id").first()
     if obj is None:
         return QueueRules()
     return rules_for_rule_set(obj)

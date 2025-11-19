@@ -454,6 +454,18 @@ def sync_pr_task(  # type: ignore[no-redef]
         rl_final.get("remaining"),
         rl_final.get("resetAt"),
     )
+    # Kick Analyzer follow-up processing for this PR (best-effort).
+    try:
+        from analyzer.tasks import process_pr_task
+
+        # Look up the PR id once to pass to the Analyzer task.
+        pr_obj = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
+        if pr_obj is not None:
+            process_pr_task.delay(int(pr_obj.id))
+    except Exception:
+        # Analyzer is best-effort; do not fail the Syncer task if follow-up cannot be scheduled.
+        log.exception("sync_pr_task: failed to enqueue analyzer.process_pr for repo=%s/%s pr=%s", repo.owner, repo.name, number)
+
     return summary
 
 

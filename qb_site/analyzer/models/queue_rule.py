@@ -19,11 +19,21 @@ class QueueRuleSet(TimestampedModel):
         (CI integration is a later addition; for now this flag is expected to remain False).
     - Label names are compared case-insensitively; rules are stored as plain strings
       to avoid hard-coupling to the Syncer label catalog.
+    - Effective bounds:
+      - If ``effective_from`` is set, the ruleset is intended to apply only to PR
+        history at or after that timestamp.
+      - If ``effective_to`` is set, the ruleset is intended to apply only to PR
+        history strictly before that timestamp (i.e., [effective_from, effective_to)).
     """
 
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="queue_rule_sets")
     version = models.PositiveIntegerField(default=1)
     description = models.TextField(blank=True)
+
+    # Optional activation window for this ruleset; used to steer which ruleset is
+    # applied for a given PR/time when multiple versions exist.
+    effective_from = models.DateTimeField(null=True, blank=True)
+    effective_to = models.DateTimeField(null=True, blank=True)
 
     require_open = models.BooleanField(default=True)
     require_not_draft = models.BooleanField(default=True)

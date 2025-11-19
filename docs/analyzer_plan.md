@@ -33,7 +33,7 @@ This plan captures how the Analyzer app will compute "who was on the queue at ti
      - `required_label_names` (all must be present) and `forbidden_label_names` (none may be present).
      - `require_ci_success` and `required_ci_contexts` (CI gating to be wired via helpers).
    - Helpers:
-     - `load_rules_for_repo(repo)` → latest rules for a repository.
+     - `load_rules_for_repo(repo, at)` → selects the best matching ruleset for time `at` using `effective_from` / `effective_to`, with fallback to the latest version.
      - `rules_for_rule_set(rule_set)` → in‑memory rules for a specific `QueueRuleSet`.
 
 2) `label_state_builder.py` — **planned, deferred**
@@ -45,16 +45,18 @@ This plan captures how the Analyzer app will compute "who was on the queue at ti
    - Transform `CheckRun`/`StatusContext` snapshots into coarse `PRCIStatusEvent` transitions (pass/fail/running/missing), using repo config and ruleset CI requirements.
    - Expose: `ci_state_at(t)`, `ci_windows()`.
 
-4) `queue_window_builder.py` — **implemented (first version)**
+4) `queue_window_builder.py` — **implemented (first version, CI-aware)**
    - Implemented as `analyzer.services.queue_windows`:
-     - In‑memory helpers compute queue windows directly from `PullRequest` + `PRTimelineEvent` and `QueueRules`:
+     - In‑memory helpers compute queue windows directly from `PullRequest` + `PRTimelineEvent` + `PRRevision` + CI snapshots and `QueueRules`:
        - `queue_windows_for_pr(pr, as_of)` → `[enter, exit)` windows.
        - `total_queue_time_for_pr(pr, as_of)` → total seconds on queue.
        - `is_on_queue_at(pr, at)` → membership at instant `T`.
        - `who_was_on_queue_at(repo, at)` → PRs whose window contains `T` under the repo’s latest ruleset.
      - Persistence helper:
        - `rebuild_queue_windows_for_ruleset(pr, rule_set, as_of)` → writes `PRQueueWindow` rows keyed by `(pr, rule_set, from_ts)` with `cycle_index`.
-   - Current implementation gates on open/not‑draft + labels; CI gating will be layered in via CI helpers.
+   - CI gating is layered into:
+     - `is_on_queue_at(pr, T)` via `PRRevision` (head SHA at T) and CI snapshots for required contexts.
+     - CI‑gated queue windows (when `require_ci_success=True`) via a combined timeline of label/draft/open/closed events, revision boundaries, and CI event times.
 
 5) Query utilities — **partially implemented**
    - Instant membership:
@@ -91,23 +93,28 @@ Stage C: Compute windows and sets
   - Service/Task: `syncer.services.ci_by_sha_service.sync_ci_for_sha`, `syncer.tasks.sync_tasks.sync_ci_for_shas`.
   - Admin tool: "Enqueue CI by SHA" under PRs (with an optional strict association guard).
 
-- Queue rules and windows (Analyzer) are implemented:
+ - Queue rules and windows (Analyzer) are implemented:
   - Models:
     - `analyzer.QueueRuleSet` (per‑repo, versioned queue rules) with:
       - `require_open`, `require_not_draft`, `require_ci_success`.
       - `required_label_names`, `forbidden_label_names` (label gates).
-      - `required_ci_contexts` (CI contexts this ruleset requires; CI wiring is incremental).
+      - `required_ci_contexts` (CI contexts this ruleset requires).
+      - `effective_from`, `effective_to` to scope which PRs/time ranges a ruleset is intended to cover (e.g., legacy label-only vs CI-gated eras).
     - `analyzer.PRQueueWindow` (per‑PR, per‑ruleset queue windows):
-      - `pull_request`, `rule_set`, `from_ts`, `to_ts`, `cycle_index`.
-      - `cycle_index` groups consecutive on‑queue segments to support “number of review cycles before merge”.
+      - `pull_request`, `rule_set`, `from_ts`, `to_ts`, `cycle_index` (window index per `(pr, rule_set)`).
   - Services:
-    - `analyzer.services.queue_rules` to materialize `QueueRules` from `QueueRuleSet` or per‑repo defaults.
+    - `analyzer.services.queue_rules` to materialize `QueueRules` from `QueueRuleSet` (or defaults) at a given time.
     - `analyzer.services.queue_windows`:
-      - In‑memory queue windows and membership helpers (see above).
-      - `rebuild_queue_windows_for_ruleset` to persist windows to `PRQueueWindow` for a given `(PR, QueueRuleSet)`.
+      - In‑memory queue windows and membership helpers (see above), CI- and PRRevision-aware for CI-gated rulesets.
+      - `rebuild_queue_windows_for_ruleset` to persist windows to `PRQueueWindow` for a given `(PR, QueueRuleSet)`, gated on `timeline_backfill_done` and PRRevision presence for CI-gated rulesets.
   - Tests:
     - `qb_site/analyzer/tests/services/test_queue_windows.py`.
     - `qb_site/analyzer/tests/services/test_queue_window_model.py`.
+    - `qb_site/analyzer/tests/services/test_queue_windows_ci.py`.
+    - `qb_site/analyzer/tests/services/test_queue_windows_prrevision.py`.
+    - `qb_site/analyzer/tests/services/test_queue_window_ci_windows.py`.
+    - `qb_site/analyzer/tests/services/test_queue_window_gating.py`.
+    - `qb_site/analyzer/tests/services/test_queue_rules_effective_bounds.py`.
 
 ## Current Admin & Commands
 - Admin

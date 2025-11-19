@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html
 
-from analyzer.models import PRRevision
+from analyzer.models import PRRevision, QueueRuleSet, PRQueueWindow
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -49,3 +49,35 @@ class PRRevisionAdmin(ReadOnlyAdmin):
     date_hierarchy = "from_ts"
     raw_id_fields = ("pull_request",)
     readonly_fields = ("pull_request", "head_sha", "from_ts", "to_ts", "seq", "created_at", "updated_at")
+
+
+@admin.register(QueueRuleSet)
+class QueueRuleSetAdmin(admin.ModelAdmin):
+    list_display = (
+        "repository",
+        "version",
+        "require_open",
+        "require_not_draft",
+        "require_ci_success",
+        "effective_from",
+        "effective_to",
+    )
+    list_filter = ("repository", "require_ci_success")
+    search_fields = ("repository__owner", "repository__name", "version", "description")
+    raw_id_fields = ("repository",)
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(PRQueueWindow)
+class PRQueueWindowAdmin(ReadOnlyAdmin):
+    list_display = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index")
+    list_filter = ("rule_set",)
+    search_fields = (
+        "pull_request__number",
+        "rule_set__version",
+        "pull_request__repository__owner",
+        "pull_request__repository__name",
+    )
+    date_hierarchy = "from_ts"
+    raw_id_fields = ("pull_request", "rule_set")
+    readonly_fields = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
