@@ -165,7 +165,9 @@ To make CI-at-time reconstructions robust to more than just force-pushes, we pla
 ### Model (Analyzer)
 - `PRRevision` (already implemented):
   - Fields: `pr` (FK), `head_sha` (str), `from_ts` (datetime), `to_ts` (nullable datetime), `seq` (int).
-  - Currently built from timeline `HEAD_REF_FORCE_PUSHED` events (and optionally seeded from CI when no events exist).
+  - Built from timeline `HEAD_REF_FORCE_PUSHED` events plus CI-derived head changes:
+    - When force-push events exist, they define hard segment boundaries and baseline heads; within each segment, earliest CI timestamps per new head SHA introduce additional revision windows.
+    - When no force-push events exist, windows are inferred from CI snapshots grouped by `head_sha`, with a fallback to seeding from the most recent CI snapshot head if necessary.
 - Optional `CommitCIRollup` (if/when we want compact per-context records):
   - Unique by `(repo_id, sha, context_key)`; fields include `status`, `conclusion`, `createdAt/startedAt/completedAt` and `source`.
 
