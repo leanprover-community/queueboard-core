@@ -181,6 +181,7 @@ To make CI-at-time reconstructions robust to more than just force-pushes, we pla
    - Anchor on timeline force-push segments. For each segment, harvest commits by walking history from the segment head back to the segment start sentinel; add timeline before/after SHAs and already-seen CI heads. These candidates feed CI backfill even if never observed live.
 3) **Drive CI backfill per candidate head**
    - Enqueue `syncer.sync_ci_for_shas` for candidates lacking CI (earliest-first). CI arriving earlier than `built_through_ts` marks the PR dirty; later CI allows tail append.
+   - Prefer SHA-anchored commit history (Syncer-owned) for harvest to avoid relying on current PR branch shape after force-pushes.
 4) **Compute CI-aware queue state at time T**
    - Resolve head SHA via `PRRevision`; evaluate labels/open/draft; evaluate CI state for required contexts; apply `QueueRuleSet`.
 5) **Rebuild CI-gated queue windows**
@@ -189,11 +190,12 @@ To make CI-at-time reconstructions robust to more than just force-pushes, we pla
 ### Coordination
 - Keep Syncer autonomous for rate budgeting; Analyzer enqueues `sync_ci_for_shas` and runs a small per-PR orchestrator task (with an advisory lock) that:
   - Skips until timeline backfill is complete.
-  - Harvests segment commits when needed.
+  - Harvests segment commits when needed (delegated to Syncer commit history service/task).
   - Enqueues missing CI and exits when waiting on CI.
   - Runs rebuild (full vs append based on build-state) and reports whether queue windows need full or tail rebuild.
 - Any signal (timeline/CI) with timestamp < `built_through_ts` marks state dirty to force a full recompute on the next orchestrator pass.
 - Requests remain idempotent and deduplicated per `(repo, sha, kind)`, with optional `not_before=resetAt` for polite rescheduling (as described in `docs/syncer_ingestion_plan.md`).
+- For eventual coverage, plan a Syncer-owned `CommitHistoryHarvest` cursor keyed by `(pull_request, start_sha)` to resume history paging when per-run page limits are low; a periodic sweeper can re-enqueue harvest tasks with `has_more=True`.
 
 ### Deliverables
 - Refined `rebuild_pr_revisions` implementation with tests that cover:

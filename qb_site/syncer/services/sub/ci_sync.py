@@ -7,6 +7,7 @@ from dateutil import parser as dtparser
 from django.utils import timezone
 from django.conf import settings
 
+from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.check_run import CheckRun
 from syncer.models.pull_request import PullRequest
 from syncer.models.status_context import StatusContext
@@ -72,6 +73,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     updated = 0
     allow = _effective_allowlist_for_checkruns(pr)
     now = timezone.now()
+    earliest_ts = None
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -104,6 +106,17 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         CheckRun.objects.filter(pk=obj.pk).update(last_synced_at=now)
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
+
+        # Track earliest timestamp seen in this batch to flag potential revision dirtiness.
+        for ts in (values["gh_started_at"], values["gh_completed_at"]):
+            if ts is None:
+                continue
+            if earliest_ts is None or ts < earliest_ts:
+                earliest_ts = ts
+
+    if earliest_ts:
+        mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
+
     return CISyncResult(created=created, updated=updated, deleted=0)
 
 
@@ -120,6 +133,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     updated = 0
     allow = _effective_allowlist_for_status(pr)
     now = timezone.now()
+    earliest_ts = None
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -148,4 +162,12 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         StatusContext.objects.filter(pk=obj.pk).update(last_synced_at=now)
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
+
+        ts = values["gh_created_at"]
+        if ts is not None and (earliest_ts is None or ts < earliest_ts):
+            earliest_ts = ts
+
+    if earliest_ts:
+        mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
+
     return CISyncResult(created=created, updated=updated, deleted=0)

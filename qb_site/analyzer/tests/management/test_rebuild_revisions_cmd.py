@@ -6,7 +6,8 @@ from django.utils import timezone
 
 from core.models import Repository
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
-from analyzer.models import PRRevision
+from analyzer.models import PRRevision, PRRevisionBuildState
+from analyzer.services.revisions import PR_REVISION_BUILDER_VERSION
 
 
 class TestRebuildRevisionsCommand(TestCase):
@@ -88,3 +89,11 @@ class TestRebuildRevisionsCommand(TestCase):
         )
         call_command("rebuild_revisions", repo=f"{self.repo.owner}/{self.repo.name}", pr=[pr.number])
         self.assertEqual(PRRevision.objects.filter(pull_request=pr).count(), 0)
+
+    def test_command_updates_build_state(self) -> None:
+        pr = self._mk_backfilled_pr(12)
+        call_command("rebuild_revisions", repo=f"{self.repo.owner}/{self.repo.name}", pr=[pr.number])
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.builder_version, PR_REVISION_BUILDER_VERSION)
+        self.assertIsNone(state.dirty_from_ts)
+        self.assertIsNotNone(state.built_through_ts)

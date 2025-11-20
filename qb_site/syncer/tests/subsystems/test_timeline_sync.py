@@ -7,6 +7,7 @@ from core.models.repository import Repository
 from syncer.models import PullRequest, PRTimelineEvent
 from syncer.services.sub.timeline_sync import sync_timeline_events
 from syncer.tests.factories import make_repo, make_pr
+from analyzer.models import PRRevisionBuildState
 
 
 class TestTimelineSync(TestCase):
@@ -41,3 +42,23 @@ class TestTimelineSync(TestCase):
         self.assertEqual(ev.type, "HEAD_FORCE_PUSHED")
         self.assertEqual(ev.before_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         self.assertEqual(ev.after_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+    def test_marks_revision_dirty_for_earlier_event(self) -> None:
+        # Seed build state as if revisions were built through a later timestamp.
+        built_through = timezone.now()
+        state = PRRevisionBuildState.objects.create(
+            pull_request=self.pr,
+            built_through_ts=built_through,
+            dirty_from_ts=None,
+        )
+        earlier = (built_through - timezone.timedelta(hours=2)).replace(microsecond=0)
+        nodes = [
+            {
+                "__typename": "ReadyForReviewEvent",
+                "id": "E4",
+                "createdAt": earlier.isoformat(),
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        state.refresh_from_db()
+        self.assertEqual(state.dirty_from_ts, earlier)

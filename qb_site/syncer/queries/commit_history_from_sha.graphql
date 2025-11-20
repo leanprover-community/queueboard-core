@@ -1,0 +1,26 @@
+# Commit history starting from a specific commit SHA (walk back)
+# Variables:
+#   $owner: String!, $name: String!, $sha: GitObjectID!
+#   $first: Int!, $after: String
+#   $since: GitTimestamp (optional lower bound)
+
+query CommitHistoryFromSha($owner: String!, $name: String!, $sha: GitObjectID!, $first: Int!, $after: String, $since: GitTimestamp) {
+  rateLimit { cost remaining resetAt used }
+  repository(owner: $owner, name: $name) {
+    object(oid: $sha) {
+      __typename
+      ... on Commit {
+        history(first: $first, after: $after, since: $since) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            oid
+            committedDate
+          }
+        }
+      }
+    }
+  }
+}

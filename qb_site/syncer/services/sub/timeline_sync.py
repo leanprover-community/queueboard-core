@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable
 from dateutil import parser as dtparser
 from django.utils import timezone
 
+from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.pr_timeline_event import PRTimelineEvent, PRTimelineEventType
 from syncer.models.pull_request import PullRequest
 
@@ -44,6 +45,7 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
     """
     created = 0
     reset_commits_backfill = False
+    earliest_new_ts = None
     type_map = {
         "LabeledEvent": PRTimelineEventType.LABELED,
         "UnlabeledEvent": PRTimelineEventType.UNLABELED,
@@ -88,6 +90,8 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         )
         if was_created:
             created += 1
+            if earliest_new_ts is None or occurred_at < earliest_new_ts:
+                earliest_new_ts = occurred_at
             if ev_type == PRTimelineEventType.HEAD_FORCE_PUSHED:
                 reset_commits_backfill = True
 
@@ -96,5 +100,8 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         pr.commits_backfill_cursor = None
         pr.commits_earliest_synced_at = None
         pr.save(update_fields=["commits_backfill_done", "commits_backfill_cursor", "commits_earliest_synced_at"])
+
+    if earliest_new_ts:
+        mark_pr_revision_dirty_if_earlier(pr, earliest_new_ts)
 
     return TimelineSyncResult(created=created, updated=0, deleted=0)

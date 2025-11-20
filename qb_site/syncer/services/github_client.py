@@ -197,6 +197,29 @@ class GitHubClient:
         }
         return self.execute(query, variables)
 
+    def get_commit_history_from_sha(
+        self,
+        *,
+        owner: str,
+        name: str,
+        sha: str,
+        first: int = 50,
+        after: Optional[str] = None,
+        since: Optional[str] = None,
+        query_path: str = "qb_site/syncer/queries/commit_history_from_sha.graphql",
+    ) -> Dict[str, Any]:
+        """Fetch git commit history starting from `sha` (walk back)."""
+        query = self._read_file(query_path)
+        variables = {
+            "owner": owner,
+            "name": name,
+            "sha": sha,
+            "first": int(max(1, min(first, 100))),
+            "after": after,
+            "since": since,
+        }
+        return self.execute(query, variables)
+
     def get_changed_pr_numbers(
         self,
         *,

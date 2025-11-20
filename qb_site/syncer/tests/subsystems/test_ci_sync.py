@@ -7,6 +7,7 @@ from core.models.repository import Repository
 from syncer.models import PullRequest, CheckRun, StatusContext
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.tests.factories import make_repo, make_pr
+from analyzer.models import PRRevisionBuildState
 
 
 class TestCISync(TestCase):
@@ -73,3 +74,52 @@ class TestCISync(TestCase):
         sc.refresh_from_db()
         self.assertIsNotNone(sc.last_synced_at)
         self.assertGreaterEqual(sc.last_synced_at, before2)
+
+    def test_marks_revision_dirty_for_earlier_checkrun(self) -> None:
+        built_through = timezone.now()
+        PRRevisionBuildState.objects.create(
+            pull_request=self.pr,
+            built_through_ts=built_through,
+            dirty_from_ts=None,
+        )
+        completed = (built_through - timezone.timedelta(hours=3)).replace(microsecond=0)
+        started = completed - timezone.timedelta(minutes=10)
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "CR_LATE",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": started.isoformat(),
+                "completedAt": completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertEqual(state.dirty_from_ts, started)
+
+    def test_marks_revision_dirty_for_earlier_status(self) -> None:
+        built_through = timezone.now()
+        PRRevisionBuildState.objects.create(
+            pull_request=self.pr,
+            built_through_ts=built_through,
+            dirty_from_ts=None,
+        )
+        earlier = (built_through - timezone.timedelta(hours=1)).replace(microsecond=0)
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "SC_LATE",
+                "context": "bors",
+                "state": "SUCCESS",
+                "targetUrl": None,
+                "description": "",
+                "createdAt": earlier.isoformat(),
+            }
+        ]
+        sync_status_contexts(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertEqual(state.dirty_from_ts, earlier)

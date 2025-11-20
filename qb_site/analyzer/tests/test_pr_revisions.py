@@ -5,8 +5,13 @@ from django.utils import timezone
 
 from core.models import Repository
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType, CheckRun, StatusContext
-from analyzer.services.revisions import rebuild_pr_revisions, next_revision_backfill_shas
-from analyzer.models import PRRevision
+from analyzer.services.revisions import (
+    PR_REVISION_BUILDER_VERSION,
+    mark_pr_revision_dirty_if_earlier,
+    next_revision_backfill_shas,
+    rebuild_pr_revisions,
+)
+from analyzer.models import PRRevision, PRRevisionBuildState
 
 
 class TestPRRevisions(TestCase):
@@ -69,6 +74,203 @@ class TestPRRevisions(TestCase):
         self.assertEqual(revs[2].head_sha, "ccc333")
         self.assertEqual(revs[2].from_ts, t1)
         self.assertIsNone(revs[2].to_ts)
+
+    def test_build_state_updated_on_full_rebuild(self) -> None:
+        pr = self._mk_pr(9)
+        created = pr.gh_created_at
+        t_fp = created + timezone.timedelta(hours=3)
+        t_ci_end = created + timezone.timedelta(hours=4)
+
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t_fp,
+            before_sha="old",
+            after_sha="new",
+        )
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_state",
+            head_sha="new",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=t_ci_end - timezone.timedelta(minutes=5),
+            gh_completed_at=t_ci_end,
+        )
+
+        res = rebuild_pr_revisions(pr)
+        self.assertEqual(res.strategy, "full")
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.builder_version, PR_REVISION_BUILDER_VERSION)
+        # built_through_ts should reflect the latest signal (CI completion here).
+        self.assertEqual(state.built_through_ts, t_ci_end)
+        self.assertIsNone(state.dirty_from_ts)
+        self.assertIsNotNone(state.last_built_at)
+
+        tail = state.tail_revision
+        self.assertIsNotNone(tail)
+        self.assertEqual(state.tail_from_ts, tail.from_ts)
+        self.assertEqual(tail.head_sha, "new")
+
+    def test_rebuild_noop_when_state_clean_and_no_new_signals(self) -> None:
+        pr = self._mk_pr(12)
+        # Seed a clean state that claims to be built through t1.
+        t1 = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=t1,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+        res = rebuild_pr_revisions(pr, latest_signal_ts=t1)
+        self.assertEqual(res.strategy, "noop")
+        self.assertEqual(res.created, 0)
+        self.assertEqual(res.deleted, 0)
+
+    def test_rebuild_full_when_builder_version_mismatch(self) -> None:
+        pr = self._mk_pr(13)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=1)
+        # Seed an older builder_version.
+        state = PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=t1,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION - 1,
+        )
+        res = rebuild_pr_revisions(pr, latest_signal_ts=t1)
+        # No timelines/CI so no revisions, but strategy should reflect a full run and builder_version bumps.
+        self.assertEqual(res.strategy, "full")
+        state.refresh_from_db()
+        self.assertEqual(state.builder_version, PR_REVISION_BUILDER_VERSION)
+
+    def test_rebuild_noop_without_new_signals_autodetect(self) -> None:
+        pr = self._mk_pr(14)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=t1,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+        # No timeline/CI rows exist; latest_signal_ts auto-detect falls back to built_through_ts.
+        res = rebuild_pr_revisions(pr)
+        self.assertEqual(res.strategy, "noop")
+        self.assertEqual(res.created, 0)
+        self.assertEqual(res.deleted, 0)
+
+    def test_rebuild_append_strategy_when_clean_and_new_signal(self) -> None:
+        pr = self._mk_pr(15)
+        # Initial rebuild seeds state with one window
+        t_fp1 = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t_fp1,
+            before_sha="h0",
+            after_sha="h1",
+        )
+        first_res = rebuild_pr_revisions(pr)
+        self.assertEqual(first_res.strategy, "full")
+
+        # Add a new force-push after the built_through_ts mark with a new head.
+        t_fp2 = t_fp1 + timezone.timedelta(hours=2)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t_fp2,
+            before_sha="h1",
+            after_sha="h2",
+        )
+
+        # Clean state, existing revisions, new signal in the future -> append strategy.
+        res = rebuild_pr_revisions(pr, latest_signal_ts=t_fp2)
+        self.assertEqual(res.strategy, "append")
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 3)
+        self.assertEqual(revs[0].head_sha, "h0")
+        self.assertEqual(revs[1].head_sha, "h1")
+        self.assertEqual(revs[2].head_sha, "h2")
+
+    def test_append_preserves_prefix_and_rewrites_tail(self) -> None:
+        pr = self._mk_pr(16)
+        t0 = pr.gh_created_at + timezone.timedelta(hours=1)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=2)
+        # First build: two windows
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="h0",
+            after_sha="h1",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t1,
+            before_sha="h1",
+            after_sha="h2",
+        )
+        first = rebuild_pr_revisions(pr, latest_signal_ts=t1)
+        self.assertEqual(first.strategy, "full")
+        # Add one more force-push after built_through_ts; expect append and prefix retained.
+        t2 = t1 + timezone.timedelta(hours=1)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t2,
+            before_sha="h2",
+            after_sha="h3",
+        )
+        res = rebuild_pr_revisions(pr, latest_signal_ts=t2)
+        self.assertEqual(res.strategy, "append")
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 4)
+        self.assertEqual(revs[0].head_sha, "h0")
+        self.assertEqual(revs[1].head_sha, "h1")
+        self.assertEqual(revs[2].head_sha, "h2")
+        self.assertEqual(revs[3].head_sha, "h3")
+
+    def test_mark_dirty_if_signal_is_earlier(self) -> None:
+        pr = self._mk_pr(10)
+        before_ts = pr.gh_created_at - timezone.timedelta(hours=2)
+        after_ts = pr.gh_created_at + timezone.timedelta(hours=2)
+
+        # Seed a build state as if we had rebuilt through `after_ts`.
+        state = PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=after_ts,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+
+        # Signal older than built_through_ts should mark dirty.
+        updated = mark_pr_revision_dirty_if_earlier(pr, before_ts)
+        state.refresh_from_db()
+        self.assertTrue(updated)
+        self.assertEqual(state.dirty_from_ts, before_ts)
+
+        # A later signal should not change dirty_from_ts.
+        updated = mark_pr_revision_dirty_if_earlier(pr, after_ts + timezone.timedelta(minutes=5))
+        state.refresh_from_db()
+        self.assertFalse(updated)
+        self.assertEqual(state.dirty_from_ts, before_ts)
+
+    def test_mark_dirty_noop_without_built_through(self) -> None:
+        pr = self._mk_pr(11)
+        # No built_through_ts yet.
+        state = PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=None,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+        updated = mark_pr_revision_dirty_if_earlier(pr, pr.gh_created_at - timezone.timedelta(days=1))
+        state.refresh_from_db()
+        self.assertFalse(updated)
+        self.assertIsNone(state.dirty_from_ts)
 
     def test_seed_from_ci_when_no_force_push(self) -> None:
         pr = self._mk_pr(2)
@@ -146,6 +348,13 @@ class TestPRRevisions(TestCase):
         res = rebuild_pr_revisions(pr)
         self.assertEqual(res.created, 0)
         self.assertEqual(res.deleted, 0)
+        self.assertEqual(res.strategy, "skipped")
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        # State should not be advanced when skipping work.
+        self.assertIsNone(state.built_through_ts)
+        self.assertIsNone(state.dirty_from_ts)
+        self.assertIsNone(state.last_built_at)
+        self.assertIsNone(state.tail_revision)
 
     def test_force_push_and_ci_heads_combined(self) -> None:
         pr = self._mk_pr(6)
@@ -243,6 +452,28 @@ class TestPRRevisions(TestCase):
         )
         shas = next_revision_backfill_shas(pr, limit=2)
         self.assertEqual(shas, ["a1"])  # only 'a1' is missing CI
+
+    def test_next_backfill_targets_include_timeline_heads(self) -> None:
+        pr = self._mk_pr(17)
+        t0 = pr.gh_created_at + timezone.timedelta(hours=1)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=2)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="t_before",
+            after_sha="t_after",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t1,
+            before_sha="t_after",
+            after_sha="t_after2",
+        )
+        # No revisions or CI yet; expect oldest timeline heads first.
+        shas = next_revision_backfill_shas(pr, limit=3)
+        self.assertEqual(shas, ["t_before", "t_after", "t_after2"])
 
     def test_ci_heads_before_and_after_force_pushes(self) -> None:
         pr = self._mk_pr(7)
