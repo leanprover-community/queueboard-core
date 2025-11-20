@@ -170,27 +170,30 @@ To make CI-at-time reconstructions robust to more than just force-pushes, we pla
     - When no force-push events exist, windows are inferred from CI snapshots grouped by `head_sha`, with a fallback to seeding from the most recent CI snapshot head if necessary.
 - Optional `CommitCIRollup` (if/when we want compact per-context records):
   - Unique by `(repo_id, sha, context_key)`; fields include `status`, `conclusion`, `createdAt/startedAt/completedAt` and `source`.
+- `PRRevisionBuildState` (new, Analyzer-owned, OneToOne → `syncer.PullRequest`):
+  - Tracks `built_through_ts`, `dirty_from_ts`, `builder_version`, `last_built_at`, and optional tail pointers.
+  - Drives the choice between a full recompute (dirty/version mismatch/late data) and a tail append (strictly forward-only signals).
 
 ### Flow (target state)
-1) **Refine PRRevision windows**
-   - Extend `rebuild_pr_revisions(pr)` to incorporate additional head-change signals (beyond `HEAD_FORCE_PUSHED`), while preserving:
-     - Non-overlapping windows per PR.
-     - `[from_ts, to_ts)` semantics.
-   - Rebuild `PRRevision` for PRs whose timeline/CI has been fully backfilled.
-2) **Drive CI backfill per revision head**
-   - Use `next_revision_backfill_shas(pr)` and `plan_missing_ci_shas(...)` to identify head SHAs with missing CI.
-   - Enqueue `syncer.sync_ci_for_shas` for those SHAs under rate-aware limits until required contexts are populated (where possible).
-3) **Compute CI-aware queue state at time T**
-   - Resolve head SHA via the refined `PRRevision` window containing T.
-   - Evaluate labels/open/draft from timeline events as of T.
-   - Evaluate CI state as of T for that head SHA and the ruleset's `required_ci_contexts`.
-   - Apply `QueueRuleSet` to decide whether the PR is on the queue at T.
-4) **Rebuild CI-gated queue windows**
-   - For CI-gated rulesets, feed the refined head windows and CI into the queue window builder to produce more accurate `[enter, exit)` windows across both force-push and non–force-push head changes.
+1) **Refine PRRevision windows (stateful)**
+   - Keep non-overlapping `[from_ts, to_ts)` semantics. If state is missing, dirty, or version-mismatched, run a full recompute and renumber windows. If signals are strictly after `built_through_ts`, close the tail window and append atomically.
+2) **Discover candidate heads per segment**
+   - Anchor on timeline force-push segments. For each segment, harvest commits by walking history from the segment head back to the segment start sentinel; add timeline before/after SHAs and already-seen CI heads. These candidates feed CI backfill even if never observed live.
+3) **Drive CI backfill per candidate head**
+   - Enqueue `syncer.sync_ci_for_shas` for candidates lacking CI (earliest-first). CI arriving earlier than `built_through_ts` marks the PR dirty; later CI allows tail append.
+4) **Compute CI-aware queue state at time T**
+   - Resolve head SHA via `PRRevision`; evaluate labels/open/draft; evaluate CI state for required contexts; apply `QueueRuleSet`.
+5) **Rebuild CI-gated queue windows**
+   - Full revision rebuild → rebuild all queue windows for the PR/ruleset. Tail append → rebuild only tail windows, preserving cycle indices.
 
 ### Coordination
-- Keep Syncer autonomous for rate budgeting; Analyzer uses CI backfill tasks (`sync_ci_for_shas`) and revision rebuilds but does not manage rate limits directly.
-- Requests should remain idempotent and deduplicated per `(repo, sha, kind)`, with optional `not_before=resetAt` for polite rescheduling (as described in `docs/syncer_ingestion_plan.md`).
+- Keep Syncer autonomous for rate budgeting; Analyzer enqueues `sync_ci_for_shas` and runs a small per-PR orchestrator task (with an advisory lock) that:
+  - Skips until timeline backfill is complete.
+  - Harvests segment commits when needed.
+  - Enqueues missing CI and exits when waiting on CI.
+  - Runs rebuild (full vs append based on build-state) and reports whether queue windows need full or tail rebuild.
+- Any signal (timeline/CI) with timestamp < `built_through_ts` marks state dirty to force a full recompute on the next orchestrator pass.
+- Requests remain idempotent and deduplicated per `(repo, sha, kind)`, with optional `not_before=resetAt` for polite rescheduling (as described in `docs/syncer_ingestion_plan.md`).
 
 ### Deliverables
 - Refined `rebuild_pr_revisions` implementation with tests that cover:
@@ -200,3 +203,4 @@ To make CI-at-time reconstructions robust to more than just force-pushes, we pla
   - Use existing `rebuild_revisions` and `analyzer.process_pr` (or a dedicated Analyzer backfill task) to recompute `PRRevision` and `PRQueueWindow` for affected PRs.
 - Updated docs:
   - `docs/design-decisions/012-prrevision-head-changes.md` describing the refined semantics and recompute strategy.
+  - `docs/design-decisions/013-prrevision-incremental-build-state.md` describing the incremental build-state, commit harvest, and orchestrator plan.
