@@ -11,9 +11,8 @@ from django.utils import timezone
 from core.models import Repository
 from syncer.models import PullRequest
 from analyzer.models import QueueRuleSet
-from analyzer.services.revisions import rebuild_pr_revisions
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
-from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
+from analyzer.tasks.process_pr import process_pr
 
 
 log = logging.getLogger(__name__)
@@ -47,17 +46,29 @@ def process_pr_task(pr_id: int) -> Dict[str, Any]:
         "steps": {},
     }
 
-    # 1) Rebuild PRRevision windows when timeline history is fully backfilled.
     steps: Dict[str, Any] = {}
+    # 1) Run the orchestrator (revisions + queue windows) when timeline is backfilled.
     if getattr(pr, "timeline_backfill_done", False):
         try:
-            res = rebuild_pr_revisions(pr)
-            steps["revisions"] = {"created": int(res.created), "deleted": int(res.deleted)}
+            gh_client = GitHubClient()
+            proc_res = process_pr(pr, client=gh_client)
+            steps["revisions"] = {
+                "created": int(proc_res.get("created", 0)),
+                "deleted": int(proc_res.get("deleted", 0)),
+                "strategy": proc_res.get("revisions"),
+            }
+            steps["queue_windows"] = proc_res.get("queue_windows", {})
+            steps["harvest"] = proc_res.get("harvest", {})
+            steps["ci_backfill"] = proc_res.get("ci_backfill", [])
         except Exception as exc:  # pragma: no cover - defensive
-            log.exception("analyzer.process_pr: rebuild_pr_revisions failed for PR id=%s", pr.id)
+            log.exception("analyzer.process_pr: orchestrator failed for PR id=%s", pr.id)
             steps["revisions"] = {"error": str(exc)}
+            steps["queue_windows"] = {"error": str(exc)}
+            steps["harvest"] = {"error": str(exc)}
+            steps["ci_backfill"] = {"error": str(exc)}
     else:
         steps["revisions"] = {"skipped": True, "reason": "timeline_not_backfilled"}
+        steps["queue_windows"] = {"skipped": True, "reason": "timeline_not_backfilled"}
 
     # 2) Plan CI-by-SHA backfill for missing revision heads (small per-PR budget).
     try:
@@ -81,33 +92,6 @@ def process_pr_task(pr_id: int) -> Dict[str, Any]:
         log.exception("analyzer.process_pr: CI backfill planning failed for PR id=%s", pr.id)
         steps["ci_backfill"] = {"error": str(exc)}
 
-    # 3) Rebuild queue windows for all rulesets on this repository.
-    qsteps: Dict[int, Dict[str, Any]] = {}
-    for ruleset in QueueRuleSet.objects.filter(repository=repo):
-        # Skip rulesets that are not intended to apply to this PR's creation
-        # time, when effective bounds are configured.
-        created_at = pr.gh_created_at
-        if ruleset.effective_from and created_at < ruleset.effective_from:
-            continue
-        if ruleset.effective_to and created_at >= ruleset.effective_to:
-            continue
-        try:
-            res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=ruleset, as_of=now)
-            qsteps[int(ruleset.id)] = {
-                "created": int(res.created),
-                "updated": int(res.updated),
-                "deleted": int(res.deleted),
-                "require_ci_success": bool(ruleset.require_ci_success),
-            }
-        except Exception as exc:  # pragma: no cover - defensive
-            log.exception(
-                "analyzer.process_pr: rebuild_queue_windows_for_ruleset failed for PR id=%s ruleset_id=%s",
-                pr.id,
-                ruleset.id,
-            )
-            qsteps[int(ruleset.id)] = {"error": str(exc), "require_ci_success": bool(ruleset.require_ci_success)}
-
-    steps["queue_windows"] = qsteps
     summary["steps"] = steps
     return summary
 

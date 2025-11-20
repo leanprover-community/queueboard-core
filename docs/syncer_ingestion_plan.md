@@ -205,8 +205,13 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - Repository “Sync tools” page: sync specific PR numbers or discover+sync since cutoff (real or dry‑run), with simple result table.
 
 - Tasks/results
-  - Celery task: `syncer.sync_pr` (sync_pr_task) — preflight + PR ingest with rateLimit logging; returns a summary dict.
-  - `django-celery-results` enabled (when `CELERY_RESULT_BACKEND=django-db`) shows task status/name/result in admin.
+- Celery task: `syncer.sync_pr` (sync_pr_task) — preflight + PR ingest with rateLimit logging; returns a summary dict.
+- `django-celery-results` enabled (when `CELERY_RESULT_BACKEND=django-db`) shows task status/name/result in admin.
+- Commit history harvest (planned):
+  - SHA-anchored GraphQL query (`commit_history_from_sha`) to walk commit history from a given head backwards; avoids reliance on current PR ancestry after force-pushes.
+  - Service helper to page history (`first/after/since`) with caps on pages/size.
+  - Future cursor table `CommitHistoryHarvest` (candidate fields: pull_request FK, start_sha, cursor, has_more, last_harvested_at) to resume paging across runs and low page budgets; periodic sweeper can re-enqueue rows with `has_more=True`.
+  - Analyzer orchestrator will call the Syncer harvest task/service for force-push before/after SHAs and use returned SHAs to enqueue CI-by-SHA for heads missing CI.
 
 Notes
 - Snapshots only: `statusCheckRollup` returns the latest state per context on each commit. Timeline and CI commit windows are capped by `$timelineK` and `$commitsM`.
