@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html
 
-from analyzer.models import PRRevision, QueueRuleSet, PRQueueWindow
+from analyzer.models import PRRevision, PRRevisionBuildState, QueueRuleSet, PRQueueWindow
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -49,6 +49,52 @@ class PRRevisionAdmin(ReadOnlyAdmin):
     date_hierarchy = "from_ts"
     raw_id_fields = ("pull_request",)
     readonly_fields = ("pull_request", "head_sha", "from_ts", "to_ts", "seq", "created_at", "updated_at")
+
+
+@admin.register(PRRevisionBuildState)
+class PRRevisionBuildStateAdmin(ReadOnlyAdmin):
+    def pr_link(self, obj: PRRevisionBuildState) -> str:  # pragma: no cover - simple formatting
+        pr = obj.pull_request
+        url = reverse("admin:syncer_pullrequest_change", args=[pr.pk])
+        return format_html("<a href='{}'>{}</a>", url, pr)
+
+    pr_link.short_description = "PR"  # type: ignore[attr-defined]
+    pr_link.admin_order_field = "pull_request"  # type: ignore[attr-defined]
+
+    def tail_link(self, obj: PRRevisionBuildState) -> str:  # pragma: no cover - simple formatting
+        tail = obj.tail_revision
+        if tail is None:
+            return "-"
+        url = reverse("admin:analyzer_prrevision_change", args=[tail.pk])
+        return format_html("<a href='{}'>{}</a>", url, tail)
+
+    tail_link.short_description = "tail_revision"  # type: ignore[attr-defined]
+    tail_link.admin_order_field = "tail_revision"  # type: ignore[attr-defined]
+
+    list_display = (
+        "pr_link",
+        "builder_version",
+        "built_through_ts",
+        "dirty_from_ts",
+        "tail_link",
+        "tail_from_ts",
+        "last_built_at",
+        "updated_at",
+    )
+    list_filter = ("builder_version",)
+    search_fields = ("pull_request__number",)
+    raw_id_fields = ("pull_request", "tail_revision")
+    readonly_fields = (
+        "pull_request",
+        "builder_version",
+        "built_through_ts",
+        "dirty_from_ts",
+        "tail_revision",
+        "tail_from_ts",
+        "last_built_at",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(QueueRuleSet)
