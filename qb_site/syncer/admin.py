@@ -15,6 +15,7 @@ from .models import (
     StatusContext,
     SyncerMetricsSnapshot,
     RepoBackfillCursor,
+    CommitHistoryHarvest,
 )
 from analyzer.models import PRRevision
 from analyzer.services.revisions import rebuild_pr_revisions
@@ -718,3 +719,36 @@ class RepoBackfillCursorAdmin(ReadOnlyAdmin):
         return cur[:16] + "…" if len(cur) > 16 else cur
 
     created_cursor_short.short_description = "created_cursor"  # type: ignore[attr-defined]
+
+
+@admin.register(CommitHistoryHarvest)
+class CommitHistoryHarvestAdmin(ReadOnlyAdmin):
+    list_display = (
+        "pull_request",
+        "start_sha",
+        "has_more",
+        "cursor_short",
+        "cutoff_ts",
+        "last_harvested_at",
+        "attempts",
+        "updated_at",
+    )
+    search_fields = ("pull_request__number", "start_sha")
+    raw_id_fields = ("pull_request",)
+    readonly_fields = (
+        "pull_request",
+        "start_sha",
+        "cursor",
+        "cutoff_ts",
+        "has_more",
+        "last_harvested_at",
+        "attempts",
+        "created_at",
+        "updated_at",
+    )
+
+    def cursor_short(self, obj: CommitHistoryHarvest) -> str:  # pragma: no cover - simple formatting
+        cur = obj.cursor or ""
+        return cur[:16] + "…" if len(cur) > 16 else cur
+
+    cursor_short.short_description = "cursor"  # type: ignore[attr-defined]

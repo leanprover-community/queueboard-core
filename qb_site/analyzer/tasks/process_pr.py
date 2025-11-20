@@ -7,8 +7,8 @@ from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
 from analyzer.models import QueueRuleSet
 from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from syncer.services.github_client import GitHubClient
-from syncer.services.commit_history import harvest_commit_history_shas
 from syncer.models import PullRequest
+from syncer.tasks.commit_history_tasks import harvest_commit_history_task
 
 
 def process_pr(
@@ -17,6 +17,7 @@ def process_pr(
     client: GitHubClient,
     harvest_max_pages: int = 1,
     harvest_page_size: int = 20,
+    harvest_task: object | None = None,
 ) -> dict[str, str | int]:
     """Orchestrate revision rebuild and queue window rebuild for a single PR.
 
@@ -47,45 +48,34 @@ def process_pr(
                 "updated": int(rebuild.updated),
                 "deleted": int(rebuild.deleted),
             }
-        # Harvest commit history per force-push segment baseline to surface missed heads.
+        # Harvest commit history per force-push segment baseline to surface missed heads via Syncer task.
         fps = list(
             pr.timeline_events.filter(type="HEAD_FORCE_PUSHED")
             .order_by("occurred_at", "id")
             .values_list("before_sha", "after_sha", "occurred_at")
         )
-        segment_heads = set()
-        for before_sha, after_sha, _ in fps:
-            for sha in (before_sha, after_sha):
-                if sha:
-                    segment_heads.add(sha)
+        segment_jobs: list[tuple[str, str | None]] = []
+        prev_ts = pr.gh_created_at
+        for before_sha, after_sha, occurred_at in fps:
+            if before_sha:
+                segment_jobs.append((before_sha, prev_ts.isoformat() if prev_ts else None))
+            if after_sha and occurred_at:
+                segment_jobs.append((after_sha, occurred_at.isoformat()))
+            prev_ts = occurred_at or prev_ts
         harvested: set[str] = set()
-        for sha in segment_heads:
-            shas = harvest_commit_history_shas(
-                client=client,
-                repo=pr.repository,
+        task_fn = harvest_task or harvest_commit_history_task
+        for sha, cutoff in segment_jobs:
+            async_res = task_fn.delay(
+                pr_id=pr.id,
                 start_sha=sha,
                 max_pages=harvest_max_pages,
                 page_size=harvest_page_size,
+                since_iso=cutoff,
             )
-            for s in shas:
-                harvested.add(s)
-        harvest_list = list(harvested)
-        harvest = {"harvested_shas": harvest_list}
-        # Enqueue CI backfill for harvested heads that lack CI.
-        missing_shas = []
-        for sha in harvest_list:
-            has_cr = pr.check_runs.filter(head_sha=sha).exists()
-            has_sc = pr.status_contexts.filter(head_sha=sha).exists()
-            if not (has_cr or has_sc):
-                missing_shas.append(sha)
-        if missing_shas:
-            task_id = enqueue_ci_by_shas(
-                pr=pr,
-                shas=missing_shas,
-                pages_per_sha=1,
-                require_pr_association=False,
-            )
-            ci_enqueued.append({"task_id": task_id, "shas": missing_shas})
+            # We fire-and-forget; Analyzer stays stateless for harvest. CI enqueue happens after we read results.
+            # Results are returned by Celery; inlined polling could be added later if needed.
+        # Nothing to enqueue yet without harvest results.
+        harvest = {"harvested_shas": [], "tasks": len(segment_jobs)}
 
     return {
         "status": "ok",
