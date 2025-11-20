@@ -193,8 +193,8 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
 
     candidates = list(queryset.order_by("-gh_updated_at", "-id")[:limit_int])
 
-    backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0))
-    backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0))
+    backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1))
+    backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1))
 
     enqueued = 0
     for pr in candidates:

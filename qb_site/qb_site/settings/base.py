@@ -154,9 +154,9 @@ SYNCER_COMMITS_M_DEFAULT = int(os.getenv("SYNCER_COMMITS_M_DEFAULT", 15))
 SYNCER_ACTIVE_REPOS_PERIOD_SECONDS = int(os.getenv("SYNCER_ACTIVE_REPOS_PERIOD_SECONDS", 300))
 SYNCER_REPO_ENQUEUE_BATCH_MAX = int(os.getenv("SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))
 SYNCER_EST_COST_PER_PR = int(os.getenv("SYNCER_EST_COST_PER_PR", 150))
-SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES", 0))
+SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES", 1))
 # Commit backfill per up-to-date run (pages of the commits connection to walk backward)
-SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 0))
+SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 1))
 SYNCER_CI_BY_SHA_PAGES = int(os.getenv("SYNCER_CI_BY_SHA_PAGES", 1))
 
 # History backfill defaults (createdAt-based)
@@ -176,6 +176,12 @@ SYNCER_PENDING_CI_MAX_AGE_HOURS = int(os.getenv("SYNCER_PENDING_CI_MAX_AGE_HOURS
 SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS = int(os.getenv("SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS", 3600))
 SYNCER_PENDING_CI_REFRESH_MAX_PRS = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_PRS", 5))
 SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR", 3))
+
+# Commit-history harvest sweep defaults
+SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS", 3600))
+SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS", 25))
+SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES", 1))
+SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE", 20))
 
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
@@ -213,6 +219,15 @@ CELERY_BEAT_SCHEDULE = {
             "max_prs_per_repo": SYNCER_PENDING_CI_REFRESH_MAX_PRS,
             "max_shas_per_pr": SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR,
             "max_pending_hours": SYNCER_PENDING_CI_MAX_AGE_HOURS,
+        },
+    },
+    "harvest_commit_history": {
+        "task": "syncer.harvest_commit_history_sweep",
+        "schedule": SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS,
+        "kwargs": {
+            "max_jobs": SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS,
+            "max_pages": SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES,
+            "page_size": SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE,
         },
     },
 }

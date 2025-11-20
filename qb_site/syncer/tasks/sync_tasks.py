@@ -584,8 +584,8 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                     timelineK=tk,
                     commitsM=cm,
                     dry_run=dry_run,
-                    backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
-                    backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+                    backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+                    backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
                 )
                 enqueued += 1
         log.info(
