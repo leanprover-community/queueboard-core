@@ -299,8 +299,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
         async_result = sync_pr_task.delay(
             pr.repository_id,
             pr.number,
-            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
-            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
         )
         self.message_user(request, f"Enqueued sync for PR #{pr.number}: task_id={async_result.id}")
         return TemplateResponse(
@@ -331,8 +331,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
             pr.repository_id,
             pr.number,
             dry_run=True,
-            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
-            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
         )
         self.message_user(request, f"Enqueued DRY-RUN sync for PR #{pr.number}: task_id={async_result.id}")
         return TemplateResponse(
@@ -460,8 +460,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
             async_result = sync_pr_task.delay(
                 pr.repository_id,
                 pr.number,
-                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
-                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
             )
             enqueued.append((pr, async_result.id))
 
@@ -486,8 +486,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 pr.repository_id,
                 pr.number,
                 dry_run=True,
-                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
-                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
             )
             enqueued.append((pr, async_result.id))
 

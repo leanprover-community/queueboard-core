@@ -129,8 +129,8 @@ class RepositoryAdmin(admin.ModelAdmin):
                                 timelineK=timelineK,
                                 commitsM=commitsM,
                                 dry_run=dry_run,
-                                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 0)),
-                                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 0)),
+                                backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+                                backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
                             )
                     enqueued.append((n, res.id))
                 else:
