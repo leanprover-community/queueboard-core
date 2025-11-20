@@ -210,8 +210,9 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - Commit history harvest (planned):
   - SHA-anchored GraphQL query (`commit_history_from_sha`) to walk commit history from a given head backwards; avoids reliance on current PR ancestry after force-pushes.
   - Service helper to page history (`first/after/since`) with caps on pages/size.
-  - Future cursor table `CommitHistoryHarvest` (candidate fields: pull_request FK, start_sha, cursor, has_more, last_harvested_at) to resume paging across runs and low page budgets; periodic sweeper can re-enqueue rows with `has_more=True`.
-  - Analyzer orchestrator will call the Syncer harvest task/service for force-push before/after SHAs and use returned SHAs to enqueue CI-by-SHA for heads missing CI.
+  - Cursor table `CommitHistoryHarvest` (pull_request FK, start_sha, cursor, has_more, cutoff_ts, last_harvested_at) resumes paging across runs and low page budgets; periodic sweep task re-enqueues rows with `has_more=True`.
+  - Harvest task enqueues `sync_ci_for_shas_task` for harvested heads missing CI.
+  - Analyzer orchestrator calls the harvest task for force-push before/after SHAs; follow-up passes of `process_pr` should occur after CI lands to rebuild revisions/windows.
 
 Notes
 - Snapshots only: `statusCheckRollup` returns the latest state per context on each commit. Timeline and CI commit windows are capped by `$timelineK` and `$commitsM`.

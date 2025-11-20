@@ -88,7 +88,7 @@ class TestProcessPRTask(TestCase):
         # Queue windows should be built for the ruleset
         self.assertGreaterEqual(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).count(), 1)
 
-    def test_enqueues_ci_for_harvested_missing_heads(self) -> None:
+    def test_harvest_tasks_include_cutoffs_and_missing_ci(self) -> None:
         pr = self._mk_pr(3)
         t_fp = pr.gh_created_at + timezone.timedelta(hours=1)
         PRTimelineEvent.objects.create(
@@ -110,25 +110,24 @@ class TestProcessPRTask(TestCase):
             external_id=None,
         )
 
-        pages = {
-            "page1": {
-                "data": {
-                    "repository": {
-                        "object": {
-                            "__typename": "Commit",
-                            "history": {
-                                "pageInfo": {"hasNextPage": False, "endCursor": None},
-                                "nodes": [{"oid": "h1"}, {"oid": "h2"}],
-                            },
-                        }
-                    }
-                }
-            }
-        }
-        client = self._StubClient(pages=pages)
+        class _StubTask:
+            def __init__(self):
+                self.calls: list[dict] = []
+
+            def delay(self, **kwargs):
+                self.calls.append(kwargs)
+                # Simulate harvested SHAs in result; real task returns via Celery result.
+                return type("Res", (), {"id": "task123"})
+
+        stub_task = _StubTask()
         with patch("analyzer.tasks.process_pr.enqueue_ci_by_shas", return_value="task123") as mock_enqueue:
-            res = process_pr(pr, client=client)
+            res = process_pr(pr, client=self._StubClient(), harvest_task=stub_task)
         self.assertEqual(res["status"], "ok")
-        # Only h2 should be enqueued because h1 already has CI.
-        self.assertEqual(res.get("ci_backfill"), [{"task_id": "task123", "shas": ["h2"]}])
-        self.assertEqual(res.get("harvest", {}).get("harvested_shas"), ["h1", "h2"])
+        # Two tasks: before_sha with cutoff = created_at, after_sha with cutoff = occurred_at.
+        self.assertEqual(len(stub_task.calls), 2)
+        self.assertEqual(stub_task.calls[0]["start_sha"], "h1")
+        self.assertEqual(stub_task.calls[0]["since_iso"], pr.gh_created_at.isoformat())
+        self.assertEqual(stub_task.calls[1]["start_sha"], "h2")
+        self.assertEqual(stub_task.calls[1]["since_iso"], t_fp.isoformat())
+        # No CI enqueued yet because we don't have harvest results in-process.
+        self.assertEqual(res.get("ci_backfill"), [])

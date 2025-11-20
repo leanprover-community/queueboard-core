@@ -32,7 +32,7 @@
 - Use per-PR advisory locks for the orchestrator to prevent overlap. Timeline not backfilled → defer rather than churn.
 - Queue windows: full revision rebuild → full queue window rebuild for the PR/ruleset; tail append → rebuild only the tail windows.
 - Keep `seq` derived; identity remains `(pull_request, from_ts)`. If mid-history changes are needed, rely on dirty/full recompute rather than trying to insert in-place.
-- Commit history harvest should be owned by Syncer with a resumable cursor (e.g., `(pull_request, start_sha, cursor, has_more)`), so low page limits still converge via repeated tasks/sweeps without Analyzer owning raw fetches.
+- Commit history harvest is owned by Syncer with a resumable cursor (e.g., `(pull_request, start_sha, cursor, has_more, cutoff_ts)`); low page limits converge via repeated harvest tasks/sweeps without Analyzer owning raw fetches. Syncer harvest tasks also enqueue CI for harvested heads missing CI.
 
 ## Alternatives
 - Store build-state on `syncer.PullRequest`; rejected to keep Analyzer metadata out of the raw ingest schema.
