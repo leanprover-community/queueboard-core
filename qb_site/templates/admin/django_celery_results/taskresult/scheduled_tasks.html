@@ -1,0 +1,46 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+<div id="content" class="app-django_celery_results model-taskresult change-list">
+  <h1>{% trans "Scheduled Celery tasks" %}</h1>
+  <p>{% trans "These entries come from CELERY_BEAT_SCHEDULE. Use Run now to enqueue once; schedule changes still require code or env updates." %}</p>
+
+  <table id="result_list" class="listing">
+    <thead>
+      <tr>
+        <th scope="col">{% trans "Name" %}</th>
+        <th scope="col">{% trans "Task" %}</th>
+        <th scope="col">{% trans "Schedule" %}</th>
+        <th scope="col">{% trans "Args" %}</th>
+        <th scope="col">{% trans "Kwargs" %}</th>
+        <th scope="col">{% trans "Actions" %}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr class="{% cycle 'row1' 'row2' %}">
+        <th scope="row">{{ entry.key }}</th>
+        <td><code>{{ entry.task }}</code></td>
+        <td>{{ entry.schedule }}</td>
+        <td><code>{{ entry.args|default:"[]" }}</code></td>
+        <td><code>{{ entry.kwargs|default:"{}" }}</code></td>
+        <td>
+          <form method="post" style="display:inline;">
+            {% csrf_token %}
+            <input type="hidden" name="task_key" value="{{ entry.key }}" />
+            <button type="submit" class="button">{% trans "Run now" %}</button>
+          </form>
+        </td>
+      </tr>
+      {% empty %}
+      <tr class="row1">
+        <td colspan="6">{% trans "No scheduled tasks configured." %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p><a href="{{ taskresult_changelist_url }}">{% trans "Back to Task results" %}</a></p>
+</div>
+{% endblock %}
