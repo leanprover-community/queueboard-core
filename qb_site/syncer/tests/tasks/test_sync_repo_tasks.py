@@ -15,9 +15,10 @@ class TestSyncRepoTasks(TestCase):
         self.repo = make_repo()
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
-    def test_sync_repo_since_enqueues(self, MockClient, mock_sync_pr, mock_lock) -> None:
+    def test_sync_repo_since_enqueues(self, MockClient, mock_sync_pr, mock_enqueue, mock_lock) -> None:
         # Acquire lock
         mock_lock.return_value.__enter__.return_value = True
         gh = MockClient.return_value
@@ -28,8 +29,8 @@ class TestSyncRepoTasks(TestCase):
         self.assertFalse(res.get("skipped"))
         self.assertEqual(res.get("discovered"), 3)
         self.assertEqual(res.get("enqueued"), 3)
-        # Ensure per-PR tasks were enqueued
-        self.assertEqual(mock_sync_pr.delay.call_count, 3)
+        # Ensure per-PR tasks were enqueued with parent headers
+        self.assertEqual(mock_enqueue.call_count, 3)
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
@@ -54,20 +55,19 @@ class TestSyncRepoTasks(TestCase):
         mock_repo_task.delay.assert_called_once_with(self.repo.id)
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     @mock.patch("syncer.tasks.sync_tasks.debounce_repo_schedule", return_value=True)
-    def test_sync_repo_since_low_budget_schedules_continuation(self, mock_debounce, MockClient, mock_sync_pr, mock_lock) -> None:
+    def test_sync_repo_since_low_budget_schedules_continuation(
+        self, mock_debounce, MockClient, mock_sync_pr, mock_enqueue, mock_lock
+    ) -> None:
         mock_lock.return_value.__enter__.return_value = True
         gh = MockClient.return_value
         gh.get_changed_pr_numbers.return_value = [10, 11, 12]
         gh.get_last_rate_limit.return_value = {"remaining": 10, "resetAt": "2030-01-01T00:00:00Z"}
 
-        # Spy on apply_async of the Celery task wrapper
-        with mock.patch.object(sync_repo_since_task, "apply_async") as mock_apply_async:
-            res = sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
-            self.assertTrue(res.get("low_budget"))
-            # No PR tasks enqueued under low budget
-            mock_sync_pr.delay.assert_not_called()
-            # Continuation scheduled once
-            mock_apply_async.assert_called_once()
+        res = sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
+        self.assertTrue(res.get("low_budget"))
+        # No PR tasks enqueued under low budget
+        mock_enqueue.assert_called_once()

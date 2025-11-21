@@ -17,6 +17,7 @@ from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.models import CheckRun, StatusContext
+from core.celery_signals import enqueue_with_parent
 
 
 log = logging.getLogger(__name__)
@@ -82,19 +83,18 @@ def sync_pr_task(  # type: ignore[no-redef]
                 eta = None
         if eta is not None:
             try:
-                sync_pr_task.apply_async(
-                    args=(repo_id, int(number)),
-                    kwargs={
-                        "timelineK": timelineK,
-                        "commitsM": commitsM,
-                        "max_timeline_pages": max_timeline_pages,
-                        "max_commit_pages": max_commit_pages,
-                        "dry_run": dry_run,
-                        "timeline_since_iso": timeline_since_iso,
-                        "backfill_commit_pages": backfill_commit_pages,
-                    },
-                    eta=eta,
+                sig = sync_pr_task.s(
+                    repo_id,
+                    int(number),
+                    timelineK=timelineK,
+                    commitsM=commitsM,
+                    max_timeline_pages=max_timeline_pages,
+                    max_commit_pages=max_commit_pages,
+                    dry_run=dry_run,
+                    timeline_since_iso=timeline_since_iso,
+                    backfill_commit_pages=backfill_commit_pages,
                 )
+                enqueue_with_parent(sig, self.request, eta=eta)
             except Exception:
                 pass
         rl = client.get_last_rate_limit() or {}
@@ -461,7 +461,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         # Look up the PR id once to pass to the Analyzer task.
         pr_obj = PullRequest.objects.filter(repository=repo, number=int(number)).only("id").first()
         if pr_obj is not None:
-            process_pr_task.delay(int(pr_obj.id))
+            enqueue_with_parent(process_pr_task.s(int(pr_obj.id)), self.request)
     except Exception:
         # Analyzer is best-effort; do not fail the Syncer task if follow-up cannot be scheduled.
         log.exception("sync_pr_task: failed to enqueue analyzer.process_pr for repo=%s/%s pr=%s", repo.owner, repo.name, number)
@@ -548,18 +548,16 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             if eta is not None and debounce_repo_schedule(repo.id, reset_at):
                 # schedule a continuation with same parameters
                 try:
-                    sync_repo_since_task.apply_async(
-                        kwargs={
-                            "repo_id": repo.id,
-                            "since_iso": cutoff_iso,
-                            "limit": lim,
-                            "states": st,
-                            "timelineK": tk,
-                            "commitsM": cm,
-                            "dry_run": dry_run,
-                        },
-                        eta=eta,
+                    sig = sync_repo_since_task.s(
+                        repo.id,
+                        since_iso=cutoff_iso,
+                        limit=lim,
+                        states=st,
+                        timelineK=tk,
+                        commitsM=cm,
+                        dry_run=dry_run,
                     )
+                    enqueue_with_parent(sig, self.request, eta=eta)
                 except Exception:
                     pass
         else:
@@ -578,14 +576,17 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 to_enqueue = min(len(numbers), batch_max)
 
             for num in numbers[:to_enqueue]:
-                sync_pr_task.delay(
-                    repo.id,
-                    int(num),
-                    timelineK=tk,
-                    commitsM=cm,
-                    dry_run=dry_run,
-                    backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
-                    backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
+                enqueue_with_parent(
+                    sync_pr_task.s(
+                        repo.id,
+                        int(num),
+                        timelineK=tk,
+                        commitsM=cm,
+                        dry_run=dry_run,
+                        backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+                        backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
+                    ),
+                    self.request,
                 )
                 enqueued += 1
         log.info(
@@ -674,16 +675,14 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
                 eta = None
         if eta is not None and remaining_shas:
             try:
-                sync_ci_for_shas_task.apply_async(
-                    kwargs={
-                        "repo_id": repo.id,
-                        "number": int(number),
-                        "shas": list(remaining_shas),
-                        "max_pages_per_sha": max_pages_per_sha,
-                        "dry_run": dry_run,
-                    },
-                    eta=eta,
+                sig = sync_ci_for_shas_task.s(
+                    repo.id,
+                    int(number),
+                    shas=list(remaining_shas),
+                    max_pages_per_sha=max_pages_per_sha,
+                    dry_run=dry_run,
                 )
+                enqueue_with_parent(sig, self.request, eta=eta)
             except Exception:
                 pass
         rl = client.get_last_rate_limit() or {}

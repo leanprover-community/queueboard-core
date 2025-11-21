@@ -15,7 +15,7 @@ trap cleanup EXIT
 # Ensure we run from the repo root so docker compose picks up the local project
 cd "$(dirname "$0")/.."
 
-echo "[1/5] Starting web (waits on db:healthy via depends_on)"
+echo "[1/6] Starting web (waits on db:healthy via depends_on)"
 if ! docker compose up -d web; then
   echo "Compose failed to start services. Dumping service status and migrate logs..." >&2
   docker compose ps || true
@@ -23,17 +23,21 @@ if ! docker compose up -d web; then
   exit 1
 fi
 
-echo "[2/5] Django system checks (compose)"
+echo "[2/6] Django system checks (compose)"
 docker compose exec -T web python qb_site/manage.py check
 
-echo "[3/5] Dry-run makemigrations (compose)"
+echo "[3/6] Dry-run makemigrations (compose)"
 docker compose exec -T web python qb_site/manage.py makemigrations --dry-run --check
 
-echo "[4/5] Run syncer tests (compose)"
+echo "[4/6] Run core tests (compose)"
+# Use higher verbosity to list skipped tests with reasons.
+docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test core # --verbosity 2
+
+echo "[5/6] Run syncer tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer # --verbosity 2
 
-echo "[5/5] Run analyzer tests (compose)"
+echo "[6/6] Run analyzer tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test analyzer # --verbosity 2
 

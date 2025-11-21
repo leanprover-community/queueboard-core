@@ -3,3 +3,4 @@
 from .repository import Repository  # noqa: F401
 from .user import User  # noqa: F401
 from .reviewer_preference import ReviewerPreference  # noqa: F401
+from .task_result_link import TaskResultLink  # noqa: F401

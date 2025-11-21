@@ -11,5 +11,35 @@
       <p>{{ repo_pr_value }}</p>
     </div>
   {% endif %}
+  {% if parent_value or root_value or child_results %}
+    <div class="module" style="margin-bottom: 1em;">
+      <h2>Task relationships</h2>
+      <p><strong>Parent:</strong> {{ parent_value|default:"-" }}</p>
+      <p><strong>Root:</strong> {{ root_value|default:"-" }}
+        {% if root_filter_url %}
+          — <a href="{{ root_filter_url }}">View all in root tree</a>
+        {% endif %}
+      </p>
+      {% if as_root_filter_url %}
+      <p><a href="{{ as_root_filter_url }}">View all tasks with this task as root</a></p>
+      {% endif %}
+      {% if child_results %}
+      <h3>Children (latest 10)</h3>
+      <ul>
+        {% for child in child_results %}
+        <li>
+          <a href="{% url 'admin:django_celery_results_taskresult_change' child.pk %}">{{ child.task_id|slice:":8" }}</a>
+          — {{ child.task_name }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% if child_filter_url %}
+      <p><a href="{{ child_filter_url }}">View all child tasks</a></p>
+      {% endif %}
+      {% else %}
+      <p>No children recorded for this task.</p>
+      {% endif %}
+    </div>
+  {% endif %}
   {{ block.super }}
 {% endblock %}
