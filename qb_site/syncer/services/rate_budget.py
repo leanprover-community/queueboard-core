@@ -69,10 +69,13 @@ def _get_redis_client():  # pragma: no cover - exercised via higher-level tests
     if redis is None:
         return None
     url = getattr(settings, "CELERY_BROKER_URL", None)
-    if not url or not str(url).startswith("redis://"):
+    if not url:
         return None
     try:
-        return redis.Redis.from_url(url)
+        # Support both redis:// and rediss:// so TLS brokers (e.g., Heroku) work.
+        if str(url).startswith(("redis://", "rediss://")):
+            return redis.Redis.from_url(url, ssl=str(url).startswith("rediss://"))
+        return None
     except Exception:
         return None
 
