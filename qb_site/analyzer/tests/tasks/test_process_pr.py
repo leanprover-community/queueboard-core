@@ -5,7 +5,7 @@ from django.utils import timezone
 from unittest.mock import patch
 
 from core.models import Repository
-from analyzer.models import QueueRuleSet, PRQueueWindow
+from analyzer.models import QueueRuleSet, PRQueueWindow, PRRevisionBuildState
 from analyzer.tasks.process_pr import process_pr
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType, CheckRun
 
@@ -98,6 +98,9 @@ class TestProcessPRTask(TestCase):
         self.assertIn(res["revisions"], {"full", "append", "noop"})
         # Queue windows should be built for the ruleset
         self.assertGreaterEqual(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).count(), 1)
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.windows_built_revision_version, state.revision_version)
+        self.assertIsNotNone(state.windows_built_at)
 
     def test_harvest_tasks_include_cutoffs_and_missing_ci(self) -> None:
         pr = self._mk_pr(3)

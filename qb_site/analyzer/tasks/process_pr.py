@@ -9,6 +9,8 @@ from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from syncer.services.github_client import GitHubClient
 from syncer.models import PullRequest
 from syncer.tasks.commit_history_tasks import harvest_commit_history_task
+from analyzer.models import PRRevisionBuildState
+from django.utils import timezone
 
 
 def process_pr(
@@ -76,6 +78,12 @@ def process_pr(
             # Results are returned by Celery; inlined polling could be added later if needed.
         # Nothing to enqueue yet without harvest results.
         harvest = {"harvested_shas": [], "tasks": len(segment_jobs)}
+
+    # Mark windows built at current revision_version after queue windows are rebuilt.
+    state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+    state.windows_built_revision_version = state.revision_version
+    state.windows_built_at = timezone.now()
+    state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
 
     return {
         "status": "ok",

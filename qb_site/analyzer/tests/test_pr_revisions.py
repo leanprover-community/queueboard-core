@@ -227,6 +227,8 @@ class TestPRRevisions(TestCase):
         self.assertEqual(state.revision_version, 2)
         self.assertIsNone(state.ci_checked_revision_version)
         self.assertIsNone(state.ci_checked_at)
+        self.assertIsNone(state.windows_built_revision_version)
+        self.assertIsNone(state.windows_built_at)
 
     def test_append_preserves_prefix_and_rewrites_tail(self) -> None:
         pr = self._mk_pr(16)
