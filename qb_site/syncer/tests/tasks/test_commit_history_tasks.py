@@ -75,6 +75,8 @@ class TestCommitHistoryTasks(TestCase):
                 )
                 mock_ci.assert_called_once()
                 self.assertEqual(res["ci_missing"], ["shaX"])
+                self.assertEqual(res["repo"], "o/r")
+                self.assertEqual(res["number"], 1)
 
         # If CI already exists for the harvested sha, do not enqueue
         state2 = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha2")
@@ -102,3 +104,5 @@ class TestCommitHistoryTasks(TestCase):
                 )
                 mock_ci2.assert_not_called()
                 self.assertEqual(res["ci_missing"], [])
+                self.assertEqual(res["repo"], "o/r")
+                self.assertEqual(res["number"], 1)
