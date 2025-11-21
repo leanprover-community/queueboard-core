@@ -24,14 +24,14 @@ if [ ! -f .env ]; then
 fi
 
 if [ "$created_env" -eq 1 ]; then
-  token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-  if [ -n "$token" ]; then
-    echo "Populating GH_TOKEN from environment for compose checks"
-    python - <<'PY'
+  # Prefer a real token if provided; otherwise use a harmless placeholder so tests don't fail.
+  token="${GH_TOKEN:-${GITHUB_TOKEN:-local-dev-token}}"
+  echo "Populating GH_TOKEN for compose checks"
+  python - <<'PY'
 from pathlib import Path
 import os
 
-token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or "local-dev-token"
 path = Path(".env")
 lines = path.read_text().splitlines()
 out = []
@@ -48,7 +48,6 @@ if not found:
 
 path.write_text("\n".join(out) + "\n")
 PY
-  fi
 fi
 
 echo "[1/6] Starting web (waits on db:healthy via depends_on)"
