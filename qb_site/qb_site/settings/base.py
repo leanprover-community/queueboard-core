@@ -187,9 +187,10 @@ SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE = int(os.getenv("SYNCER_COMMIT_HISTORY_SWE
 ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS = int(os.getenv("ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS", 6 * 3600))
 ANALYZER_MISSING_CI_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_MISSING_CI_SWEEP_MAX_PRS_PER_REPO", 30))
 ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR = int(os.getenv("ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR", 2))
-ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(
-    os.getenv("ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL"), False
-)
+ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(os.getenv("ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL"), False)
+ANALYZER_REVISION_SWEEP_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVISION_SWEEP_PERIOD_SECONDS", 3 * 3600))
+ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO", 50))
+ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(os.getenv("ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL"), False)
 
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
@@ -245,6 +246,14 @@ CELERY_BEAT_SCHEDULE = {
             "max_prs_per_repo": ANALYZER_MISSING_CI_SWEEP_MAX_PRS_PER_REPO,
             "shas_per_pr": ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR,
             "only_complete_backfill": ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL,
+        },
+    },
+    "analyzer_revision_sweep": {
+        "task": "analyzer.rebuild_revisions_sweep",
+        "schedule": ANALYZER_REVISION_SWEEP_PERIOD_SECONDS,
+        "kwargs": {
+            "max_prs_per_repo": ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO,
+            "only_complete_backfill": ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
     },
 }
