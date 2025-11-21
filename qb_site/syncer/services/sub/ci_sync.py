@@ -12,6 +12,9 @@ from syncer.models.check_run import CheckRun
 from syncer.models.pull_request import PullRequest
 from syncer.models.status_context import StatusContext
 from core.utils.db import upsert_if_changed
+import logging
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,6 +75,8 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     created = 0
     updated = 0
     allow = _effective_allowlist_for_checkruns(pr)
+    if allow:
+        log.debug("CI sync: using CheckRun allowlist for %s (patterns=%s)", pr.repository, allow)
     now = timezone.now()
     earliest_ts = None
     for ctx in contexts:
@@ -84,7 +89,11 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         if allow:
             nm = (ctx.get("name") or "").lower()
             if not any(pat in nm for pat in allow):
+                log.debug("CI sync: skipping CheckRun %s due to allowlist (pat=%s)", nm, allow)
                 continue
+        if (ctx.get("conclusion") or "").upper() == "SKIPPED":
+            log.debug("CI sync: skipping CheckRun %s due to SKIPPED conclusion", ctx.get("name"))
+            continue
         values = {
             "pull_request": pr,
             "head_sha": head_sha,
@@ -132,6 +141,8 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     created = 0
     updated = 0
     allow = _effective_allowlist_for_status(pr)
+    if allow:
+        log.debug("CI sync: using StatusContext allowlist for %s (patterns=%s)", pr.repository, allow)
     now = timezone.now()
     earliest_ts = None
     for ctx in contexts:
@@ -144,6 +155,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         if allow:
             nm = (ctx.get("context") or "").lower()
             if not any(pat in nm for pat in allow):
+                log.debug("CI sync: skipping StatusContext %s due to allowlist (pat=%s)", nm, allow)
                 continue
         values = {
             "pull_request": pr,

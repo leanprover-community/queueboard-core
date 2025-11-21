@@ -434,7 +434,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
             raw = request.POST.get("shas", "")
             pages = request.POST.get("pages")
             dry_run = bool(request.POST.get("dry_run"))
-            require_assoc = bool(request.POST.get("require_assoc", "on"))
+            # Checkbox is omitted when unchecked; treat absence as False.
+            require_assoc = bool(request.POST.get("require_assoc"))
             # Parse SHAs (split by comma/whitespace) and dedupe order-preserving
             toks = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
             seen = set()
