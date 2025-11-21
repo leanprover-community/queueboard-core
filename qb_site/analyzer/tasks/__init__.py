@@ -10,9 +10,11 @@ from django.utils import timezone
 
 from core.models import Repository
 from syncer.models import PullRequest
+from syncer.services.github_client import GitHubClient
 from analyzer.models import QueueRuleSet
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 from analyzer.tasks.process_pr import process_pr
+from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 
 
 log = logging.getLogger(__name__)
@@ -96,4 +98,4 @@ def process_pr_task(pr_id: int) -> Dict[str, Any]:
     return summary
 
 
-__all__ = ["process_pr_task"]
+__all__ = ["process_pr_task", "plan_missing_ci_backfill_task"]
