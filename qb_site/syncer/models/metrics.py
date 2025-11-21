@@ -43,6 +43,10 @@ class SyncerMetricsSnapshot(models.Model):
     # Database size at snapshot time (bytes)
     db_size_bytes = models.BigIntegerField(default=0)
 
+    # Broker queue depth at snapshot time (Redis LLEN; null when unavailable)
+    queue_default_depth = models.IntegerField(null=True, blank=True, default=None)
+    queue_github_depth = models.IntegerField(null=True, blank=True, default=None)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -140,6 +140,24 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_DEFAULT_QUEUE = "default"
 CELERY_TASK_SERIALIZER = "json"
 CELERY_ACCEPT_CONTENT = ["json"]
+# Optional Celery queue name for GitHub-bound syncer tasks; when set,
+# route GitHub work onto this queue so a dedicated worker can throttle it.
+SYNCER_GITHUB_QUEUE = os.getenv("SYNCER_GITHUB_QUEUE", "")
+if SYNCER_GITHUB_QUEUE:
+    CELERY_TASK_ROUTES = {
+        "syncer.sync_repo_since": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.sync_active_repos": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.sync_pr": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.sync_ci_for_shas": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.refresh_pending_ci_for_repo": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.refresh_pending_ci_for_active_repos": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.backfill_repo_history": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.backfill_repo_history_active": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.backfill_repo_incomplete_prs": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.backfill_repo_incomplete_prs_active": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.harvest_commit_history": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.harvest_commit_history_sweep": {"queue": SYNCER_GITHUB_QUEUE},
+    }
 
 # Syncer scheduling defaults (env-overridable)
 SYNCER_DISCOVERY_LOOKBACK_MINUTES = int(os.getenv("SYNCER_DISCOVERY_LOOKBACK_MINUTES", 60))
@@ -158,6 +176,8 @@ SYNCER_TIMELINE_BACKFILL_PAGES = int(os.getenv("SYNCER_TIMELINE_BACKFILL_PAGES",
 # Commit backfill per up-to-date run (pages of the commits connection to walk backward)
 SYNCER_COMMITS_BACKFILL_PAGES = int(os.getenv("SYNCER_COMMITS_BACKFILL_PAGES", 1))
 SYNCER_CI_BY_SHA_PAGES = int(os.getenv("SYNCER_CI_BY_SHA_PAGES", 1))
+SYNCER_GH_THROTTLE_MS = int(os.getenv("SYNCER_GH_THROTTLE_MS", 250))
+SYNCER_GH_THROTTLE_MAX_WAIT_MS = int(os.getenv("SYNCER_GH_THROTTLE_MAX_WAIT_MS", 5000))
 
 # History backfill defaults (createdAt-based)
 SYNCER_HISTORY_BACKFILL_PAGE_SIZE = int(os.getenv("SYNCER_HISTORY_BACKFILL_PAGE_SIZE", 50))

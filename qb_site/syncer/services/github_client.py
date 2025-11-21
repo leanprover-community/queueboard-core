@@ -6,7 +6,10 @@ from typing import Any, Dict, Optional, Sequence
 
 import requests
 from dateutil import parser as dtparser
+from django.conf import settings
 from django.utils import timezone
+
+from syncer.services.rate_budget import throttle_request_slot
 
 
 class GitHubClient:
@@ -33,6 +36,9 @@ class GitHubClient:
         - Writes any returned `rateLimit` snapshot to Redis via `set_rate_snapshot` for
           cross-process token coordination (best-effort).
         """
+        throttle_request_slot(
+            getattr(settings, "SYNCER_GH_THROTTLE_MS", 0), getattr(settings, "SYNCER_GH_THROTTLE_MAX_WAIT_MS", 5000)
+        )
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
