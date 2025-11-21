@@ -1,0 +1,15 @@
+{% extends "admin/change_list.html" %}
+{% load i18n %}
+
+{% block object-tools %}
+{{ block.super }}
+<div class="object-tools">
+  <ul class="object-tools">
+    <li>
+      <a href="{% url 'admin:django_celery_results_taskresult_scheduled_tasks' %}" class="historylink">
+        {% trans "Scheduled task controls" %}
+      </a>
+    </li>
+  </ul>
+</div>
+{% endblock %}

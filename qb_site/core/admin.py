@@ -6,12 +6,14 @@ from django.template.response import TemplateResponse
 from django import forms
 from django.utils.html import format_html
 from django.http import HttpResponseRedirect, HttpResponse
+from django.conf import settings
 from collections import OrderedDict
 import json
 import ast
 
 from .models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest  # type: ignore
+from qb_site.celery import app as celery_app
 
 
 @admin.register(Repository)
@@ -415,6 +417,7 @@ try:
     @admin.register(TaskResult)
     class EnhancedTaskResultAdmin(TaskResultAdmin):  # type: ignore[misc]
         change_form_template = "admin/django_celery_results/taskresult/change_form.html"
+        change_list_template = "admin/django_celery_results/taskresult/change_list.html"
         list_display = (
             "short_id",
             "task_name_link",
@@ -692,6 +695,72 @@ try:
                 except Exception:  # pragma: no cover - best-effort
                     extra["repo_pr_value"] = None
             return super().changeform_view(request, object_id, form_url, extra)
+
+        def get_urls(self):  # type: ignore[override]
+            urls = super().get_urls()
+            custom = [
+                path(
+                    "scheduled-tasks/",
+                    self.admin_site.admin_view(self.scheduled_tasks_view),
+                    name="django_celery_results_taskresult_scheduled_tasks",
+                )
+            ]
+            return custom + urls
+
+        def _format_schedule(self, schedule_obj):  # pragma: no cover - formatting helper
+            if schedule_obj is None:
+                return "-"
+            try:
+                human = schedule_obj.human_readable()  # type: ignore[attr-defined]
+                if human:
+                    return human
+            except Exception:
+                pass
+            return str(schedule_obj)
+
+        def scheduled_tasks_view(self, request):
+            schedule_conf = getattr(settings, "CELERY_BEAT_SCHEDULE", {}) or {}
+            if request.method == "POST":
+                task_key = request.POST.get("task_key")
+                entry = schedule_conf.get(task_key)
+                if entry:
+                    task_name = entry.get("task")
+                    args = entry.get("args") or []
+                    kwargs = entry.get("kwargs") or {}
+                    try:
+                        async_res = celery_app.send_task(task_name, args=args, kwargs=kwargs)
+                        self.message_user(request, f"Enqueued scheduled task '{task_key}' ({task_name}): {async_res.id}")
+                    except Exception as exc:  # pragma: no cover - external dependency
+                        self.message_user(request, f"Failed to enqueue '{task_key}': {exc}")
+                else:
+                    self.message_user(request, f"Unknown scheduled task: {task_key}")
+                return HttpResponseRedirect(request.path)
+
+            entries = []
+            for key, entry in sorted(schedule_conf.items()):
+                schedule_label = self._format_schedule(entry.get("schedule"))
+                entries.append(
+                    {
+                        "key": key,
+                        "task": entry.get("task"),
+                        "schedule": schedule_label,
+                        "args": entry.get("args") or [],
+                        "kwargs": entry.get("kwargs") or {},
+                    }
+                )
+
+            context = {
+                **self.admin_site.each_context(request),
+                "title": "Scheduled Celery tasks",
+                "opts": self.model._meta,
+                "entries": entries,
+                "taskresult_changelist_url": reverse("admin:django_celery_results_taskresult_changelist"),
+            }
+            return TemplateResponse(
+                request,
+                "admin/django_celery_results/taskresult/scheduled_tasks.html",
+                context,
+            )
 
 except Exception:  # pragma: no cover - django-celery-results not installed
     pass
