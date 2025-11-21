@@ -15,6 +15,11 @@ trap cleanup EXIT
 # Ensure we run from the repo root so docker compose picks up the local project
 cd "$(dirname "$0")/.."
 
+if [ ! -f .env ]; then
+  echo "No .env found; copying .env.example for compose checks"
+  cp .env.example .env
+fi
+
 echo "[1/6] Starting web (waits on db:healthy via depends_on)"
 if ! docker compose up -d web; then
   echo "Compose failed to start services. Dumping service status and migrate logs..." >&2
