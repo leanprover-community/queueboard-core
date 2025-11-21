@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.contrib import admin
+from django.http import HttpResponseRedirect
 from django.urls import reverse
 from django.utils.html import format_html
 
@@ -162,3 +163,18 @@ class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "ci_gated_missing_windows",
         "created_at",
     )
+
+    change_list_template = "admin/analyzer/analyzerconvergencesnapshot/change_list.html"
+
+    def changelist_view(self, request, extra_context=None):  # type: ignore[override]
+        extra = extra_context or {}
+        if request.method == "POST" and request.POST.get("action") == "collect_convergence":
+            try:
+                from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
+
+                async_res = collect_analyzer_convergence_task.delay()
+                self.message_user(request, f"Enqueued analyzer convergence collection task: {async_res.id}")
+            except Exception as exc:  # pragma: no cover - external dependency
+                self.message_user(request, f"Failed to enqueue analyzer convergence collection: {exc}")
+            return HttpResponseRedirect(request.path)
+        return super().changelist_view(request, extra_context=extra)
