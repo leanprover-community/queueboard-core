@@ -415,6 +415,9 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     state.tail_revision = tail
     state.tail_from_ts = tail_from_ts
     state.last_built_at = now_ts
+    state.revision_version = (state.revision_version or 0) + 1
+    state.ci_checked_revision_version = None
+    state.ci_checked_at = None
     state.save(
         update_fields=[
             "builder_version",
@@ -423,6 +426,9 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
             "tail_revision",
             "tail_from_ts",
             "last_built_at",
+            "revision_version",
+            "ci_checked_revision_version",
+            "ci_checked_at",
             "updated_at",
         ],
     )

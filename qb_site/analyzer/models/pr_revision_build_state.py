@@ -15,6 +15,9 @@ class PRRevisionBuildState(models.Model):
     dirty_from_ts = models.DateTimeField(null=True, blank=True)
     builder_version = models.PositiveIntegerField(default=1)
     last_built_at = models.DateTimeField(null=True, blank=True)
+    revision_version = models.PositiveIntegerField(default=0)
+    ci_checked_revision_version = models.PositiveIntegerField(null=True, blank=True)
+    ci_checked_at = models.DateTimeField(null=True, blank=True)
 
     # Optional pointer to the known tail window for faster appends; safe to null out.
     tail_revision = models.ForeignKey(
@@ -35,6 +38,7 @@ class PRRevisionBuildState(models.Model):
             models.Index(fields=["builder_version"], name="prrbs_version_idx"),
             models.Index(fields=["dirty_from_ts"], name="prrbs_dirty_idx"),
             models.Index(fields=["built_through_ts"], name="prrbs_built_idx"),
+            models.Index(fields=["revision_version"], name="prrbs_rev_version_idx"),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
