@@ -44,6 +44,8 @@ def harvest_commit_history_task(
         ci_task_id = ci_res.id
     return {
         "skipped": False,
+        "repo": f"{pr.repository.owner}/{pr.repository.name}",
+        "number": pr.number,
         "pr_id": pr.id,
         "start_sha": start_sha,
         "harvested_shas": shas,
