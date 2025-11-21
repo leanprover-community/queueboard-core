@@ -736,6 +736,8 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         "repo_low_budget",
         "repo_discovered",
         "repo_enqueued",
+        "queue_default_depth",
+        "queue_github_depth",
         "db_size_bytes",
     )
     date_hierarchy = "window_start"

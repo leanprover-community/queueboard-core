@@ -48,6 +48,7 @@ Implementation notes
 
 from datetime import datetime, timedelta, timezone
 import json
+import time
 from typing import Any, Dict, Optional
 
 from django.conf import settings
@@ -61,6 +62,7 @@ except Exception:  # pragma: no cover - environment without redis client
 
 RATE_SNAPSHOT_KEY = "gh:rate:snapshot"
 SCHEDULE_KEY_PREFIX = "gh:rate:continue:repo:"
+THROTTLE_SLOT_KEY = "gh:throttle:slot"
 
 
 def _get_redis_client():  # pragma: no cover - exercised via higher-level tests
@@ -149,3 +151,40 @@ def debounce_repo_schedule(repo_id: int, reset_at_iso: str, ttl_seconds: int = 7
         return bool(client.set(key, "1", nx=True, ex=int(max(60, ttl_seconds))))
     except Exception:
         return True  # fail-open to avoid deadlocks
+
+
+def throttle_request_slot(interval_ms: int, max_wait_ms: int) -> None:
+    """Gate GitHub requests so only one proceeds per interval across workers.
+
+    Uses Redis SET NX with a short TTL to space requests. If Redis is unavailable,
+    falls back to a simple sleep (local process only). The wait loop is capped by
+    ``max_wait_ms`` to avoid blocking indefinitely when something goes wrong.
+    """
+    try:
+        interval = max(0, int(interval_ms))
+        if interval <= 0:
+            return
+        max_wait = max(interval, int(max_wait_ms))
+    except Exception:
+        return
+
+    client = _get_redis_client()
+    delay = interval / 1000
+    deadline = time.monotonic() + max_wait / 1000
+
+    if client is None:
+        time.sleep(delay)
+        return
+
+    # Spin with a small sleep until we acquire the slot or hit the deadline.
+    while True:
+        try:
+            if client.set(THROTTLE_SLOT_KEY, "1", nx=True, px=interval):
+                return
+        except Exception:
+            # Fail open if Redis misbehaves; avoid blocking requests entirely.
+            return
+
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(min(delay, 0.05 + delay / 2))

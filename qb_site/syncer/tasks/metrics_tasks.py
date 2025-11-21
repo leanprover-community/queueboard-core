@@ -18,6 +18,7 @@ from datetime import timedelta
 from typing import Any, Dict
 
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 from django.db import connection
 
@@ -32,6 +33,7 @@ from syncer.models import (
     PRLabel,
     LabelDef,
 )
+from syncer.services import rate_budget as rb
 
 
 def _parse_json(raw: Any) -> Dict[str, Any]:
@@ -45,6 +47,19 @@ def _parse_json(raw: Any) -> Dict[str, Any]:
         return json.loads(raw)
     except Exception:
         return {}
+
+
+def _queue_depth(queue_name: str) -> int | None:
+    """Return LLEN for a Redis queue or None if unavailable."""
+    if not queue_name:
+        return None
+    client = rb._get_redis_client()
+    if client is None:
+        return None
+    try:
+        return int(client.llen(queue_name))
+    except Exception:
+        return None
 
 
 @shared_task(name="syncer.collect_metrics")
@@ -134,6 +149,10 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     except Exception:
         db_size = 0
 
+    # Queue depths (may be None when Redis or broker key is unavailable)
+    queue_default_depth = _queue_depth(getattr(settings, "CELERY_TASK_DEFAULT_QUEUE", "celery"))
+    queue_github_depth = _queue_depth(getattr(settings, "SYNCER_GITHUB_QUEUE", ""))
+
     snap = SyncerMetricsSnapshot.objects.create(
         window_start=start,
         window_seconds=window_seconds,
@@ -155,6 +174,8 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         rows_pr_label=rows_pl,
         rows_label_def=rows_ld,
         db_size_bytes=db_size,
+        queue_default_depth=queue_default_depth,
+        queue_github_depth=queue_github_depth,
     )
 
     return {
@@ -163,4 +184,6 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         "pr_tasks": pr_count,
         "repo_tasks": repo_count,
         "db_size_bytes": db_size,
+        "queue_default_depth": queue_default_depth,
+        "queue_github_depth": queue_github_depth,
     }
