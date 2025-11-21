@@ -746,6 +746,21 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "created_at",
     )
 
+    change_list_template = "admin/syncer/syncerconvergencesnapshot/change_list.html"
+
+    def changelist_view(self, request, extra_context=None):  # type: ignore[override]
+        extra = extra_context or {}
+        if request.method == "POST" and request.POST.get("action") == "collect_convergence":
+            try:
+                from syncer.tasks.collect_convergence import collect_syncer_convergence_task
+
+                async_res = collect_syncer_convergence_task.delay()
+                self.message_user(request, f"Enqueued syncer convergence collection task: {async_res.id}")
+            except Exception as exc:  # pragma: no cover - external dependency
+                self.message_user(request, f"Failed to enqueue syncer convergence collection: {exc}")
+            return HttpResponseRedirect(request.path)
+        return super().changelist_view(request, extra_context=extra)
+
 
 @admin.register(CommitHistoryHarvest)
 class CommitHistoryHarvestAdmin(ReadOnlyAdmin):
