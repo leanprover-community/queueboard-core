@@ -23,3 +23,4 @@
   - Store harvested SHAs and retry CI fetches explicitly (or add a “missing CI” sweep keyed off stored SHAs).
   - Delay cursor advancement until enqueue succeeds (does not cover downstream task failures).
   - Add per-SHA attempt tracking with backoff/TTL to reduce silent skips.
+  - CheckRun node ids are not always stable across state transitions; a future refactor could fall back to external_id or merge pending/queued rows by (head_sha, name) when GitHub emits a new node id for the same run.

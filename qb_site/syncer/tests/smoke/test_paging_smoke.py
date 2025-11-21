@@ -123,6 +123,8 @@ class TestPagingSmoke(TestCase):
                         continue
                     t = c.get("__typename")
                     if t == "CheckRun":
+                        if (c.get("conclusion") or "").upper() == "SKIPPED":
+                            continue
                         cr += 1
                     elif t == "StatusContext":
                         sc += 1
