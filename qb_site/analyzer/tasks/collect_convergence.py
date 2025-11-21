@@ -25,7 +25,7 @@ def collect_analyzer_convergence_task() -> dict:
     for repo in repos:
         rulesets = list(QueueRuleSet.objects.filter(repository=repo))
         ruleset_updated_at = QueueRuleSet.objects.filter(repository=repo).aggregate(m=Max("updated_at")).get("m")
-        base_prs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
+        base_prs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True, state="open")
 
         pr_no_revisions = (
             base_prs.annotate(has_rev=Exists(PRRevision.objects.filter(pull_request=OuterRef("pk"))))
