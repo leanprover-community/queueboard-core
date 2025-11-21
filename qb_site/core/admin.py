@@ -7,11 +7,12 @@ from django import forms
 from django.utils.html import format_html
 from django.http import HttpResponseRedirect, HttpResponse
 from django.conf import settings
+from urllib.parse import quote_plus
 from collections import OrderedDict
 import json
 import ast
 
-from .models import Repository, ReviewerPreference, User
+from .models import Repository, ReviewerPreference, User, TaskResultLink
 from syncer.models import PullRequest  # type: ignore
 from qb_site.celery import app as celery_app
 
@@ -420,6 +421,8 @@ try:
         change_list_template = "admin/django_celery_results/taskresult/change_list.html"
         list_display = (
             "short_id",
+            "parent_link",
+            "root_link",
             "task_name_link",
             "repo_pr",
             "status",
@@ -432,7 +435,14 @@ try:
             "result",
             "task_args",
             "task_kwargs",
+            "link__parent_task_id",
+            "link__root_task_id",
         )
+
+        def lookup_allowed(self, lookup, value):  # type: ignore[override]
+            if lookup in {"link__parent_task_id__exact", "link__root_task_id__exact"}:
+                return True
+            return super().lookup_allowed(lookup, value)
 
         def short_id(self, obj):  # type: ignore[override]
             tid = getattr(obj, "task_id", "") or ""
@@ -443,6 +453,13 @@ try:
         def has_add_permission(self, request):  # type: ignore[override]
             return False
 
+        def get_queryset(self, request):  # type: ignore[override]
+            qs = super().get_queryset(request)
+            try:
+                return qs.select_related("link")
+            except Exception:
+                return qs
+
         def task_name_link(self, obj):  # type: ignore[override]
             name = getattr(obj, "task_name", "") or ""
             changelist_url = reverse("admin:django_celery_results_taskresult_changelist")
@@ -452,6 +469,40 @@ try:
 
         task_name_link.short_description = "Task name"  # type: ignore[attr-defined]
         task_name_link.admin_order_field = "task_name"  # type: ignore[attr-defined]
+
+        def parent_link(self, obj):
+            try:
+                link = getattr(obj, "link", None)
+                parent_id = getattr(link, "parent_task_id", None) if link else None
+                if not parent_id:
+                    return "-"
+                parent_tr = TaskResult.objects.only("id", "task_id").filter(task_id=parent_id).first()
+                short = str(parent_id)[:8]
+                if parent_tr is not None:
+                    url = reverse("admin:django_celery_results_taskresult_change", args=[parent_tr.pk])
+                    return format_html("<a href='{}'>{}</a>", url, short)
+                return short
+            except Exception:  # pragma: no cover - best-effort
+                return "-"
+
+        parent_link.short_description = "Parent"  # type: ignore[attr-defined]
+
+        def root_link(self, obj):
+            try:
+                link = getattr(obj, "link", None)
+                root_id = getattr(link, "root_task_id", None) if link else None
+                if not root_id:
+                    return "-"
+                root_tr = TaskResult.objects.only("id", "task_id").filter(task_id=root_id).first()
+                short = str(root_id)[:8]
+                if root_tr is not None:
+                    url = reverse("admin:django_celery_results_taskresult_change", args=[root_tr.pk])
+                    return format_html("<a href='{}'>{}</a>", url, short)
+                return short
+            except Exception:  # pragma: no cover - best-effort
+                return "-"
+
+        root_link.short_description = "Root"  # type: ignore[attr-defined]
 
         def _json_load(self, raw):  # pragma: no cover - trivial helper
             if raw is None:
@@ -694,6 +745,32 @@ try:
                     extra["repo_pr_value"] = self.repo_pr(obj)
                 except Exception:  # pragma: no cover - best-effort
                     extra["repo_pr_value"] = None
+                try:
+                    extra["parent_value"] = self.parent_link(obj)
+                    extra["root_value"] = self.root_link(obj)
+                    children_qs = (
+                        TaskResult.objects.filter(link__parent_task_id=obj.task_id)
+                        .select_related("link")
+                        .order_by("-date_done")[:10]
+                    )
+                    extra["child_results"] = children_qs
+                    changelist = reverse("admin:django_celery_results_taskresult_changelist")
+                    extra["child_filter_url"] = f"{changelist}?link__parent_task_id__exact={quote_plus(obj.task_id)}"
+                    root_id = getattr(getattr(obj, "link", None), "root_task_id", None)
+                    extra["root_filter_url"] = f"{changelist}?link__root_task_id__exact={quote_plus(root_id)}" if root_id else None
+                    has_root_children = TaskResult.objects.filter(link__root_task_id=obj.task_id).exists()
+                    extra["as_root_filter_url"] = (
+                        f"{changelist}?link__root_task_id__exact={quote_plus(obj.task_id)}"
+                        if obj.task_id and has_root_children
+                        else None
+                    )
+                except Exception:  # pragma: no cover - best-effort
+                    extra["parent_value"] = None
+                    extra["root_value"] = None
+                    extra["child_results"] = None
+                    extra["child_filter_url"] = None
+                    extra["root_filter_url"] = None
+                    extra["as_root_filter_url"] = None
             return super().changeform_view(request, object_id, form_url, extra)
 
         def get_urls(self):  # type: ignore[override]

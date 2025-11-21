@@ -16,8 +16,9 @@ class TestSyncRepoTasksBatching(TestCase):
     @override_settings(SYNCER_RATE_REMAINING_MIN=200, SYNCER_REPO_ENQUEUE_BATCH_MAX=30, SYNCER_EST_COST_PER_PR=150)
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
-    def test_batch_sizing_enqueues_subset(self, MockClient, mock_sync_pr, mock_lock) -> None:
+    def test_batch_sizing_enqueues_subset(self, MockClient, mock_enqueue, mock_sync_pr, mock_lock) -> None:
         mock_lock.return_value.__enter__.return_value = True
         gh = MockClient.return_value
         # 10 candidates discovered
@@ -27,6 +28,6 @@ class TestSyncRepoTasksBatching(TestCase):
 
         res = sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
         # Should enqueue only 5 now
-        self.assertEqual(mock_sync_pr.delay.call_count, 5)
+        self.assertEqual(mock_enqueue.call_count, 5)
         self.assertEqual(res.get("enqueued"), 5)
         self.assertFalse(res.get("low_budget"))
