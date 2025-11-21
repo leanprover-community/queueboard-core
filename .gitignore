@@ -1,4 +1,6 @@
 __pycache__/
+.env.local
+.env.heroku
 .env
 test/**/gh-pages
 test/**/api
