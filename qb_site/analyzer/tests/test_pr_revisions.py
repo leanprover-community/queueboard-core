@@ -109,6 +109,9 @@ class TestPRRevisions(TestCase):
         self.assertEqual(state.built_through_ts, t_ci_end)
         self.assertIsNone(state.dirty_from_ts)
         self.assertIsNotNone(state.last_built_at)
+        self.assertEqual(state.revision_version, 1)
+        self.assertIsNone(state.ci_checked_revision_version)
+        self.assertIsNone(state.ci_checked_at)
 
         tail = state.tail_revision
         self.assertIsNotNone(tail)
@@ -193,6 +196,37 @@ class TestPRRevisions(TestCase):
         self.assertEqual(revs[0].head_sha, "h0")
         self.assertEqual(revs[1].head_sha, "h1")
         self.assertEqual(revs[2].head_sha, "h2")
+
+    def test_revision_version_increments_and_resets_ci_marker(self) -> None:
+        pr = self._mk_pr(115)
+        # Initial rebuild seeds version 1
+        first = rebuild_pr_revisions(pr)
+        self.assertEqual(first.strategy, "full")
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.revision_version, 1)
+
+        # Pretend a CI coverage check was recorded for this version
+        state.ci_checked_revision_version = state.revision_version
+        state.ci_checked_at = timezone.now()
+        state.save(update_fields=["ci_checked_revision_version", "ci_checked_at"])
+
+        # Add a new signal to force an append; expect version bump and CI marker cleared.
+        t_fp = pr.gh_created_at + timezone.timedelta(hours=2)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t_fp,
+            before_sha="h_prev",
+            after_sha="h_new",
+        )
+        res = rebuild_pr_revisions(pr, latest_signal_ts=t_fp)
+        # With no existing revisions we fall back to a full rebuild even though the state was clean.
+        self.assertEqual(res.strategy, "full")
+
+        state.refresh_from_db()
+        self.assertEqual(state.revision_version, 2)
+        self.assertIsNone(state.ci_checked_revision_version)
+        self.assertIsNone(state.ci_checked_at)
 
     def test_append_preserves_prefix_and_rewrites_tail(self) -> None:
         pr = self._mk_pr(16)

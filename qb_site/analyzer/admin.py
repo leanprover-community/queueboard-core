@@ -74,6 +74,9 @@ class PRRevisionBuildStateAdmin(ReadOnlyAdmin):
     list_display = (
         "pr_link",
         "builder_version",
+        "revision_version",
+        "ci_checked_revision_version",
+        "ci_checked_at",
         "built_through_ts",
         "dirty_from_ts",
         "tail_link",
@@ -81,12 +84,15 @@ class PRRevisionBuildStateAdmin(ReadOnlyAdmin):
         "last_built_at",
         "updated_at",
     )
-    list_filter = ("builder_version",)
+    list_filter = ("builder_version", "revision_version")
     search_fields = ("pull_request__number",)
     raw_id_fields = ("pull_request", "tail_revision")
     readonly_fields = (
         "pull_request",
         "builder_version",
+        "revision_version",
+        "ci_checked_revision_version",
+        "ci_checked_at",
         "built_through_ts",
         "dirty_from_ts",
         "tail_revision",
