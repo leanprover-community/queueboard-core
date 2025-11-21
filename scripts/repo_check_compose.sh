@@ -15,9 +15,40 @@ trap cleanup EXIT
 # Ensure we run from the repo root so docker compose picks up the local project
 cd "$(dirname "$0")/.."
 
+created_env=0
+
 if [ ! -f .env ]; then
   echo "No .env found; copying .env.example for compose checks"
   cp .env.example .env
+  created_env=1
+fi
+
+if [ "$created_env" -eq 1 ]; then
+  token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+  if [ -n "$token" ]; then
+    echo "Populating GH_TOKEN from environment for compose checks"
+    python - <<'PY'
+from pathlib import Path
+import os
+
+token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+path = Path(".env")
+lines = path.read_text().splitlines()
+out = []
+found = False
+for line in lines:
+    if line.startswith("GH_TOKEN="):
+        out.append(f"GH_TOKEN={token}")
+        found = True
+    else:
+        out.append(line)
+
+if not found:
+    out.append(f"GH_TOKEN={token}")
+
+path.write_text("\n".join(out) + "\n")
+PY
+  fi
 fi
 
 echo "[1/6] Starting web (waits on db:healthy via depends_on)"
