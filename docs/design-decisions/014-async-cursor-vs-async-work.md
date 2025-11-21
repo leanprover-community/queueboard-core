@@ -3,7 +3,7 @@
 ## Context
 - Several Syncer/Analyzer flows advance cursors or mark work “done” before downstream async tasks have actually completed:
   - `syncer.backfill_repo_history_task` persists `RepoBackfillCursor` after queuing `sync_pr_task` for discovered PR numbers.
-  - `syncer.harvest_commit_history_task` advances `CommitHistoryHarvest` cursors/has_more as soon as commit pages are read, then fires `sync_ci_for_shas_task` for missing SHAs.
+- `syncer.harvest_commit_history_task` advances `CommitHistoryHarvest` cursors/has_more as soon as commit pages are read, then fires `sync_ci_for_shas_task` for SHAs with missing or only pending/queued CI.
   - `analyzer.process_pr` rebuilds revisions/windows and enqueues commit-history harvest jobs without waiting for those harvest/CI tasks.
 - Failures in the enqueued tasks (or their downstream CI fetches) are not currently propagated back to rewind cursors or retry automatically; eventual consistency is relied upon via independent sweeps (e.g., commit-history sweep, missing-CI planners).
 
@@ -23,4 +23,3 @@
   - Store harvested SHAs and retry CI fetches explicitly (or add a “missing CI” sweep keyed off stored SHAs).
   - Delay cursor advancement until enqueue succeeds (does not cover downstream task failures).
   - Add per-SHA attempt tracking with backoff/TTL to reduce silent skips.
-

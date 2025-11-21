@@ -757,7 +757,9 @@ try:
                     changelist = reverse("admin:django_celery_results_taskresult_changelist")
                     extra["child_filter_url"] = f"{changelist}?link__parent_task_id__exact={quote_plus(obj.task_id)}"
                     root_id = getattr(getattr(obj, "link", None), "root_task_id", None)
-                    extra["root_filter_url"] = f"{changelist}?link__root_task_id__exact={quote_plus(root_id)}" if root_id else None
+                    extra["root_filter_url"] = (
+                        f"{changelist}?link__root_task_id__exact={quote_plus(root_id)}" if root_id else None
+                    )
                     has_root_children = TaskResult.objects.filter(link__root_task_id=obj.task_id).exists()
                     extra["as_root_filter_url"] = (
                         f"{changelist}?link__root_task_id__exact={quote_plus(obj.task_id)}"

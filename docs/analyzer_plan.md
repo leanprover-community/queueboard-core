@@ -86,7 +86,7 @@ Stage C: Compute windows and sets
 - Head revision windows are implemented:
   - Model: `analyzer.PRRevision(pr, head_sha, from_ts, to_ts, seq)` with indexes for time and SHA.
   - Service: `analyzer.services.revisions.rebuild_pr_revisions(pr)` builds windows from force‑push events (seeding from CI when no events exist) and replaces rows atomically.
-  - Targeting: `analyzer.services.revisions.next_revision_backfill_shas(pr, limit)` returns head SHAs missing any CI in Syncer tables.
+  - Targeting: `analyzer.services.revisions.next_revision_backfill_shas(pr, limit)` returns head SHAs missing any CI or only pending/queued CI in Syncer tables.
   - Tests: see `qb_site/analyzer/tests/test_pr_revisions.py`.
 - Syncer support for historical CI by SHA exists and is rate‑aware:
   - Query: `syncer/queries/ci_by_commit.graphql` (includes `associatedPullRequests` for optional safeties).
@@ -133,7 +133,7 @@ Stage C: Compute windows and sets
 ## Planned Work (incremental)
 1) Coordinator (optional periodic)
    - Periodically rebuild revisions for PRs with recent timeline changes.
-   - Identify `next_revision_backfill_shas(pr)` and enqueue limited `syncer.sync_ci_for_shas` per PR under rate‑aware caps.
+  - Identify `next_revision_backfill_shas(pr)` (missing or pending/queued CI) and enqueue limited `syncer.sync_ci_for_shas` per PR under rate‑aware caps.
 2) CI state and queue queries
    - `ci_state_at_time(pr, T)` helper (essentials only; unknown‑CI policy via rules and `required_ci_contexts`).
    - Refine `queue_state_at_time(repo, T)` / `who_was_on_queue_at` to incorporate CI gating once CI helpers are in place.

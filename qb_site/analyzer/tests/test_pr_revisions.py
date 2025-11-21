@@ -511,6 +511,92 @@ class TestPRRevisions(TestCase):
         shas = next_revision_backfill_shas(pr, limit=3)
         self.assertEqual(shas, ["t_before", "t_after", "t_after2"])
 
+    def test_next_backfill_targets_include_pending_and_queued_ci(self) -> None:
+        pr = self._mk_pr(30)
+        created = pr.gh_created_at
+        PRRevision.objects.create(pull_request=pr, head_sha="pending_sc", from_ts=created, to_ts=None, seq=0)
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="queued_cr",
+            from_ts=created + timezone.timedelta(hours=1),
+            to_ts=None,
+            seq=1,
+        )
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="done",
+            from_ts=created + timezone.timedelta(hours=2),
+            to_ts=None,
+            seq=2,
+        )
+
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_pending",
+            rest_id=None,
+            head_sha="pending_sc",
+            name="lint",
+            state="PENDING",
+            target_url=None,
+            description=None,
+            gh_created_at=created + timezone.timedelta(minutes=5),
+        )
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_pending",
+            head_sha="queued_cr",
+            name="ci",
+            status="QUEUED",
+            conclusion=None,
+            details_url=None,
+            external_id=None,
+            gh_started_at=None,
+            gh_completed_at=None,
+        )
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_done",
+            rest_id=None,
+            head_sha="done",
+            name="lint",
+            state="SUCCESS",
+            target_url=None,
+            description=None,
+            gh_created_at=created + timezone.timedelta(hours=2, minutes=10),
+        )
+
+        shas = next_revision_backfill_shas(pr, limit=5)
+        self.assertEqual(shas, ["pending_sc", "queued_cr"])
+
+    def test_pending_status_not_selected_when_completed_exists(self) -> None:
+        pr = self._mk_pr(31)
+        PRRevision.objects.create(pull_request=pr, head_sha="mixed", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_pending_mixed",
+            rest_id=None,
+            head_sha="mixed",
+            name="lint",
+            state="PENDING",
+            target_url=None,
+            description=None,
+            gh_created_at=pr.gh_created_at + timezone.timedelta(minutes=5),
+        )
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_done_mixed",
+            rest_id=None,
+            head_sha="mixed",
+            name="lint",
+            state="SUCCESS",
+            target_url=None,
+            description=None,
+            gh_created_at=pr.gh_created_at + timezone.timedelta(minutes=10),
+        )
+
+        shas = next_revision_backfill_shas(pr, limit=2)
+        self.assertEqual(shas, [])
+
     def test_ci_heads_before_and_after_force_pushes(self) -> None:
         pr = self._mk_pr(7)
         created = pr.gh_created_at
