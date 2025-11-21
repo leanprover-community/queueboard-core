@@ -4,7 +4,7 @@ from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html
 
-from analyzer.models import PRRevision, PRRevisionBuildState, QueueRuleSet, PRQueueWindow
+from analyzer.models import PRRevision, PRRevisionBuildState, QueueRuleSet, PRQueueWindow, AnalyzerConvergenceSnapshot
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -137,3 +137,28 @@ class PRQueueWindowAdmin(ReadOnlyAdmin):
     date_hierarchy = "from_ts"
     raw_id_fields = ("pull_request", "rule_set")
     readonly_fields = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
+
+
+@admin.register(AnalyzerConvergenceSnapshot)
+class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
+    list_display = (
+        "repository",
+        "collected_at",
+        "pr_no_revisions",
+        "windows_stale",
+        "ci_not_checked",
+        "ci_gated_missing_windows",
+    )
+    list_filter = ("repository",)
+    date_hierarchy = "collected_at"
+    search_fields = ("repository__owner", "repository__name")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "collected_at",
+        "pr_no_revisions",
+        "windows_stale",
+        "ci_not_checked",
+        "ci_gated_missing_windows",
+        "created_at",
+    )

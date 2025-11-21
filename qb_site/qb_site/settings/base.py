@@ -196,6 +196,7 @@ ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_QUEUE_WI
 ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(
     os.getenv("ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL"), False
 )
+ANALYTICS_CONVERGENCE_PERIOD_SECONDS = int(os.getenv("ANALYTICS_CONVERGENCE_PERIOD_SECONDS", 900))
 
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
@@ -268,5 +269,13 @@ CELERY_BEAT_SCHEDULE = {
             "max_prs_per_repo": ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO,
             "only_complete_backfill": ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
+    },
+    "collect_convergence": {
+        "task": "syncer.collect_convergence",
+        "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
+    },
+    "collect_analyzer_convergence": {
+        "task": "analyzer.collect_convergence",
+        "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
     },
 }
