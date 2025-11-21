@@ -45,9 +45,7 @@ class TestPlanMissingCITask(TestCase):
     def test_enqueues_missing_ci_and_marks_checked(self, mock_enqueue) -> None:
         pr = self._mk_pr_with_revision(1, "sha-miss")
 
-        res = plan_missing_ci_backfill_task.apply(
-            kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}
-        ).get()
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
 
         mock_enqueue.assert_called_once()
         state = PRRevisionBuildState.objects.get(pull_request=pr)
@@ -64,9 +62,7 @@ class TestPlanMissingCITask(TestCase):
         state.ci_checked_at = timezone.now()
         state.save(update_fields=["ci_checked_revision_version", "ci_checked_at"])
 
-        res = plan_missing_ci_backfill_task.apply(
-            kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}
-        ).get()
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
 
         mock_enqueue.assert_not_called()
         state.refresh_from_db()
@@ -91,9 +87,7 @@ class TestPlanMissingCITask(TestCase):
             gh_completed_at=pr.gh_created_at + timezone.timedelta(hours=2),
         )
 
-        res = plan_missing_ci_backfill_task.apply(
-            kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}
-        ).get()
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
 
         mock_enqueue.assert_not_called()
         state = PRRevisionBuildState.objects.get(pull_request=pr)

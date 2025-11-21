@@ -36,11 +36,7 @@ def plan_missing_ci_backfill_task(
         pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
         if only_complete_backfill:
             pr_qs = pr_qs.filter(commits_backfill_done=True)
-        pr_qs = (
-            pr_qs.select_related("revision_build_state")
-            .only("id", "number", "timeline_backfill_done", "commits_backfill_done", "gh_updated_at")
-            .order_by("-gh_updated_at", "-id")
-        )
+        pr_qs = pr_qs.select_related("revision_build_state").order_by("-gh_updated_at", "-id")
         repo_enqueued = 0
         repo_prs = 0
         for pr in pr_qs:

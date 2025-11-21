@@ -42,7 +42,7 @@ def process_pr(
                 continue
             if rule_set.effective_to and created_at >= rule_set.effective_to:
                 continue
-            rebuild = rebuild_queue_windows_for_ruleset(pr, rule_set)
+            rebuild = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rule_set)
             queue_results[int(rule_set.id)] = {
                 "created": int(rebuild.created),
                 "updated": int(rebuild.updated),
@@ -65,7 +65,7 @@ def process_pr(
         harvested: set[str] = set()
         task_fn = harvest_task or harvest_commit_history_task
         for sha, cutoff in segment_jobs:
-            async_res = task_fn.delay(
+            task_fn.delay(
                 pr_id=pr.id,
                 start_sha=sha,
                 max_pages=harvest_max_pages,

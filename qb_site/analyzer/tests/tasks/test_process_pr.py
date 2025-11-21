@@ -15,7 +15,7 @@ class TestProcessPRTask(TestCase):
         self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
         self.rule_set = QueueRuleSet.objects.create(
             repository=self.repo,
-            version="v1",
+            version=1,
             require_open=True,
             require_not_draft=True,
             require_ci_success=False,
@@ -82,7 +82,18 @@ class TestProcessPRTask(TestCase):
             before_sha="aaa111",
             after_sha="bbb222",
         )
-        res = process_pr(pr, client=self._StubClient())
+
+        class _StubTask:
+            def __init__(self):
+                self.calls: list[dict] = []
+
+            def delay(self, **kwargs):
+                self.calls.append(kwargs)
+                return type("Res", (), {"id": "task123"})
+
+        stub_task = _StubTask()
+
+        res = process_pr(pr, client=self._StubClient(), harvest_task=stub_task)
         self.assertEqual(res["status"], "ok")
         self.assertIn(res["revisions"], {"full", "append", "noop"})
         # Queue windows should be built for the ruleset
