@@ -183,6 +183,14 @@ SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEE
 SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES", 1))
 SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE", 20))
 
+# Analyzer missing-CI sweep defaults
+ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS = int(os.getenv("ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS", 6 * 3600))
+ANALYZER_MISSING_CI_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_MISSING_CI_SWEEP_MAX_PRS_PER_REPO", 30))
+ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR = int(os.getenv("ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR", 2))
+ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(
+    os.getenv("ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL"), False
+)
+
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
@@ -228,6 +236,15 @@ CELERY_BEAT_SCHEDULE = {
             "max_jobs": SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS,
             "max_pages": SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES,
             "page_size": SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE,
+        },
+    },
+    "analyzer_missing_ci": {
+        "task": "analyzer.plan_missing_ci",
+        "schedule": ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS,
+        "kwargs": {
+            "max_prs_per_repo": ANALYZER_MISSING_CI_SWEEP_MAX_PRS_PER_REPO,
+            "shas_per_pr": ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR,
+            "only_complete_backfill": ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
     },
 }
