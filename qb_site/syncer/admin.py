@@ -14,6 +14,7 @@ from .models import (
     CheckRun,
     StatusContext,
     SyncerMetricsSnapshot,
+    SyncerConvergenceSnapshot,
     RepoBackfillCursor,
     CommitHistoryHarvest,
 )
@@ -718,7 +719,32 @@ class RepoBackfillCursorAdmin(ReadOnlyAdmin):
         cur = obj.created_cursor or ""
         return cur[:16] + "…" if len(cur) > 16 else cur
 
-    created_cursor_short.short_description = "created_cursor"  # type: ignore[attr-defined]
+
+@admin.register(SyncerConvergenceSnapshot)
+class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
+    list_display = (
+        "repository",
+        "collected_at",
+        "timeline_backfill_pending",
+        "commits_backfill_pending",
+        "incomplete_prs",
+        "harvest_jobs_open",
+        "history_cursor_completed",
+    )
+    list_filter = ("repository", "history_cursor_completed")
+    date_hierarchy = "collected_at"
+    search_fields = ("repository__owner", "repository__name")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "collected_at",
+        "timeline_backfill_pending",
+        "commits_backfill_pending",
+        "incomplete_prs",
+        "harvest_jobs_open",
+        "history_cursor_completed",
+        "created_at",
+    )
 
 
 @admin.register(CommitHistoryHarvest)

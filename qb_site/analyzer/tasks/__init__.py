@@ -17,6 +17,7 @@ from analyzer.tasks.process_pr import process_pr
 from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 from analyzer.tasks.rebuild_revisions_sweep import rebuild_revisions_sweep_task
 from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
+from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 
 
 log = logging.getLogger(__name__)
@@ -100,4 +101,10 @@ def process_pr_task(pr_id: int) -> Dict[str, Any]:
     return summary
 
 
-__all__ = ["process_pr_task", "plan_missing_ci_backfill_task", "rebuild_revisions_sweep_task", "rebuild_queue_windows_sweep_task"]
+__all__ = [
+    "process_pr_task",
+    "plan_missing_ci_backfill_task",
+    "rebuild_revisions_sweep_task",
+    "rebuild_queue_windows_sweep_task",
+    "collect_analyzer_convergence_task",
+]
