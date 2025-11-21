@@ -20,7 +20,7 @@
 
 {% block after_field_sets %}
 {{ block.super }}
-<h2>Recent sync tasks</h2>
+<h2>Recent tasks for this PR</h2>
 <p>
   <a href="{{ task_results_changelist_url }}{{ task_results_filter_query }}">View all Task results filtered to this
     PR</a>
@@ -30,6 +30,7 @@
   <thead>
     <tr>
       <th>ID</th>
+      <th>Task</th>
       <th>Status</th>
       <th>Date done</th>
       <th>Result</th>
@@ -39,6 +40,7 @@
     {% for tr in recent_task_results %}
     <tr>
       <td><code>{{ tr.task_id|slice:":8" }}</code></td>
+      <td>{{ tr.task_name }}</td>
       <td>{{ tr.status }}</td>
       <td>{{ tr.date_done }}</td>
       <td><code

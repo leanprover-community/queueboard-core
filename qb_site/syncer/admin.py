@@ -5,6 +5,10 @@ from django.http import HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.urls import reverse, path
 from django.utils.html import format_html
+from django.db.models import Q
+from urllib.parse import quote_plus
+import json
+import ast
 
 from .models import (
     PullRequest,
@@ -245,6 +249,60 @@ class PullRequestAdmin(ReadOnlyAdmin):
         ]
         return custom + urls
 
+    def _json_load(self, raw):  # pragma: no cover - trivial helper
+        if raw is None:
+            return None
+        if isinstance(raw, (dict, list)):
+            return raw
+        try:
+            return json.loads(raw)
+        except Exception:
+            try:
+                val = ast.literal_eval(raw)
+                if isinstance(val, tuple):
+                    return list(val)
+                return val
+            except Exception:
+                return None
+
+    def _matches_pr(self, tr, repo_id: int, repo_str: str, number: int) -> bool:
+        """Best-effort decode repo/number from a TaskResult and check against a PR."""
+        res = self._json_load(getattr(tr, "result", None))
+        if isinstance(res, dict):
+            if str(res.get("repo") or "") == repo_str:
+                try:
+                    if int(res.get("number")) == int(number):
+                        return True
+                except Exception:
+                    pass
+
+        kwargs = self._json_load(getattr(tr, "task_kwargs", None))
+        if isinstance(kwargs, dict):
+            repo_match = False
+            if kwargs.get("repo") and str(kwargs.get("repo")) == repo_str:
+                repo_match = True
+            if kwargs.get("repo_id") is not None:
+                try:
+                    repo_match = int(kwargs.get("repo_id")) == int(repo_id)
+                except Exception:
+                    pass
+            if repo_match and kwargs.get("number") is not None:
+                try:
+                    if int(kwargs.get("number")) == int(number):
+                        return True
+                except Exception:
+                    pass
+
+        args = self._json_load(getattr(tr, "task_args", None))
+        if isinstance(args, list) and len(args) >= 2:
+            try:
+                if int(args[0]) == int(repo_id) and int(args[1]) == int(number):
+                    return True
+            except Exception:
+                pass
+
+        return False
+
     def change_view(self, request, object_id, form_url="", extra_context=None):  # type: ignore[override]
         extra = extra_context or {}
         pr = self.get_object(request, object_id)
@@ -255,12 +313,23 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 owner = pr.repository.owner
                 name = pr.repository.name
                 number = pr.number
-                recent = (
-                    TaskResult.objects.filter(task_name="syncer.sync_pr")
-                    .filter(result__contains=f'"repo": "{owner}/{name}"')
-                    .filter(result__contains=f'"number": {int(number)}')
-                    .order_by("-date_done")[:10]
+                repo_str = f"{owner}/{name}"
+                repo_id = pr.repository_id
+                # Seed candidates with substring filters, then confirm via structured decode.
+                # TODO: This uses unindexed text contains filters; prefer structured fields or pruning if TaskResult grows.
+                candidates_q = (
+                    Q(result__contains=repo_str)
+                    | Q(task_kwargs__contains=repo_str)
+                    | Q(task_args__contains=repo_str)
+                    | Q(task_kwargs__contains=str(repo_id))
+                    | Q(task_args__contains=str(repo_id))
                 )
+                recent = []
+                for tr in TaskResult.objects.filter(candidates_q).order_by("-date_done")[:200]:
+                    if self._matches_pr(tr, repo_id=repo_id, repo_str=repo_str, number=number):
+                        recent.append(tr)
+                    if len(recent) >= 10:
+                        break
                 labels = PRLabel.objects.filter(pull_request=pr).select_related("label_def").order_by("-created_at")[:10]
                 timeline_events = PRTimelineEvent.objects.filter(pull_request=pr).order_by("-occurred_at", "-id")[:10]
                 revisions = PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id")[:10]
@@ -270,7 +339,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
                     {
                         "recent_task_results": recent,
                         "task_results_changelist_url": reverse("admin:django_celery_results_taskresult_changelist"),
-                        "task_results_filter_query": f"?task_name=syncer.sync_pr&q={owner}/{name} {int(number)}",
+                        "task_results_filter_query": f"?q={quote_plus(f'{owner}/{name} {int(number)}')}",
                         "labels": labels,
                         "timeline_events": timeline_events,
                         "revisions": revisions,
