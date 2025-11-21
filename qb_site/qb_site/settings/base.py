@@ -191,6 +191,11 @@ ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(os.getenv("ANALYZER_
 ANALYZER_REVISION_SWEEP_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVISION_SWEEP_PERIOD_SECONDS", 3 * 3600))
 ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO", 50))
 ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(os.getenv("ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL"), False)
+ANALYZER_QUEUE_WINDOWS_SWEEP_PERIOD_SECONDS = int(os.getenv("ANALYZER_QUEUE_WINDOWS_SWEEP_PERIOD_SECONDS", 4 * 3600))
+ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO", 50))
+ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL = env_bool(
+    os.getenv("ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL"), False
+)
 
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
@@ -254,6 +259,14 @@ CELERY_BEAT_SCHEDULE = {
         "kwargs": {
             "max_prs_per_repo": ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO,
             "only_complete_backfill": ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL,
+        },
+    },
+    "analyzer_queue_windows_sweep": {
+        "task": "analyzer.rebuild_queue_windows_sweep",
+        "schedule": ANALYZER_QUEUE_WINDOWS_SWEEP_PERIOD_SECONDS,
+        "kwargs": {
+            "max_prs_per_repo": ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO,
+            "only_complete_backfill": ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
     },
 }
