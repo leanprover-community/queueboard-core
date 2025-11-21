@@ -3,6 +3,8 @@ from __future__ import annotations
 from celery import shared_task
 
 from syncer.models import PullRequest, CheckRun, StatusContext
+from syncer.models.check_run import CheckRunStatus
+from syncer.models.status_context import StatusContextState
 from syncer.services.github_client import GitHubClient
 from syncer.services.commit_history import harvest_commit_history_with_cursor
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task
@@ -26,12 +28,40 @@ def harvest_commit_history_task(
         page_size=page_size,
         since_iso=since_iso,
     )
-    missing = []
-    for sha in shas:
-        has_cr = CheckRun.objects.filter(pull_request=pr, head_sha=sha).exists()
-        has_sc = StatusContext.objects.filter(pull_request=pr, head_sha=sha).exists()
-        if not (has_cr or has_sc):
-            missing.append(sha)
+    missing: list[str] = []
+    if shas:
+        # Cache CI rows for harvested SHAs to avoid per-sha queries and to detect pending rows.
+        sc_rows = StatusContext.objects.filter(pull_request=pr, head_sha__in=shas).values_list("head_sha", "state")
+        sc_any: set[str] = set()
+        sc_pending: set[str] = set()
+        sc_completed: set[str] = set()
+        for head_sha, sc_state in sc_rows:
+            if not head_sha:
+                continue
+            sc_any.add(head_sha)
+            if sc_state == StatusContextState.PENDING:
+                sc_pending.add(head_sha)
+            else:
+                sc_completed.add(head_sha)
+
+        cr_rows = CheckRun.objects.filter(pull_request=pr, head_sha__in=shas).values_list("head_sha", "status")
+        cr_any: set[str] = set()
+        cr_pending: set[str] = set()
+        for head_sha, status in cr_rows:
+            if not head_sha:
+                continue
+            cr_any.add(head_sha)
+            if status in (CheckRunStatus.QUEUED, CheckRunStatus.IN_PROGRESS):
+                cr_pending.add(head_sha)
+
+        for sha in shas:
+            has_cr = sha in cr_any
+            has_sc = sha in sc_any
+            pending_status_only = sha in sc_pending and sha not in sc_completed
+            pending_check_run = sha in cr_pending
+            missing_ci = not (has_cr or has_sc)
+            if missing_ci or pending_status_only or pending_check_run:
+                missing.append(sha)
     ci_task_id = None
     if missing:
         ci_res = sync_ci_for_shas_task.delay(

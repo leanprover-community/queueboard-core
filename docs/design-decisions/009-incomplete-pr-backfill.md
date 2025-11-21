@@ -120,7 +120,7 @@ return {
 ## Analyzer Considerations
 - Analyzer’s revision and CI backfill flows assume:
   - `timeline_backfill_done == True` before calling `rebuild_pr_revisions(pr)`.
-  - `commits_backfill_done == True` when using `next_revision_backfill_shas(pr, ...)` to find missing CI heads across force-pushes.
+  - `commits_backfill_done == True` when using `next_revision_backfill_shas(pr, ...)` to find missing or pending/queued CI heads across force-pushes.
 - The incomplete PR backfill task will:
   - Reduce the number of PRs where `rebuild_pr_revisions` must be skipped due to unfinished timeline backfill.
   - Improve confidence that commit backfill across the PR’s lifetime is done before Analyzer runs CI-by-SHA backfills.
@@ -140,4 +140,3 @@ return {
   - We still only track `*_backfill_done` as booleans; we may later add counters or “last backfilled at” timestamps to distinguish “never attempted” from “in progress”.
   - Once most PRs are complete, we may want to reduce `SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS` (run less often) or prioritize older/high-value PRs.
   - Exposing incomplete-PR counts (e.g., on the Repository tools page or via metrics snapshots) would make it easier to see convergence and tune limits.
-

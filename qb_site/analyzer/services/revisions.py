@@ -9,6 +9,8 @@ from django.db.models import Max
 from django.utils import timezone
 
 from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType, StatusContext
+from syncer.models.check_run import CheckRunStatus
+from syncer.models.status_context import StatusContextState
 from analyzer.models import PRRevision, PRRevisionBuildState
 
 PR_REVISION_BUILDER_VERSION = 1
@@ -441,10 +443,13 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
 
 
 def next_revision_backfill_shas(pr: PullRequest, limit: int = 2) -> list[str]:
-    """Return up to `limit` head SHAs whose CI appears missing.
+    """Return up to `limit` head SHAs whose CI appears missing or still pending.
 
-    Heuristic: select candidate head SHAs (older first) where neither any CheckRun nor
-    any StatusContext exists for that SHA. Candidates include:
+    Heuristic: select candidate head SHAs (older first) where:
+      - neither any CheckRun nor any StatusContext exists for that SHA, or
+      - only pending StatusContexts exist (no completed states), or
+      - any CheckRun is still queued or in-progress.
+    Candidates include:
       - before/after SHAs from HEAD_FORCE_PUSHED timeline events
       - existing PRRevision heads
     If `limit` <= 0 returns an empty list.
@@ -478,11 +483,38 @@ def next_revision_backfill_shas(pr: PullRequest, limit: int = 2) -> list[str]:
     # Oldest-first
     candidates.sort(key=lambda item: item[0])
 
+    # Snapshot CI presence up-front to avoid repeated queries per candidate.
+    status_ctx_rows = StatusContext.objects.filter(pull_request=pr).values_list("head_sha", "state")
+    sc_any: set[str] = set()
+    sc_pending: set[str] = set()
+    sc_completed: set[str] = set()
+    for head_sha, state in status_ctx_rows:
+        if not head_sha:
+            continue
+        sc_any.add(head_sha)
+        if state == StatusContextState.PENDING:
+            sc_pending.add(head_sha)
+        else:
+            sc_completed.add(head_sha)
+
+    check_run_rows = CheckRun.objects.filter(pull_request=pr).values_list("head_sha", "status")
+    cr_any: set[str] = set()
+    cr_pending: set[str] = set()
+    for head_sha, status in check_run_rows:
+        if not head_sha:
+            continue
+        cr_any.add(head_sha)
+        if status in (CheckRunStatus.QUEUED, CheckRunStatus.IN_PROGRESS):
+            cr_pending.add(head_sha)
+
     shas: list[str] = []
     for _, sha in candidates:
-        has_cr = CheckRun.objects.filter(pull_request=pr, head_sha=sha).exists()
-        has_sc = StatusContext.objects.filter(pull_request=pr, head_sha=sha).exists()
-        if not (has_cr or has_sc):
+        has_cr = sha in cr_any
+        has_sc = sha in sc_any
+        pending_status_only = sha in sc_pending and sha not in sc_completed
+        pending_check_run = sha in cr_pending
+        missing_ci = not (has_cr or has_sc)
+        if missing_ci or pending_status_only or pending_check_run:
             shas.append(sha)
             if len(shas) >= limit:
                 break

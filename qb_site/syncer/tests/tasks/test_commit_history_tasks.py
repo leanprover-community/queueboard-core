@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from django.test import TestCase
+from django.utils import timezone
 from unittest.mock import patch
 
 from syncer.models import PullRequest, CommitHistoryHarvest
 from core.models import Repository
 from syncer.tasks.commit_history_tasks import harvest_commit_history_sweep, harvest_commit_history_task
-from syncer.models import CheckRun
+from syncer.models import CheckRun, StatusContext
 
 
 class TestCommitHistoryTasks(TestCase):
@@ -106,3 +107,53 @@ class TestCommitHistoryTasks(TestCase):
                 self.assertEqual(res["ci_missing"], [])
                 self.assertEqual(res["repo"], "o/r")
                 self.assertEqual(res["number"], 1)
+
+    def test_harvest_task_enqueues_for_pending_ci_rows(self) -> None:
+        state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha3")
+        StatusContext.objects.create(
+            pull_request=self.pr,
+            github_node_id="SC_pending",
+            rest_id=None,
+            head_sha="sha_pending",
+            name="lint",
+            state="PENDING",
+            target_url=None,
+            description=None,
+            gh_created_at=timezone.now(),
+        )
+        CheckRun.objects.create(
+            pull_request=self.pr,
+            github_node_id="CR_queued",
+            head_sha="sha_queued",
+            name="build",
+            status="QUEUED",
+            conclusion=None,
+            details_url=None,
+            external_id=None,
+        )
+        StatusContext.objects.create(
+            pull_request=self.pr,
+            github_node_id="SC_done",
+            rest_id=None,
+            head_sha="sha_done",
+            name="lint",
+            state="SUCCESS",
+            target_url=None,
+            description=None,
+            gh_created_at=timezone.now(),
+        )
+
+        with patch(
+            "syncer.tasks.commit_history_tasks.harvest_commit_history_with_cursor",
+            return_value=(["sha_pending", "sha_queued", "sha_done"], state),
+        ):
+            with patch("syncer.tasks.commit_history_tasks.sync_ci_for_shas_task.delay") as mock_ci:
+                res = harvest_commit_history_task(
+                    pr_id=self.pr.id,
+                    start_sha="sha3",
+                    max_pages=1,
+                    page_size=1,
+                    since_iso=None,
+                )
+        mock_ci.assert_called_once()
+        self.assertEqual(set(res["ci_missing"]), {"sha_pending", "sha_queued"})
