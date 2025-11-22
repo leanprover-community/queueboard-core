@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -9,13 +10,13 @@ from dateutil import parser as dtparser
 from django.conf import settings
 from django.utils import timezone
 
-from syncer.services.rate_budget import throttle_request_slot
+from syncer.services.rate_budget import choose_token, throttle_request_slot, token_fingerprint
 
 
 class GitHubClient:
     """Tiny GraphQL client for GitHub v4.
 
-    - Reads token from GH_TOKEN or GITHUB_TOKEN if not provided.
+    - Reads token from GH_TOKEN or GITHUB_TOKEN (comma-separated list allowed; picks one based on cached rate budget) if not provided.
     - Provides helpers to load and execute the PR bundle query.
 
     Network calls are centralized here to make higher-level services easy to test
@@ -24,10 +25,23 @@ class GitHubClient:
 
     def __init__(self, token: Optional[str] = None, endpoint: str = "https://api.github.com/graphql"):
         self.endpoint = endpoint
-        self.token = token or os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        self.token = self._choose_token(token)
         if not self.token:
-            raise RuntimeError("GitHub token not found; set GH_TOKEN or pass token explicitly")
+            raise RuntimeError("GitHub token not found; set GH_TOKEN/GITHUB_TOKEN or pass token explicitly")
+        self.token_id = token_fingerprint(self.token)
         self._last_rate_limit: Optional[Dict[str, Any]] = None
+
+    def _choose_token(self, provided: Optional[str]) -> Optional[str]:
+        if provided:
+            return provided
+        env_tokens = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if not env_tokens:
+            return None
+        tokens = [t.strip() for t in env_tokens.split(",") if t.strip()]
+        if not tokens:
+            return None
+        chosen = choose_token(tokens)
+        return chosen or random.choice(tokens)
 
     def execute(self, query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a GraphQL query against the GitHub v4 API.
@@ -58,7 +72,7 @@ class GitHubClient:
             try:  # local import to avoid import-time Redis coupling in tests
                 from syncer.services.rate_budget import set_rate_snapshot
 
-                set_rate_snapshot(rl)
+                set_rate_snapshot(rl, token_id=self.token_id)
             except Exception:
                 pass
         return data
