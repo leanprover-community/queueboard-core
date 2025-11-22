@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest import mock
 
 from django.test import SimpleTestCase
@@ -46,6 +47,14 @@ class TestGitHubClient(SimpleTestCase):
             with self.assertRaises(RuntimeError) as cm:
                 client.execute("q", {})
             self.assertIn("GraphQL", str(cm.exception))
+
+    def test_init_chooses_token_from_comma_separated_env(self) -> None:
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "a, b , c", "GITHUB_TOKEN": ""}):
+            with mock.patch("syncer.services.github_client.choose_token", return_value="b") as mchoose:
+                client = GitHubClient()
+
+        self.assertEqual(client.token, "b")
+        mchoose.assert_called_once_with(["a", "b", "c"])
 
     def test_get_pr_bundle_calls_execute_with_vars(self) -> None:
         client = GitHubClient(token="t")
