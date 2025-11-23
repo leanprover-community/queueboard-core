@@ -52,7 +52,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A qb_site worker -l info --uid nobody --gid nogroup
+    command: >-
+      celery -A qb_site worker -l info -Q default --concurrency=2 --prefetch-multiplier=1
+      --max-tasks-per-child=200 --max-memory-per-child=250000 --without-gossip
+      --without-mingle --uid nobody --gid nogroup
     volumes:
       - .:/app:ro
       - appdata:/data
