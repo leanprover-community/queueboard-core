@@ -170,8 +170,9 @@
   {
     "github_handle": "TwoFX",
     "zulip_handle": "@**Markus Himmel**",
-    "top_level": ["t-category-theory", "t-linear-algebra", "t-combinatorial-game-theory"],
-    "free_form": ""
+    "top_level": ["t-data"],
+    "free_form": "I am also knowledgeable about much of the category theory library. I don't have time right now do to many reviews in category theory, but feel free to request reviews for specific category theory PRs from me.",
+    "maximum_capacity": 5
   },
   {
     "github_handle": "mattrobball",
