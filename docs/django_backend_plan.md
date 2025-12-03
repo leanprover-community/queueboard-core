@@ -2,6 +2,14 @@
 
 See also: docs/legacy_data_surface.md for an overview of the legacy pipeline’s data surface and flow used to inform the new models, and docs/syncer_ingestion_plan.md for the v1 syncer ingestion architecture and service layout.
 
+## Status Update
+- Django project, layered settings, and Compose (web/worker/beat/db/redis) are in place; Celery beat drives syncer schedules and code is mounted read-only in containers.
+- Core models (`Repository`, `User`, `ReviewerPreference`) with constraints and syncer upsert helpers are implemented and exercised by the ingestion commands.
+- Syncer raw schema, rate-aware tasks, discovery/backfill flows, admin tools, and metrics snapshots are live; `sync_pr_from_file` and repo/PR tasks ingest GraphQL bundles end-to-end.
+- Analyzer has PR revision windows, admin actions, and commands to rebuild revisions and enqueue missing CI; CI/queue-at-time rollups remain to be built.
+- API app exists but only serves a placeholder index; DRF endpoints and queueboard JSON replacements have not been built yet.
+- The legacy `src/queueboard` pipeline still generates dashboards from downloaded JSON; migration plan to Django APIs is below.
+
 ## Project Configuration
 - Use a settings package (`qb_site/qb_site/settings/`) with `base.py`, `local.py`, `ci.py`, `production.py`; load config from environment variables and select modules via `DJANGO_SETTINGS_MODULE`.
 - Register first-party apps (`core`, `syncer`, `analyzer`, `api`) alongside Django defaults; keep shared dependencies centralized in `core`.
@@ -194,11 +202,22 @@ Developer utilities (current)
    - `upsert_user_from_github` creates/updates `core.User` for PR authors by GitHub node id or login, updating `name` and `avatar_url` when provided.
 
 ## API Layer
+- Status: the API app currently exposes only the placeholder index view; DRF wiring and endpoints remain to be built.
 - Adopt Django REST Framework for serialization, viewsets, filtering, pagination, throttling.
 - Namespace routes under `/api/` with versioning (`/api/v1/`); expose raw entities as needed and focused analytics endpoints consumed by the frontend.
 - Implement composite responses for dashboard widgets (queue snapshot, reviewer load, trend summaries).
 - Enable caching headers and optional Redis cache for high-traffic endpoints.
 - Provide schema documentation via `drf-spectacular` or `drf-yasg`, published alongside existing docs.
+
+## Queueboard API Migration Plan
+- Goal: replace the filesystem JSON “backend” in `src/queueboard` with Django/DRF endpoints while keeping current consumers stable during the cutover.
+- Phase 1: document the contract and version it — freeze the shapes used in `api/*.json` (`AggregatePRInfo`, `BasicPRInformation`, `PRStatus`, `CIStatus`, reviewer suggestions, dependency graph) and publish them under `/api/v1/queueboard/...`.
+- Phase 2: close data gaps in Postgres — confirm Syncer tables contain every field the legacy pipeline uses (direct dependencies parsed from descriptions, reviewer-topic fields, CI rollups, label kinds) and backfill from existing bundle fixtures where needed.
+- Phase 3: port classification/suggestion logic — move `classify_pr_state`, `ci_status`, state-evolution timing, and reviewer suggestion logic into Django services (Analyzer) with unit tests mirroring `src/queueboard/test_state_evolution.py` and fixture-based parity checks.
+- Phase 4: build a snapshot endpoint — DRF view that emits the same payloads as today’s `api/*.json` (`aggregate_info`, `draft_PRs`, `nondraft_PRs`, `CI_status`, `base_branch`, `all_pr_status`, `prs_to_list`, `automatic_assignments`, `area_stats`, `dependency_graph`), with ETags/Last-Modified and optional Redis caching.
+- Phase 5: precompute and cache — periodic Celery task to materialize a `QueueSnapshot` (or reuse Analyzer snapshot tables) so the API mostly serves prebuilt JSON blobs; add admin/management commands for forced refresh during debugging.
+- Phase 6: bridge the client — add an optional `--source api` path to `src/queueboard/dashboard_data.py` (or a thin adapter) that fetches the snapshot endpoint and writes the same `api/*.json` artifacts; run dual pipelines in CI and diff outputs to prove parity.
+- Phase 7: flip and deprecate — switch the default generator to the API source once parity is proven, keep filesystem download behind a flag for one release, then retire the legacy download/processing scripts.
 
 ## Testing and CI
 - Standardize on pytest + pytest-django; configure coverage and type-checking (mypy or pyright).
@@ -221,17 +240,19 @@ Developer utilities (current)
   use Docker Compose (or set local DB env vars) if you prefer a warning‑free run.
 
 ## Remaining Work (near‑term)
-1. CI backfill across force‑pushes (Analyzer‑driven)
+1. Queueboard API migration
+    - Finalize the versioned contract, build the DRF snapshot endpoint + Celery precompute, add the `--source api` adapter for the legacy generator, run dual pipelines to diff outputs, then flip the default and retire filesystem downloads.
+2. CI backfill across force‑pushes (Analyzer‑driven)
     - Build `PRRevision` windows from force‑push events and head state.
     - Identify historical SHAs missing CI and enqueue Syncer CI fetches (rate‑aware scheduling remains in Syncer).
     - Add query helpers for “CI at time T” and “who was on the queue at T”.
-2. Metrics and observability
+3. Metrics and observability
     - Keep token usage from `rate_events`; consider adding rollups for commit/timeline backfill pages if needed.
     - Small admin summary for per‑repo task volumes and token cost over selectable windows.
-3. Admin ergonomics
+4. Admin ergonomics
     - Optional per‑run overrides for backfill budgets on PR enqueue.
     - Quick links from PR admin to filtered Task Results (already present; iterate as needed).
-4. Tests
+5. Tests
     - Extend backfill tests (commit + timeline) and rate‑guard paths.
     - Add Analyzer unit tests for revision windows and CI reconstruction.
 
