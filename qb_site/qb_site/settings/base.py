@@ -155,6 +155,8 @@ if SYNCER_GITHUB_QUEUE:
         "syncer.backfill_repo_history_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_incomplete_prs": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_incomplete_prs_active": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.backfill_repo_engagement": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.backfill_repo_engagement_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history_sweep": {"queue": SYNCER_GITHUB_QUEUE},
     }
@@ -190,6 +192,9 @@ SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_HISTORY_BACKFILL_
 # Incomplete-PR backfill defaults (DB-based)
 SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS", 600))
 SYNCER_INCOMPLETE_BACKFILL_LIMIT = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_LIMIT", 20))
+# Engagement backfill (one-off snapshot of files/assignees/approvals/comments)
+SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS", 900))
+SYNCER_ENGAGEMENT_BACKFILL_LIMIT = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_LIMIT", 5))
 
 # Pending-CI refresh defaults
 SYNCER_PENDING_CI_MAX_AGE_HOURS = int(os.getenv("SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
@@ -299,3 +304,12 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
     },
 }
+# Optional engagement backfill; disable by setting SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS<=0
+if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["backfill_repo_engagement"] = {
+        "task": "syncer.backfill_repo_engagement_active",
+        "schedule": SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS,
+        "kwargs": {
+            "limit": SYNCER_ENGAGEMENT_BACKFILL_LIMIT,
+        },
+    }

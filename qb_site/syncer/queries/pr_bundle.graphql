@@ -52,7 +52,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
         }
       }
 
-      reviews(first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      reviews(first: 100) {
         totalCount
         pageInfo { hasNextPage }
         nodes {
@@ -67,7 +67,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
         }
       }
 
-      comments(first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      comments(first: 100) {
         totalCount
         pageInfo { hasNextPage }
         nodes {
