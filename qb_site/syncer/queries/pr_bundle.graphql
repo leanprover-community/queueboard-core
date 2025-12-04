@@ -31,6 +31,66 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
       deletions
       changedFiles
 
+      files(first: 100) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          path
+          changeType
+          additions
+          deletions
+        }
+      }
+
+      assignees(first: 100) {
+        totalCount
+        pageInfo { hasNextPage }
+        nodes {
+          id
+          login
+          name
+          avatarUrl
+        }
+      }
+
+      reviews(first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        totalCount
+        pageInfo { hasNextPage }
+        nodes {
+          id
+          state
+          submittedAt
+          author {
+            __typename
+            ... on User { id login name avatarUrl }
+            ... on Bot { id login avatarUrl }
+          }
+        }
+      }
+
+      comments(first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        totalCount
+        pageInfo { hasNextPage }
+        nodes {
+          id
+          createdAt
+          author {
+            __typename
+            ... on User { id login name avatarUrl }
+            ... on Bot { id login avatarUrl }
+          }
+        }
+      }
+
+      reviewThreads(first: 100) {
+        totalCount
+        pageInfo { hasNextPage }
+        nodes {
+          comments(first: 1) {
+            totalCount
+          }
+        }
+      }
+
       author {
         __typename
         ... on User { id login name avatarUrl }

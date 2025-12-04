@@ -57,9 +57,19 @@ class PullRequest(TimestampedModel):
     additions = models.IntegerField()
     deletions = models.IntegerField()
     changed_files_count = models.IntegerField()
+    files = models.JSONField(default=list)
+    assignees = models.JSONField(default=list)
+    approvals = models.JSONField(default=list)
+    commenters = models.JSONField(default=list)
+    number_total_comments = models.IntegerField(null=True, blank=True)
 
     # Ingestion metadata
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    engagement_synced_at = models.DateTimeField(null=True, blank=True)
+    files_incomplete = models.BooleanField(default=False)
+    assignees_incomplete = models.BooleanField(default=False)
+    reviews_incomplete = models.BooleanField(default=False)
+    comments_incomplete = models.BooleanField(default=False)
 
     # Timeline backfill state (optional V1.1 feature)
     # - timeline_backfill_cursor: oldest cursor reached so far when paging backward
