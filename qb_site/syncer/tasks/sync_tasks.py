@@ -142,7 +142,8 @@ def sync_pr_task(  # type: ignore[no-redef]
         gh_updated = None
 
     pr_db = PullRequest.objects.filter(repository=repo, number=int(number)).first()
-    if pr_db and pr_db.last_synced_at and gh_updated and gh_updated <= pr_db.last_synced_at:
+    needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
+    if pr_db and pr_db.last_synced_at and gh_updated and gh_updated <= pr_db.last_synced_at and not needs_engagement:
         # PR unchanged, but we may still spend backfill budget on older timeline pages.
         pages_used = 0
         events_created = 0
