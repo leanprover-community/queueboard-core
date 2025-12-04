@@ -439,10 +439,13 @@ try:
             "link__root_task_id",
         )
 
-        def lookup_allowed(self, lookup, value):  # type: ignore[override]
+        def lookup_allowed(self, lookup, value, request=None):  # type: ignore[override]
             if lookup in {"link__parent_task_id__exact", "link__root_task_id__exact"}:
                 return True
-            return super().lookup_allowed(lookup, value)
+            try:
+                return super().lookup_allowed(lookup, value, request)
+            except TypeError:
+                return super().lookup_allowed(lookup, value)
 
         def short_id(self, obj):  # type: ignore[override]
             tid = getattr(obj, "task_id", "") or ""
