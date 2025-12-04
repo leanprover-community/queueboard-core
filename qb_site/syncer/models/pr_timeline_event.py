@@ -54,7 +54,7 @@ class PRTimelineEvent(TimestampedModel):
             # Ensure SHA fields are only set on HEAD_FORCE_PUSHED events and are both present there.
             models.CheckConstraint(
                 name="syncer_prtl_sha_by_type_ck",
-                check=(
+                condition=(
                     (Q(type=PRTimelineEventType.HEAD_FORCE_PUSHED) & Q(before_sha__isnull=False) & Q(after_sha__isnull=False))
                     | (~Q(type=PRTimelineEventType.HEAD_FORCE_PUSHED) & Q(before_sha__isnull=True) & Q(after_sha__isnull=True))
                 ),
@@ -62,7 +62,9 @@ class PRTimelineEvent(TimestampedModel):
             # If label_name is set, the type must be LABELED or UNLABELED.
             models.CheckConstraint(
                 name="syncer_prtl_label_by_type_ck",
-                check=(Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])),
+                condition=(
+                    Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])
+                ),
             ),
         ]
         indexes = [
