@@ -55,6 +55,90 @@ class PRSyncService:
             checkruns_upserted += cr_res.created + cr_res.updated
             statusctx_upserted += sc_res.created + sc_res.updated
 
+        # Engagement fields: files, assignees, approvals, commenters, comment totals.
+        extras: Dict[str, Any] = {}
+        now_ts = timezone.now()
+
+        files_conn = pr_bundle.get("files") or {}
+        file_nodes = [n for n in (files_conn.get("nodes") or []) if isinstance(n, dict)]
+        file_paths = [str(n.get("path")) for n in file_nodes if n.get("path")]
+        files_has_more = bool((files_conn.get("pageInfo") or {}).get("hasNextPage"))
+        extras["files"] = file_paths
+        extras["files_incomplete"] = files_has_more or (pr_obj.changed_files_count > len(file_paths))
+
+        assignees_conn = pr_bundle.get("assignees") or {}
+        assignee_nodes = [n for n in (assignees_conn.get("nodes") or []) if isinstance(n, dict)]
+        assignees = [str(n.get("login")) for n in assignee_nodes if n.get("login")]
+        assignees_total = assignees_conn.get("totalCount")
+        assignees_has_more = bool((assignees_conn.get("pageInfo") or {}).get("hasNextPage"))
+        extras["assignees"] = assignees
+        extras["assignees_incomplete"] = bool(
+            assignees_has_more or (isinstance(assignees_total, int) and assignees_total > len(assignees))
+        )
+
+        reviews_conn = pr_bundle.get("reviews") or {}
+        review_nodes = [n for n in (reviews_conn.get("nodes") or []) if isinstance(n, dict)]
+        review_authors = []
+        approvals = []
+        for node in review_nodes:
+            author = node.get("author") or {}
+            login = author.get("login")
+            if login:
+                review_authors.append(login)
+                if str(node.get("state", "")).upper() == "APPROVED":
+                    approvals.append(login)
+        reviews_total = reviews_conn.get("totalCount")
+        reviews_has_more = bool((reviews_conn.get("pageInfo") or {}).get("hasNextPage"))
+        extras["approvals"] = sorted(set(approvals))
+        extras["reviews_incomplete"] = bool(
+            reviews_has_more or (isinstance(reviews_total, int) and reviews_total > len(review_nodes))
+        )
+
+        comments_conn = pr_bundle.get("comments") or {}
+        comment_nodes = [n for n in (comments_conn.get("nodes") or []) if isinstance(n, dict)]
+        comment_authors = [
+            str((n.get("author") or {}).get("login")) for n in comment_nodes if (n.get("author") or {}).get("login")
+        ]
+        issue_comments_total = comments_conn.get("totalCount")
+        comments_has_more = bool((comments_conn.get("pageInfo") or {}).get("hasNextPage"))
+        issue_comments_count = issue_comments_total if isinstance(issue_comments_total, int) else len(comment_nodes)
+
+        review_threads_conn = pr_bundle.get("reviewThreads") or {}
+        review_threads_nodes = [n for n in (review_threads_conn.get("nodes") or []) if isinstance(n, dict)]
+        review_threads_total = review_threads_conn.get("totalCount")
+        review_threads_has_more = bool((review_threads_conn.get("pageInfo") or {}).get("hasNextPage"))
+        review_comments_count = 0
+        for thread in review_threads_nodes:
+            comments = thread.get("comments") or {}
+            t_total = comments.get("totalCount")
+            if isinstance(t_total, int):
+                review_comments_count += t_total
+        extras["comments_incomplete"] = bool(
+            comments_has_more
+            or review_threads_has_more
+            or (isinstance(issue_comments_total, int) and issue_comments_total > len(comment_nodes))
+            or (isinstance(review_threads_total, int) and review_threads_total > len(review_threads_nodes))
+        )
+        commenters = sorted(set(comment_authors + review_authors))
+        extras["commenters"] = commenters
+        total_comments = None
+        if isinstance(issue_comments_count, int) and isinstance(review_comments_count, int):
+            total_comments = int(issue_comments_count) + int(review_comments_count)
+        extras["number_total_comments"] = total_comments
+
+        extras["engagement_synced_at"] = now_ts
+
+        update_fields = []
+        for field, value in extras.items():
+            if getattr(pr_obj, field) != value:
+                setattr(pr_obj, field, value)
+                update_fields.append(field)
+        if "engagement_synced_at" not in update_fields:
+            pr_obj.engagement_synced_at = now_ts
+            update_fields.append("engagement_synced_at")
+        if update_fields:
+            pr_obj.save(update_fields=update_fields + ["updated_at"])
+
         result = {
             "labels_created": lab_res.created,
             "labels_updated": lab_res.updated,

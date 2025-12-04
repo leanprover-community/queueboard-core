@@ -147,6 +147,109 @@ class TestPRSyncIntegration(TestCase):
         self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
         self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
 
+    def test_engagement_fields_ingest(self) -> None:
+        svc = PRSyncService()
+        bundle = self._make_min_bundle()
+        bundle["changedFiles"] = 2
+        bundle["files"] = {
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [
+                {"path": "src/a.lean", "changeType": "MODIFIED", "additions": 2, "deletions": 1},
+                {"path": "src/b.lean", "changeType": "ADDED", "additions": 5, "deletions": 0},
+            ],
+        }
+        bundle["assignees"] = {
+            "totalCount": 2,
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [
+                {"id": "U1", "login": "assignee1", "name": "Assignee One", "avatarUrl": "https://ex/a.png"},
+                {"id": "U2", "login": "assignee2", "name": "Assignee Two", "avatarUrl": "https://ex/b.png"},
+            ],
+        }
+        bundle["reviews"] = {
+            "totalCount": 2,
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [
+                {
+                    "id": "R1",
+                    "state": "APPROVED",
+                    "submittedAt": "2025-10-20T00:07:00Z",
+                    "author": {
+                        "__typename": "User",
+                        "id": "A1",
+                        "login": "rev1",
+                        "name": "Reviewer 1",
+                        "avatarUrl": "https://ex/r1.png",
+                    },
+                },
+                {
+                    "id": "R2",
+                    "state": "COMMENTED",
+                    "submittedAt": "2025-10-20T00:08:00Z",
+                    "author": {
+                        "__typename": "User",
+                        "id": "A2",
+                        "login": "rev2",
+                        "name": "Reviewer 2",
+                        "avatarUrl": "https://ex/r2.png",
+                    },
+                },
+            ],
+        }
+        bundle["comments"] = {
+            "totalCount": 2,
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [
+                {
+                    "id": "C1",
+                    "createdAt": "2025-10-20T00:09:00Z",
+                    "author": {
+                        "__typename": "User",
+                        "id": "C1",
+                        "login": "commenter1",
+                        "name": "Commenter 1",
+                        "avatarUrl": "https://ex/c1.png",
+                    },
+                },
+                {
+                    "id": "C2",
+                    "createdAt": "2025-10-20T00:10:00Z",
+                    "author": {
+                        "__typename": "User",
+                        "id": "C2",
+                        "login": "rev2",
+                        "name": "Reviewer 2",
+                        "avatarUrl": "https://ex/r2.png",
+                    },
+                },
+            ],
+        }
+        bundle["reviewThreads"] = {
+            "totalCount": 1,
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [
+                {
+                    "comments": {
+                        "totalCount": 5,
+                    }
+                }
+            ],
+        }
+
+        svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
+        pr = PullRequest.objects.get(repository=self.repo, number=1)
+
+        self.assertEqual(pr.files, ["src/a.lean", "src/b.lean"])
+        self.assertFalse(pr.files_incomplete)
+        self.assertEqual(pr.assignees, ["assignee1", "assignee2"])
+        self.assertFalse(pr.assignees_incomplete)
+        self.assertEqual(pr.approvals, ["rev1"])
+        self.assertFalse(pr.reviews_incomplete)
+        self.assertEqual(pr.commenters, ["commenter1", "rev1", "rev2"])
+        self.assertEqual(pr.number_total_comments, 7)
+        self.assertFalse(pr.comments_incomplete)
+        self.assertIsNotNone(pr.engagement_synced_at)
+
     def test_labels_diff_attach_and_detach(self) -> None:
         svc = PRSyncService()
         bundle = self._make_min_bundle()  # A, B
