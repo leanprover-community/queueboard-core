@@ -20,7 +20,10 @@ class TestCommitBackfillOnly(TestCase):
     def _mk_pr(self, number: int, last_synced_at=None):
         if last_synced_at is None:
             last_synced_at = timezone.now()
-        return make_pr(self.repo, number, last_synced_at=last_synced_at)
+        pr = make_pr(self.repo, number, last_synced_at=last_synced_at)
+        pr.engagement_synced_at = last_synced_at
+        pr.save(update_fields=["engagement_synced_at"])
+        return pr
 
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     def test_commit_backfill_runs_when_up_to_date(self, MockClient) -> None:
