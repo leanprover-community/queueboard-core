@@ -18,7 +18,10 @@ class TestSyncPrTaskSkip(TestCase):
     def _make_pr(self, number: int, last_synced_at=None):
         if last_synced_at is None:
             last_synced_at = timezone.now()
-        return make_pr(self.repo, number, last_synced_at=last_synced_at)
+        pr = make_pr(self.repo, number, last_synced_at=last_synced_at)
+        pr.engagement_synced_at = last_synced_at
+        pr.save(update_fields=["engagement_synced_at"])
+        return pr
 
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     def test_up_to_date_skip_includes_rate_events(self, MockClient) -> None:
