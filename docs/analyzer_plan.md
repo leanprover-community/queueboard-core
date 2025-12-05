@@ -93,19 +93,20 @@ Stage C: Compute windows and sets
   - Service/Task: `syncer.services.ci_by_sha_service.sync_ci_for_sha`, `syncer.tasks.sync_tasks.sync_ci_for_shas`.
   - Admin tool: "Enqueue CI by SHA" under PRs (with an optional strict association guard).
 
- - Queue rules and windows (Analyzer) are implemented:
+- Queue rules and windows (Analyzer) are implemented:
   - Models:
-    - `analyzer.QueueRuleSet` (per‑repo, versioned queue rules) with:
+    - `analyzer.QueueRuleSet` (per-repo, versioned queue rules) with:
       - `require_open`, `require_not_draft`, `require_ci_success`.
       - `required_label_names`, `forbidden_label_names` (label gates).
       - `required_ci_contexts` (CI contexts this ruleset requires).
       - `effective_from`, `effective_to` to scope which PRs/time ranges a ruleset is intended to cover (e.g., legacy label-only vs CI-gated eras).
     - `analyzer.PRQueueWindow` (per‑PR, per‑ruleset queue windows):
       - `pull_request`, `rule_set`, `from_ts`, `to_ts`, `cycle_index` (window index per `(pr, rule_set)`).
+    - `analyzer.PRDependency` and `analyzer.PRDependencyState` (dependency edges parsed from PR bodies with stateful rebuild tracking; periodic sweep + per-PR rebuild keep edges current, with fan-out mode for low memory usage).
   - Services:
     - `analyzer.services.queue_rules` to materialize `QueueRules` from `QueueRuleSet` (or defaults) at a given time.
     - `analyzer.services.queue_windows`:
-      - In‑memory queue windows and membership helpers (see above), CI- and PRRevision-aware for CI-gated rulesets.
+      - In-memory queue windows and membership helpers (see above), CI- and PRRevision-aware for CI-gated rulesets.
       - `rebuild_queue_windows_for_ruleset` to persist windows to `PRQueueWindow` for a given `(PR, QueueRuleSet)`, gated on `timeline_backfill_done` and PRRevision presence for CI-gated rulesets.
   - Tests:
     - `qb_site/analyzer/tests/services/test_queue_windows.py`.

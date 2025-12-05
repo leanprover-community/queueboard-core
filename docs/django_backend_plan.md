@@ -321,10 +321,11 @@ Developer utilities (current)
 - Models/services in place:
   - `PRRevision` model with indexes and ordering.
   - `rebuild_pr_revisions(pr)` builds windows from timeline events (seeding from CI when needed).
+  - `PRDependency` + `PRDependencyState` parse body checkboxes into dependencies; `analyzer.process_pr` rebuilds per-PR, and periodic `analyzer.rebuild_dependencies_sweep` (builder-versioned, fan-out capable) backfills/refreshes incrementally with state tracking.
 - `next_revision_backfill_shas(pr, limit)` identifies head SHAs with missing or only pending/queued CI.
 - Syncer counterpart ready to consume requests:
   - `sync_ci_for_shas(repo_id, number, shas=[...], max_pages_per_sha=?, require_pr_association=?)` with rate guard and continuation.
  - Admin & commands:
    - Read‑only PRRevision admin view and inline on PR pages.
-   - PR object tools: Analyzer “Rebuild revisions” and “Enqueue missing CI”.
+   - PR object tools: Analyzer “Rebuild revisions”, “Enqueue missing CI”, and “Rebuild dependencies” (links/actions).
    - Commands: `rebuild_revisions` and `plan_ci_backfill` (dry‑run and enqueue modes).

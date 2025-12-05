@@ -13,6 +13,8 @@
       revisions</a>
     <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_enqueue_missing_ci' original.pk %}">Analyzer:
       Enqueue missing CI</a>
+    <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_rebuild_dependencies' original.pk %}">Analyzer:
+      Rebuild dependencies</a>
   </div>
 </div>
 {% endif %}
@@ -209,5 +211,40 @@
 </table>
 {% else %}
 <p>No status contexts for this PR yet.</p>
+{% endif %}
+<h2>Dependencies (parsed from body)</h2>
+{% if prdependency_list_url %}
+<p><a href="{{ prdependency_list_url }}">View all dependencies for this PR</a></p>
+{% endif %}
+{% if dependencies %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Depends on</th>
+      <th>Target PR</th>
+      <th>Created</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for dep in dependencies %}
+    <tr>
+      <td>{{ dep.depends_on_repository }}#{{ dep.depends_on_number }}</td>
+      <td>
+        {% if dep.depends_on_pull_request %}
+        <a href="{% url 'admin:syncer_pullrequest_change' dep.depends_on_pull_request_id %}">{{ dep.depends_on_pull_request }}</a>
+        {% else %}
+        (not ingested)
+        {% endif %}
+      </td>
+      <td>{{ dep.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No dependencies parsed for this PR yet.</p>
+{% endif %}
+{% if dependency_state %}
+<p><strong>Dependency state:</strong> last checked {{ dependency_state.last_checked_at }} (builder v{{ dependency_state.builder_version }})</p>
 {% endif %}
 {% endblock %}

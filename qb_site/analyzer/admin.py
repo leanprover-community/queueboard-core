@@ -5,7 +5,15 @@ from django.http import HttpResponseRedirect
 from django.urls import reverse
 from django.utils.html import format_html
 
-from analyzer.models import PRRevision, PRRevisionBuildState, QueueRuleSet, PRQueueWindow, AnalyzerConvergenceSnapshot
+from analyzer.models import (
+    PRRevision,
+    PRRevisionBuildState,
+    QueueRuleSet,
+    PRQueueWindow,
+    AnalyzerConvergenceSnapshot,
+    PRDependency,
+    PRDependencyState,
+)
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -138,6 +146,58 @@ class PRQueueWindowAdmin(ReadOnlyAdmin):
     date_hierarchy = "from_ts"
     raw_id_fields = ("pull_request", "rule_set")
     readonly_fields = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
+
+
+@admin.register(PRDependency)
+class PRDependencyAdmin(ReadOnlyAdmin):
+    list_display = (
+        "pull_request",
+        "depends_on_repository",
+        "depends_on_number",
+        "depends_on_pr_link",
+        "created_at",
+    )
+    list_filter = ("depends_on_repository",)
+    search_fields = (
+        "pull_request__number",
+        "pull_request__repository__owner",
+        "pull_request__repository__name",
+        "depends_on_number",
+    )
+    raw_id_fields = ("pull_request", "depends_on_repository", "depends_on_pull_request")
+    readonly_fields = (
+        "pull_request",
+        "depends_on_repository",
+        "depends_on_number",
+        "depends_on_pull_request",
+        "created_at",
+        "updated_at",
+    )
+
+    def depends_on_pr_link(self, obj: PRDependency) -> str:  # pragma: no cover - simple formatting
+        if not obj.depends_on_pull_request_id:
+            return "-"
+        url = reverse("admin:syncer_pullrequest_change", args=[obj.depends_on_pull_request_id])
+        return format_html("<a href='{}'>{}</a>", url, obj.depends_on_pull_request)
+
+    depends_on_pr_link.short_description = "Depends on PR"  # type: ignore[attr-defined]
+    depends_on_pr_link.admin_order_field = "depends_on_pull_request"  # type: ignore[attr-defined]
+
+
+@admin.register(PRDependencyState)
+class PRDependencyStateAdmin(ReadOnlyAdmin):
+    list_display = ("pull_request", "last_checked_at", "last_body_hash", "builder_version", "updated_at")
+    list_filter = ("builder_version",)
+    search_fields = ("pull_request__number", "pull_request__repository__owner", "pull_request__repository__name")
+    raw_id_fields = ("pull_request",)
+    readonly_fields = (
+        "pull_request",
+        "last_checked_at",
+        "last_body_hash",
+        "builder_version",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(AnalyzerConvergenceSnapshot)
