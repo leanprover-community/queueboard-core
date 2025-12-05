@@ -7,93 +7,10 @@ This document captures the contract for the Django/DRF replacement of the legacy
 - Primary endpoint: `GET /api/v1/queueboard/snapshot?repo=<owner/name>` returning a JSON object that embeds the artifacts previously written to `api/*.json`.
 - Versioning: bump the `v1` prefix for breaking changes; include `schema_version` and `generated_at` in the response metadata.
 
-## Payload shapes
-- Types reused from the legacy pipeline:
-  - `Label`: `{ "name": str, "color": str, "url": str }`
-  - `CIStatus` enum: `pass | fail | fail-inessential | running | missing`
-  - `PRStatus` enum (from `classify_pr_state`): `queue | merge-conflict | awaiting-ci | awaiting-author | awaiting-zulip | blocked | delegated | ready-to-merge | awaiting-review | not-ready | closed`
-  - `DataStatus`: `valid | incomplete | missing`
-- `BasicPRInformation` (matches open-PR listings):
-  ```json
-  {
-    "number": int,
-    "author_name": str | null,
-    "title": str,
-    "url": str,
-    "labels": [Label],
-    "updatedAt": datetime
-  }
-  ```
-- `AggregatePRInfo` (per PR, keyed by number in the snapshot):
-  ```json
-  {
-    "is_draft": bool,
-    "CI_status": CIStatus,
-    "base_branch": str,
-    "branch_name": str,
-    "head_repo": str,
-    "state": str,                // open|closed
-    "last_updated": datetime,
-    "author": str,
-    "title": str,
-    "description": str,
-    "direct_dependencies": [int],
-    "labels": [Label],
-    "additions": int,
-    "deletions": int,
-    "modified_files": [str],     // first 100 paths
-    "number_modified_files": int,
-    "approvals": [str],
-    "assignees": [str],
-    "users_commented": [DataStatus, [str]],
-    "number_total_comments": int | null,
-    "last_status_change": {
-      "status": DataStatus,
-      "time": datetime,
-      "delta": relativedelta,
-      "current_status": PRStatus
-    } | null,
-    "first_on_queue": [DataStatus, datetime|null] | null,
-    "total_queue_time": {
-      "status": DataStatus,
-      "value_td": timedelta,
-      "value_rd": relativedelta,
-      "explanation": str
-    } | null
-  }
-  ```
-- Snapshot response structure (single HTTP call replaces the legacy directory of files):
-  ```json
-  {
-    "meta": {
-      "schema_version": "v1",
-      "generated_at": datetime,
-      "repository": "owner/name",
-      "rule_set_id": "<ruleset-id-or-name>"
-    },
-    "artifacts": {
-      "aggregate_info": { "<pr_number>": AggregatePRInfo, ... },
-      "draft_PRs": [BasicPRInformation],
-      "nondraft_PRs": [BasicPRInformation],
-      "CI_status": { "<pr_number>": CIStatus },
-      "base_branch": { "<pr_number>": str },
-      "all_pr_status": { "<pr_number>": PRStatus },
-      "prs_to_list": { "<dashboard>": [BasicPRInformation] },
-      "automatic_assignments": { "<pr_number>": "<github_login>" },
-      "area_stats": { ... },              // same shape as legacy compute_area_ratios
-      "dependency_graph": { "nodes": [...], "links": [...], "metadata": {...} }
-    }
-  }
-  ```
-- Optional additions:
-  - `etag`/`last_modified` headers; `max_age` cache hints for consumers.
-  - Future pagination hooks for per-dashboard lists if payload size grows.
+## Minimal snapshot (current)
 
-## Minimal snapshot for dashboard tables (draft)
+We now emit a single `snapshot.json` used by the dashboard renderer (dependency graph, area stats, and automatic assignments remain separate files/endpoints). Shape:
 
-Scope: keep dependency graph, area stats, and automatic assignments as separate artifacts for now; this snapshot covers only the data the main HTML tables need.
-
-Proposed structure (`docs/` draft; to be mirrored by DRF later):
 ```json
 {
   "meta": {
@@ -112,21 +29,31 @@ Proposed structure (`docs/` draft; to be mirrored by DRF later):
       "author": "<login>",
       "title": "<str>",
       "description": "<str>",
-      "labels": [Label],
+      "labels": [ { "name": "<str>", "color": "<hex>", "url": "<label url>" } ],
       "additions": 0,
       "deletions": 0,
       "modified_files": ["<path>", ...],        // first 100
       "number_modified_files": 0,
       "approvals": ["<login>", ...],
       "assignees": ["<login>", ...],
-      "users_commented": [DataStatus, ["<login>", ...]],
+      "users_commented": ["valid|incomplete|missing", ["<login>", ...]] | null,
       "number_total_comments": 0 | null,
       "direct_dependencies": [int],
-      "ci_status": CIStatus,
-      "pr_status": PRStatus,
-      "last_status_change": LastStatusChange | null,
-      "first_on_queue": [DataStatus, "<datetime|null>"] | null,
-      "total_queue_time": TotalQueueTime | null
+      "ci_status": "pass|fail|fail-inessential|running|missing",
+      "pr_status": "<PRStatus or null>",
+      "last_status_change": {
+        "status": "valid|incomplete|missing",
+        "time": "<datetime>",
+        "delta": { "days": 1, "hours": 2, ... },
+        "current_status": "<PRStatus>"
+      } | null,
+      "first_on_queue": ["valid|incomplete|missing", "<datetime|null>"] | null,
+      "total_queue_time": {
+        "status": "valid|incomplete|missing",
+        "value_td": <seconds>,
+        "value_rd": { "days": 1, "hours": 2, ... },
+        "explanation": "<str>"
+      } | null
     }
   },
   "lists": {
@@ -136,20 +63,13 @@ Proposed structure (`docs/` draft; to be mirrored by DRF later):
   }
 }
 ```
-- `dashboards` replaces `prs_to_list.json` and keeps the existing partitions (queue, queue-easy, queue-new-contributor, tech-debt, needs-decision, stale variants, etc.). The consumer still builds `BasicPRInformation` rows from the `prs` map.
-- `pr_status` replaces `all_pr_status.json`; `ci_status` replaces `CI_status.json`; `base_branch` remains per-PR rather than a separate map.
-- If a PR is missing in `prs`, it is implicitly absent; placeholder rows are no longer needed.
 
-Update cadence considerations (for the future DRF builder):
-- **Syncer ingest batch**: updates `state`, `is_draft`, `base_branch`, `branch_name`, `last_updated`, `author`, `title`, `description`, `labels`, `additions/deletions`, `modified_files` (+count), `approvals`, `assignees`, `users_commented`, `number_total_comments`, `direct_dependencies` (via Analyzer rebuild), and the raw CI inputs. These fields should be consistent within one snapshot build.
-- **Derived classification**: `ci_status` and `pr_status` should be computed in the same pass as the snapshot to avoid drift (no need to persist separately).
-- **Timeline analytics**: `last_status_change`, `first_on_queue`, `total_queue_time` depend on timeline backfill; compute in Analyzer and mark `DataStatus` when incomplete. These can be precomputed and read as-is during snapshot generation.
-- **Dashboards/lists**: recompute on each snapshot from the in-memory `prs` map (no separate persistence needed).
+Notes:
+- `dashboards` mirrors `prs_to_list.json`; the renderer rebuilds `BasicPRInformation` from `prs`.
+- Legacy files (`aggregate_info.json`, `CI_status.json`, etc.) are still emitted during transition but are now derived from the snapshot in the renderer.
+- Dependency graph, area stats, and automatic assignments stay separate for now.
 
-Migration plan against the legacy generator:
-1. Emit this snapshot alongside the current multi-file outputs for a few runs; add a tiny diff script/test that compares queue size, draft count, and per-PR `ci_status`/`pr_status`.
-2. Point `dashboard.py` at the snapshot (derive old maps from it) and keep the old files as a fallback flag.
-3. Drop the redundant files once parity is proven; keep dependency graph, area stats, and automatic assignments as separate endpoints/files.
+Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`).
 
 ## Database coverage (current vs. needed)
 - Covered today:
