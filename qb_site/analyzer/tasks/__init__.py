@@ -11,9 +11,11 @@ from django.utils import timezone
 from core.models import Repository
 from syncer.models import PullRequest
 from syncer.services.github_client import GitHubClient
-from analyzer.models import QueueRuleSet
+from analyzer.models import QueueRuleSet, PRDependencyState
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
+from analyzer.services.dependencies import rebuild_pr_dependencies, body_hash
 from analyzer.tasks.process_pr import process_pr
+from analyzer.tasks.dependencies import rebuild_pr_dependencies_task, rebuild_dependencies_sweep_task
 from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 from analyzer.tasks.rebuild_revisions_sweep import rebuild_revisions_sweep_task
 from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
@@ -52,6 +54,26 @@ def process_pr_task(pr_id: int) -> Dict[str, Any]:
     }
 
     steps: Dict[str, Any] = {}
+    # 0) Parse PR body dependencies.
+    try:
+        deps_res = rebuild_pr_dependencies(pr)
+        steps["dependencies"] = {
+            "created": int(deps_res.created),
+            "updated": int(deps_res.updated),
+            "deleted": int(deps_res.deleted),
+            "parsed_numbers": deps_res.parsed_numbers,
+            "resolved_numbers": deps_res.resolved_numbers,
+            "unresolved_numbers": deps_res.unresolved_numbers,
+        }
+        dep_state, _ = PRDependencyState.objects.get_or_create(pull_request=pr)
+        dep_state.last_checked_at = now
+        dep_state.last_body_hash = body_hash(pr.body)
+        dep_state.builder_version = dep_state.builder_version or 1
+        dep_state.save(update_fields=["last_checked_at", "last_body_hash", "builder_version", "updated_at"])
+    except Exception as exc:  # pragma: no cover - defensive
+        log.exception("analyzer.process_pr: dependency rebuild failed for PR id=%s", pr.id)
+        steps["dependencies"] = {"error": str(exc)}
+
     # 1) Run the orchestrator (revisions + queue windows) when timeline is backfilled.
     if getattr(pr, "timeline_backfill_done", False):
         try:
@@ -107,4 +129,6 @@ __all__ = [
     "rebuild_revisions_sweep_task",
     "rebuild_queue_windows_sweep_task",
     "collect_analyzer_convergence_task",
+    "rebuild_pr_dependencies_task",
+    "rebuild_dependencies_sweep_task",
 ]

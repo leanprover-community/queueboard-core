@@ -22,9 +22,10 @@ from .models import (
     RepoBackfillCursor,
     CommitHistoryHarvest,
 )
-from analyzer.models import PRRevision
+from analyzer.models import PRRevision, PRDependency, PRDependencyState
 from analyzer.services.revisions import rebuild_pr_revisions
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
+from analyzer.tasks.dependencies import rebuild_pr_dependencies_task
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -256,6 +257,11 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 self.admin_site.admin_view(self.analyzer_enqueue_missing_ci_view),
                 name="syncer_pullrequest_analyzer_enqueue_missing_ci",
             ),
+            path(
+                "<path:object_id>/analyzer-rebuild-dependencies/",
+                self.admin_site.admin_view(self.analyzer_rebuild_dependencies_view),
+                name="syncer_pullrequest_analyzer_rebuild_dependencies",
+            ),
         ]
         return custom + urls
 
@@ -345,6 +351,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 revisions = PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id")[:10]
                 check_runs = CheckRun.objects.filter(pull_request=pr).order_by("-gh_completed_at", "-id")[:10]
                 status_contexts = StatusContext.objects.filter(pull_request=pr).order_by("-gh_created_at", "-id")[:10]
+                dependencies = PRDependency.objects.filter(pull_request=pr).select_related("depends_on_pull_request")[:20]
+                dep_state = PRDependencyState.objects.filter(pull_request=pr).first()
                 extra.update(
                     {
                         "recent_task_results": recent,
@@ -359,6 +367,9 @@ class PullRequestAdmin(ReadOnlyAdmin):
                         "checkrun_list_url": f"{reverse('admin:syncer_checkrun_changelist')}?pull_request__id__exact={pr.id}",
                         "statuscontext_list_url": f"{reverse('admin:syncer_statuscontext_changelist')}?pull_request__id__exact={pr.id}",
                         "prrevision_list_url": f"{reverse('admin:analyzer_prrevision_changelist')}?pull_request__id__exact={pr.id}",
+                        "prdependency_list_url": f"{reverse('admin:analyzer_prdependency_changelist')}?pull_request__id__exact={pr.id}",
+                        "dependencies": dependencies,
+                        "dependency_state": dep_state,
                     }
                 )
             except Exception:  # pragma: no cover - optional dependency
@@ -524,11 +535,21 @@ class PullRequestAdmin(ReadOnlyAdmin):
         self.message_user(request, f"Analyzer: enqueued CI by SHA for {len(shas)} head(s); task_id={task_id}")
         return self.change_view(request, object_id)
 
+    def analyzer_rebuild_dependencies_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            self.message_user(request, "PR not found")
+            return self.change_view(request, object_id)
+        async_res = rebuild_pr_dependencies_task.delay(pr.id)
+        self.message_user(request, f"Analyzer: enqueued dependency rebuild; task_id={async_res.id}")
+        return self.change_view(request, object_id)
+
     actions = [
         "action_enqueue_sync",
         "action_enqueue_sync_dry_run",
         "action_analyzer_rebuild_revisions",
         "action_analyzer_enqueue_missing_ci",
+        "action_analyzer_rebuild_dependencies",
     ]
 
     def action_enqueue_sync(self, request, queryset):  # type: ignore[override]
@@ -633,6 +654,20 @@ class PullRequestAdmin(ReadOnlyAdmin):
         )
 
     action_analyzer_enqueue_missing_ci.short_description = "Analyzer: enqueue missing CI for selected PRs"  # type: ignore[attr-defined]
+
+    def action_analyzer_rebuild_dependencies(self, request, queryset):  # type: ignore[override]
+        enqueued = 0
+        for pr in queryset.select_related("repository"):
+            async_res = rebuild_pr_dependencies_task.delay(pr.id)
+            enqueued += 1
+            self.message_user(
+                request,
+                f"Analyzer: enqueued dependency rebuild for PR #{pr.number}; task_id={async_res.id}",
+            )
+        if enqueued == 0:
+            self.message_user(request, "Analyzer: no PRs selected for dependency rebuild")
+
+    action_analyzer_rebuild_dependencies.short_description = "Analyzer: rebuild dependencies for selected PRs"  # type: ignore[attr-defined]
 
 
 @admin.register(LabelDef)

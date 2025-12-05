@@ -62,9 +62,7 @@ class PRTimelineEvent(TimestampedModel):
             # If label_name is set, the type must be LABELED or UNLABELED.
             models.CheckConstraint(
                 name="syncer_prtl_label_by_type_ck",
-                condition=(
-                    Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])
-                ),
+                condition=(Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])),
             ),
         ]
         indexes = [
