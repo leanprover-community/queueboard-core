@@ -68,7 +68,8 @@ This document captures the contract for the Django/DRF replacement of the legacy
     "meta": {
       "schema_version": "v1",
       "generated_at": datetime,
-      "repository": "owner/name"
+      "repository": "owner/name",
+      "rule_set_id": "<ruleset-id-or-name>"
     },
     "artifacts": {
       "aggregate_info": { "<pr_number>": AggregatePRInfo, ... },
@@ -91,19 +92,16 @@ This document captures the contract for the Django/DRF replacement of the legacy
 ## Database coverage (current vs. needed)
 - Covered today:
   - Core PR metadata: state, draft, timestamps, base/head refs, head repo owner/name, title/body, additions/deletions, `changed_files_count` (Syncer `PullRequest`).
+  - Engagement fields: first 100 `files`, `assignees`, `approvals` (approving review authors), `commenters` (issue + review authors), `number_total_comments`, with completeness flags and `engagement_synced_at`.
   - CI rollup inputs: `CheckRun`, `StatusContext`.
   - Labels and attachments: `LabelDef`, `PRLabel`.
   - Timeline events needed for state evolution: `PRTimelineEvent` (label add/remove, draft toggles, reopen/close).
   - Identity: `Repository`, `User`; reviewer preferences exist in `ReviewerPreference`.
-- Gaps to fill for parity with `AggregatePRInfo`:
-  - `modified_files` (first 100 paths per PR): not stored; only `changed_files_count` exists.
-  - `approvals`: review approvals not stored.
-  - `assignees`: assignee list not stored.
-  - `users_commented` and `number_total_comments`: comments/review comments not stored.
-  - `head_repo` string: stored as owner/name components; needs join/formatting in the API.
-  - `direct_dependencies`: parsed from `PullRequest.body` into Analyzer `PRDependency` via body-checkbox parsing; rebuild tasks (`analyzer.rebuild_pr_dependencies`, `analyzer.rebuild_dependencies_sweep`) keep edges in sync with existing PRs.
-- Queue inputs:
-  - Legacy `queue.json` comparison should be replaced by computing the queue from DB data; `use_aggregate_queue=True` becomes the default once parity is proven.
+  - Direct dependencies: parsed from `PullRequest.body` into Analyzer `PRDependency` via body-checkbox parsing; rebuild tasks (`analyzer.rebuild_pr_dependencies`, `analyzer.rebuild_dependencies_sweep`) keep edges in sync with existing PRs.
+- Remaining considerations:
+  - `head_repo` string still needs to be formatted from stored owner/name in the API response.
+  - Map completeness flags → `DataStatus` consistently (e.g., `files_incomplete` → `incomplete` for `modified_files`, same for comments/reviews/assignees).
+  - Queue inputs: replace `queue.json` with DB-derived queue computation; `use_aggregate_queue=True` should become the default once parity is proven.
 
 ## Implementation notes
 - Coverage updates (Dec 2025):
@@ -115,3 +113,40 @@ This document captures the contract for the Django/DRF replacement of the legacy
 - Source of truth for classification remains the existing Python logic (`classify_pr_state`, `ci_status`, `state_evolution`); port into Analyzer services and add parity tests using the fixtures in `test/`.
 - Expose the snapshot via DRF; add Celery to precompute and cache the artifacts (`QueueSnapshot` table or cached blob).
 - Add an `--source api` mode to `src/queueboard/dashboard_data.py` to fetch the snapshot and emit the same files for the renderer; run dual pipelines in CI to diff outputs before flipping the default.
+
+## Open choices before API build
+- Status mapping: translate completeness flags to `DataStatus` (`missing` if not synced, `incomplete` if caps/flags set, otherwise `valid`) for files/assignees/reviews/comments; mirror legacy behaviour when counts hit pagination caps.
+- Head repo string: choose a single formatting helper (owner/name) for `head_repo` in `AggregatePRInfo`.
+- Queue source: switch to DB-derived queue (no `queue.json`) and decide whether to keep a comparison/debug endpoint.
+- Caching: pick defaults for ETag/Last-Modified and any Redis-backed caching of the snapshot.
+- Dependency graph source: prefer `PRDependency` table over re-parsing bodies at response time.
+
+## Snapshot builder plan
+- Ownership: Analyzer service builds a `QueueboardSnapshot` payload; DRF endpoint serves cached/precomputed blobs keyed by `repo` + `rule_set_id`.
+- Rule sets: resolve a single rule set per snapshot (repo default + optional override); include `rule_set_id` in meta and cache keys; no mixing across rule sets.
+- DataStatus mapping:
+  - `missing` if engagement/timeline data has never been synced (e.g., `engagement_synced_at` null or no timeline events).
+  - `incomplete` if pagination caps hit or completeness flags are true (`files_incomplete`, `assignees_incomplete`, `reviews_incomplete`, `comments_incomplete`, timeline backfill not done).
+  - `valid` otherwise.
+- Inputs:
+  - `PullRequest` with engagement fields/flags, `last_synced_at`, `engagement_synced_at`, timeline backfill flags.
+  - `PRLabel`/`LabelDef`, `PRTimelineEvent`, `CheckRun`/`StatusContext`, `PRDependency`, reviewer preferences.
+- Steps:
+  1) Fetch open PRs for the repo; prefetch labels/engagement fields.
+  2) Build `AggregatePRInfo` per PR from stored fields; map completeness→`DataStatus`; format `head_repo` from owner/name.
+  3) Compute coarse `CI_status` from `CheckRun`/`StatusContext` (legacy `determine_ci_status` rules).
+  4) Classify labels/CI/draft into `PRStatus` via `classify_pr_state` with the selected rule set.
+  5) Timeline-derived stats (`last_status_change`, `first_on_queue`, `total_queue_time`) from `PRTimelineEvent`; apply DataStatus mapping based on sync/backfill state.
+  6) Compute dashboards (`prs_to_list`) and stale metrics from the DB (replace `queue.json`).
+  7) Reviewer suggestions/area stats: reuse legacy logic on the in-memory `AggregatePRInfo`.
+  8) Dependency graph: use stored `PRDependency` edges to build nodes/links.
+- Caching/precompute:
+  - Option A: compute on request and return with ETag/Last-Modified.
+  - Option B (preferred): Celery task to precompute and cache/persist snapshots; web serves cached blob; admin/CLI can force refresh; TTL-based cleanup for old/closed PR snapshots.
+
+## After the snapshot builder
+- DRF endpoint: expose `GET /api/v1/queueboard/snapshot` using the builder; add ETag/Last-Modified and optional cache headers; accept `rule_set_id` override.
+- Worker wiring: schedule periodic precompute for active repos/rule sets; add admin/CLI “refresh snapshot” actions; purge stale snapshots on TTL and when PRs close.
+- Legacy bridge: add `--source api` to `src/queueboard/dashboard_data.py`, keep filesystem path as a fallback; run dual-pipeline diff in CI until parity is proven.
+- Parity tests: compare API snapshot output to legacy `api/*.json` from fixtures (including engagement fields, dependency graph, dashboards, DataStatus flags).
+- Observability: log/summarize snapshot generation (counts, timings, rule_set_id, stale/missing data); surface metrics for cache hits/misses and rebuild durations.
