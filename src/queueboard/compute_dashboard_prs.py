@@ -382,15 +382,15 @@ def parse_aggregate_file(data: dict) -> dict[int, AggregatePRInfo]:
         if "number_review_comments" in pr:
             number_all_comments = pr["number_comments"] + pr["number_review_comments"]
             # If status information is invalid, omit it.
-            st = pr["last_status_change"]
-            if st["status"] == "missing":
+            st = pr.get("last_status_change")
+            if not st or st.get("status") == "missing":
                 last_status_change = None
             else:
                 (data_status, raw_time, raw_delta, raw_current_status) = (
-                    st["status"],
-                    st["time"],
-                    st["delta"],
-                    st["current_status"],
+                    st.get("status"),
+                    st.get("time"),
+                    st.get("delta"),
+                    st.get("current_status"),
                 )
                 delta = relativedelta_tryParse(raw_delta)
                 current_status = PRStatus.tryFrom_str(raw_current_status)
@@ -404,19 +404,22 @@ def parse_aggregate_file(data: dict) -> dict[int, AggregatePRInfo]:
                         f"error: invalid data, input {raw_current_status} for 'current_status' field of 'last_status_change' is invalid",
                         file=sys.stderr,
                     )
-                last_status_change = LastStatusChange(
-                    DataStatus.fromStr(data_status), parser.isoparse(raw_time), delta, current_status
-                )
+                elif raw_time is None:
+                    print("error: invalid data, missing 'time' field of 'last_status_change'", file=sys.stderr)
+                else:
+                    last_status_change = LastStatusChange(
+                        DataStatus.fromStr(data_status), parser.isoparse(raw_time), delta, current_status
+                    )
 
-            foq = pr["first_on_queue"]
-            if foq["status"] == "missing":
+            foq = pr.get("first_on_queue")
+            if not foq or foq.get("status") == "missing":
                 first_on_queue = None
             else:
-                date2 = None if foq["date"] is None else parser.isoparse(foq["date"])
+                date2 = None if foq.get("date") is None else parser.isoparse(foq["date"])
                 first_on_queue = (DataStatus.fromStr(foq["status"]), date2)
 
-            tqt = pr["total_queue_time"]
-            if tqt["status"] == "missing":
+            tqt = pr.get("total_queue_time")
+            if not tqt or tqt.get("status") == "missing":
                 total_queue_time = None
             else:
                 (data_status, value_td, value_rd, explanation) = (

@@ -18,6 +18,7 @@ from queueboard.compute_dashboard_prs import (
     parse_aggregate_file,
     _extract_prs,
 )
+from queueboard.snapshot import build_snapshot
 
 ### Reading the input files passed to this script ###
 
@@ -224,6 +225,11 @@ def main() -> None:
     print(
         f"Generated dependency graph with {dependency_graph_data['metadata']['dependency_links']} links between {dependency_graph_data['metadata']['total_prs']} PRs"
     )
+
+    # Minimal dashboard snapshot to replace legacy multi-file API payloads.
+    snapshot = build_snapshot(aggregate_info, all_pr_status, draft_PRs, nondraft_PRs, prs_to_list)
+    with open(path.join("api", "snapshot.json"), "w") as fi:
+        json.dump(snapshot, fi, indent=2)
 
 
 if __name__ == "__main__":

@@ -89,6 +89,68 @@ This document captures the contract for the Django/DRF replacement of the legacy
   - `etag`/`last_modified` headers; `max_age` cache hints for consumers.
   - Future pagination hooks for per-dashboard lists if payload size grows.
 
+## Minimal snapshot for dashboard tables (draft)
+
+Scope: keep dependency graph, area stats, and automatic assignments as separate artifacts for now; this snapshot covers only the data the main HTML tables need.
+
+Proposed structure (`docs/` draft; to be mirrored by DRF later):
+```json
+{
+  "meta": {
+    "schema_version": "v1-draft",
+    "generated_at": "<datetime>",
+    "repository": "owner/name",
+    "rule_set_id": "<ruleset-id-or-name>"
+  },
+  "prs": {
+    "<pr_number>": {
+      "state": "open|closed",
+      "is_draft": true|false,
+      "base_branch": "<branch>",
+      "branch_name": "<head ref>",
+      "last_updated": "<datetime>",
+      "author": "<login>",
+      "title": "<str>",
+      "description": "<str>",
+      "labels": [Label],
+      "additions": 0,
+      "deletions": 0,
+      "modified_files": ["<path>", ...],        // first 100
+      "number_modified_files": 0,
+      "approvals": ["<login>", ...],
+      "assignees": ["<login>", ...],
+      "users_commented": [DataStatus, ["<login>", ...]],
+      "number_total_comments": 0 | null,
+      "direct_dependencies": [int],
+      "ci_status": CIStatus,
+      "pr_status": PRStatus,
+      "last_status_change": LastStatusChange | null,
+      "first_on_queue": [DataStatus, "<datetime|null>"] | null,
+      "total_queue_time": TotalQueueTime | null
+    }
+  },
+  "lists": {
+    "draft_prs": [int],
+    "nondraft_prs": [int],
+    "dashboards": { "<dashboard>": [int] }
+  }
+}
+```
+- `dashboards` replaces `prs_to_list.json` and keeps the existing partitions (queue, queue-easy, queue-new-contributor, tech-debt, needs-decision, stale variants, etc.). The consumer still builds `BasicPRInformation` rows from the `prs` map.
+- `pr_status` replaces `all_pr_status.json`; `ci_status` replaces `CI_status.json`; `base_branch` remains per-PR rather than a separate map.
+- If a PR is missing in `prs`, it is implicitly absent; placeholder rows are no longer needed.
+
+Update cadence considerations (for the future DRF builder):
+- **Syncer ingest batch**: updates `state`, `is_draft`, `base_branch`, `branch_name`, `last_updated`, `author`, `title`, `description`, `labels`, `additions/deletions`, `modified_files` (+count), `approvals`, `assignees`, `users_commented`, `number_total_comments`, `direct_dependencies` (via Analyzer rebuild), and the raw CI inputs. These fields should be consistent within one snapshot build.
+- **Derived classification**: `ci_status` and `pr_status` should be computed in the same pass as the snapshot to avoid drift (no need to persist separately).
+- **Timeline analytics**: `last_status_change`, `first_on_queue`, `total_queue_time` depend on timeline backfill; compute in Analyzer and mark `DataStatus` when incomplete. These can be precomputed and read as-is during snapshot generation.
+- **Dashboards/lists**: recompute on each snapshot from the in-memory `prs` map (no separate persistence needed).
+
+Migration plan against the legacy generator:
+1. Emit this snapshot alongside the current multi-file outputs for a few runs; add a tiny diff script/test that compares queue size, draft count, and per-PR `ci_status`/`pr_status`.
+2. Point `dashboard.py` at the snapshot (derive old maps from it) and keep the old files as a fallback flag.
+3. Drop the redundant files once parity is proven; keep dependency graph, area stats, and automatic assignments as separate endpoints/files.
+
 ## Database coverage (current vs. needed)
 - Covered today:
   - Core PR metadata: state, draft, timestamps, base/head refs, head repo owner/name, title/body, additions/deletions, `changed_files_count` (Syncer `PullRequest`).
