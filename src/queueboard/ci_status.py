@@ -22,5 +22,6 @@ class CIStatus(StrEnum):
             "fail": CIStatus.Fail,
             "fail-inessential": CIStatus.FailInessential,
             "running": CIStatus.Running,
+            "missing": CIStatus.Missing,
             None: CIStatus.Missing,
         }[s]

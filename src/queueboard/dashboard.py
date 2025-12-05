@@ -28,6 +28,7 @@ from queueboard.compute_dashboard_prs import (
 )
 from queueboard.mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
 from queueboard.util import format_delta
+from queueboard.snapshot import load_snapshot
 
 
 ### Helper methods: writing HTML code for various parts of the generated webpage ###
@@ -950,13 +951,25 @@ def main() -> None:
         global API_DIR
         API_DIR = sys.argv[2]  # "api" by default
 
-    aggregate_info = load_from_json_file(path.join(API_DIR, "aggregate_info.json"))
-    draft_PRs = load_from_json_file(path.join(API_DIR, "draft_PRs.json"))
-    nondraft_PRs = load_from_json_file(path.join(API_DIR, "nondraft_PRs.json"))
-    CI_status = load_from_json_file(path.join(API_DIR, "CI_status.json"))
-    all_pr_status = load_from_json_file(path.join(API_DIR, "all_pr_status.json"))
-    base_branch = load_from_json_file(path.join(API_DIR, "base_branch.json"))
-    prs_to_list = load_from_json_file(path.join(API_DIR, "prs_to_list.json"))
+    snapshot_path = path.join(API_DIR, "snapshot.json")
+    if path.exists(snapshot_path):
+        (
+            aggregate_info,
+            draft_PRs,
+            nondraft_PRs,
+            CI_status,
+            all_pr_status,
+            base_branch,
+            prs_to_list,
+        ) = load_snapshot(API_DIR)
+    else:
+        aggregate_info = load_from_json_file(path.join(API_DIR, "aggregate_info.json"))
+        draft_PRs = load_from_json_file(path.join(API_DIR, "draft_PRs.json"))
+        nondraft_PRs = load_from_json_file(path.join(API_DIR, "nondraft_PRs.json"))
+        CI_status = load_from_json_file(path.join(API_DIR, "CI_status.json"))
+        all_pr_status = load_from_json_file(path.join(API_DIR, "all_pr_status.json"))
+        base_branch = load_from_json_file(path.join(API_DIR, "base_branch.json"))
+        prs_to_list = load_from_json_file(path.join(API_DIR, "prs_to_list.json"))
 
     makedirs(GH_PAGES_DIR, exist_ok=True)
     # copy JSON files from API_DIR into place

@@ -81,6 +81,40 @@
                   { "name": "easy", "color": "66CC66", "url": "https://github.com/leanprover-community/mathlib4/labels/easy" }
                 ]
               }
+            },
+            {
+              "number": 110,
+              "url": "https://github.com/leanprover-community/mathlib4/pull/110",
+              "author": {
+                "login": "jane",
+                "url": "https://github.com/jane"
+              },
+              "title": "feat: address tech debt",
+              "state": "OPEN",
+              "updatedAt": "2025-01-10T12:00:00Z",
+              "labels": {
+                "nodes": [
+                  { "name": "t-algebra", "color": "33DBEC", "url": "https://github.com/leanprover-community/mathlib4/labels/t-algebra" },
+                  { "name": "tech debt", "color": "000000", "url": "https://github.com/leanprover-community/mathlib4/labels/tech%20debt" }
+                ]
+              }
+            },
+            {
+              "number": 111,
+              "url": "https://github.com/leanprover-community/mathlib4/pull/111",
+              "author": {
+                "login": "kate",
+                "url": "https://github.com/kate"
+              },
+              "title": "feat: maintainer merge needed",
+              "state": "OPEN",
+              "updatedAt": "2025-01-11T12:00:00Z",
+              "labels": {
+                "nodes": [
+                  { "name": "t-topology", "color": "33DBEC", "url": "https://github.com/leanprover-community/mathlib4/labels/t-topology" },
+                  { "name": "maintainer-merge", "color": "0055AA", "url": "https://github.com/leanprover-community/mathlib4/labels/maintainer-merge" }
+                ]
+              }
             }
           ]
         }
