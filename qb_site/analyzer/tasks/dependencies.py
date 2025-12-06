@@ -59,10 +59,25 @@ def rebuild_dependencies_sweep_task(
     per_repo: list[dict] = []
 
     for repo in repos:
-        pr_qs = PullRequest.objects.filter(repository=repo)
+        pr_qs = (
+            PullRequest.objects.filter(repository=repo)
+            .select_related("repository", "dependency_state")
+            .only(
+                "id",
+                "number",
+                "body",
+                "state",
+                "gh_updated_at",
+                "repository",
+                "repository__owner",
+                "repository__name",
+                "dependency_state__builder_version",
+                "dependency_state__last_checked_at",
+                "dependency_state__last_body_hash",
+            )
+        )
         if only_open:
             pr_qs = pr_qs.filter(state=PullRequestState.OPEN)
-        pr_qs = pr_qs.select_related("dependency_state")
         pr_qs = pr_qs.annotate(
             is_open_flag=models.Case(
                 models.When(state=PullRequestState.OPEN, then=models.Value(1)),
@@ -70,9 +85,14 @@ def rebuild_dependencies_sweep_task(
                 output_field=models.IntegerField(),
             )
         )
-        pr_qs = pr_qs.filter(
-            models.Q(dependency_state__builder_version=builder_version) | models.Q(dependency_state__builder_version__isnull=True)
-        ).order_by("dependency_state__last_checked_at", "-is_open_flag", "-gh_updated_at", "-id")
+        pr_qs = (
+            pr_qs.filter(
+                models.Q(dependency_state__builder_version=builder_version)
+                | models.Q(dependency_state__builder_version__isnull=True)
+            )
+            .order_by("dependency_state__last_checked_at", "-is_open_flag", "-gh_updated_at", "-id")
+            .iterator(chunk_size=100)
+        )
 
         repo_created = 0
         repo_updated = 0

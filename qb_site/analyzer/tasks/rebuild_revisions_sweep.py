@@ -20,12 +20,14 @@ def rebuild_revisions_sweep_task(
     total_prs_considered = 0
     per_repo: list[dict] = []
     for repo in repos:
-        pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
-        if only_complete_backfill:
-            pr_qs = pr_qs.filter(commits_backfill_done=True)
-        pr_qs = pr_qs.only("id", "number", "timeline_backfill_done", "commits_backfill_done", "gh_updated_at").order_by(
-            "-gh_updated_at", "-id"
+        pr_qs = (
+            PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
+            .only("id", "number", "timeline_backfill_done", "commits_backfill_done", "gh_updated_at", "gh_created_at")
+            .order_by("-gh_updated_at", "-id")
+            .iterator(chunk_size=100)
         )
+        if only_complete_backfill:
+            pr_qs = (p for p in pr_qs if p.commits_backfill_done)
 
         repo_rebuilt = 0
         repo_prs = 0
