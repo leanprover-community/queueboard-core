@@ -21,6 +21,10 @@ from typing import Deque, Iterable, Optional
 
 
 MEM_RE = re.compile(r"sample#memory_(?:total|rss)=([0-9.]+)MB", re.IGNORECASE)
+CELERY_RSS_RE = re.compile(
+    r"celery_rss\s+event=(?P<event>\w+)\s+task=(?P<task>\S+)\s+id=(?P<id>\S+)\s+rss_mb=(?P<rss>[0-9.]+)",
+    re.IGNORECASE,
+)
 TASK_RE = re.compile(
     r"(?:Received task: (?P<recv>[^\[]+)\[(?P<recv_id>[^\]]+)\])|"
     r"(?:Task (?P<task>[^\s\[]+)\[(?P<task_id>[^\]]+)\])",
@@ -72,6 +76,13 @@ def now_str() -> str:
 
 
 def record_task(line: str) -> Optional[TaskSample]:
+    cm = CELERY_RSS_RE.search(line)
+    if cm:
+        task = cm.group("task") or "unknown"
+        event = cm.group("event") or "event"
+        tid = cm.group("id") or ""
+        return TaskSample(ts=now_str(), name=f"celery_rss {event} {task}", task_id=tid.strip() or None, line=line.strip())
+
     m = TASK_RE.search(line)
     if not m:
         return None
@@ -81,6 +92,13 @@ def record_task(line: str) -> Optional[TaskSample]:
 
 
 def parse_memory_mb(line: str) -> Optional[float]:
+    cm = CELERY_RSS_RE.search(line)
+    if cm:
+        try:
+            return float(cm.group("rss"))
+        except ValueError:
+            return None
+
     m = MEM_RE.search(line)
     if not m:
         return None
