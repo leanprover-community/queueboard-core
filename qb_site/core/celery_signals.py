@@ -1,9 +1,35 @@
 from __future__ import annotations
 
-from celery.signals import task_postrun
+import logging
+import resource
+import sys
+from typing import Optional
+
+from celery.signals import task_postrun, task_prerun
 from django_celery_results.models import TaskResult
 
 from core.models import TaskResultLink
+
+
+log = logging.getLogger(__name__)
+
+
+def _rss_mb() -> Optional[float]:
+    """Return current process RSS in MB (best-effort).
+
+    ru_maxrss units differ by platform: kilobytes on Linux, bytes on macOS.
+    """
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        raw = float(getattr(usage, "ru_maxrss", 0.0))
+        if raw <= 0:
+            return None
+        if sys.platform == "darwin":
+            return raw / (1024.0 * 1024.0)  # bytes -> MB
+        # Linux and most other Unix report kilobytes
+        return raw / 1024.0  # kB -> MB
+    except Exception:
+        return None
 
 
 def _store_task_links(task_id: str | None, parent_id: str | None, root_id: str | None) -> None:
@@ -58,3 +84,25 @@ def enqueue_with_parent(sig, request, **apply_kwargs):
         return sig.apply_async(**apply_kwargs)
     except Exception:
         return sig.apply_async(**apply_kwargs)
+
+
+@task_prerun.connect
+def log_task_rss_prerun(sender=None, task_id=None, task=None, **kwargs):  # pragma: no cover - integration hook
+    """Log best-effort RSS before a task runs."""
+    try:
+        rss_mb = _rss_mb()
+        if rss_mb is not None:
+            log.info("celery_rss event=prerun task=%s id=%s rss_mb=%.1f", getattr(task, "name", sender), task_id, rss_mb)
+    except Exception:
+        return
+
+
+@task_postrun.connect
+def log_task_rss_postrun(sender=None, task_id=None, task=None, **kwargs):  # pragma: no cover - integration hook
+    """Log best-effort RSS after a task finishes."""
+    try:
+        rss_mb = _rss_mb()
+        if rss_mb is not None:
+            log.info("celery_rss event=postrun task=%s id=%s rss_mb=%.1f", getattr(task, "name", sender), task_id, rss_mb)
+    except Exception:
+        return
