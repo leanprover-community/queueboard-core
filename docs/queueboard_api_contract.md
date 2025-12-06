@@ -141,3 +141,16 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Precompute/caching: schedule Celery jobs to refresh snapshots and supporting payloads per repo/ruleset; add admin/CLI “refresh snapshot” actions; purge stale blobs on TTL and when PRs close.
 - Client bridge: add `--source api` to `src/queueboard/dashboard_data.py` to fetch the snapshot/supporting payloads and re-emit legacy `api/*.json` locally for HTML generation; keep filesystem download as a fallback until parity is proven.
 - Rollout: run dual pipelines and diffs in CI, cut over dashboard generation to the API source by default, then retire the filesystem download path and `queue.json`.
+
+## Server-side snapshot computation (memory-aware)
+- Constraints: Heroku worker dyno with limited RAM; target ~2k open PRs without loading all rows into memory at once.
+- Builder: a `QueueboardSnapshotBuilder` that chunk-iterates open PRs (e.g., 200–500 via `values()`/`iterator`) and assembles `prs`/`lists` in one pass, backed by keyed maps loaded up front:
+  - Labels: `pr_id -> [(name, color, url)]`
+  - Dependencies: `pr_id -> [dep_number]`
+  - CI: `pr_id -> coarse ci_status` from latest `CheckRun`/`StatusContext`
+  - Timeline: stream `PRTimelineEvent` ordered by `(pr_id, occurred_at)` to compute `last_status_change` / `first_on_queue` / `total_queue_time` per PR; if this is too heavy, read from precomputed queue windows/table instead.
+  - Engagement fields: `modified_files`, `assignees`, `approvals`, `commenters`, `number_total_comments`, plus completeness flags mapped to `DataStatus`.
+- Queue rules: same as legacy aggregate path (master-only, CI pass, exclude WIP/help-wanted/awaiting-* etc.); `queue.json` is not required and can be used only for optional parity checks during development.
+- Caching: Celery task builds the snapshot and stores it (Redis or `QueueSnapshot` table with compressed JSON keyed by repo + rule_set_id + generated_at); DRF view serves cached payload with ETag/Last-Modified and can enqueue refresh instead of computing in-request.
+- Extras: dependency graph, area stats, and automatic assignments can be computed from the already-built per-PR dicts or a lightweight second pass over the snapshot payload.
+- Ops: drop per-PR temporaries inside the loop, log counts/durations, guard missing data via `DataStatus`, and add admin/CLI triggers plus TTL cleanup for stale snapshots.
