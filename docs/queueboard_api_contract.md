@@ -67,7 +67,7 @@ We now emit a single `snapshot.json` used by the dashboard renderer (dependency 
 Notes:
 - `dashboards` mirrors `prs_to_list.json`; the renderer rebuilds `BasicPRInformation` from `prs`.
 - `dashboard.py` now prefers `api/snapshot.json` when present and falls back to the legacy `api/*.json` emitted by `dashboard_data.py`; those legacy files still use the custom type-wrapped JSON format.
-- `prs_to_list` is currently computed with `use_aggregate_queue=False`, so `queue.json` from GitHub search remains the source of truth for queue membership until we replace it.
+- `prs_to_list` is now computed from our aggregate data by default; `queue.json` (GitHub search) is only used for an optional parity check when present.
 - Dependency graph, area stats, and automatic assignments stay separate for now.
 
 Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`).
@@ -76,7 +76,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Snapshot is the normalized contract; everything else is compatibility scaffolding for the legacy renderer.
 - `aggregate_info.json`, `draft_PRs.json`, `nondraft_PRs.json`, `CI_status.json`, `all_pr_status.json`, and `prs_to_list.json` are still written for CLI consumers using `CustomJSONEncoder` wrappers (`__type__`, `__module__`, `__data__`). The API should avoid emitting this encoding; any adapter can regenerate these shapes from the snapshot.
 - `automatic_assignments.json`, `area_stats.json`, and `dependency_graph.json` are copied verbatim into `gh-pages/` and will need server-side equivalents (or to be derived from the snapshot payloads).
-- `queue.json` from GitHub search is still read by `determine_pr_dashboards` in `src/queueboard` when `use_aggregate_queue=False`.
+- `queue.json` from GitHub search is now optional and used only for comparison during development; queue membership comes from label/CI/draft classification.
 
 ## Database coverage (current vs. needed)
 - Covered today:

@@ -180,7 +180,7 @@ flowchart TD
 - Inputs (filesystem/argv):
   - CLI args: one or more of `all-open-PRs-*.json` produced by `scripts/dashboard.sh`.
   - `processed_data/open_pr_data.json` (aggregate source parsed into `AggregatePRInfo`).
-  - `queue.json` (used in `determine_pr_dashboards` comparison with GitHub’s queue).
+  - `queue.json` (now optional; used only to compare our queue classification with GitHub’s search).
   - `reviewer-topics.json` (reviewer preferences used for suggestions).
   - `outdated_prs.txt` (to avoid re-suggesting PRs just flagged as outdated in the same run).
 - Produces `api/*.json`:
@@ -189,7 +189,7 @@ flowchart TD
   - `CI_status.json`: PR → coarse CI status (for non‑draft PRs).
   - `base_branch.json`: PR → base branch.
   - `all_pr_status.json`: PR → computed `PRStatus` (labels+CI+draft classification) via `compute_pr_statusses`.
-  - `prs_to_list.json`: PR partitions per dashboard via `determine_pr_dashboards`.
+  - `prs_to_list.json`: PR partitions per dashboard via `determine_pr_dashboards` (defaulting to aggregate-derived queue; optionally compared to `queue.json` when present).
   - `automatic_assignments.json`: reviewer suggestions for stale unassigned PRs.
   - `dependency_graph.json`: D3‑friendly nodes/links based on `direct_dependencies` (only across open PRs present in aggregate data).
 - Python types/classes involved:
@@ -216,7 +216,7 @@ Key data shape used across files:
   - Deserializes API files via `load_from_json_file` (preserving `AggregatePRInfo`, `BasicPRInformation`, `PRStatus`, `CIStatus`)
   - Uses `Dashboard` enum for sections/anchors and link building; `Label` for label rendering
 - Related logic:
-  - `determine_pr_dashboards(...)` (in `src/queueboard/compute_dashboard_prs.py`) constructs per‑dashboard partitions; compares with `queue.json`
+  - `determine_pr_dashboards(...)` (in `src/queueboard/compute_dashboard_prs.py`) constructs per‑dashboard partitions; defaults to aggregate-derived queue and only compares with `queue.json` when present.
 
 ## Reviewer Suggestions
 - Script: `src/queueboard/suggest_reviewer.py`
