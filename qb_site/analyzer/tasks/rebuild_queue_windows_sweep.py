@@ -24,10 +24,25 @@ def rebuild_queue_windows_sweep_task(
     per_repo: list[dict] = []
 
     for repo in repos:
-        pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
+        pr_qs = (
+            PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
+            .select_related("revision_build_state")
+            .only(
+                "id",
+                "number",
+                "gh_created_at",
+                "gh_updated_at",
+                "timeline_backfill_done",
+                "commits_backfill_done",
+                "revision_build_state__revision_version",
+                "revision_build_state__windows_built_revision_version",
+                "revision_build_state__windows_built_at",
+            )
+            .order_by("-gh_updated_at", "-id")
+            .iterator(chunk_size=100)
+        )
         if only_complete_backfill:
-            pr_qs = pr_qs.filter(commits_backfill_done=True)
-        pr_qs = pr_qs.select_related("revision_build_state").order_by("-gh_updated_at", "-id")
+            pr_qs = (p for p in pr_qs if p.commits_backfill_done)
         repo_rebuilt = 0
         repo_prs = 0
 

@@ -33,10 +33,26 @@ def plan_missing_ci_backfill_task(
     per_repo: list[dict] = []
     now_ts = timezone.now()
     for repo in repos:
-        pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
+        pr_qs = (
+            PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
+            .select_related("repository", "revision_build_state")
+            .only(
+                "id",
+                "number",
+                "repository",
+                "repository__owner",
+                "repository__name",
+                "timeline_backfill_done",
+                "commits_backfill_done",
+                "gh_updated_at",
+                "revision_build_state__revision_version",
+                "revision_build_state__ci_checked_revision_version",
+                "revision_build_state__ci_checked_at",
+            )
+        )
         if only_complete_backfill:
             pr_qs = pr_qs.filter(commits_backfill_done=True)
-        pr_qs = pr_qs.select_related("revision_build_state").order_by("-gh_updated_at", "-id")
+        pr_qs = pr_qs.order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
         repo_enqueued = 0
         repo_prs = 0
         for pr in pr_qs:
