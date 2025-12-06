@@ -179,7 +179,7 @@ def main() -> None:
 
     # TODO: try to enable |use_aggregate_queue| 'queue_prs' again, once all the root causes
     # for PRs getting 'dropped' by 'gather_stats.sh' are found and fixed.
-    prs_to_list = determine_pr_dashboards(input_data.all_open_prs, nondraft_PRs, base_branch, CI_status, aggregate_info, False)
+    prs_to_list = determine_pr_dashboards(input_data.all_open_prs, nondraft_PRs, base_branch, CI_status, aggregate_info, True)
     dump_to_json_file(prs_to_list, path.join("api", "prs_to_list.json"))
 
     # As a final feature, we propose a reviewer for 50 (randomly drawn) stale unassigned pull requests,

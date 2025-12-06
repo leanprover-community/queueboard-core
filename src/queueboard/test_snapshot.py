@@ -18,7 +18,7 @@ from pathlib import Path
 from queueboard import dashboard_data
 from queueboard.ci_status import CIStatus
 from queueboard.classify_pr_state import PRStatus
-from queueboard.compute_dashboard_prs import BasicPRInformation, load_from_json_file
+from queueboard.compute_dashboard_prs import BasicPRInformation, _extract_prs, load_from_json_file
 from queueboard.mathlib_dashboards import Dashboard
 
 
@@ -79,6 +79,14 @@ def _load_pr_numbers_from_basic(prs: list[BasicPRInformation]) -> list[int]:
     return [int(pr.number) for pr in prs]
 
 
+def _load_queue_numbers(work: Path) -> list[int]:
+    queue_path = work / "queue.json"
+    if not queue_path.exists():
+        return []
+    with queue_path.open("r") as f:
+        return [int(pr.number) for pr in _extract_prs(json.load(f))]
+
+
 def _assert_snapshot(snapshot: dict, work: Path) -> None:
     assert snapshot["meta"]["schema_version"] == "v1-draft", "unexpected schema_version"
 
@@ -118,6 +126,12 @@ def _assert_snapshot(snapshot: dict, work: Path) -> None:
     # Spot-check a few key dashboards we rely on
     for required_dash in ["Queue", "QueueEasy", "QueueNewContributor", "TechDebt", "NeedsDecision"]:
         assert required_dash in snapshot["lists"]["dashboards"], f"Expected dashboard {required_dash} in snapshot"
+
+    expected_queue = _load_queue_numbers(work)
+    if expected_queue:
+        snap_queue = snapshot["lists"]["dashboards"].get("Queue")
+        assert snap_queue is not None, "Missing Queue dashboard in snapshot"
+        assert sorted(int(n) for n in snap_queue) == sorted(expected_queue), "Queue dashboard mismatch vs queue.json"
 
 
 def main() -> None:

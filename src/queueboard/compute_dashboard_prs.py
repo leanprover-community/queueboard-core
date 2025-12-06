@@ -754,16 +754,28 @@ def determine_pr_dashboards(
     foo = [pr for pr in interesting_CI if base_branch[pr.number] == "master"]
     prs_to_list[Dashboard.InessentialCIFails] = prs_without_any_label(foo, other_labels + ["merge-conflict"])
 
-    queue_prs2 = None
-    with open("queue.json", "r") as queuefile:
-        queue_prs2 = _extract_prs(json.load(queuefile))
-        queue_pr_numbers2 = [pr.number for pr in queue_prs2]
-    msg = "comparing this page's review dashboard (left) with the Github #queue (right)"
-    if my_assert_eq(msg, [pr.number for pr in queue_prs], queue_pr_numbers2):
-        print("Review dashboard and #queue match, hooray!", file=sys.stderr)
+    queue: List[BasicPRInformation]
+    if use_aggregate_queue:
+        queue = queue_prs
+        try:
+            with open("queue.json", "r") as queuefile:
+                queue_prs2 = _extract_prs(json.load(queuefile))
+                queue_pr_numbers2 = [pr.number for pr in queue_prs2]
+            msg = "comparing this page's review dashboard (left) with the Github #queue (right)"
+            if my_assert_eq(msg, [pr.number for pr in queue_prs], queue_pr_numbers2):
+                print("Review dashboard and #queue match, hooray!", file=sys.stderr)
+        except FileNotFoundError:
+            print("warning: queue.json not found; using aggregate-derived queue", file=sys.stderr)
+    else:
+        try:
+            with open("queue.json", "r") as queuefile:
+                queue_prs2 = _extract_prs(json.load(queuefile))
+            queue = queue_prs2
+        except FileNotFoundError:
+            print("warning: queue.json not found; falling back to aggregate-derived queue", file=sys.stderr)
+            queue = queue_prs
 
-    prs_to_list[Dashboard.Queue] = queue_prs if use_aggregate_queue else queue_prs2
-    queue = prs_to_list[Dashboard.Queue]
+    prs_to_list[Dashboard.Queue] = queue
     prs_to_list[Dashboard.QueueNewContributor] = prs_with_label(queue, "new-contributor")
     prs_to_list[Dashboard.QueueEasy] = prs_with_label(queue, "easy")
     prs_to_list[Dashboard.QueueTechDebt] = prs_with_any_label(queue, ["tech debt", "longest-pole"])
