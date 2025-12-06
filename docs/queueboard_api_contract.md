@@ -66,10 +66,17 @@ We now emit a single `snapshot.json` used by the dashboard renderer (dependency 
 
 Notes:
 - `dashboards` mirrors `prs_to_list.json`; the renderer rebuilds `BasicPRInformation` from `prs`.
-- Legacy files (`aggregate_info.json`, `CI_status.json`, etc.) are still emitted during transition but are now derived from the snapshot in the renderer.
+- `dashboard.py` now prefers `api/snapshot.json` when present and falls back to the legacy `api/*.json` emitted by `dashboard_data.py`; those legacy files still use the custom type-wrapped JSON format.
+- `prs_to_list` is currently computed with `use_aggregate_queue=False`, so `queue.json` from GitHub search remains the source of truth for queue membership until we replace it.
 - Dependency graph, area stats, and automatic assignments stay separate for now.
 
 Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`).
+
+## Current filesystem artifacts (post-refactor)
+- Snapshot is the normalized contract; everything else is compatibility scaffolding for the legacy renderer.
+- `aggregate_info.json`, `draft_PRs.json`, `nondraft_PRs.json`, `CI_status.json`, `all_pr_status.json`, and `prs_to_list.json` are still written for CLI consumers using `CustomJSONEncoder` wrappers (`__type__`, `__module__`, `__data__`). The API should avoid emitting this encoding; any adapter can regenerate these shapes from the snapshot.
+- `automatic_assignments.json`, `area_stats.json`, and `dependency_graph.json` are copied verbatim into `gh-pages/` and will need server-side equivalents (or to be derived from the snapshot payloads).
+- `queue.json` from GitHub search is still read by `determine_pr_dashboards` in `src/queueboard` when `use_aggregate_queue=False`.
 
 ## Database coverage (current vs. needed)
 - Covered today:
@@ -81,11 +88,11 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
   - Identity: `Repository`, `User`; reviewer preferences exist in `ReviewerPreference`.
   - Direct dependencies: parsed from `PullRequest.body` into Analyzer `PRDependency` via body-checkbox parsing; rebuild tasks (`analyzer.rebuild_pr_dependencies`, `analyzer.rebuild_dependencies_sweep`) keep edges in sync with existing PRs.
 - Remaining considerations:
-  - `head_repo` string still needs to be formatted from stored owner/name in the API response.
   - Map completeness flags → `DataStatus` consistently (e.g., `files_incomplete` → `incomplete` for `modified_files`, same for comments/reviews/assignees).
   - Queue inputs: replace `queue.json` with DB-derived queue computation; `use_aggregate_queue=True` should become the default once parity is proven.
 
 ## Implementation notes
+- Contract: treat the snapshot schema as canonical for the API; legacy type-wrapped files remain a client-side compatibility layer generated from the snapshot.
 - Coverage updates (Dec 2025):
   - Syncer now fetches and stores snapshot fields on `PullRequest`: first 100 `modified_files`, `assignees`, `approvals` (approving review authors), `commenters` (issue comment + review authors), and `number_total_comments` (issue + review comments) with completeness flags.
   - GraphQL bundle expanded to include files/assignees/reviews/comments/reviewThreads totals; comments/review bodies are not fetched.
@@ -98,10 +105,11 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 
 ## Open choices before API build
 - Status mapping: translate completeness flags to `DataStatus` (`missing` if not synced, `incomplete` if caps/flags set, otherwise `valid`) for files/assignees/reviews/comments; mirror legacy behaviour when counts hit pagination caps.
-- Head repo string: choose a single formatting helper (owner/name) for `head_repo` in `AggregatePRInfo`.
+- Head repo string: choose a single formatting helper (owner/name) for `head_repo` in `AggregatePRInfo` if we decide to expose it; the snapshot currently omits it and defaults in the loader.
 - Queue source: switch to DB-derived queue (no `queue.json`) and decide whether to keep a comparison/debug endpoint.
 - Caching: pick defaults for ETag/Last-Modified and any Redis-backed caching of the snapshot.
 - Dependency graph source: prefer `PRDependency` table over re-parsing bodies at response time.
+- Legacy compatibility: prefer to ship only the normalized snapshot + supporting payloads from the API; regenerate legacy type-wrapped `api/*.json` on the client side when needed.
 
 ## Snapshot builder plan
 - Ownership: Analyzer service builds a `QueueboardSnapshot` payload; DRF endpoint serves cached/precomputed blobs keyed by `repo` + `rule_set_id`.
@@ -126,9 +134,10 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
   - Option A: compute on request and return with ETag/Last-Modified.
   - Option B (preferred): Celery task to precompute and cache/persist snapshots; web serves cached blob; admin/CLI can force refresh; TTL-based cleanup for old/closed PR snapshots.
 
-## After the snapshot builder
-- DRF endpoint: expose `GET /api/v1/queueboard/snapshot` using the builder; add ETag/Last-Modified and optional cache headers; accept `rule_set_id` override.
-- Worker wiring: schedule periodic precompute for active repos/rule sets; add admin/CLI “refresh snapshot” actions; purge stale snapshots on TTL and when PRs close.
-- Legacy bridge: add `--source api` to `src/queueboard/dashboard_data.py`, keep filesystem path as a fallback; run dual-pipeline diff in CI until parity is proven.
-- Parity tests: compare API snapshot output to legacy `api/*.json` from fixtures (including engagement fields, dependency graph, dashboards, DataStatus flags).
-- Observability: log/summarize snapshot generation (counts, timings, rule_set_id, stale/missing data); surface metrics for cache hits/misses and rebuild durations.
+## Migration plan (post-refactor)
+- Surface freeze: treat `snapshot.json` plus `automatic_assignments.json`, `area_stats.json`, and `dependency_graph.json` as the v1 contract; legacy type-wrapped files remain adapter-only.
+- Server endpoints: build DRF views for `GET /api/v1/queueboard/snapshot` (rule_set override, ETag/Last-Modified) and sibling endpoints for assignments/area stats/dependency graph; allow bundling all in one payload for the CLI adapter.
+- Server computation: port CI/status classification, dashboard partitioning (drop `queue.json`), dependency graph assembly, and reviewer suggestion/area stats into Analyzer services with pytest parity tests against `test/newtest`/`test_snapshot`.
+- Precompute/caching: schedule Celery jobs to refresh snapshots and supporting payloads per repo/ruleset; add admin/CLI “refresh snapshot” actions; purge stale blobs on TTL and when PRs close.
+- Client bridge: add `--source api` to `src/queueboard/dashboard_data.py` to fetch the snapshot/supporting payloads and re-emit legacy `api/*.json` locally for HTML generation; keep filesystem download as a fallback until parity is proven.
+- Rollout: run dual pipelines and diffs in CI, cut over dashboard generation to the API source by default, then retire the filesystem download path and `queue.json`.
