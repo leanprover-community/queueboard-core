@@ -162,12 +162,12 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - If reviewer suggestions/area stats/dependency graph move server-side, precompute them in dedicated tasks or cache them alongside the snapshot payload.
 
 ### Progress (implemented)
-- `QueueboardSnapshotBuilder` in Analyzer: chunked DB reads; populates snapshot `prs` with metadata, labels, dependencies, coarse CI, and PR status; builds dashboards (Queue, QueueNewContributor, QueueEasy, QueueTechDebt, NeedsDecision) and draft/nondraft lists.
+- `QueueboardSnapshotBuilder` in Analyzer: chunked DB reads; populates snapshot `prs` with metadata, labels, dependencies, coarse CI (legacy determine_ci_status rules), PR status (legacy classify_pr_state rules), head/base refs, engagement fields and `data_status` for files/assignees/approvals/comments; builds dashboards for all legacy buckets (Queue, stale variants, ready-to-merge/delegated/maintainer, tech debt, needs-*, approved, bad title, unlabelled, contradictory, All) plus draft/nondraft lists.
 - `QueueSnapshot` model in Analyzer to persist cached payloads with counts/etag/cache_key; builder can `build_and_store(...)`.
 - Tests for builder/storage live under `qb_site/analyzer/tests/test_queueboard_snapshot.py`.
 
 ### Next steps to reach parity
 - Add timeline-derived fields (`last_status_change`, `first_on_queue`, `total_queue_time`) via precomputed summaries or queue windows; map DataStatus.
-- Add CI/status classification parity (label categorisation rules) and optional per-ruleset PRStatus persistence.
+- Add optional per-ruleset PRStatus persistence if needed.
 - Wire Celery task + beat schedule to refresh snapshots; add DRF endpoint to serve cached payloads with ETag/Last-Modified and enqueue refresh on miss/stale.
 - Optional: server-side dependency graph, area stats, automatic assignments; cache/bundle as needed.

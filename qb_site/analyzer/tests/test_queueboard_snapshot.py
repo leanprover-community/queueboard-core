@@ -104,6 +104,8 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(prs[1]["direct_dependencies"], [42])
         self.assertEqual(prs[1]["labels"][0]["name"], "t-analysis")
         self.assertEqual(prs[1]["labels"][0]["url"], "https://github.com/leanprover-community/mathlib4/labels/t-analysis")
+        self.assertEqual(prs[1]["head_repo"], "leanprover-community")
+        self.assertEqual(prs[1]["data_status"]["comments"], "valid")
 
         self.assertEqual(set(snapshot["lists"]["nondraft_prs"]), {1, 2})
         self.assertEqual(set(snapshot["lists"]["draft_prs"]), {3})
@@ -165,3 +167,69 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(updated.pr_count, 2)
         self.assertEqual(updated.queue_count, 1)
         self.assertGreater(updated.generated_at, first.generated_at)
+
+    def test_dashboards_cover_expected_keys(self):
+        pr_queue = self._make_pr(30, labels=("easy",))
+        pr_merge_conflict = self._make_pr(31, labels=("merge-conflict",))
+        pr_ready_to_merge = self._make_pr(32, labels=("ready-to-merge",))
+        pr_awaiting_zulip = self._make_pr(33, labels=("awaiting-zulip",))
+        pr_help = self._make_pr(34, labels=("help-wanted",))
+        self._make_pr(35, is_draft=True)
+
+        # CI for queue entry
+        CheckRun.objects.create(
+            pull_request=pr_queue,
+            github_node_id="cr30",
+            head_sha="c" * 40,
+            name="lint",
+            status=CheckRunStatus.COMPLETED,
+            conclusion=CheckRunConclusion.SUCCESS,
+            gh_started_at=self.now,
+            gh_completed_at=self.now,
+        )
+        # CI for merge-conflict candidate so it qualifies for NeedsMerge
+        CheckRun.objects.create(
+            pull_request=pr_merge_conflict,
+            github_node_id="cr31",
+            head_sha="d" * 40,
+            name="lint",
+            status=CheckRunStatus.COMPLETED,
+            conclusion=CheckRunConclusion.SUCCESS,
+            gh_started_at=self.now,
+            gh_completed_at=self.now,
+        )
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo)
+        dashboards = snapshot["lists"]["dashboards"]
+
+        expected_keys = {
+            "Queue",
+            "QueueNewContributor",
+            "QueueEasy",
+            "QueueTechDebt",
+            "QueueStaleUnassigned",
+            "QueueStaleAssigned",
+            "NeedsDecision",
+            "NeedsMerge",
+            "InessentialCIFails",
+            "TechDebt",
+            "NeedsHelp",
+            "OtherBase",
+            "AllReadyToMerge",
+            "StaleReadyToMerge",
+            "StaleDelegated",
+            "StaleMaintainerMerge",
+            "AllMaintainerMerge",
+            "StaleNewContributor",
+            "Approved",
+            "BadTitle",
+            "Unlabelled",
+            "ContradictoryLabels",
+            "All",
+        }
+        self.assertTrue(expected_keys.issubset(set(dashboards.keys())))
+        self.assertIn(pr_queue.number, dashboards["Queue"])
+        self.assertIn(pr_merge_conflict.number, dashboards["NeedsMerge"])
+        self.assertIn(pr_ready_to_merge.number, dashboards["AllReadyToMerge"])
+        self.assertIn(pr_awaiting_zulip.number, dashboards["NeedsDecision"])
+        self.assertIn(pr_help.number, dashboards["NeedsHelp"])
