@@ -50,6 +50,13 @@ path.write_text("\n".join(out) + "\n")
 PY
 fi
 
+if [ "${SKIP_COMPOSE_BUILD:-0}" != "1" ]; then
+  echo "[0/6] Building compose images (web/migrate/worker/beat) to pick up dependency changes"
+  docker compose build web migrate worker beat
+else
+  echo "[0/6] Skipping compose build (SKIP_COMPOSE_BUILD=1)"
+fi
+
 echo "[1/6] Starting web (waits on db:healthy via depends_on)"
 if ! docker compose up -d web; then
   echo "Compose failed to start services. Dumping service status and migrate logs..." >&2
