@@ -154,3 +154,20 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Caching: Celery task builds the snapshot and stores it (Redis or `QueueSnapshot` table with compressed JSON keyed by repo + rule_set_id + generated_at); DRF view serves cached payload with ETag/Last-Modified and can enqueue refresh instead of computing in-request.
 - Extras: dependency graph, area stats, and automatic assignments can be computed from the already-built per-PR dicts or a lightweight second pass over the snapshot payload.
 - Ops: drop per-PR temporaries inside the loop, log counts/durations, guard missing data via `DataStatus`, and add admin/CLI triggers plus TTL cleanup for stale snapshots.
+
+### Precomputation to keep refreshes cheap
+- Materialize timeline-derived fields per PR (or per ruleset) in Analyzer tables: `last_status_change`, `first_on_queue`, `total_queue_time`, and/or `PRQueueWindow` summaries; snapshot reads these instead of replaying timeline events.
+- Persist current `PRStatus` (label + CI + draft classification) per ruleset to avoid reclassification on every snapshot build.
+- Persist a coarse CI rollup per PR/head (or per PR) so snapshot avoids scanning all `CheckRun`/`StatusContext` rows.
+- If reviewer suggestions/area stats/dependency graph move server-side, precompute them in dedicated tasks or cache them alongside the snapshot payload.
+
+### Progress (implemented)
+- `QueueboardSnapshotBuilder` in Analyzer: chunked DB reads; populates snapshot `prs` with metadata, labels, dependencies, coarse CI, and PR status; builds dashboards (Queue, QueueNewContributor, QueueEasy, QueueTechDebt, NeedsDecision) and draft/nondraft lists.
+- `QueueSnapshot` model in Analyzer to persist cached payloads with counts/etag/cache_key; builder can `build_and_store(...)`.
+- Tests for builder/storage live under `qb_site/analyzer/tests/test_queueboard_snapshot.py`.
+
+### Next steps to reach parity
+- Add timeline-derived fields (`last_status_change`, `first_on_queue`, `total_queue_time`) via precomputed summaries or queue windows; map DataStatus.
+- Add CI/status classification parity (label categorisation rules) and optional per-ruleset PRStatus persistence.
+- Wire Celery task + beat schedule to refresh snapshots; add DRF endpoint to serve cached payloads with ETag/Last-Modified and enqueue refresh on miss/stale.
+- Optional: server-side dependency graph, area stats, automatic assignments; cache/bundle as needed.
