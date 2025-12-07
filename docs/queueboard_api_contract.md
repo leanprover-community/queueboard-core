@@ -168,6 +168,6 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 
 ### Next steps to reach parity
 - Add timeline-derived fields (`last_status_change`, `first_on_queue`, `total_queue_time`) via precomputed summaries or queue windows; map DataStatus.
-- Add optional per-ruleset PRStatus persistence if needed.
+- Optional: persist PRStatus per ruleset (lightweight) to keep multi-ruleset views consistent; not needed for performance at current scale.
 - Wire Celery task + beat schedule to refresh snapshots; add DRF endpoint to serve cached payloads with ETag/Last-Modified and enqueue refresh on miss/stale.
 - Optional: server-side dependency graph, area stats, automatic assignments; cache/bundle as needed.
