@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
 from typing import Dict, Iterable, List, Sequence
@@ -15,6 +15,8 @@ from syncer.models import PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
 from syncer.models.status_context import StatusContext, StatusContextState
+from queueboard.classify_pr_state import determine_PR_status, label_categorisation_rules, LabelKind, PRState, PRStatus
+from queueboard.ci_status import CIStatus
 
 
 DataStatus = str  # "valid" | "incomplete" | "missing"
@@ -36,41 +38,39 @@ def _data_status(is_incomplete: bool, synced_at: datetime | None) -> DataStatus:
     return "valid"
 
 
-def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict]) -> str:
-    """Coarse CI rollup: running > fail > pass > missing."""
-    has_any = False
-    running = False
-    failed = False
-
+def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict]) -> CIStatus:
+    """Coarse CI rollup aligned with legacy determine_ci_status."""
+    statuses = []
     for cr in check_runs:
-        has_any = True
         status = cr["status"]
         conclusion = cr["conclusion"]
         if status != CheckRunStatus.COMPLETED:
-            running = True
-            continue
-        if conclusion not in (
-            CheckRunConclusion.SUCCESS,
-            CheckRunConclusion.NEUTRAL,
-            CheckRunConclusion.SKIPPED,
-        ):
-            failed = True
+            statuses.append(CIStatus.Running)
+        elif conclusion in (CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED):
+            statuses.append(CIStatus.Pass)
+        elif conclusion == CheckRunConclusion.CANCELLED:
+            statuses.append(CIStatus.FailInessential)
+        else:
+            statuses.append(CIStatus.Fail)
 
     for sc in status_contexts:
-        has_any = True
         state = sc["state"]
         if state == StatusContextState.PENDING:
-            running = True
+            statuses.append(CIStatus.Running)
         elif state in (StatusContextState.FAILURE, StatusContextState.ERROR):
-            failed = True
+            statuses.append(CIStatus.Fail)
+        elif state == StatusContextState.SUCCESS:
+            statuses.append(CIStatus.Pass)
 
-    if running:
-        return "running"
-    if failed:
-        return "fail"
-    if has_any:
-        return "pass"
-    return "missing"
+    if not statuses:
+        return CIStatus.Missing
+    if CIStatus.Running in statuses:
+        return CIStatus.Running
+    if CIStatus.Fail in statuses:
+        return CIStatus.Fail
+    if CIStatus.FailInessential in statuses:
+        return CIStatus.FailInessential
+    return CIStatus.Pass
 
 
 def _forbidden_queue_labels(default_branch: str) -> set[str]:
@@ -98,25 +98,22 @@ def _label_url(repo: Repository, name: str) -> str:
     return f"https://github.com/{repo.owner}/{repo.name}/labels/{name}"
 
 
-def _classify_pr_status(*, label_names: set[str], ci_status: str, is_draft: bool) -> str:
-    """Approximate legacy PRStatus classification."""
-    if is_draft or ci_status in {"fail", "fail-inessential", "running", "missing"}:
-        return "NotReady"
-    if "merge-conflict" in label_names:
-        return "MergeConflict"
-    if any(lbl in label_names for lbl in ("blocked-by-other-pr", "blocked-by-core-pr", "blocked-by-batt-pr", "blocked-by-qq-pr")):
-        return "Blocked"
-    if "awaiting-author" in label_names:
-        return "AwaitingAuthor"
-    if "awaiting-zulip" in label_names:
-        return "AwaitingDecision"
-    if "delegated" in label_names:
-        return "Delegated"
-    if any(lbl in label_names for lbl in ("help-wanted", "please-adopt")):
-        return "HelpWanted"
-    if any(lbl in label_names for lbl in ("ready-to-merge", "auto-merge-after-ci")):
-        return "AwaitingBors"
-    return "AwaitingReview"
+def _classify_pr_status(
+    *, label_names: set[str], ci_status: CIStatus, is_draft: bool, head_repo_owner: str, repo_owner: str
+) -> str:
+    """Use legacy classify_pr_state logic."""
+    kinds = []
+    for name in label_names:
+        if name in label_categorisation_rules:
+            kinds.append(label_categorisation_rules[name])
+    from_fork = head_repo_owner.lower() != repo_owner.lower()
+    state = PRState(kinds, ci_status, is_draft, from_fork)
+    status = determine_PR_status(datetime.now(timezone.utc), state)
+    return status.value
+
+
+def _has_any(labels: set[str], names: tuple[str, ...]) -> bool:
+    return any(name in labels for name in names)
 
 
 @dataclass
@@ -143,20 +140,52 @@ class QueueboardSnapshotBuilder:
         queue_new_contrib: List[int] = []
         queue_easy: List[int] = []
         queue_tech_debt: List[int] = []
+        queue_stale_unassigned: List[int] = []
+        queue_stale_assigned: List[int] = []
         needs_decision: List[int] = []
+        needs_merge: List[int] = []
+        inessential_ci_fails: List[int] = []
+        tech_debt: List[int] = []
+        needs_help: List[int] = []
+        other_base: List[int] = []
+        all_ready_to_merge: List[int] = []
+        stale_ready_to_merge: List[int] = []
+        stale_delegated: List[int] = []
+        stale_maintainer_merge: List[int] = []
+        all_maintainer_merge: List[int] = []
+        stale_new_contributor: List[int] = []
+        approved: List[int] = []
+        bad_title: List[int] = []
+        unlabelled: List[int] = []
+        contradictory: List[int] = []
+        all_prs: List[int] = []
 
         forbidden_labels = _forbidden_queue_labels(repository.default_branch)
+        now = datetime.now(timezone.utc)
+        stale_queue_threshold = now - timedelta(days=3)
+        stale_queue_assigned_threshold = now - timedelta(days=14)
+        stale_ready_threshold = now - timedelta(days=1)
+        stale_new_contrib_threshold = now - timedelta(days=7)
 
         for pr in pr_qs.iterator(chunk_size=self.chunk_size):
             labels = label_map.get(pr.id, [])
-            label_names = {lab["name"].lower() for lab in labels}
+            label_names = {lab["name"] for lab in labels}
+            label_names_lc = {name.lower() for name in label_names}
+            all_prs.append(pr.number)
 
             ci_status = _ci_status_for_pr(
                 pr.id,
                 check_runs=ci_checks.get(pr.id, []),
                 status_contexts=ci_statuses.get(pr.id, []),
             )
-            pr_status = _classify_pr_status(label_names=label_names, ci_status=ci_status, is_draft=pr.is_draft)
+            ci_value = ci_status.value if isinstance(ci_status, CIStatus) else str(ci_status)
+            pr_status = _classify_pr_status(
+                label_names=label_names,
+                ci_status=ci_status,
+                is_draft=pr.is_draft,
+                head_repo_owner=pr.head_repo_owner_login,
+                repo_owner=repository.owner,
+            )
             entry = self._build_pr_entry(
                 pr,
                 repository=repository,
@@ -171,31 +200,92 @@ class QueueboardSnapshotBuilder:
                 draft_prs.append(pr.number)
             else:
                 nondraft_prs.append(pr.number)
+                if "wip" not in label_names_lc:
+                    if pr.approvals:
+                        approved.append(pr.number)
+                    topic_label = any(
+                        lbl["name"].lower() in {"ci", "imo"} or lbl["name"].lower().startswith("t-") for lbl in labels
+                    )
+                    if (pr.title or "").startswith("feat") and not topic_label:
+                        unlabelled.append(pr.number)
+                    lowered_title = (pr.title or "").lower()
+                    if lowered_title and not lowered_title.startswith(
+                        ("feat", "chore", "perf", "refactor", "style", "fix", "doc")
+                    ):
+                        bad_title.append(pr.number)
+                    if _has_contradictory_labels(label_names_lc):
+                        contradictory.append(pr.number)
 
             on_queue = (
                 not pr.is_draft
                 and pr.base_ref_name == repository.default_branch
-                and ci_status == "pass"
-                and forbidden_labels.isdisjoint(label_names)
+                and ci_value == CIStatus.Pass.value
+                and forbidden_labels.isdisjoint(label_names_lc)
             )
             if on_queue:
                 queue_prs.append(pr.number)
-                if "new-contributor" in label_names:
+                if "new-contributor" in label_names_lc:
                     queue_new_contrib.append(pr.number)
-                if "easy" in label_names:
+                if "easy" in label_names_lc:
                     queue_easy.append(pr.number)
-                if any(lbl in label_names for lbl in ("tech debt", "longest-pole")):
+                if any(lbl in label_names_lc for lbl in ("tech debt", "longest-pole")):
                     queue_tech_debt.append(pr.number)
+                if (pr.assignees or []) and pr.gh_updated_at < stale_queue_assigned_threshold:
+                    queue_stale_assigned.append(pr.number)
+                if not pr.assignees and pr.gh_updated_at < stale_queue_threshold:
+                    queue_stale_unassigned.append(pr.number)
 
-            if "awaiting-zulip" in label_names:
+            if "awaiting-zulip" in label_names_lc:
                 needs_decision.append(pr.number)
+            if "merge-conflict" in label_names_lc and on_queue:
+                needs_merge.append(pr.number)
+            if ci_value == CIStatus.FailInessential.value and pr.base_ref_name == repository.default_branch and not pr.is_draft:
+                inessential_ci_fails.append(pr.number)
+            if any(lbl in label_names_lc for lbl in ("tech debt", "longest-pole")) and not pr.is_draft:
+                tech_debt.append(pr.number)
+            if any(lbl in label_names_lc for lbl in ("help-wanted", "please-adopt")) and not pr.is_draft:
+                needs_help.append(pr.number)
+            if pr.base_ref_name != repository.default_branch and not pr.is_draft:
+                other_base.append(pr.number)
+            if any(lbl in label_names_lc for lbl in ("ready-to-merge", "auto-merge-after-ci")) and not pr.is_draft:
+                all_ready_to_merge.append(pr.number)
+                if pr.gh_updated_at < stale_ready_threshold:
+                    stale_ready_to_merge.append(pr.number)
+            if "delegated" in label_names_lc and pr.gh_updated_at < stale_ready_threshold and not pr.is_draft:
+                stale_delegated.append(pr.number)
+            if "maintainer-merge" in label_names_lc and not any(
+                lbl in label_names_lc for lbl in ("ready-to-merge", "auto-merge-after-ci")
+            ):
+                all_maintainer_merge.append(pr.number)
+                if pr.gh_updated_at < stale_ready_threshold:
+                    stale_maintainer_merge.append(pr.number)
+            if "new-contributor" in label_names_lc and pr.gh_updated_at < stale_new_contrib_threshold:
+                stale_new_contributor.append(pr.number)
 
         dashboards = {
             "Queue": queue_prs,
             "QueueNewContributor": queue_new_contrib,
             "QueueEasy": queue_easy,
             "QueueTechDebt": queue_tech_debt,
+            "QueueStaleUnassigned": queue_stale_unassigned,
+            "QueueStaleAssigned": queue_stale_assigned,
             "NeedsDecision": needs_decision,
+            "NeedsMerge": needs_merge,
+            "InessentialCIFails": inessential_ci_fails,
+            "TechDebt": tech_debt,
+            "NeedsHelp": needs_help,
+            "OtherBase": other_base,
+            "AllReadyToMerge": all_ready_to_merge,
+            "StaleReadyToMerge": stale_ready_to_merge,
+            "StaleDelegated": stale_delegated,
+            "StaleMaintainerMerge": stale_maintainer_merge,
+            "AllMaintainerMerge": all_maintainer_merge,
+            "StaleNewContributor": stale_new_contributor,
+            "Approved": approved,
+            "BadTitle": bad_title,
+            "Unlabelled": unlabelled,
+            "ContradictoryLabels": contradictory,
+            "All": all_prs,
         }
 
         meta = {
@@ -275,10 +365,13 @@ class QueueboardSnapshotBuilder:
         repository: Repository,
         labels: Iterable[dict],
         dependencies: Iterable[int],
-        ci_status: str,
+        ci_status: CIStatus,
         pr_status: str,
     ) -> dict:
         comments_status = _data_status(bool(pr.comments_incomplete), pr.engagement_synced_at)
+        assignees_status = _data_status(bool(pr.assignees_incomplete), pr.engagement_synced_at)
+        files_status = _data_status(bool(pr.files_incomplete), pr.engagement_synced_at)
+        approvals_status = _data_status(bool(pr.reviews_incomplete), pr.engagement_synced_at)
         users_commented = [comments_status, list(pr.commenters or [])]
 
         return {
@@ -286,6 +379,7 @@ class QueueboardSnapshotBuilder:
             "is_draft": pr.is_draft,
             "base_branch": pr.base_ref_name,
             "branch_name": pr.head_ref_name,
+            "head_repo": pr.head_repo_owner_login,
             "last_updated": _isoformat(pr.gh_updated_at),
             "author": pr.author.github_login if pr.author else None,
             "title": pr.title,
@@ -300,9 +394,34 @@ class QueueboardSnapshotBuilder:
             "users_commented": users_commented,
             "number_total_comments": pr.number_total_comments,
             "direct_dependencies": list(dependencies),
-            "ci_status": ci_status,
+            "ci_status": ci_status.value if isinstance(ci_status, CIStatus) else str(ci_status),
             "pr_status": pr_status,
             "last_status_change": None,
             "first_on_queue": None,
             "total_queue_time": None,
+            "data_status": {
+                "files": files_status,
+                "assignees": assignees_status,
+                "approvals": approvals_status,
+                "comments": comments_status,
+            },
         }
+
+
+def _has_contradictory_labels(label_names: set[str]) -> bool:
+    """Match legacy has_contradictory_labels heuristics assuming no WIP in the set."""
+    canonical = set()
+    for name in label_names:
+        if name in {"ready-to-merge", "auto-merge-after-ci"}:
+            canonical.add("bors")
+        elif name in {"blocked-by-other-pr", "blocked-by-core-pr", "blocked-by-batt-pr", "blocked-by-qq-pr"}:
+            canonical.add("blocked")
+        else:
+            canonical.add(name)
+
+    if "awaiting-review-dont-use" in canonical:
+        return True
+    if "bors" in canonical and {"awaiting-author", "awaiting-zulip"} & canonical:
+        return True
+    # Legacy also treated WIP+awaiting-review as contradictory; WIP is excluded upstream.
+    return False
