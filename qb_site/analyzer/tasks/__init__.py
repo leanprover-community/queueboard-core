@@ -11,7 +11,7 @@ from django.utils import timezone
 from core.models import Repository
 from syncer.models import PullRequest
 from syncer.services.github_client import GitHubClient
-from analyzer.models import QueueRuleSet, PRDependencyState
+from analyzer.models import QueueRuleSet, PRDependencyState, PRRevision
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 from analyzer.services.dependencies import rebuild_pr_dependencies, body_hash
 from analyzer.tasks.process_pr import process_pr
@@ -112,12 +112,14 @@ def process_pr_task(pr_id: int) -> Dict[str, Any]:
                     require_pr_association=False,
                 )
                 ci_enqueued.append({"pr_number": int(item.pr.number), "shas": list(item.shas), "task_id": task_id})
-            steps["ci_backfill"] = {"planned": len(plan), "enqueued": ci_enqueued}
+            steps["ci_backfill"] = {"planned": len(plan), "enqueued": ci_enqueued, "status": "enqueued"}
         else:
-            steps["ci_backfill"] = {"planned": 0, "enqueued": []}
+            has_revisions = PRRevision.objects.filter(pull_request=pr).exists()
+            reason = "no_pr_revisions" if not has_revisions else "no_missing_ci_shas"
+            steps["ci_backfill"] = {"planned": 0, "enqueued": [], "status": "skipped", "reason": reason}
     except Exception as exc:  # pragma: no cover - defensive
         log.exception("analyzer.process_pr: CI backfill planning failed for PR id=%s", pr.id)
-        steps["ci_backfill"] = {"error": str(exc)}
+        steps["ci_backfill"] = {"error": str(exc), "status": "error"}
 
     summary["steps"] = steps
     return summary

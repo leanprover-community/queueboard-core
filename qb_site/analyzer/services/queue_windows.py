@@ -29,6 +29,8 @@ class QueueWindowRebuildResult:
     created: int
     updated: int
     deleted: int
+    status: str = "rebuilt"
+    reason: str | None = None
 
 
 def _normalize_label(name: str | None) -> str:
@@ -437,13 +439,25 @@ def rebuild_queue_windows_for_ruleset(
         # Ensure we do not leave stale windows around if gating conditions
         # change over time.
         PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set).delete()
-        return QueueWindowRebuildResult(created=0, updated=0, deleted=0)
+        return QueueWindowRebuildResult(
+            created=0,
+            updated=0,
+            deleted=0,
+            status="skipped",
+            reason="timeline_backfill_incomplete",
+        )
 
     if rule_set.require_ci_success:
         has_revisions = PRRevision.objects.filter(pull_request=pr).exists()
         if not has_revisions:
             PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set).delete()
-            return QueueWindowRebuildResult(created=0, updated=0, deleted=0)
+            return QueueWindowRebuildResult(
+                created=0,
+                updated=0,
+                deleted=0,
+                status="skipped",
+                reason="missing_pr_revisions_for_ci_ruleset",
+            )
 
     if as_of is None:
         as_of = timezone.now()
@@ -482,4 +496,4 @@ def rebuild_queue_windows_for_ruleset(
         qs = qs.exclude(from_ts__in=expected_starts)
     deleted, _ = qs.delete()
 
-    return QueueWindowRebuildResult(created=created, updated=updated, deleted=deleted)
+    return QueueWindowRebuildResult(created=created, updated=updated, deleted=deleted, status="rebuilt", reason=None)
