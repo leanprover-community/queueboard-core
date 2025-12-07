@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from django.conf import settings
+from django.db import models
+from django.db.models.functions import Cast
+from django.http import StreamingHttpResponse
 from django.utils import timezone
 from django.utils.http import http_date, parse_http_date_safe
 from rest_framework import status
@@ -37,7 +40,12 @@ class QueueboardSnapshotView(APIView):
         cache_key = request.query_params.get("cache_key", "default")
         refresh_requested = _as_bool(request.query_params.get("refresh"))
         ttl_seconds = int(getattr(settings, "ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS", 0))
-        snapshot = QueueSnapshot.objects.filter(repository=repo, cache_key=cache_key).order_by("-generated_at", "-id").first()
+        snapshot = (
+            QueueSnapshot.objects.filter(repository=repo, cache_key=cache_key)
+            .annotate(payload_text=Cast("payload", output_field=models.TextField()))
+            .order_by("-generated_at", "-id")
+            .first()
+        )
         now_ts = timezone.now()
         stale = snapshot is None
         if snapshot:
@@ -88,7 +96,13 @@ class QueueboardSnapshotView(APIView):
         if stale:
             headers["X-Queueboard-Stale"] = "1"
 
-        return Response(snapshot.payload, status=status.HTTP_200_OK, headers=headers)
+        stream = snapshot.payload_text or "{}"
+        return StreamingHttpResponse(
+            stream,
+            status=status.HTTP_200_OK,
+            headers=headers,
+            content_type="application/json",
+        )
 
 
 def _as_bool(value: str | None) -> bool:
