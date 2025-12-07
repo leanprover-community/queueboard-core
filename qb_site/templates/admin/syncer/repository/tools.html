@@ -69,6 +69,16 @@
   <input type="submit" value="{% trans 'Enqueue pending-CI refresh' %}" />
 </form>
 
+<h2>{% trans "Queue snapshot" %}</h2>
+<p>
+  {% trans "Enqueue a queueboard snapshot build for this repository." %}
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="build_queue_snapshot" />
+  <input type="submit" value="{% trans 'Build queue snapshot' %}" />
+</form>
+
 <h2>{% trans "Sync specific PR numbers" %}</h2>
 <form method="post" style="margin-bottom:2em;">
   {% csrf_token %}

@@ -231,6 +231,16 @@ class RepositoryAdmin(admin.ModelAdmin):
                     )
                 else:
                     error = "Invalid toggle request"
+            elif submitted_action == "build_queue_snapshot":
+                form = self.SyncPRsForm(prefix="prs")
+                repo_form = self.RepoSyncTaskForm(prefix="repo")
+                try:
+                    from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
+
+                    async_res = build_queueboard_snapshot.delay(repository_id=repo.id, cache_key="default")
+                    notice = f"Enqueued queue snapshot build for {repo.owner}/{repo.name}: {async_res.id}"
+                except Exception as e:  # pragma: no cover - external dependency
+                    error = f"Failed to enqueue queue snapshot build: {e}"
             else:
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
@@ -262,6 +272,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         "backfill_history_action",
         "backfill_incomplete_action",
         "refresh_pending_ci_action",
+        "build_queue_snapshot_action",
     ]
 
     def open_sync_tools_action(self, request, queryset):  # type: ignore[override]
@@ -335,6 +346,17 @@ class RepositoryAdmin(admin.ModelAdmin):
 
     refresh_pending_ci_action.short_description = "Enqueue pending-CI refresh for selected repositories"  # type: ignore[attr-defined]
 
+    def build_queue_snapshot_action(self, request, queryset):  # type: ignore[override]
+        from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
+
+        count = 0
+        for repo in queryset:
+            build_queueboard_snapshot.delay(repository_id=repo.id, cache_key="default")
+            count += 1
+        self.message_user(request, f"Enqueued queue snapshot build for {count} repositories.")
+
+    build_queue_snapshot_action.short_description = "Build queue snapshot for selected repositories"  # type: ignore[attr-defined]
+
     def get_actions(self, request):  # type: ignore[override]
         """Return actions with 'delete_selected' moved to the end.
 
@@ -353,6 +375,7 @@ class RepositoryAdmin(admin.ModelAdmin):
             "backfill_history_action",
             "backfill_incomplete_action",
             "refresh_pending_ci_action",
+            "build_queue_snapshot_action",
         ):
             if key in actions:
                 ordered[key] = actions.pop(key)
