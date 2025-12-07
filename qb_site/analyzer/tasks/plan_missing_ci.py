@@ -30,6 +30,10 @@ def plan_missing_ci_backfill_task(
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     total_enqueued = 0
     total_prs_considered = 0
+    total_prs_skipped_no_backfill = 0
+    total_prs_skipped_no_revisions = 0
+    total_prs_skipped_already_checked = 0
+    total_prs_skipped_limit = 0
     per_repo: list[dict] = []
     now_ts = timezone.now()
     for repo in repos:
@@ -55,15 +59,28 @@ def plan_missing_ci_backfill_task(
         pr_qs = pr_qs.order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
         repo_enqueued = 0
         repo_prs = 0
+        repo_prs_skipped_no_backfill: list[int] = []
+        repo_prs_skipped_no_revisions: list[int] = []
+        repo_prs_skipped_already_checked: list[int] = []
+        repo_prs_skipped_limit: list[int] = []
+        repo_limit_hit = False
         for pr in pr_qs:
             if repo_prs >= int(max_prs_per_repo):
+                repo_limit_hit = True
+                repo_prs_skipped_limit.append(int(pr.number))
                 break
+
+            if not getattr(pr, "timeline_backfill_done", False):
+                repo_prs_skipped_no_backfill.append(int(pr.number))
+                continue
 
             state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
             # Skip if already checked for this revision_version.
             if state.revision_version and state.ci_checked_revision_version == state.revision_version:
+                repo_prs_skipped_already_checked.append(int(pr.number))
                 continue
             if not PRRevision.objects.filter(pull_request=pr).exists():
+                repo_prs_skipped_no_revisions.append(int(pr.number))
                 continue
 
             shas = next_revision_backfill_shas(pr, limit=int(shas_per_pr))
@@ -86,12 +103,31 @@ def plan_missing_ci_backfill_task(
             total_prs_considered += 1
 
         total_enqueued += repo_enqueued
-        per_repo.append({"repo": f"{repo.owner}/{repo.name}", "prs_checked": repo_prs, "ci_tasks": repo_enqueued})
+        total_prs_skipped_no_backfill += len(repo_prs_skipped_no_backfill)
+        total_prs_skipped_no_revisions += len(repo_prs_skipped_no_revisions)
+        total_prs_skipped_already_checked += len(repo_prs_skipped_already_checked)
+        total_prs_skipped_limit += len(repo_prs_skipped_limit)
+        per_repo.append(
+            {
+                "repo": f"{repo.owner}/{repo.name}",
+                "prs_checked": repo_prs,
+                "ci_tasks": repo_enqueued,
+                "prs_skipped_no_backfill": repo_prs_skipped_no_backfill,
+                "prs_skipped_no_revisions": repo_prs_skipped_no_revisions,
+                "prs_skipped_already_checked": repo_prs_skipped_already_checked,
+                "prs_skipped_limit": repo_prs_skipped_limit,
+                "limit_hit": repo_limit_hit,
+            }
+        )
 
     return {
         "repos": len(repos),
         "prs_checked": total_prs_considered,
         "ci_tasks": total_enqueued,
+        "prs_skipped_no_backfill": total_prs_skipped_no_backfill,
+        "prs_skipped_no_revisions": total_prs_skipped_no_revisions,
+        "prs_skipped_already_checked": total_prs_skipped_already_checked,
+        "prs_skipped_limit": total_prs_skipped_limit,
         "per_repo": per_repo,
         "only_complete_backfill": bool(only_complete_backfill),
     }

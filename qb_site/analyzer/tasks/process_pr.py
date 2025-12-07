@@ -35,21 +35,31 @@ def process_pr(
         strategy = res.strategy
 
     harvest = {}
-    ci_enqueued: list[dict[str, object]] = []
+    ci_result: dict[str, object] = {
+        "status": "skipped",
+        "reason": "ci_planning_runs_in_process_pr_task",
+        "planned": 0,
+        "enqueued": [],
+    }
     queue_results: dict[int, dict[str, int]] = {}
     if strategy != "noop":
         for rule_set in QueueRuleSet.objects.filter(repository=pr.repository):
             created_at = pr.gh_created_at
             if rule_set.effective_from and created_at < rule_set.effective_from:
+                queue_results[int(rule_set.id)] = {"status": "skipped", "reason": "pr_before_ruleset_effective_from"}
                 continue
             if rule_set.effective_to and created_at >= rule_set.effective_to:
+                queue_results[int(rule_set.id)] = {"status": "skipped", "reason": "pr_on_or_after_ruleset_effective_to"}
                 continue
             rebuild = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rule_set)
             queue_results[int(rule_set.id)] = {
                 "created": int(rebuild.created),
                 "updated": int(rebuild.updated),
                 "deleted": int(rebuild.deleted),
+                "status": getattr(rebuild, "status", None),
             }
+            if getattr(rebuild, "reason", None):
+                queue_results[int(rule_set.id)]["reason"] = rebuild.reason
         # Harvest commit history per force-push segment baseline to surface missed heads via Syncer task.
         fps = list(
             pr.timeline_events.filter(type="HEAD_FORCE_PUSHED")
@@ -92,5 +102,5 @@ def process_pr(
         "deleted": res.deleted,
         "queue_windows": queue_results,
         "harvest": harvest,
-        "ci_backfill": ci_enqueued,
+        "ci_backfill": ci_result,
     }

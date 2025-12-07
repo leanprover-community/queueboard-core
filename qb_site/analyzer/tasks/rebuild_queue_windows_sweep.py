@@ -21,6 +21,9 @@ def rebuild_queue_windows_sweep_task(
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     total_rebuilt = 0
     total_prs = 0
+    total_prs_skipped_up_to_date = 0
+    total_prs_skipped_no_revisions = 0
+    total_rulesets_skipped_out_of_bounds = 0
     per_repo: list[dict] = []
 
     for repo in repos:
@@ -45,14 +48,29 @@ def rebuild_queue_windows_sweep_task(
             pr_qs = (p for p in pr_qs if p.commits_backfill_done)
         repo_rebuilt = 0
         repo_prs = 0
+        repo_prs_skipped_up_to_date: list[int] = []
+        repo_prs_skipped_no_revisions: list[int] = []
+        repo_rulesets_skipped_out_of_bounds: list[int] = []
+        repo_limit_hit = False
 
         rulesets = list(QueueRuleSet.objects.filter(repository=repo))
         if not rulesets:
-            per_repo.append({"repo": f"{repo.owner}/{repo.name}", "prs_checked": 0, "windows_rebuilt": 0})
+            per_repo.append(
+                {
+                    "repo": f"{repo.owner}/{repo.name}",
+                    "prs_checked": 0,
+                    "windows_rebuilt": 0,
+                    "prs_skipped_up_to_date": 0,
+                    "prs_skipped_no_revisions": 0,
+                    "rulesets_skipped_out_of_bounds": 0,
+                    "limit_hit": False,
+                }
+            )
             continue
 
         for pr in pr_qs:
             if repo_prs >= int(max_prs_per_repo):
+                repo_limit_hit = True
                 break
 
             state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
@@ -67,17 +85,29 @@ def rebuild_queue_windows_sweep_task(
                 and state.windows_built_revision_version == state.revision_version
                 and not stale_ruleset
             ):
+                pr_num = int(pr.number)
+                if pr_num not in repo_prs_skipped_up_to_date:
+                    repo_prs_skipped_up_to_date.append(pr_num)
                 continue
 
             if not PRRevision.objects.filter(pull_request=pr).exists():
+                pr_num = int(pr.number)
+                if pr_num not in repo_prs_skipped_no_revisions:
+                    repo_prs_skipped_no_revisions.append(pr_num)
                 continue
 
             rebuilt_any = False
             for rs in rulesets:
                 created_at = pr.gh_created_at
                 if rs.effective_from and created_at < rs.effective_from:
+                    pr_num = int(pr.number)
+                    if pr_num not in repo_rulesets_skipped_out_of_bounds:
+                        repo_rulesets_skipped_out_of_bounds.append(pr_num)
                     continue
                 if rs.effective_to and created_at >= rs.effective_to:
+                    pr_num = int(pr.number)
+                    if pr_num not in repo_rulesets_skipped_out_of_bounds:
+                        repo_rulesets_skipped_out_of_bounds.append(pr_num)
                     continue
                 res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rs)
                 if res.created or res.updated or res.deleted:
@@ -91,12 +121,28 @@ def rebuild_queue_windows_sweep_task(
             repo_prs += 1
             total_prs += 1
         total_rebuilt += repo_rebuilt
-        per_repo.append({"repo": f"{repo.owner}/{repo.name}", "prs_checked": repo_prs, "windows_rebuilt": repo_rebuilt})
+        total_prs_skipped_up_to_date += len(repo_prs_skipped_up_to_date)
+        total_prs_skipped_no_revisions += len(repo_prs_skipped_no_revisions)
+        total_rulesets_skipped_out_of_bounds += len(repo_rulesets_skipped_out_of_bounds)
+        per_repo.append(
+            {
+                "repo": f"{repo.owner}/{repo.name}",
+                "prs_checked": repo_prs,
+                "windows_rebuilt": repo_rebuilt,
+                "prs_skipped_up_to_date": repo_prs_skipped_up_to_date,
+                "prs_skipped_no_revisions": repo_prs_skipped_no_revisions,
+                "rulesets_skipped_out_of_bounds": repo_rulesets_skipped_out_of_bounds,
+                "limit_hit": repo_limit_hit,
+            }
+        )
 
     return {
         "repos": len(repos),
         "prs_checked": total_prs,
         "windows_rebuilt": total_rebuilt,
+        "prs_skipped_up_to_date": total_prs_skipped_up_to_date,
+        "prs_skipped_no_revisions": total_prs_skipped_no_revisions,
+        "rulesets_skipped_out_of_bounds": total_rulesets_skipped_out_of_bounds,
         "only_complete_backfill": bool(only_complete_backfill),
         "per_repo": per_repo,
     }

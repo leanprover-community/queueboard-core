@@ -143,5 +143,11 @@ class TestProcessPRTask(TestCase):
         self.assertEqual(stub_task.calls[0]["since_iso"], pr.gh_created_at.isoformat())
         self.assertEqual(stub_task.calls[1]["start_sha"], "h2")
         self.assertEqual(stub_task.calls[1]["since_iso"], t_fp.isoformat())
-        # No CI enqueued yet because we don't have harvest results in-process.
-        self.assertEqual(res.get("ci_backfill"), [])
+        # Queue windows rebuilt. CI backfill planning is handled in process_pr_task, so this call should mark it skipped.
+        qwin = res["queue_windows"][self.rule_set.id]
+        self.assertEqual(qwin.get("created"), 1)
+        self.assertEqual(qwin.get("updated"), 0)
+        self.assertEqual(qwin.get("deleted"), 0)
+        self.assertEqual(qwin.get("status"), "rebuilt")
+        self.assertEqual(res["ci_backfill"].get("status"), "skipped")
+        self.assertEqual(res["ci_backfill"].get("planned"), 0)
