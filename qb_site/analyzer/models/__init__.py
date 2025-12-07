@@ -7,3 +7,4 @@ from .queue_window import PRQueueWindow  # noqa: F401
 from .pr_dependency import PRDependency  # noqa: F401
 from .pr_dependency_state import PRDependencyState  # noqa: F401
 from .convergence_snapshot import AnalyzerConvergenceSnapshot  # noqa: F401
+from .queue_snapshot import QueueSnapshot  # noqa: F401
