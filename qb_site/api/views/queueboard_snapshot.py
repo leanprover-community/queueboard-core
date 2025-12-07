@@ -6,7 +6,7 @@ from typing import Any
 from django.conf import settings
 from django.db import models
 from django.db.models.functions import Cast
-from django.http import StreamingHttpResponse
+from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.http import http_date, parse_http_date_safe
 from rest_framework import status
@@ -96,13 +96,8 @@ class QueueboardSnapshotView(APIView):
         if stale:
             headers["X-Queueboard-Stale"] = "1"
 
-        stream = snapshot.payload_text or "{}"
-        return StreamingHttpResponse(
-            stream,
-            status=status.HTTP_200_OK,
-            headers=headers,
-            content_type="application/json",
-        )
+        content = snapshot.payload_text or "{}"
+        return HttpResponse(content, status=status.HTTP_200_OK, headers=headers, content_type="application/json")
 
 
 def _as_bool(value: str | None) -> bool:
