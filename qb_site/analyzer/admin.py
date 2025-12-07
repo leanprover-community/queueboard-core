@@ -13,7 +13,10 @@ from analyzer.models import (
     AnalyzerConvergenceSnapshot,
     PRDependency,
     PRDependencyState,
+    QueueSnapshot,
 )
+from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
+from core.models import Repository
 
 
 class ReadOnlyAdmin(admin.ModelAdmin):
@@ -198,6 +201,39 @@ class PRDependencyStateAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(QueueSnapshot)
+class QueueSnapshotAdmin(ReadOnlyAdmin):
+    list_display = ("repository", "cache_key", "generated_at", "pr_count", "queue_count")
+    list_filter = ("cache_key",)
+    search_fields = ("repository__owner", "repository__name", "cache_key")
+    readonly_fields = ("repository", "cache_key", "generated_at", "expires_at", "etag", "pr_count", "queue_count", "payload")
+
+    def get_urls(self):
+        urls = super().get_urls()
+        from django.urls import path
+
+        custom = [
+            path("build/", self.admin_site.admin_view(self.build_snapshot_view), name="analyzer_queue_snapshot_build"),
+        ]
+        return custom + urls
+
+    def build_snapshot_view(self, request):
+        repo_id = request.GET.get("repo_id")
+        cache_key = request.GET.get("cache_key", "default")
+        if not repo_id:
+            self.message_user(request, "Missing repo_id", level="error")
+            return HttpResponseRedirect(reverse("admin:analyzer_queuesnapshot_changelist"))
+        try:
+            repo = Repository.objects.get(pk=repo_id)
+        except Repository.DoesNotExist:
+            self.message_user(request, f"Repository {repo_id} not found", level="error")
+            return HttpResponseRedirect(reverse("admin:analyzer_queuesnapshot_changelist"))
+
+        build_queueboard_snapshot.delay(repository_id=repo.id, cache_key=cache_key)
+        self.message_user(request, f"Enqueued snapshot build for {repo} (cache_key={cache_key})")
+        return HttpResponseRedirect(reverse("admin:analyzer_queuesnapshot_changelist"))
 
 
 @admin.register(AnalyzerConvergenceSnapshot)
