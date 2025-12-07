@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_celery_results",
+    "rest_framework",
     "core",
     "syncer",
     "analyzer",
@@ -226,6 +227,8 @@ ANALYZER_DEPENDENCY_SWEEP_MAX_PRS_PER_REPO = int(os.getenv("ANALYZER_DEPENDENCY_
 ANALYZER_DEPENDENCY_SWEEP_ONLY_OPEN = env_bool(os.getenv("ANALYZER_DEPENDENCY_SWEEP_ONLY_OPEN"), False)
 ANALYZER_DEPENDENCY_SWEEP_BUILDER_VERSION = int(os.getenv("ANALYZER_DEPENDENCY_SWEEP_BUILDER_VERSION", 1))
 ANALYZER_DEPENDENCY_SWEEP_FANOUT = env_bool(os.getenv("ANALYZER_DEPENDENCY_SWEEP_FANOUT"), True)
+ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS = int(os.getenv("ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS", 900))
+ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS = int(os.getenv("ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS", 900))
 ANALYTICS_CONVERGENCE_PERIOD_SECONDS = int(os.getenv("ANALYTICS_CONVERGENCE_PERIOD_SECONDS", 900))
 
 # CI filter (opt-in allowlist mode)
@@ -326,5 +329,14 @@ if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:
         "schedule": SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS,
         "kwargs": {
             "limit": SYNCER_ENGAGEMENT_BACKFILL_LIMIT,
+        },
+    }
+if ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["refresh_queueboard_snapshots"] = {
+        "task": "analyzer.refresh_queueboard_snapshots",
+        "schedule": ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS,
+        "kwargs": {
+            "cache_key": "default",
+            "fanout": True,
         },
     }
