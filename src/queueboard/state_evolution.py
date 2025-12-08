@@ -148,8 +148,12 @@ def update_state(current: PRState, ev: Event) -> PRState:
         case LabelRemoved(name):
             if name in label_categorisation_rules:
                 # NB: make sure to *copy* current.labels using [:], otherwise that state is also modified!
+                label_kind = label_categorisation_rules[name]
+                if label_kind not in current.labels:
+                    print(f"warning: label {name} removed although it is not present")
+                    return current
                 new_labels = current.labels[:]
-                new_labels.remove(label_categorisation_rules[name])
+                new_labels.remove(label_kind)
                 return PRState(new_labels, current.ci, current.draft, current.from_fork)
             else:
                 # Removing an irrelevant label does not change the PR status.
@@ -162,10 +166,11 @@ def update_state(current: PRState, ev: Event) -> PRState:
             # Any remaining labels to be removed should exist.
             new_labels = current.labels[:]
             for r in removed:
-                if r not in current.labels:
+                label_kind = label_categorisation_rules[r]
+                if label_kind not in current.labels:
                     print(f"warning: label {r} is supposedly removed twice")
                     continue
-                new_labels.remove(label_categorisation_rules[r])
+                new_labels.remove(label_kind)
             return PRState(
                 new_labels + [label_categorisation_rules[lab] for lab in added], current.ci, current.draft, current.from_fork
             )

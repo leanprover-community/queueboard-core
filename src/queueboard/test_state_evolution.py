@@ -107,6 +107,13 @@ def test_determine_state_changes() -> None:
         ],
         PRState.with_labels([LabelKind.Decision]),
     )
+    # Removing a label that is not present should be ignored.
+    check([Event.remove_label(dummy, "awaiting-author")], PRState.with_labels([]))
+    # Combined add/remove uses canonical label kinds when removing.
+    check(
+        [Event.add_label(dummy, "awaiting-author"), Event.add_remove_labels(dummy, [], ["awaiting-author"])],
+        PRState.with_labels([]),
+    )
     # TODO: better tests for add-remove
     # - equivalent to individual additions; with irrelevant labels; same for removal
     # - adding and removing same label is a no-op
