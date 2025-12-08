@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 
 from django.conf import settings
@@ -121,7 +121,7 @@ def _is_not_modified(request, snapshot: QueueSnapshot) -> bool:
     if modified_since:
         parsed = parse_http_date_safe(modified_since)
         if parsed is not None:
-            since_dt = datetime.fromtimestamp(parsed, tz=timezone.utc)
+            since_dt = datetime.fromtimestamp(parsed, tz=dt_timezone.utc)
             if snapshot.generated_at <= since_dt:
                 return True
     return False
