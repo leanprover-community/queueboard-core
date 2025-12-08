@@ -44,6 +44,7 @@ def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: S
     for cr in check_runs:
         status = cr["status"]
         conclusion = cr["conclusion"]
+        # TODO: this is not correct
         if status != CheckRunStatus.COMPLETED:
             statuses.append(CIStatus.Running)
         elif conclusion in (CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED):
