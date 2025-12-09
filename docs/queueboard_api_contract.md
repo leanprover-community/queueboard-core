@@ -142,6 +142,9 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Client bridge: add `--source api` to `src/queueboard/dashboard_data.py` to fetch the snapshot/supporting payloads and re-emit legacy `api/*.json` locally for HTML generation; keep filesystem download as a fallback until parity is proven.
 - Rollout: run dual pipelines and diffs in CI, cut over dashboard generation to the API source by default, then retire the filesystem download path and `queue.json`.
 
+Future cleanup
+- Snapshot currently includes `direct_dependencies` per PR, and the dependency graph endpoint reuses that payload. Once clients no longer rely on `direct_dependencies` inside `snapshot.json`, we can drop it from the snapshot contract and have the dependency graph read directly from `PRDependency` (filtered to open PRs in the requested repo) to decouple snapshot shape from dependency edges.
+
 ## Server-side snapshot computation (memory-aware)
 - Constraints: Heroku worker dyno with limited RAM; target ~2k open PRs without loading all rows into memory at once.
 - Builder: a `QueueboardSnapshotBuilder` that chunk-iterates open PRs (e.g., 200–500 via `values()`/`iterator`) and assembles `prs`/`lists` in one pass, backed by keyed maps loaded up front:
@@ -165,6 +168,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - `QueueboardSnapshotBuilder` in Analyzer: chunked DB reads; populates snapshot `prs` with metadata, labels, dependencies, coarse CI (legacy determine_ci_status rules), PR status (legacy classify_pr_state rules), head/base refs, engagement fields and `data_status` for files/assignees/approvals/comments; builds dashboards for all legacy buckets (Queue, stale variants, ready-to-merge/delegated/maintainer, tech debt, needs-*, approved, bad title, unlabelled, contradictory, All) plus draft/nondraft lists.
 - `QueueSnapshot` model in Analyzer to persist cached payloads with counts/etag/cache_key; builder can `build_and_store(...)`.
 - Tests for builder/storage live under `qb_site/analyzer/tests/test_queueboard_snapshot.py`.
+- Dependency graph endpoint (`QueueboardDependencyGraphView`) serves `dependency_graph.json` derived from cached snapshots with matching ETag/Last-Modified semantics; `DependencyGraphBuilder` mirrors the legacy D3 shape (nodes/links/metadata, dynamic repo URLs, draft detection via flag/WIP labels). API tests cover 200/304/202/stale refresh paths.
 
 ### Next steps to reach parity
 - Add timeline-derived fields (`last_status_change`, `first_on_queue`, `total_queue_time`) via precomputed summaries or queue windows; map DataStatus.
