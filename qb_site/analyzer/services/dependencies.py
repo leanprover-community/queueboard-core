@@ -9,6 +9,7 @@ from analyzer.models import PRDependency
 from syncer.models import PullRequest
 
 DEPENDENCY_PATTERN = re.compile(r"-\s*\[[ x]\]\s*depends on:\s*#(\d+)", re.IGNORECASE)
+PR_DEPENDENCY_BUILDER_VERSION = 1
 
 
 def parse_dependency_numbers(body: str | None) -> List[int]:

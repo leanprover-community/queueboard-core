@@ -847,6 +847,10 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "incomplete_prs",
         "harvest_jobs_open",
         "history_cursor_completed",
+        "prs_missing_engagement",
+        "prs_engagement_incomplete",
+        "prs_missing_timeline",
+        "prs_missing_commits",
     )
     list_filter = ("repository", "history_cursor_completed")
     date_hierarchy = "collected_at"
@@ -860,6 +864,10 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "incomplete_prs",
         "harvest_jobs_open",
         "history_cursor_completed",
+        "prs_missing_engagement",
+        "prs_engagement_incomplete",
+        "prs_missing_timeline",
+        "prs_missing_commits",
         "created_at",
     )
 

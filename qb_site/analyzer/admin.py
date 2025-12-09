@@ -245,6 +245,8 @@ class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "windows_stale",
         "ci_not_checked",
         "ci_gated_missing_windows",
+        "prs_missing_dependency_state",
+        "prs_stale_dependency_state",
     )
     list_filter = ("repository",)
     date_hierarchy = "collected_at"
@@ -257,6 +259,8 @@ class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "windows_stale",
         "ci_not_checked",
         "ci_gated_missing_windows",
+        "prs_missing_dependency_state",
+        "prs_stale_dependency_state",
         "created_at",
     )
 
