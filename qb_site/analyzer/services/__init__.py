@@ -1,6 +1,7 @@
 """Service layer for analytics computations."""
 
 from .ci_backfill import PlanItem, enqueue_ci_by_shas, plan_missing_ci_shas
+from .dependency_graph import DependencyGraphBuilder
 from .dependencies import DependencyRebuildResult, body_hash, parse_dependency_numbers, rebuild_pr_dependencies
 from .queue_windows import (
     QueueSummary,
@@ -15,6 +16,7 @@ __all__ = [
     "PlanItem",
     "enqueue_ci_by_shas",
     "plan_missing_ci_shas",
+    "DependencyGraphBuilder",
     "DependencyRebuildResult",
     "body_hash",
     "parse_dependency_numbers",
