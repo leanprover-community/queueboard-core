@@ -1,0 +1,22 @@
+{% extends "admin/change_list.html" %}
+{% load i18n %}
+
+{% block object-tools %}
+{{ block.super }}
+{% url 'admin:core_reviewerpreference_import_topics' as fallback_import_url %}
+<div class="object-tools">
+  <ul class="object-tools">
+    <li>
+      <a href="{{ import_topics_url|default:fallback_import_url }}" class="button">
+        {% trans "Import reviewer-topics.json" %}
+      </a>
+    </li>
+    <li>
+      {% url 'admin:core_reviewerpreference_export_topics' as fallback_export_url %}
+      <a href="{{ export_topics_url|default:fallback_export_url }}" class="button">
+        {% trans "Export reviewer-topics.json" %}
+      </a>
+    </li>
+  </ul>
+</div>
+{% endblock %}

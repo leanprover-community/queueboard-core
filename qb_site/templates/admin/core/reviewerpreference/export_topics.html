@@ -1,0 +1,51 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<h1>{% trans "Export reviewer-topics.json" %}</h1>
+
+<p>
+  <strong>{% trans "Field mapping notes" %}:</strong>
+  <ul>
+    <li>{% trans "github_handle comes from User.github_login (sorted case-insensitively)." %}</li>
+    <li>{% trans "top_level comes from preferred_labels." %}</li>
+    <li>{% trans "free_form and auto_assign are emitted directly." %}</li>
+    <li>{% trans "maximum_capacity is emitted only when it differs from the model default." %}</li>
+    <li>{% trans "temporary_break and zulip_handle are not included (no corresponding DB fields)." %}</li>
+  </ul>
+</p>
+
+{% if form.non_field_errors %}
+<ul class="errorlist">
+  {% for error in form.non_field_errors %}
+  <li>{{ error }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<form method="post" novalidate>
+  {% csrf_token %}
+  <table>
+    {% for field in form %}
+    <tr>
+      <th>{{ field.label_tag }}</th>
+      <td>
+        {{ field }}
+        {% if field.help_text %}
+        <br />
+        <small>{{ field.help_text }}</small>
+        {% endif %}
+        {% for error in field.errors %}
+        <p class="error">{{ error }}</p>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p><input type="submit" class="default" value="{% trans 'Download JSON' %}" /></p>
+</form>
+
+<p><a href="{{ changelist_url }}">{% trans "Return to reviewer preferences" %}</a></p>
+{% endblock %}
