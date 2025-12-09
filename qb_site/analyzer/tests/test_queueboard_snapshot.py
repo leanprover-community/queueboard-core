@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
 
-from analyzer.models import PRDependency
+from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet
 from analyzer.models.queue_snapshot import QueueSnapshot
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository, User
@@ -60,6 +60,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
             assignees_incomplete=False,
             reviews_incomplete=False,
             comments_incomplete=False,
+            timeline_backfill_done=True,
         )
         for label_name in labels:
             label_def, _ = LabelDef.objects.get_or_create(repository=self.repo, name=label_name, defaults={"color": "123456"})
@@ -234,3 +235,44 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertIn(pr_ready_to_merge.number, dashboards["AllReadyToMerge"])
         self.assertIn(pr_awaiting_zulip.number, dashboards["NeedsDecision"])
         self.assertIn(pr_help.number, dashboards["NeedsHelp"])
+
+    def test_queue_timeline_fields_from_windows(self):
+        rule_set = QueueRuleSet.objects.create(repository=self.repo, version=1)
+        pr = self._make_pr(101)
+        window1_start = self.now - timedelta(days=2)
+        window1_end = self.now - timedelta(days=1)
+        window2_start = self.now - timedelta(hours=12)
+        window2_end = self.now + timedelta(hours=1)
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rule_set,
+            from_ts=window1_start,
+            to_ts=window1_end,
+            cycle_index=0,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rule_set,
+            from_ts=window2_start,
+            to_ts=window2_end,
+            cycle_index=1,
+        )
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz:
+                    return self.now
+                return self.now.replace(tzinfo=None)
+
+        with patch("analyzer.services.queueboard_snapshot.datetime", FixedDateTime):
+            snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo, rule_set=rule_set)
+
+        entry = snapshot["prs"][pr.number]
+        self.assertEqual(entry["first_on_queue"]["status"], "valid")
+        self.assertEqual(entry["first_on_queue"]["date"], window1_start.isoformat())
+        self.assertEqual(entry["total_queue_time"]["status"], "valid")
+        self.assertEqual(entry["total_queue_time"]["value_td"], 129600)
+        self.assertEqual(entry["last_queue_status_change"]["time"], window2_start.isoformat())
+        self.assertEqual(entry["last_queue_status_change"]["current_status"], "OnQueue")
+        self.assertEqual(entry["last_queue_status_change"]["delta"]["hours"], 12)

@@ -175,3 +175,21 @@ Future cleanup
 - Optional: persist PRStatus per ruleset (lightweight) to keep multi-ruleset views consistent; not needed for performance at current scale.
 - Wire Celery task + beat schedule to refresh snapshots; add DRF endpoint to serve cached payloads with ETag/Last-Modified and enqueue refresh on miss/stale.
 - Optional: server-side dependency graph, area stats, automatic assignments; cache/bundle as needed.
+
+### Plan: fill queue timeline fields without new models
+- **Targets**: populate `first_on_queue` and `total_queue_time` (and optionally replace `last_status_change` with `last_queue_status_change`) using existing `PRQueueWindow` data; keep `DataStatus` (`valid`/`incomplete`/`missing`) aligned to coverage.
+- **No new tables**: reuse `PRQueueWindow` as the single source of queue history. If we later need a status-change field, prefer a queue-specific variant derived from windows instead of adding a new status-interval model.
+- **Computation flow**:
+  1) Window freshness: keep `analyzer.process_pr` and the queue window sweep rebuilding `PRQueueWindow` after revision changes; skip CI-gated rulesets when prerequisites are missing (`timeline_backfill_done` false; no revisions/CI heads) so we can mark those PR/ruleset pairs as `missing`.
+  2) Snapshot builder: for the selected rule_set (or cache_key), stream windows per PR (chunked) and compute:
+     - `first_on_queue`: earliest `from_ts`; set `null` with `valid` if no windows; `missing` if prerequisites failed or windows are absent for a CI-gated ruleset.
+     - `total_queue_time`: sum of window durations up to `generated_at`; emit seconds (`value_td`) and a relativedelta-style breakdown (`value_rd`), plus a short interval explanation.
+     - `last_queue_status_change` (if we swap it in): if currently on-queue, use the start of the active window; if off-queue, use the end of the last window; include `delta` from `generated_at`.
+  3) DataStatus mapping:
+     - `missing`: timeline backfill incomplete; CI-gated rulesets without revisions/CI; no windows built for the PR/ruleset.
+     - `valid`: windows present and current; `null` values are allowed when a PR never entered the queue.
+     - `incomplete`: reserve for future partial signals (e.g., known window staleness vs ruleset version/TTL); otherwise treat as `valid`.
+- **Tests**:
+  - Analyzer unit tests covering label-only vs CI-gated rulesets that assert the three fields (and DataStatus) from queue windows alone.
+  - Snapshot/API tests ensuring ETag stability when only these fields change and exercising stale/refresh behaviour when windows are missing or stale.
+  - Snapshot currently emits `last_queue_status_change` derived from queue windows; `last_status_change` stays `null` until full status intervals exist.
