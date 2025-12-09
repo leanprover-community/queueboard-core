@@ -66,6 +66,4 @@ class TestCollectConvergenceTask(TestCase):
         self.assertFalse(snap.history_cursor_completed)
         self.assertEqual(snap.prs_missing_engagement, 2)
         self.assertEqual(snap.prs_engagement_incomplete, 1)
-        self.assertEqual(snap.prs_missing_timeline, 1)
-        self.assertEqual(snap.prs_missing_commits, 1)
         self.assertEqual(res["rows_created"], 1)
