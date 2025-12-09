@@ -33,8 +33,6 @@ def collect_syncer_convergence_task() -> dict:
             .distinct()
             .count()
         )
-        timeline_missing = qs.filter(Q(timeline_backfill_done=False) | Q(timeline_backfill_done__isnull=True)).count()
-        commits_missing = qs.filter(Q(commits_backfill_done=False) | Q(commits_backfill_done__isnull=True)).count()
 
         SyncerConvergenceSnapshot.objects.create(
             repository=repo,
@@ -46,8 +44,6 @@ def collect_syncer_convergence_task() -> dict:
             history_cursor_completed=history_completed,
             prs_missing_engagement=engagement_missing,
             prs_engagement_incomplete=engagement_incomplete,
-            prs_missing_timeline=timeline_missing,
-            prs_missing_commits=commits_missing,
         )
         rows += 1
         per_repo.append(
@@ -59,8 +55,6 @@ def collect_syncer_convergence_task() -> dict:
                 "history_completed": history_completed,
                 "prs_missing_engagement": engagement_missing,
                 "prs_engagement_incomplete": engagement_incomplete,
-                "prs_missing_timeline": timeline_missing,
-                "prs_missing_commits": commits_missing,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo}
