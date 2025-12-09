@@ -44,7 +44,9 @@ def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: S
     for cr in check_runs:
         status = cr["status"]
         conclusion = cr["conclusion"]
-        # TODO: this is not correct
+        # TODO(parity): legacy queueboard.process.determine_ci_status treats FailInessential
+        # as a job-name allowlist (label-new-contributor, apply_one_t_label, etc.). This path
+        # ignores job names and marks CANCELLED as inessential, so FailInessential classification diverges.
         if status != CheckRunStatus.COMPLETED:
             statuses.append(CIStatus.Running)
         elif conclusion in (CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED):
@@ -167,6 +169,8 @@ class QueueboardSnapshotBuilder:
         stale_queue_assigned_threshold = now - timedelta(days=14)
         stale_ready_threshold = now - timedelta(days=1)
         stale_new_contrib_threshold = now - timedelta(days=7)
+        # NOTE(parity): legacy stale queue logic uses last_status_change timestamps; Analyzer falls
+        # back to gh_updated_at because timeline replay is not wired in yet.
 
         for pr in pr_qs.iterator(chunk_size=self.chunk_size):
             labels = label_map.get(pr.id, [])
@@ -201,6 +205,7 @@ class QueueboardSnapshotBuilder:
                 draft_prs.append(pr.number)
             else:
                 nondraft_prs.append(pr.number)
+                # NOTE(parity): legacy Approved dashboard includes WIP-labelled PRs; we drop WIP here.
                 if "wip" not in label_names_lc:
                     if pr.approvals:
                         approved.append(pr.number)
@@ -217,6 +222,9 @@ class QueueboardSnapshotBuilder:
                     if _has_contradictory_labels(label_names_lc):
                         contradictory.append(pr.number)
 
+            # NOTE(parity): legacy determine_pr_dashboards drops merge-conflict PRs from Queue
+            # and can optionally source queue.json; this path always uses aggregate data and keeps
+            # merge-conflict PRs in Queue membership.
             on_queue = (
                 not pr.is_draft
                 and pr.base_ref_name == repository.default_branch
@@ -240,6 +248,8 @@ class QueueboardSnapshotBuilder:
                 needs_decision.append(pr.number)
             if "merge-conflict" in label_names_lc and on_queue:
                 needs_merge.append(pr.number)
+            # NOTE(parity): legacy InessentialCIFails also filters out blocked/help-wanted/etc.
+            # labels; here we include all default-branch FailInessential nondraft PRs.
             if ci_value == CIStatus.FailInessential.value and pr.base_ref_name == repository.default_branch and not pr.is_draft:
                 inessential_ci_fails.append(pr.number)
             if any(lbl in label_names_lc for lbl in ("tech debt", "longest-pole")) and not pr.is_draft:
@@ -257,6 +267,8 @@ class QueueboardSnapshotBuilder:
             if "maintainer-merge" in label_names_lc and not any(
                 lbl in label_names_lc for lbl in ("ready-to-merge", "auto-merge-after-ci")
             ):
+                # NOTE(parity): legacy AllMaintainerMerge only includes PRs older than a day;
+                # we currently keep all maintainer-merge PRs here and use staleness only for the stale subset.
                 all_maintainer_merge.append(pr.number)
                 if pr.gh_updated_at < stale_ready_threshold:
                     stale_maintainer_merge.append(pr.number)
@@ -397,9 +409,12 @@ class QueueboardSnapshotBuilder:
             "direct_dependencies": list(dependencies),
             "ci_status": ci_status.value if isinstance(ci_status, CIStatus) else str(ci_status),
             "pr_status": pr_status,
+            # NOTE(parity): legacy snapshot populates the timeline-derived fields from state_evolution;
+            # Analyzer has not ported that yet, so these remain empty.
             "last_status_change": None,
             "first_on_queue": None,
             "total_queue_time": None,
+            # NOTE: legacy snapshot payloads omit data_status; we expose it here for API consumers.
             "data_status": {
                 "files": files_status,
                 "assignees": assignees_status,
