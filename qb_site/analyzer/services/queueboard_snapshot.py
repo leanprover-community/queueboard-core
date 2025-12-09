@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Sequence
 
 from django.db.models import QuerySet
 
-from analyzer.models import PRDependency, QueueRuleSet, QueueSnapshot
+from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
@@ -36,6 +36,14 @@ def _data_status(is_incomplete: bool, synced_at: datetime | None) -> DataStatus:
     if is_incomplete:
         return "incomplete"
     return "valid"
+
+
+def _relativedelta_dict(total_seconds: float) -> dict:
+    seconds = int(total_seconds)
+    days, rem = divmod(seconds, 24 * 3600)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    return {"days": days, "hours": hours, "minutes": minutes, "seconds": secs}
 
 
 def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict]) -> CIStatus:
@@ -126,6 +134,8 @@ class QueueboardSnapshotBuilder:
     chunk_size: int = 200
 
     def build(self, repository: Repository, rule_set: QueueRuleSet | None = None) -> dict:
+        generated_at = datetime.now(timezone.utc)
+        effective_rule_set = rule_set or self._default_rule_set(repository)
         pr_qs = (
             PullRequest.objects.filter(repository=repository, state=PullRequestState.OPEN)
             .select_related("author")
@@ -135,6 +145,7 @@ class QueueboardSnapshotBuilder:
         label_map = self._labels_for_repo(repository)
         dependency_map = self._dependencies_for_repo(repository)
         ci_checks, ci_statuses = self._ci_inputs_for_repo(repository)
+        queue_windows = self._queue_windows_for_repo(repository, rule_set=effective_rule_set)
 
         prs: Dict[int, dict] = {}
         draft_prs: List[int] = []
@@ -177,6 +188,13 @@ class QueueboardSnapshotBuilder:
             label_names = {lab["name"] for lab in labels}
             label_names_lc = {name.lower() for name in label_names}
             all_prs.append(pr.number)
+            windows = queue_windows.get(pr.id, [])
+            queue_status = self._queue_data_status(pr, windows, effective_rule_set)
+            queue_fields = self._queue_fields_for_pr(
+                windows=windows,
+                data_status=queue_status,
+                generated_at=generated_at,
+            )
 
             ci_status = _ci_status_for_pr(
                 pr.id,
@@ -198,6 +216,8 @@ class QueueboardSnapshotBuilder:
                 dependencies=dependency_map.get(pr.id, []),
                 ci_status=ci_status,
                 pr_status=pr_status,
+                queue_fields=queue_fields,
+                queue_status=queue_status,
             )
             prs[pr.number] = entry
 
@@ -303,9 +323,9 @@ class QueueboardSnapshotBuilder:
 
         meta = {
             "schema_version": "v1-draft",
-            "generated_at": _isoformat(datetime.now(timezone.utc)),
+            "generated_at": _isoformat(generated_at),
             "repository": f"{repository.owner}/{repository.name}",
-            "rule_set_id": rule_set.id if rule_set else "default",
+            "rule_set_id": effective_rule_set.id if effective_rule_set else "default",
         }
 
         lists = {"draft_prs": draft_prs, "nondraft_prs": nondraft_prs, "dashboards": dashboards}
@@ -349,6 +369,70 @@ class QueueboardSnapshotBuilder:
             acc[pl.pull_request_id].append({"name": label.name, "color": label.color, "url": _label_url(repository, label.name)})
         return acc
 
+    def _queue_windows_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, List[tuple]]:
+        qs = PRQueueWindow.objects.filter(pull_request__repository=repository)
+        if rule_set:
+            qs = qs.filter(rule_set=rule_set)
+        acc: Dict[int, List[tuple]] = defaultdict(list)
+        for win in qs.order_by("pull_request_id", "from_ts").iterator():
+            acc[win.pull_request_id].append((win.from_ts, win.to_ts))
+        return acc
+
+    def _queue_data_status(self, pr: PullRequest, windows: list[tuple], rule_set: QueueRuleSet | None) -> DataStatus:
+        if not getattr(pr, "timeline_backfill_done", False):
+            return "missing"
+        if rule_set and rule_set.require_ci_success and not windows:
+            return "missing"
+        return "valid"
+
+    def _queue_fields_for_pr(self, *, windows: list[tuple], data_status: DataStatus, generated_at: datetime) -> dict:
+        if not windows and data_status != "valid":
+            return {
+                "first_on_queue": {"status": data_status, "date": None},
+                "total_queue_time": {"status": data_status, "value_td": None, "value_rd": None, "explanation": ""},
+                "last_queue_status_change": None,
+            }
+
+        first_date = _isoformat(windows[0][0]) if windows else None
+        total_seconds = 0
+        explanation_parts: list[str] = []
+        for start, end in windows:
+            end_clamped = end if end <= generated_at else generated_at
+            if start >= end_clamped:
+                continue
+            total_seconds += (end_clamped - start).total_seconds()
+            explanation_parts.append(f"{_isoformat(start)} → {_isoformat(end_clamped)}")
+
+        value_rd = _relativedelta_dict(total_seconds)
+        total_queue_time = {
+            "status": data_status,
+            "value_td": int(total_seconds),
+            "value_rd": value_rd,
+            "explanation": "; ".join(explanation_parts),
+        }
+
+        last_change = None
+        if windows:
+            last_start, last_end = windows[-1]
+            on_queue = last_start <= generated_at < last_end
+            change_time = last_start if on_queue else last_end
+            delta_seconds = (generated_at - change_time).total_seconds()
+            last_change = {
+                "status": data_status,
+                "time": _isoformat(change_time),
+                "delta": _relativedelta_dict(delta_seconds),
+                "current_status": "OnQueue" if on_queue else "OffQueue",
+            }
+
+        return {
+            "first_on_queue": {"status": data_status, "date": first_date},
+            "total_queue_time": total_queue_time,
+            "last_queue_status_change": last_change,
+        }
+
+    def _default_rule_set(self, repository: Repository) -> QueueRuleSet | None:
+        return QueueRuleSet.objects.filter(repository=repository).order_by("-version", "-id").first()
+
     def _dependencies_for_repo(self, repository: Repository) -> Dict[int, List[int]]:
         qs: QuerySet[PRDependency] = PRDependency.objects.filter(pull_request__repository=repository)
         acc: Dict[int, List[int]] = defaultdict(list)
@@ -380,6 +464,8 @@ class QueueboardSnapshotBuilder:
         dependencies: Iterable[int],
         ci_status: CIStatus,
         pr_status: str,
+        queue_fields: dict,
+        queue_status: DataStatus,
     ) -> dict:
         comments_status = _data_status(bool(pr.comments_incomplete), pr.engagement_synced_at)
         assignees_status = _data_status(bool(pr.assignees_incomplete), pr.engagement_synced_at)
@@ -412,14 +498,16 @@ class QueueboardSnapshotBuilder:
             # NOTE(parity): legacy snapshot populates the timeline-derived fields from state_evolution;
             # Analyzer has not ported that yet, so these remain empty.
             "last_status_change": None,
-            "first_on_queue": None,
-            "total_queue_time": None,
+            "last_queue_status_change": queue_fields.get("last_queue_status_change"),
+            "first_on_queue": queue_fields.get("first_on_queue"),
+            "total_queue_time": queue_fields.get("total_queue_time"),
             # NOTE: legacy snapshot payloads omit data_status; we expose it here for API consumers.
             "data_status": {
                 "files": files_status,
                 "assignees": assignees_status,
                 "approvals": approvals_status,
                 "comments": comments_status,
+                "queue": queue_status,
             },
         }
 
