@@ -17,6 +17,10 @@ class SyncerConvergenceSnapshot(models.Model):
     incomplete_prs = models.IntegerField(default=0)
     harvest_jobs_open = models.IntegerField(default=0)
     history_cursor_completed = models.BooleanField(default=False)
+    prs_missing_engagement = models.IntegerField(default=0)
+    prs_engagement_incomplete = models.IntegerField(default=0)
+    prs_missing_timeline = models.IntegerField(default=0)
+    prs_missing_commits = models.IntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

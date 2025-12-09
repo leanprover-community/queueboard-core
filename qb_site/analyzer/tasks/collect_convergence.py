@@ -4,13 +4,8 @@ from celery import shared_task
 from django.utils import timezone
 from django.db.models import Exists, OuterRef, F, Max, Q
 
-from analyzer.models import (
-    AnalyzerConvergenceSnapshot,
-    PRRevision,
-    PRRevisionBuildState,
-    PRQueueWindow,
-    QueueRuleSet,
-)
+from analyzer.models import AnalyzerConvergenceSnapshot, PRRevision, PRRevisionBuildState, PRQueueWindow, QueueRuleSet
+from analyzer.services.dependencies import PR_DEPENDENCY_BUILDER_VERSION
 from core.models import Repository
 from syncer.models import PullRequest
 
@@ -25,7 +20,7 @@ def collect_analyzer_convergence_task() -> dict:
     for repo in repos:
         rulesets = list(QueueRuleSet.objects.filter(repository=repo))
         ruleset_updated_at = QueueRuleSet.objects.filter(repository=repo).aggregate(m=Max("updated_at")).get("m")
-        base_prs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True, state="open")
+        base_prs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
 
         pr_no_revisions = (
             base_prs.annotate(has_rev=Exists(PRRevision.objects.filter(pull_request=OuterRef("pk"))))
@@ -73,6 +68,16 @@ def collect_analyzer_convergence_task() -> dict:
                 missing = prs_with_rev.annotate(has_win=Exists(rs_windows)).filter(has_win=False).count()
                 ci_gated_missing_windows += missing
 
+        dep_missing = base_prs.filter(dependency_state__isnull=True).count()
+        dep_stale = (
+            base_prs.filter(dependency_state__isnull=False).filter(
+                Q(dependency_state__builder_version__lt=PR_DEPENDENCY_BUILDER_VERSION)
+                | Q(dependency_state__last_checked_at__isnull=True)
+                | Q(dependency_state__last_checked_at__lt=F("last_synced_at"))
+                | Q(last_synced_at__isnull=True)
+            )
+        ).count()
+
         AnalyzerConvergenceSnapshot.objects.create(
             repository=repo,
             collected_at=collected_at,
@@ -80,6 +85,8 @@ def collect_analyzer_convergence_task() -> dict:
             windows_stale=windows_stale,
             ci_not_checked=ci_not_checked,
             ci_gated_missing_windows=ci_gated_missing_windows,
+            prs_missing_dependency_state=dep_missing,
+            prs_stale_dependency_state=dep_stale,
         )
         rows += 1
         per_repo.append(
@@ -89,6 +96,8 @@ def collect_analyzer_convergence_task() -> dict:
                 "windows_stale": windows_stale,
                 "ci_not_checked": ci_not_checked,
                 "ci_gated_missing_windows": ci_gated_missing_windows,
+                "prs_missing_dependency_state": dep_missing,
+                "prs_stale_dependency_state": dep_stale,
             }
         )
 

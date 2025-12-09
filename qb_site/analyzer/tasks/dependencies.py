@@ -5,7 +5,7 @@ from django.db import models
 from django.utils import timezone
 
 from analyzer.models import PRDependencyState
-from analyzer.services.dependencies import body_hash, rebuild_pr_dependencies
+from analyzer.services.dependencies import PR_DEPENDENCY_BUILDER_VERSION, body_hash, rebuild_pr_dependencies
 from core.models import Repository
 from syncer.models import PullRequest
 from syncer.models.pull_request import PullRequestState
@@ -43,7 +43,7 @@ def rebuild_dependencies_sweep_task(
     *,
     max_prs_per_repo: int = 200,
     only_open: bool = True,
-    builder_version: int = 1,
+    builder_version: int = PR_DEPENDENCY_BUILDER_VERSION,
     fanout: bool = False,
 ) -> dict:
     """Sweep active repositories and rebuild PRDependency edges from PR bodies.

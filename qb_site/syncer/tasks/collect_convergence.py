@@ -3,7 +3,7 @@ from __future__ import annotations
 from celery import shared_task
 from django.utils import timezone
 
-from django.db.models import Q, Exists, OuterRef
+from django.db.models import Q
 
 from syncer.models import PullRequest, CommitHistoryHarvest, RepoBackfillCursor, SyncerConvergenceSnapshot
 from core.models import Repository
@@ -25,6 +25,17 @@ def collect_syncer_convergence_task() -> dict:
         cursor = RepoBackfillCursor.objects.filter(repository=repo).first()
         history_completed = bool(cursor.completed) if cursor else False
 
+        engagement_missing = qs.filter(engagement_synced_at__isnull=True).count()
+        engagement_incomplete = (
+            qs.filter(
+                Q(files_incomplete=True) | Q(assignees_incomplete=True) | Q(reviews_incomplete=True) | Q(comments_incomplete=True)
+            )
+            .distinct()
+            .count()
+        )
+        timeline_missing = qs.filter(Q(timeline_backfill_done=False) | Q(timeline_backfill_done__isnull=True)).count()
+        commits_missing = qs.filter(Q(commits_backfill_done=False) | Q(commits_backfill_done__isnull=True)).count()
+
         SyncerConvergenceSnapshot.objects.create(
             repository=repo,
             collected_at=collected_at,
@@ -33,6 +44,10 @@ def collect_syncer_convergence_task() -> dict:
             incomplete_prs=incomplete,
             harvest_jobs_open=harvest_open,
             history_cursor_completed=history_completed,
+            prs_missing_engagement=engagement_missing,
+            prs_engagement_incomplete=engagement_incomplete,
+            prs_missing_timeline=timeline_missing,
+            prs_missing_commits=commits_missing,
         )
         rows += 1
         per_repo.append(
@@ -42,6 +57,10 @@ def collect_syncer_convergence_task() -> dict:
                 "commits_pending": commits_pending,
                 "harvest_open": harvest_open,
                 "history_completed": history_completed,
+                "prs_missing_engagement": engagement_missing,
+                "prs_engagement_incomplete": engagement_incomplete,
+                "prs_missing_timeline": timeline_missing,
+                "prs_missing_commits": commits_missing,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo}
