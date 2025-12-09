@@ -1,0 +1,65 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<h1>{% trans "Import reviewer-topics.json" %}</h1>
+
+<p>
+  <strong>{% trans "Field mapping notes" %}:</strong>
+  <ul>
+    <li>{% trans "github_handle → User.github_login (case-insensitive lookup; casing is updated if different)." %}</li>
+    <li>{% trans "temporary_break sets auto_assign = False (no dedicated DB column)." %}</li>
+    <li>{% trans "auto_assign mirrors the JSON value when temporary_break is not set." %}</li>
+    <li>{% trans "top_level → preferred_labels (replaced or merged depending on the toggle)." %}</li>
+    <li>{% trans "free_form maps to the free_form text field." %}</li>
+    <li>{% trans "maximum_capacity is applied when present; otherwise the existing/default value is kept." %}</li>
+    <li>{% trans "zulip_handle and any other extra fields are ignored." %}</li>
+  </ul>
+</p>
+
+{% if result_summary %}
+<p><strong>{% trans "Summary" %}:</strong> {{ result_summary }}</p>
+{% if result and result.repo_created %}
+<p>{% trans "Repository created" %}: {{ result.owner }}/{{ result.name }}</p>
+{% endif %}
+{% endif %}
+
+{% if form.non_field_errors %}
+<ul class="errorlist">
+  {% for error in form.non_field_errors %}
+  <li>{{ error }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" novalidate>
+  {% csrf_token %}
+  <table>
+    {% for field in form %}
+    <tr>
+      <th>{{ field.label_tag }}</th>
+      <td>
+        {{ field }}
+        {% if field.help_text %}
+        <br />
+        <small>{{ field.help_text }}</small>
+        {% endif %}
+        {% for error in field.errors %}
+        <p class="error">{{ error }}</p>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p><input type="submit" class="default" value="{% trans 'Import' %}" /></p>
+</form>
+
+{% if log_lines %}
+<h2>{% trans "Verbose log" %}</h2>
+<pre style="background:#f8f8f8; padding:1em; border:1px solid #ddd;">{% for line in log_lines %}{{ line }}{% if not forloop.last %}\n{% endif %}{% endfor %}</pre>
+{% endif %}
+
+<p><a href="{{ changelist_url }}">{% trans "Return to reviewer preferences" %}</a></p>
+{% endblock %}

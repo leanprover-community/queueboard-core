@@ -1,8 +1,9 @@
 {% extends "admin/base_site.html" %}
 {% load i18n %}
 
+{% block content_title %}{% endblock %}
+
 {% block content %}
-<h1>{% trans "Enqueue CI by SHA" %}</h1>
 <p>
   {% trans "Enter one or more commit SHAs (separated by spaces or commas)." %}
 </p>

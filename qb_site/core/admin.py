@@ -13,8 +13,78 @@ import json
 import ast
 
 from .models import Repository, ReviewerPreference, User, TaskResultLink
+from core.services.reviewer_topics_importer import (
+    DEFAULT_REPO,
+    ReviewerTopicsExportError,
+    ReviewerTopicsImportError,
+    export_reviewer_topics,
+    import_reviewer_topics,
+)
 from syncer.models import PullRequest  # type: ignore
 from qb_site.celery import app as celery_app
+
+
+class ReviewerTopicsImportForm(forms.Form):
+    repo = forms.CharField(
+        label="Repository",
+        help_text="owner/name",
+        initial=DEFAULT_REPO,
+        widget=forms.TextInput(attrs={"size": 40}),
+    )
+    file = forms.FileField(
+        label="reviewer-topics.json",
+        help_text="Upload a JSON array of reviewer entries",
+        widget=forms.ClearableFileInput(attrs={"accept": "application/json"}),
+    )
+    replace_labels = forms.BooleanField(
+        label="Replace labels (default)",
+        required=False,
+        initial=True,
+        help_text="Uncheck to merge preferred_labels with existing values",
+    )
+    dry_run = forms.BooleanField(
+        label="Dry-run",
+        required=False,
+        initial=False,
+        help_text="Preview changes without writing to the database",
+    )
+    create_missing_users = forms.BooleanField(
+        label="Create missing users",
+        required=False,
+        initial=True,
+        help_text="Create User rows for unknown GitHub logins",
+    )
+    create_missing_repo_default_branch = forms.CharField(
+        label="Default branch for new repository",
+        required=False,
+        initial="master",
+        widget=forms.TextInput(attrs={"size": 20}),
+    )
+    verbose = forms.BooleanField(
+        label="Verbose logs",
+        required=False,
+        initial=False,
+        help_text="Show per-entry changes",
+    )
+
+    def clean_repo(self) -> str:
+        return (self.cleaned_data["repo"] or "").strip()
+
+    def clean_create_missing_repo_default_branch(self) -> str:
+        branch = (self.cleaned_data.get("create_missing_repo_default_branch") or "").strip()
+        return branch or "master"
+
+
+class ReviewerTopicsExportForm(forms.Form):
+    repo = forms.CharField(
+        label="Repository",
+        help_text="owner/name",
+        initial=DEFAULT_REPO,
+        widget=forms.TextInput(attrs={"size": 40}),
+    )
+
+    def clean_repo(self) -> str:
+        return (self.cleaned_data["repo"] or "").strip()
 
 
 @admin.register(Repository)
@@ -407,12 +477,15 @@ class UserAdmin(admin.ModelAdmin):
 
 @admin.register(ReviewerPreference)
 class ReviewerPreferenceAdmin(admin.ModelAdmin):
+    change_list_template = "admin/core/reviewerpreference/change_list.html"
     list_display = (
         "repository",
         "user",
         "maximum_capacity",
         "auto_assign",
         "away_until",
+        "created_at",
+        "updated_at",
     )
     list_filter = ("auto_assign", "repository")
     search_fields = (
@@ -422,6 +495,102 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("repository", "user")
+
+    def get_urls(self):  # type: ignore[override]
+        urls = super().get_urls()
+        custom = [
+            path(
+                "import-topics/",
+                self.admin_site.admin_view(self.import_topics_view),
+                name="core_reviewerpreference_import_topics",
+            ),
+            path(
+                "export-topics/",
+                self.admin_site.admin_view(self.export_topics_view),
+                name="core_reviewerpreference_export_topics",
+            ),
+        ]
+        return custom + urls
+
+    def changelist_view(self, request, extra_context=None):  # type: ignore[override]
+        extra = extra_context or {}
+        extra["import_topics_url"] = reverse("admin:core_reviewerpreference_import_topics")
+        extra["export_topics_url"] = reverse("admin:core_reviewerpreference_export_topics")
+        return super().changelist_view(request, extra_context=extra)
+
+    def import_topics_view(self, request, *args, **kwargs):  # type: ignore[override]
+        result = None
+        log_lines: list[str] = []
+
+        if request.method == "POST":
+            form = ReviewerTopicsImportForm(request.POST, request.FILES)
+            if form.is_valid():
+                repo_val = form.cleaned_data["repo"]
+                uploaded_file = form.cleaned_data["file"]
+                replace_labels = form.cleaned_data["replace_labels"]
+                dry_run = form.cleaned_data["dry_run"]
+                create_missing_users = form.cleaned_data["create_missing_users"]
+                create_repo_branch = form.cleaned_data["create_missing_repo_default_branch"]
+                verbose = form.cleaned_data["verbose"]
+
+                try:
+                    result = import_reviewer_topics(
+                        repo=repo_val,
+                        file_obj=uploaded_file,
+                        replace_labels=replace_labels,
+                        dry_run=dry_run,
+                        create_missing_users=create_missing_users,
+                        create_missing_repo_default_branch=create_repo_branch,
+                        verbose=verbose,
+                        logger=log_lines.append,
+                    )
+                except ReviewerTopicsImportError as exc:
+                    form.add_error(None, str(exc))
+                else:
+                    if result.repo_created:
+                        self.message_user(request, f"Repository {result.owner}/{result.name} created")
+                    self.message_user(request, result.summary_text())
+                    if not verbose:
+                        log_lines.clear()
+        else:
+            form = ReviewerTopicsImportForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Import reviewer-topics.json",
+            "form": form,
+            "result": result,
+            "result_summary": result.summary_text() if result else None,
+            "log_lines": log_lines,
+            "changelist_url": reverse("admin:core_reviewerpreference_changelist"),
+        }
+        return TemplateResponse(request, "admin/core/reviewerpreference/import_topics.html", context)
+
+    def export_topics_view(self, request, *args, **kwargs):  # type: ignore[override]
+        if request.method == "POST":
+            form = ReviewerTopicsExportForm(request.POST)
+            if form.is_valid():
+                repo_val = form.cleaned_data["repo"]
+                try:
+                    owner, name, entries = export_reviewer_topics(repo=repo_val)
+                except ReviewerTopicsExportError as exc:
+                    form.add_error(None, str(exc))
+                else:
+                    payload = json.dumps(entries, indent=2, ensure_ascii=False)
+                    filename = f"reviewer-topics-{owner}-{name}.json"
+                    resp = HttpResponse(payload, content_type="application/json")
+                    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+                    return resp
+        else:
+            form = ReviewerTopicsExportForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Export reviewer-topics.json",
+            "form": form,
+            "changelist_url": reverse("admin:core_reviewerpreference_changelist"),
+        }
+        return TemplateResponse(request, "admin/core/reviewerpreference/export_topics.html", context)
 
 
 # Enhance django-celery-results TaskResult admin with repo/PR context for syncer tasks
