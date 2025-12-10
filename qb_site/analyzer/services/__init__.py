@@ -3,6 +3,17 @@
 from .ci_backfill import PlanItem, enqueue_ci_by_shas, plan_missing_ci_shas
 from .dependency_graph import DependencyGraphBuilder
 from .dependencies import DependencyRebuildResult, body_hash, parse_dependency_numbers, rebuild_pr_dependencies
+from .reviewer_assignment import (
+    AssignmentStatistics,
+    ReviewerAssignmentBuilder,
+    ReviewerProfile,
+    ReviewerSuggestionResult,
+    build_reviewer_catalog,
+    collect_assignment_statistics,
+    compute_area_stats,
+    suggest_reviewer_for_pr,
+    suggest_reviewers_many,
+)
 from .queue_windows import (
     QueueSummary,
     QueueWindow,
@@ -21,6 +32,15 @@ __all__ = [
     "body_hash",
     "parse_dependency_numbers",
     "rebuild_pr_dependencies",
+    "ReviewerAssignmentBuilder",
+    "ReviewerProfile",
+    "AssignmentStatistics",
+    "ReviewerSuggestionResult",
+    "build_reviewer_catalog",
+    "collect_assignment_statistics",
+    "compute_area_stats",
+    "suggest_reviewer_for_pr",
+    "suggest_reviewers_many",
     "QueueSummary",
     "QueueWindow",
     "queue_windows_for_pr",
