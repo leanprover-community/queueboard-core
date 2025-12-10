@@ -6,23 +6,32 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
-from analyzer.models import QueueSnapshot
+from analyzer.models import QueueSnapshot, QueueRuleSet
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository
 
 
 @shared_task(name="analyzer.build_queueboard_snapshot")
-def build_queueboard_snapshot(repository_id: int, cache_key: str = "default", expires_in_seconds: int | None = None) -> int:
+def build_queueboard_snapshot(
+    repository_id: int,
+    cache_key: str | None = None,
+    expires_in_seconds: int | None = None,
+    rule_set_id: int | None = None,
+) -> int:
     """Build and store a queueboard snapshot for a repository.
 
     Returns the QueueSnapshot id.
     """
     repo = Repository.objects.get(id=repository_id)
+    rule_set = None
+    if rule_set_id is not None:
+        rule_set = QueueRuleSet.objects.filter(id=rule_set_id, repository=repo).first()
     builder = QueueboardSnapshotBuilder()
     expires_at = None
     if expires_in_seconds is not None and int(expires_in_seconds) > 0:
         expires_at = timezone.now() + timedelta(seconds=int(expires_in_seconds))
-    snapshot = builder.build_and_store(repo, cache_key=cache_key, expires_at=expires_at)
+    effective_cache_key = cache_key or (str(rule_set.id) if rule_set else "default")
+    snapshot = builder.build_and_store(repo, cache_key=effective_cache_key, expires_at=expires_at, rule_set=rule_set)
     return snapshot.id
 
 
@@ -43,61 +52,76 @@ def refresh_queueboard_snapshots_task(*, cache_key: str = "default", fanout: boo
     per_repo: list[dict] = []
 
     for repo in repos:
-        existing = (
-            QueueSnapshot.objects.filter(repository=repo, cache_key=cache_key)
-            .only("id", "generated_at", "expires_at")
-            .order_by("-generated_at", "-id")
-            .first()
-        )
-        stale = existing is None
-        if existing:
-            if existing.expires_at and existing.expires_at <= now_ts:
-                stale = True
-            elif ttl_seconds > 0 and existing.generated_at <= now_ts - timedelta(seconds=ttl_seconds):
-                stale = True
+        rule_sets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
+        if not rule_sets:
+            rule_sets = [None]
 
-        if not force and existing and not stale:
-            skipped_fresh += 1
-            per_repo.append(
-                {
-                    "repo": f"{repo.owner}/{repo.name}",
-                    "status": "fresh",
-                    "snapshot_id": existing.id,
-                }
+        for rule_set in rule_sets:
+            rs_cache_key = str(rule_set.id) if rule_set else cache_key
+            existing = (
+                QueueSnapshot.objects.filter(repository=repo, cache_key=rs_cache_key)
+                .only("id", "generated_at", "expires_at")
+                .order_by("-generated_at", "-id")
+                .first()
             )
-            continue
+            rs_stale = existing is None
+            if existing:
+                if existing.expires_at and existing.expires_at <= now_ts:
+                    rs_stale = True
+                elif ttl_seconds > 0 and existing.generated_at <= now_ts - timedelta(seconds=ttl_seconds):
+                    rs_stale = True
 
-        expires_in = ttl_seconds if ttl_seconds > 0 else None
-        if fanout:
-            async_res = build_queueboard_snapshot.delay(
-                repository_id=repo.id,
-                cache_key=cache_key,
-                expires_in_seconds=expires_in,
-            )
-            enqueued += 1
-            per_repo.append(
-                {
-                    "repo": f"{repo.owner}/{repo.name}",
-                    "status": "enqueued",
-                    "task_id": getattr(async_res, "id", None),
-                    "expires_in_seconds": expires_in,
-                }
-            )
-        else:
-            builder = QueueboardSnapshotBuilder()
-            expires_at = None
-            if expires_in:
-                expires_at = timezone.now() + timedelta(seconds=int(expires_in))
-            snapshot = builder.build_and_store(repo, cache_key=cache_key, expires_at=expires_at)
-            built_inline += 1
-            per_repo.append(
-                {
-                    "repo": f"{repo.owner}/{repo.name}",
-                    "status": "built",
-                    "snapshot_id": snapshot.id,
-                    "expires_at": snapshot.expires_at,
-                }
-            )
+            if not force and existing and not rs_stale:
+                skipped_fresh += 1
+                per_repo.append(
+                    {
+                        "repo": f"{repo.owner}/{repo.name}",
+                        "rule_set_id": rule_set.id if rule_set else None,
+                        "status": "fresh",
+                        "snapshot_id": existing.id,
+                    }
+                )
+                continue
+
+            expires_in = ttl_seconds if ttl_seconds > 0 else None
+            if fanout:
+                async_res = build_queueboard_snapshot.delay(
+                    repository_id=repo.id,
+                    cache_key=rs_cache_key,
+                    expires_in_seconds=expires_in,
+                    rule_set_id=rule_set.id if rule_set else None,
+                )
+                enqueued += 1
+                per_repo.append(
+                    {
+                        "repo": f"{repo.owner}/{repo.name}",
+                        "rule_set_id": rule_set.id if rule_set else None,
+                        "status": "enqueued",
+                        "task_id": getattr(async_res, "id", None),
+                        "expires_in_seconds": expires_in,
+                    }
+                )
+            else:
+                builder = QueueboardSnapshotBuilder()
+                expires_at = None
+                if expires_in:
+                    expires_at = timezone.now() + timedelta(seconds=int(expires_in))
+                snapshot = builder.build_and_store(
+                    repo,
+                    cache_key=rs_cache_key,
+                    expires_at=expires_at,
+                    rule_set=rule_set,
+                )
+                built_inline += 1
+                per_repo.append(
+                    {
+                        "repo": f"{repo.owner}/{repo.name}",
+                        "rule_set_id": rule_set.id if rule_set else None,
+                        "status": "built",
+                        "snapshot_id": snapshot.id,
+                        "expires_at": snapshot.expires_at,
+                    }
+                )
 
     return {
         "repos": len(repos),

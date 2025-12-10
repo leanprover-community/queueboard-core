@@ -13,7 +13,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from analyzer.models import QueueSnapshot
+from analyzer.models import QueueSnapshot, QueueRuleSet
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 from core.models import Repository
 
@@ -37,7 +37,24 @@ class QueueboardSnapshotView(APIView):
         if repo is None:
             return Response({"detail": "repository not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        cache_key = request.query_params.get("cache_key", "default")
+        cache_key_param = request.query_params.get("cache_key")
+        rule_set_param = request.query_params.get("rule_set_id")
+        rule_set = None
+        if rule_set_param is not None:
+            try:
+                rule_set_id = int(rule_set_param)
+            except ValueError:
+                return Response({"detail": "rule_set_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+            rule_set = QueueRuleSet.objects.filter(id=rule_set_id, repository=repo, is_active=True).first()
+            if rule_set is None:
+                return Response({"detail": "rule set not found or inactive"}, status=status.HTTP_404_NOT_FOUND)
+            cache_key = str(rule_set.id)
+        elif cache_key_param is not None:
+            cache_key = cache_key_param
+        else:
+            rule_set = QueueRuleSet.objects.filter(repository=repo, is_active=True).order_by("-version", "-id").first()
+            cache_key = str(rule_set.id) if rule_set else "default"
+
         refresh_requested = _as_bool(request.query_params.get("refresh"))
         ttl_seconds = int(getattr(settings, "ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS", 0))
         snapshot = (
@@ -61,6 +78,7 @@ class QueueboardSnapshotView(APIView):
                 repository_id=repo.id,
                 cache_key=cache_key,
                 expires_in_seconds=expires_in,
+                rule_set_id=rule_set.id if rule_set else None,
             )
             refresh_task_id = getattr(async_res, "id", None)
             headers = {}
@@ -78,6 +96,7 @@ class QueueboardSnapshotView(APIView):
                 repository_id=repo.id,
                 cache_key=cache_key,
                 expires_in_seconds=expires_in,
+                rule_set_id=rule_set.id if rule_set else None,
             )
             refresh_task_id = getattr(async_res, "id", None)
 

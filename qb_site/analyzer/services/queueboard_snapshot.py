@@ -431,7 +431,7 @@ class QueueboardSnapshotBuilder:
         }
 
     def _default_rule_set(self, repository: Repository) -> QueueRuleSet | None:
-        return QueueRuleSet.objects.filter(repository=repository).order_by("-version", "-id").first()
+        return QueueRuleSet.objects.filter(repository=repository, is_active=True).order_by("-version", "-id").first()
 
     def _dependencies_for_repo(self, repository: Repository) -> Dict[int, List[int]]:
         qs: QuerySet[PRDependency] = PRDependency.objects.filter(pull_request__repository=repository)

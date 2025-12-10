@@ -43,7 +43,7 @@ def process_pr(
     }
     queue_results: dict[int, dict[str, int]] = {}
     if strategy != "noop":
-        for rule_set in QueueRuleSet.objects.filter(repository=pr.repository):
+        for rule_set in QueueRuleSet.objects.filter(repository=pr.repository, is_active=True):
             created_at = pr.gh_created_at
             if rule_set.effective_from and created_at < rule_set.effective_from:
                 queue_results[int(rule_set.id)] = {"status": "skipped", "reason": "pr_before_ruleset_effective_from"}

@@ -53,7 +53,7 @@ def rebuild_queue_windows_sweep_task(
         repo_rulesets_skipped_out_of_bounds: list[int] = []
         repo_limit_hit = False
 
-        rulesets = list(QueueRuleSet.objects.filter(repository=repo))
+        rulesets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
         if not rulesets:
             per_repo.append(
                 {
