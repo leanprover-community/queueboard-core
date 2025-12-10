@@ -20,6 +20,12 @@ from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 from analyzer.tasks.rebuild_revisions_sweep import rebuild_revisions_sweep_task
 from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
+from analyzer.tasks.reviewer_assignment import (
+    build_reviewer_assignment,
+    refresh_reviewer_assignments_task,
+    build_area_stats,
+    refresh_area_stats_task,
+)
 
 
 log = logging.getLogger(__name__)
@@ -133,4 +139,8 @@ __all__ = [
     "collect_analyzer_convergence_task",
     "rebuild_pr_dependencies_task",
     "rebuild_dependencies_sweep_task",
+    "build_reviewer_assignment",
+    "refresh_reviewer_assignments_task",
+    "build_area_stats",
+    "refresh_area_stats_task",
 ]
