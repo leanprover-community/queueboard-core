@@ -9,7 +9,7 @@ from typing import Dict, Iterable, Sequence
 
 from django.utils.dateparse import parse_datetime
 
-from analyzer.models import QueueSnapshot, ReviewerAssignmentSnapshot
+from analyzer.models import AreaStatsSnapshot, QueueRuleSet, QueueSnapshot, ReviewerAssignmentSnapshot
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository, ReviewerPreference
 from queueboard.classify_pr_state import PRStatus
@@ -410,9 +410,10 @@ class ReviewerAssignmentBuilder:
         queue_snapshot: QueueSnapshot | None = None,
         cache_key: str | None = None,
         now: datetime | None = None,
+        rule_set: QueueRuleSet | None = None,
     ) -> dict:
         current_time = now or datetime.now(timezone.utc)
-        queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key)
+        queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
         payload = queue_obj.payload
 
         reviewers = build_reviewer_catalog(repository, now=current_time)
@@ -429,13 +430,6 @@ class ReviewerAssignmentBuilder:
             all_prs=payload.get("prs", {}),
             rng=self.rng,
         )
-        area_stats = compute_area_stats(
-            existing_assignments=assignment_stats.assignments,
-            reviewers=reviewers,
-            queue_pr_numbers=queue_prs,
-            all_prs=payload.get("prs", {}),
-            rng=self.rng,
-        )
 
         rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")
         meta = {
@@ -447,7 +441,7 @@ class ReviewerAssignmentBuilder:
             "queue_snapshot_cache_key": queue_obj.cache_key,
         }
 
-        return {"meta": meta, "automatic_assignments": automatic_assignments, "area_stats": area_stats}
+        return {"meta": meta, "automatic_assignments": automatic_assignments}
 
     def build_and_store(
         self,
@@ -457,10 +451,11 @@ class ReviewerAssignmentBuilder:
         cache_key: str | None = None,
         expires_at: datetime | None = None,
         now: datetime | None = None,
+        rule_set: QueueRuleSet | None = None,
     ) -> ReviewerAssignmentSnapshot:
         current_time = now or datetime.now(timezone.utc)
-        queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key)
-        payload = self.build(repository, queue_snapshot=queue_obj, now=current_time)
+        queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
+        payload = self.build(repository, queue_snapshot=queue_obj, now=current_time, rule_set=rule_set)
 
         etag = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         key = cache_key or queue_obj.cache_key
@@ -480,9 +475,98 @@ class ReviewerAssignmentBuilder:
         )
         return obj
 
-    def _get_or_build_queue_snapshot(self, repository: Repository, *, cache_key: str | None) -> QueueSnapshot:
-        key = cache_key or "default"
+    def _get_or_build_queue_snapshot(
+        self, repository: Repository, *, cache_key: str | None, rule_set: QueueRuleSet | None
+    ) -> QueueSnapshot:
+        key = cache_key or (str(rule_set.id) if rule_set else "default")
         existing = QueueSnapshot.objects.filter(repository=repository, cache_key=key).order_by("-generated_at").first()
         if existing:
             return existing
-        return self.queue_snapshot_builder.build_and_store(repository, cache_key=key)
+        return self.queue_snapshot_builder.build_and_store(repository, cache_key=key, rule_set=rule_set)
+
+
+@dataclass
+class AreaStatsBuilder:
+    """Build area stats payloads anchored to a queue snapshot."""
+
+    rng: random.Random | None = None
+    queue_snapshot_builder: QueueboardSnapshotBuilder = field(default_factory=QueueboardSnapshotBuilder)
+
+    def build(
+        self,
+        repository: Repository,
+        *,
+        queue_snapshot: QueueSnapshot | None = None,
+        cache_key: str | None = None,
+        now: datetime | None = None,
+        rule_set: QueueRuleSet | None = None,
+    ) -> dict:
+        current_time = now or datetime.now(timezone.utc)
+        queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
+        payload = queue_obj.payload
+
+        reviewers = build_reviewer_catalog(repository, now=current_time)
+        assignment_stats = collect_assignment_statistics(payload)
+        dashboards = payload.get("lists", {}).get("dashboards", {})
+        queue_prs = dashboards.get("Queue", [])
+
+        area_stats = compute_area_stats(
+            existing_assignments=assignment_stats.assignments,
+            reviewers=reviewers,
+            queue_pr_numbers=queue_prs,
+            all_prs=payload.get("prs", {}),
+            rng=self.rng,
+        )
+
+        rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")
+        meta = {
+            "schema_version": "v1-draft",
+            "generated_at": _isoformat(current_time),
+            "repository": f"{repository.owner}/{repository.name}",
+            "rule_set_id": rule_set_id,
+            "queue_snapshot_generated_at": payload.get("meta", {}).get("generated_at"),
+            "queue_snapshot_cache_key": queue_obj.cache_key,
+        }
+
+        return {"meta": meta, "area_stats": area_stats}
+
+    def build_and_store(
+        self,
+        repository: Repository,
+        *,
+        queue_snapshot: QueueSnapshot | None = None,
+        cache_key: str | None = None,
+        expires_at: datetime | None = None,
+        now: datetime | None = None,
+        rule_set: QueueRuleSet | None = None,
+    ) -> AreaStatsSnapshot:
+        current_time = now or datetime.now(timezone.utc)
+        queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
+        payload = self.build(repository, queue_snapshot=queue_obj, now=current_time, rule_set=rule_set)
+
+        etag = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        key = cache_key or queue_obj.cache_key
+        area_count = len(payload.get("area_stats", {}))
+
+        obj, _ = AreaStatsSnapshot.objects.update_or_create(
+            repository=repository,
+            cache_key=key,
+            defaults={
+                "queue_snapshot": queue_obj,
+                "generated_at": current_time,
+                "payload": payload,
+                "etag": etag,
+                "area_count": area_count,
+                "expires_at": expires_at,
+            },
+        )
+        return obj
+
+    def _get_or_build_queue_snapshot(
+        self, repository: Repository, *, cache_key: str | None, rule_set: QueueRuleSet | None
+    ) -> QueueSnapshot:
+        key = cache_key or (str(rule_set.id) if rule_set else "default")
+        existing = QueueSnapshot.objects.filter(repository=repository, cache_key=key).order_by("-generated_at").first()
+        if existing:
+            return existing
+        return self.queue_snapshot_builder.build_and_store(repository, cache_key=key, rule_set=rule_set)
