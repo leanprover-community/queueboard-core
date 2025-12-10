@@ -85,8 +85,8 @@ class CheckRunInline(admin.TabularInline):
     model = CheckRun
     extra = 0
     can_delete = False
-    fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "details_url")
-    readonly_fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "details_url")
+    fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "created_at", "updated_at", "details_url")
+    readonly_fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "created_at", "updated_at", "details_url")
     ordering = ("-gh_completed_at",)
     show_change_link = True
 
@@ -106,8 +106,8 @@ class StatusContextInline(admin.TabularInline):
     model = StatusContext
     extra = 0
     can_delete = False
-    fields = ("name", "state", "head_sha", "gh_created_at", "target_url")
-    readonly_fields = ("name", "state", "head_sha", "gh_created_at", "target_url")
+    fields = ("name", "state", "head_sha", "gh_created_at", "created_at", "updated_at", "target_url")
+    readonly_fields = ("name", "state", "head_sha", "gh_created_at", "created_at", "updated_at", "target_url")
     ordering = ("-gh_created_at",)
     show_change_link = True
 
@@ -199,6 +199,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "commits_backfill_cursor",
         "commits_backfill_done",
         "commits_earliest_synced_at",
+        "head_ci_state",
         "created_at",
         "updated_at",
     )
@@ -672,7 +673,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
 
 @admin.register(LabelDef)
 class LabelDefAdmin(ReadOnlyAdmin):
-    list_display = ("repository", "name", "color")
+    list_display = ("repository", "name", "color", "created_at", "updated_at")
     list_filter = ("repository",)
     search_fields = ("name",)
     raw_id_fields = ("repository",)
@@ -716,7 +717,17 @@ class CheckRunAdmin(ReadOnlyAdmin):
 
     short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
 
-    list_display = ("pull_request", "name", "status", "conclusion", "short_sha", "gh_completed_at", "last_synced_at")
+    list_display = (
+        "pull_request",
+        "name",
+        "status",
+        "conclusion",
+        "short_sha",
+        "gh_completed_at",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    )
     list_filter = ("pull_request__repository", "status", "conclusion")
     search_fields = ("name", "head_sha", "pull_request__number")
     date_hierarchy = "gh_completed_at"
@@ -746,7 +757,16 @@ class StatusContextAdmin(ReadOnlyAdmin):
 
     short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
 
-    list_display = ("pull_request", "name", "state", "short_sha", "gh_created_at", "last_synced_at")
+    list_display = (
+        "pull_request",
+        "name",
+        "state",
+        "short_sha",
+        "gh_created_at",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    )
     list_filter = ("pull_request__repository", "state")
     search_fields = ("name", "head_sha", "pull_request__number")
     date_hierarchy = "gh_created_at"

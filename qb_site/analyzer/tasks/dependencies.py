@@ -29,6 +29,7 @@ def rebuild_pr_dependencies_task(pr_id: int, *, builder_version: int = 1) -> dic
         "skipped": False,
         "repo": f"{repo.owner}/{repo.name}",
         "pr_number": int(pr.number),
+        "repo_pr": f"{repo.owner}/{repo.name}#{int(pr.number)}",
         "created": int(result.created),
         "updated": int(result.updated),
         "deleted": int(result.deleted),
@@ -56,6 +57,7 @@ def rebuild_dependencies_sweep_task(
     total_deleted = 0
     total_prs = 0
     total_enqueued = 0
+    processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
 
     for repo in repos:
@@ -103,6 +105,7 @@ def rebuild_dependencies_sweep_task(
             if repo_prs >= int(max_prs_per_repo):
                 break
             repo_prs += 1
+            processed_pr_numbers.append(int(pr.number))
             total_prs += 1
             if fanout:
                 async_res = rebuild_pr_dependencies_task.delay(pr.id, builder_version=builder_version)
@@ -140,6 +143,7 @@ def rebuild_dependencies_sweep_task(
         "updated": total_updated,
         "deleted": total_deleted,
         "enqueued": total_enqueued,
+        "prs_processed_numbers": processed_pr_numbers,
         "only_open": bool(only_open),
         "max_prs_per_repo": int(max_prs_per_repo),
         "builder_version": int(builder_version),
