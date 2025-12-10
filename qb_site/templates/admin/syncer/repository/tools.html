@@ -79,6 +79,26 @@
   <input type="submit" value="{% trans 'Build queue snapshot' %}" />
 </form>
 
+<h2>{% trans "Reviewer assignments" %}</h2>
+<p>
+  {% trans "Enqueue a reviewer assignment snapshot build for this repository." %}
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="build_reviewer_assignments" />
+  <input type="submit" value="{% trans 'Build reviewer assignments' %}" />
+</form>
+
+<h2>{% trans "Area stats" %}</h2>
+<p>
+  {% trans "Enqueue area stats build for this repository." %}
+</p>
+<form method="post" style="margin-bottom:2em;">
+  {% csrf_token %}
+  <input type="hidden" name="action" value="build_area_stats" />
+  <input type="submit" value="{% trans 'Build area stats' %}" />
+</form>
+
 <h2>{% trans "Sync specific PR numbers" %}</h2>
 <form method="post" style="margin-bottom:2em;">
   {% csrf_token %}
