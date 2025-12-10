@@ -193,3 +193,8 @@ Future cleanup
   - Analyzer unit tests covering label-only vs CI-gated rulesets that assert the three fields (and DataStatus) from queue windows alone.
   - Snapshot/API tests ensuring ETag stability when only these fields change and exercising stale/refresh behaviour when windows are missing or stale.
   - Snapshot currently emits `last_queue_status_change` derived from queue windows; `last_status_change` stays `null` until full status intervals exist.
+
+### Ruleset selection and caching
+- `QueueRuleSet` now has `is_active` (default True); only active rulesets are considered when building queue windows and snapshots.
+- Snapshot builds cache one payload per active ruleset (cache key = ruleset id); the API defaults to the newest active ruleset when none is specified.
+- Management/beat tasks fan out snapshot builds across all active rulesets per repo; callers can request a specific ruleset via `rule_set_id` or `cache_key`.

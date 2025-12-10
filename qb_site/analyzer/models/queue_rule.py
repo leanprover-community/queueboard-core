@@ -35,6 +35,9 @@ class QueueRuleSet(TimestampedModel):
     effective_from = models.DateTimeField(null=True, blank=True)
     effective_to = models.DateTimeField(null=True, blank=True)
 
+    # Whether this ruleset should be considered when building snapshots/windows.
+    is_active = models.BooleanField(default=True)
+
     require_open = models.BooleanField(default=True)
     require_not_draft = models.BooleanField(default=True)
     require_ci_success = models.BooleanField(default=False)

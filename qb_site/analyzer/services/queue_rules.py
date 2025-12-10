@@ -82,10 +82,10 @@ def load_rules_for_repo(repo: Repository, at: Optional[datetime] = None) -> Queu
     Behavior
     - If ``at`` is provided, prefer the latest ruleset whose effective window
       contains ``at`` (effective_from <= at < effective_to when set).
-    - If no such ruleset exists, fall back to the latest ruleset by version/id.
-    - If no rulesets exist at all, return default rules (open/not-draft only).
+    - If no such ruleset exists, fall back to the latest active ruleset by version/id.
+    - If no active rulesets exist at all, return default rules (open/not-draft only).
     """
-    qs = QueueRuleSet.objects.filter(repository=repo)
+    qs = QueueRuleSet.objects.filter(repository=repo, is_active=True)
     obj = None
     if at is not None:
         qs_eff = qs.filter(
