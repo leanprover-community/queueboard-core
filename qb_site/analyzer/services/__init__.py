@@ -5,6 +5,7 @@ from .dependency_graph import DependencyGraphBuilder
 from .dependencies import DependencyRebuildResult, body_hash, parse_dependency_numbers, rebuild_pr_dependencies
 from .reviewer_assignment import (
     AssignmentStatistics,
+    AreaStatsBuilder,
     ReviewerAssignmentBuilder,
     ReviewerProfile,
     ReviewerSuggestionResult,
@@ -32,6 +33,7 @@ __all__ = [
     "body_hash",
     "parse_dependency_numbers",
     "rebuild_pr_dependencies",
+    "AreaStatsBuilder",
     "ReviewerAssignmentBuilder",
     "ReviewerProfile",
     "AssignmentStatistics",

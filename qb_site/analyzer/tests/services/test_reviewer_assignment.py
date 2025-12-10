@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from django.test import SimpleTestCase, TestCase
 
 from analyzer.services.reviewer_assignment import (
+    AreaStatsBuilder,
     ReviewerAssignmentBuilder,
     ReviewerProfile,
     collect_assignment_statistics,
@@ -214,3 +215,84 @@ class ReviewerAssignmentBuilderTests(TestCase):
             obj.payload["meta"]["queue_snapshot_cache_key"],
             queue_snapshot.cache_key,
         )
+
+
+class AreaStatsBuilderTests(TestCase):
+    def setUp(self):
+        self.repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        self.alice = User.objects.create(github_login="alice")
+        self.bob = User.objects.create(github_login="bob")
+        self.now = datetime.now(timezone.utc)
+
+    def _make_pr(self, number: int, *, labels: tuple[str, ...] = ()) -> PullRequest:
+        pr = PullRequest.objects.create(
+            repository=self.repo,
+            number=number,
+            author=self.alice,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=self.now,
+            gh_updated_at=self.now,
+            closed_at=None,
+            merged_at=None,
+            base_ref_name="master",
+            head_ref_name=f"feature/{number}",
+            head_repo_owner_login=self.repo.owner,
+            head_repo_name=self.repo.name,
+            title=f"PR {number}",
+            body="description",
+            additions=1,
+            deletions=1,
+            changed_files_count=1,
+            files=["src/file.py"],
+            assignees=[],
+            approvals=[],
+            commenters=[],
+            number_total_comments=0,
+            last_synced_at=self.now,
+            engagement_synced_at=self.now,
+            files_incomplete=False,
+            assignees_incomplete=False,
+            reviews_incomplete=False,
+            comments_incomplete=False,
+            timeline_backfill_done=True,
+        )
+        for label_name in labels:
+            label_def, _ = LabelDef.objects.get_or_create(repository=self.repo, name=label_name, defaults={"color": "123456"})
+            PRLabel.objects.create(pull_request=pr, label_def=label_def)
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id=f"cr-area-{number}",
+            head_sha="a" * 40,
+            name="lint",
+            status=CheckRunStatus.COMPLETED,
+            conclusion=CheckRunConclusion.SUCCESS,
+            gh_started_at=self.now,
+            gh_completed_at=self.now,
+        )
+        return pr
+
+    def test_build_and_store_area_stats_snapshot(self):
+        self._make_pr(50, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=2,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=2,
+            auto_assign=True,
+        )
+
+        builder = AreaStatsBuilder(rng=random.Random(0))
+        obj = builder.build_and_store(self.repo)
+
+        self.assertEqual(obj.repository, self.repo)
+        self.assertIsNotNone(obj.queue_snapshot)
+        self.assertGreaterEqual(obj.area_count, 1)
+        self.assertIn("t-analysis", obj.payload["area_stats"])
