@@ -44,10 +44,14 @@ class PRSyncService:
         # CI snapshots per commit
         checkruns_upserted = 0
         statusctx_upserted = 0
+        head_ci_state: str | None = None
         for cnode in (pr_bundle.get("commits") or {}).get("nodes") or []:
             commit = (cnode or {}).get("commit") or {}
             sha = commit.get("oid") or ""
             contexts = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
+            rollup_state = (commit.get("statusCheckRollup") or {}).get("state")
+            if rollup_state is not None:
+                head_ci_state = str(rollup_state)
             cr_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "CheckRun"]
             sc_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "StatusContext"]
             cr_res = sync_check_runs(pr_obj, cr_contexts, sha)
@@ -128,7 +132,12 @@ class PRSyncService:
 
         extras["engagement_synced_at"] = now_ts
 
-        update_fields = []
+        update_fields: list[str] = []
+        ci_update_fields: list[str] = []
+        if head_ci_state is not None and pr_obj.head_ci_state != head_ci_state:
+            pr_obj.head_ci_state = head_ci_state
+            ci_update_fields.append("head_ci_state")
+
         for field, value in extras.items():
             if getattr(pr_obj, field) != value:
                 setattr(pr_obj, field, value)
@@ -136,8 +145,8 @@ class PRSyncService:
         if "engagement_synced_at" not in update_fields:
             pr_obj.engagement_synced_at = now_ts
             update_fields.append("engagement_synced_at")
-        if update_fields:
-            pr_obj.save(update_fields=update_fields + ["updated_at"])
+        if update_fields or ci_update_fields:
+            pr_obj.save(update_fields=update_fields + ci_update_fields + ["updated_at"])
 
         result = {
             "labels_created": lab_res.created,
