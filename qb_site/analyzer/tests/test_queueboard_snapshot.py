@@ -67,22 +67,25 @@ class QueueboardSnapshotBuilderTests(TestCase):
             PRLabel.objects.create(pull_request=pr, label_def=label_def)
         return pr
 
+    def _add_ci(self, pr: PullRequest, *, conclusion=CheckRunConclusion.SUCCESS, status=CheckRunStatus.COMPLETED, name="lint"):
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id=f"cr-{pr.number}-{name}",
+            head_sha="a" * 40,
+            name=name,
+            status=status,
+            conclusion=conclusion,
+            gh_started_at=self.now,
+            gh_completed_at=self.now if status == CheckRunStatus.COMPLETED else None,
+        )
+
     def test_builds_snapshot_with_queue_filters(self):
         pr1 = self._make_pr(1, author=self.user, labels=("t-analysis",))
         pr2 = self._make_pr(2, labels=("awaiting-zulip",))
         pr3 = self._make_pr(3, is_draft=True)
 
         # CI success for pr1
-        CheckRun.objects.create(
-            pull_request=pr1,
-            github_node_id="cr1",
-            head_sha="a" * 40,
-            name="lint",
-            status=CheckRunStatus.COMPLETED,
-            conclusion=CheckRunConclusion.SUCCESS,
-            gh_started_at=self.now,
-            gh_completed_at=self.now,
-        )
+        self._add_ci(pr1)
 
         # Dependency edge for pr1
         PRDependency.objects.create(
@@ -235,6 +238,45 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertIn(pr_ready_to_merge.number, dashboards["AllReadyToMerge"])
         self.assertIn(pr_awaiting_zulip.number, dashboards["NeedsDecision"])
         self.assertIn(pr_help.number, dashboards["NeedsHelp"])
+
+    def test_ci_status_uses_head_rollup_for_untracked_failure(self):
+        pr = self._make_pr(50, author=self.user, labels=("t-analysis",))
+        # Tracked contexts all pass, but head rollup is failing => fail-inessential.
+        self._add_ci(pr, conclusion=CheckRunConclusion.SUCCESS)
+        pr.head_ci_state = "FAILURE"
+        pr.save(update_fields=["head_ci_state"])
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
+        prs = snapshot["prs"]
+        self.assertEqual(prs[50]["ci_status"], "fail-inessential")
+
+    def test_ci_status_prefers_tracked_failure_over_head_rollup(self):
+        pr = self._make_pr(51, author=self.user, labels=("t-analysis",))
+        self._add_ci(pr, conclusion=CheckRunConclusion.FAILURE)
+        pr.head_ci_state = "SUCCESS"
+        pr.save(update_fields=["head_ci_state"])
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
+        prs = snapshot["prs"]
+        self.assertEqual(prs[51]["ci_status"], "fail")
+
+    def test_ci_status_running_when_tracked_in_progress(self):
+        pr = self._make_pr(52, author=self.user, labels=("t-analysis",))
+        self._add_ci(pr, status=CheckRunStatus.IN_PROGRESS)
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
+        prs = snapshot["prs"]
+        self.assertEqual(prs[52]["ci_status"], "running")
+
+    def test_ci_status_running_from_head_rollup(self):
+        pr = self._make_pr(53, author=self.user, labels=("t-analysis",))
+        # No tracked contexts; head rollup pending => running.
+        pr.head_ci_state = "PENDING"
+        pr.save(update_fields=["head_ci_state"])
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
+        prs = snapshot["prs"]
+        self.assertEqual(prs[53]["ci_status"], "running")
 
     def test_queue_timeline_fields_from_windows(self):
         rule_set = QueueRuleSet.objects.create(repository=self.repo, version=1)

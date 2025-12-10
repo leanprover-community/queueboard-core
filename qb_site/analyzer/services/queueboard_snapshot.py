@@ -49,7 +49,15 @@ def _relativedelta_dict(total_seconds: float) -> dict:
 def _ci_status_for_pr(
     pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict], head_state: str | None
 ) -> CIStatus:
-    """Coarse CI rollup aligned with legacy determine_ci_status."""
+    """Coarse CI rollup aligned with legacy determine_ci_status.
+
+    Differences vs. legacy:
+    - No inessential job-name allowlist; any tracked failure is treated as fail unless head rollup indicates
+      an untracked failure (see below).
+    - Uses head commit rollup (statusCheckRollup.state) to downgrade to FailInessential when all tracked
+      contexts pass but GitHub shows the head as failing.
+    - Treats missing contexts as Missing unless head rollup is present (then uses head state).
+    """
 
     def _from_head_state(val: str | None) -> CIStatus | None:
         if not val:
@@ -63,46 +71,54 @@ def _ci_status_for_pr(
             return CIStatus.Running
         return None
 
-    statuses = []
+    any_running = False
+    any_fail = False
+
     for cr in check_runs:
-        status = cr["status"]
-        conclusion = cr["conclusion"]
-        # TODO(parity): legacy queueboard.process.determine_ci_status treats FailInessential
-        # as a job-name allowlist (label-new-contributor, apply_one_t_label, etc.). This path
-        # ignores job names and marks CANCELLED as inessential, so FailInessential classification diverges.
-        if status != CheckRunStatus.COMPLETED:
-            statuses.append(CIStatus.Running)
-        elif conclusion in (CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED):
-            statuses.append(CIStatus.Pass)
-        elif conclusion == CheckRunConclusion.CANCELLED:
-            statuses.append(CIStatus.FailInessential)
-        else:
-            statuses.append(CIStatus.Fail)
+        status_raw = cr.get("status")
+        conclusion_raw = cr.get("conclusion")
+        name = cr.get("name") or ""
+        status = str(status_raw or "").upper()
+        conclusion = str(conclusion_raw or "").upper() if conclusion_raw is not None else None
+
+        if status in {"IN_PROGRESS", "QUEUED", "PENDING"}:
+            any_running = True
+            continue
+        if conclusion in {CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED}:
+            continue
+        if conclusion in {CheckRunConclusion.FAILURE, CheckRunConclusion.CANCELLED, CheckRunConclusion.TIMED_OUT}:
+            any_fail = True
+        elif conclusion is None and status == CheckRunStatus.COMPLETED:
+            # Completed with no conclusion: treat as failure to be conservative.
+            any_fail = True
 
     for sc in status_contexts:
-        state = sc["state"]
+        state = sc.get("state")
         if state == StatusContextState.PENDING:
-            statuses.append(CIStatus.Running)
+            any_running = True
         elif state in (StatusContextState.FAILURE, StatusContextState.ERROR):
-            statuses.append(CIStatus.Fail)
+            any_fail = True
         elif state == StatusContextState.SUCCESS:
-            statuses.append(CIStatus.Pass)
+            continue
 
-    if not statuses:
-        head = _from_head_state(head_state)
-        return head or CIStatus.Missing
-    if CIStatus.Running in statuses:
-        return CIStatus.Running
-    if CIStatus.Fail in statuses:
-        return CIStatus.Fail
-    base = CIStatus.FailInessential if CIStatus.FailInessential in statuses else CIStatus.Pass
+    base: CIStatus
+    if any_fail:
+        base = CIStatus.Fail
+    elif any_running:
+        base = CIStatus.Running
+    else:
+        # No tracked failures/running; pass if we saw any contexts, missing otherwise.
+        base = CIStatus.Pass if check_runs or status_contexts else CIStatus.Missing
+
     head = _from_head_state(head_state)
     if head is None:
         return base
-    if head == CIStatus.Fail:
-        # Treat untracked failures as inessential when tracked checks passed.
+    if base == CIStatus.Fail:
+        return CIStatus.Fail
+    if head == CIStatus.Fail and base == CIStatus.Pass:
+        # Tracked contexts are green, but GitHub shows red for the head commit → treat as inessential failure.
         return CIStatus.FailInessential
-    if head == CIStatus.Running and base == CIStatus.Pass:
+    if head == CIStatus.Running and base in (CIStatus.Pass, CIStatus.Missing):
         return CIStatus.Running
     if head == CIStatus.Pass and base == CIStatus.Missing:
         return CIStatus.Pass
@@ -521,9 +537,8 @@ class QueueboardSnapshotBuilder:
             "direct_dependencies": list(dependencies),
             "ci_status": ci_status.value if isinstance(ci_status, CIStatus) else str(ci_status),
             "pr_status": pr_status,
-            # NOTE(parity): legacy snapshot populates the timeline-derived fields from state_evolution;
-            # Analyzer has not ported that yet, so these remain empty.
-            "last_status_change": None,
+            # We expose queue-derived timing only; legacy last_status_change was timeline-replay-based.
+            "last_status_change": queue_fields.get("last_queue_status_change"),
             "last_queue_status_change": queue_fields.get("last_queue_status_change"),
             "first_on_queue": queue_fields.get("first_on_queue"),
             "total_queue_time": queue_fields.get("total_queue_time"),
