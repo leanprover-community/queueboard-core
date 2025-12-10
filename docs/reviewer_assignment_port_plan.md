@@ -141,6 +141,12 @@ plan to move the logic into `qb_site/` (Django + Celery + DRF).
   - Snapshot tests comparing `automatic_assignments`/`area_stats` outputs to legacy fixtures derived from `test/`.
   - Integration tests for DRF views (200/202/304 and rule set selection) and Celery task wiring.
 
+- **Progress (current)**
+  - Added `ReviewerAssignmentSnapshot` model keyed like `QueueSnapshot` and linked back to the queue snapshot used to build it (cache_key + FK).
+  - Implemented `ReviewerAssignmentBuilder` that hydrates reviewers from `ReviewerPreference`, reuses/builds a queue snapshot, computes legacy-parity suggestions for `QueueStaleUnassigned`, and area stats for `Queue`, then stores payload + etag.
+  - Added unit tests for picker/area stats and snapshot persistence under `qb_site/analyzer/tests/services/test_reviewer_assignment.py`.
+  - Next: DRF endpoints/Celery task wiring, makemigrations/migrations, and the CLI/renderer adapter to emit legacy `api/*.json`.
+
 - **Open follow-ups**
   - Decide how to represent and ingest `conflict_of_interest` (new JSONField vs. join table) and whether to expose
     Zulip handles in the API.
