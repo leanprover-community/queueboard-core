@@ -60,13 +60,15 @@ plan to move the logic into `qb_site/` (Django + Celery + DRF).
 ## Parity gaps vs. `qb_site/`
 
 - Analyzer snapshot currently sets `last_status_change=None`; weights depend on it for `AwaitingAuthor/Decision`, so we
-  need an equivalent source (timeline replay or queue-window-derived deltas).
+  need an equivalent source (timeline replay or queue-window-derived deltas). Current snapshot uses queue-window fields
+  (`first_on_queue`, `total_queue_time`, `last_queue_status_change`) and sets `last_status_change` to that surrogate; it
+  does not surface pagination-based “incomplete” from timeline replay.
 - Legacy reads `conflict_of_interest` and `zulip_handle`; `ReviewerPreference` does not currently store these fields.
 - Legacy queue time uses `TotalQueueTime` seconds; Analyzer emits `total_queue_time.value_td` as seconds and a richer
   `data_status` map. The port should map statuses back to legacy semantics (`missing` → 0 but tracked).
-- CI rollup parity differs: Analyzer treats cancelled checks as inessential without name allowlisting. Weighting uses the
-  legacy `determine_PR_status`, so CI inputs must match. We now persist GitHub's head commit rollup
-  (`head_ci_state`) to detect untracked failures as inessential without storing every job.
+- CI rollup parity: Analyzer no longer uses the legacy inessential job-name allowlist. Instead, we persist GitHub's head
+  commit rollup (`head_ci_state`) and treat “head is red but tracked checks are green” as inessential failure. This is a
+  deliberate divergence from legacy’s job-name heuristics.
 - Legacy filters queue PRs by default-branch labels/CI + dashboard logic; Analyzer queue lists come from
   `QueueboardSnapshotBuilder` + `QueueRuleSet`. We should keep using the same dashboard partition for picking PRs.
 
@@ -142,6 +144,7 @@ plan to move the logic into `qb_site/` (Django + Celery + DRF).
 - **Open follow-ups**
   - Decide how to represent and ingest `conflict_of_interest` (new JSONField vs. join table) and whether to expose
     Zulip handles in the API.
-  - Align CI rollup with legacy `determine_ci_status` name allowlist or document intended divergence.
-  - If timeline replay is postponed, define the queue-window-derived surrogate for `last_status_change` used in weighting
-    and mark any data_status differences in responses.
+- Align CI rollup with legacy `determine_ci_status` name allowlist or document intended divergence.
+- If timeline replay is postponed, define the queue-window-derived surrogate for `last_status_change` used in weighting
+  and mark any data_status differences in responses. (Current: use queue-window fields for `first_on_queue`,
+  `total_queue_time`, and set `last_status_change` = `last_queue_status_change`.)
