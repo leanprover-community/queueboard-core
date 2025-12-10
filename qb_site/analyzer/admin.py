@@ -139,7 +139,7 @@ class QueueRuleSetAdmin(admin.ModelAdmin):
 
 @admin.register(PRQueueWindow)
 class PRQueueWindowAdmin(ReadOnlyAdmin):
-    list_display = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index")
+    list_display = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
     list_filter = ("rule_set",)
     search_fields = (
         "pull_request__number",
@@ -160,6 +160,7 @@ class PRDependencyAdmin(ReadOnlyAdmin):
         "depends_on_number",
         "depends_on_pr_link",
         "created_at",
+        "updated_at",
     )
     list_filter = ("depends_on_repository",)
     search_fields = (
@@ -190,7 +191,7 @@ class PRDependencyAdmin(ReadOnlyAdmin):
 
 @admin.register(PRDependencyState)
 class PRDependencyStateAdmin(ReadOnlyAdmin):
-    list_display = ("pull_request", "last_checked_at", "last_body_hash", "builder_version", "updated_at")
+    list_display = ("pull_request", "last_checked_at", "last_body_hash", "builder_version", "created_at", "updated_at")
     list_filter = ("builder_version",)
     search_fields = ("pull_request__number", "pull_request__repository__owner", "pull_request__repository__name")
     raw_id_fields = ("pull_request",)

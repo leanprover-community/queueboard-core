@@ -24,6 +24,7 @@ def rebuild_queue_windows_sweep_task(
     total_prs_skipped_up_to_date = 0
     total_prs_skipped_no_revisions = 0
     total_rulesets_skipped_out_of_bounds = 0
+    processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
 
     for repo in repos:
@@ -120,6 +121,7 @@ def rebuild_queue_windows_sweep_task(
 
             repo_prs += 1
             total_prs += 1
+            processed_pr_numbers.append(int(pr.number))
         total_rebuilt += repo_rebuilt
         total_prs_skipped_up_to_date += len(repo_prs_skipped_up_to_date)
         total_prs_skipped_no_revisions += len(repo_prs_skipped_no_revisions)
@@ -139,6 +141,7 @@ def rebuild_queue_windows_sweep_task(
     return {
         "repos": len(repos),
         "prs_checked": total_prs,
+        "prs_checked_numbers": processed_pr_numbers,
         "windows_rebuilt": total_rebuilt,
         "prs_skipped_up_to_date": total_prs_skipped_up_to_date,
         "prs_skipped_no_revisions": total_prs_skipped_no_revisions,

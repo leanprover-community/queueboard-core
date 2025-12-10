@@ -34,6 +34,7 @@ def plan_missing_ci_backfill_task(
     total_prs_skipped_no_revisions = 0
     total_prs_skipped_already_checked = 0
     total_prs_skipped_limit = 0
+    processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
     now_ts = timezone.now()
     for repo in repos:
@@ -101,6 +102,7 @@ def plan_missing_ci_backfill_task(
 
             repo_prs += 1
             total_prs_considered += 1
+            processed_pr_numbers.append(int(pr.number))
 
         total_enqueued += repo_enqueued
         total_prs_skipped_no_backfill += len(repo_prs_skipped_no_backfill)
@@ -123,6 +125,7 @@ def plan_missing_ci_backfill_task(
     return {
         "repos": len(repos),
         "prs_checked": total_prs_considered,
+        "prs_checked_numbers": processed_pr_numbers,
         "ci_tasks": total_enqueued,
         "prs_skipped_no_backfill": total_prs_skipped_no_backfill,
         "prs_skipped_no_revisions": total_prs_skipped_no_revisions,

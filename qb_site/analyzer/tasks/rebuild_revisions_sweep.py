@@ -21,6 +21,7 @@ def rebuild_revisions_sweep_task(
     total_prs_skipped_limit = 0
     total_prs_skipped_no_backfill = 0
     per_repo: list[dict] = []
+    processed_pr_numbers: list[int] = []
     for repo in repos:
         pr_qs = (
             PullRequest.objects.filter(repository=repo)
@@ -51,6 +52,7 @@ def rebuild_revisions_sweep_task(
                 repo_rebuilt += 1
             repo_prs += 1
             total_prs_considered += 1
+            processed_pr_numbers.append(int(pr.number))
         total_rebuilt += repo_rebuilt
         total_prs_skipped_limit += len(repo_prs_skipped_limit)
         total_prs_skipped_no_backfill += len(repo_prs_skipped_no_backfill)
@@ -69,6 +71,7 @@ def rebuild_revisions_sweep_task(
     return {
         "repos": len(repos),
         "prs_checked": total_prs_considered,
+        "prs_checked_numbers": processed_pr_numbers,
         "revisions_updated": total_rebuilt,
         "prs_skipped_limit": total_prs_skipped_limit,
         "prs_skipped_no_backfill": total_prs_skipped_no_backfill,
