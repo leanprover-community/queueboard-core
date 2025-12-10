@@ -96,6 +96,7 @@ def import_reviewer_topics(
     - ``top_level``: maps to ``preferred_labels`` (replace or merge based on ``replace_labels``).
     - ``free_form``: copied to the ``free_form`` text field.
     - ``maximum_capacity``: copied when present; otherwise existing/default is kept.
+    - ``conflict_of_interest``: copied to ``conflict_of_interest`` (deduped, case-insensitive).
     - ``zulip_handle`` and any other extra fields are ignored (not stored).
     """
 
@@ -215,6 +216,13 @@ def import_reviewer_topics(
                 changes["free_form"] = (pref.free_form, new_ff)
                 pref.free_form = new_ff
 
+        if "conflict_of_interest" in entry:
+            raw_conflicts = entry.get("conflict_of_interest") or []
+            conflicts = _dedupe_case_insensitive_preserve_first(str(x) for x in raw_conflicts)
+            if pref.conflict_of_interest != conflicts:
+                changes["conflict_of_interest"] = (pref.conflict_of_interest, conflicts)
+                pref.conflict_of_interest = conflicts
+
         if was_create:
             if dry_run:
                 created_prefs += 1
@@ -269,6 +277,7 @@ def export_reviewer_topics(
     - Emits ``top_level`` from ``preferred_labels``.
     - Emits ``free_form`` and ``auto_assign``.
     - Emits ``maximum_capacity`` only when it differs from the model default (to mirror legacy files).
+    - Emits ``conflict_of_interest`` when present.
     - Does not emit ``zulip_handle`` or other non-model fields.
     """
 
@@ -290,6 +299,8 @@ def export_reviewer_topics(
         }
         if pref.maximum_capacity != ReviewerPreference._meta.get_field("maximum_capacity").default:
             entry["maximum_capacity"] = pref.maximum_capacity
+        if pref.conflict_of_interest:
+            entry["conflict_of_interest"] = list(pref.conflict_of_interest)
         entries.append(entry)
 
     return owner, name, entries
