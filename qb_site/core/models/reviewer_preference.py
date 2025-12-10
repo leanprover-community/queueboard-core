@@ -18,6 +18,7 @@ class ReviewerPreference(TimestampedModel):
       reviewer while ``now_utc < away_until``.
     - ``preferred_labels``: list of GitHub label names the reviewer prefers (e.g., ["t-analysis", "t-algebra"]).
     - ``free_form``: optional free‑text notes from reviewer‑topics.json for context.
+    - ``conflict_of_interest``: list of GitHub handles this reviewer should not be auto-assigned to.
     """
 
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="reviewer_preferences")
@@ -32,6 +33,8 @@ class ReviewerPreference(TimestampedModel):
 
     # Free-form notes/comments provided by the reviewer (legacy: reviewer-topics.json "free_form").
     free_form = models.TextField(null=True, blank=True)
+    # GitHub handles that should not be auto-assigned to this reviewer (legacy: conflict_of_interest list).
+    conflict_of_interest = models.JSONField(default=list, blank=True)
 
     class Meta:
         constraints = [
