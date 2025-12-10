@@ -229,6 +229,12 @@ ANALYZER_DEPENDENCY_SWEEP_BUILDER_VERSION = int(os.getenv("ANALYZER_DEPENDENCY_S
 ANALYZER_DEPENDENCY_SWEEP_FANOUT = env_bool(os.getenv("ANALYZER_DEPENDENCY_SWEEP_FANOUT"), True)
 ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS = int(os.getenv("ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS", 300))
 ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS = int(os.getenv("ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS", 300))
+ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS", 86400))
+ANALYZER_REVIEWER_ASSIGNMENT_TTL_SECONDS = int(
+    os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_TTL_SECONDS", ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS)
+)
+ANALYZER_AREA_STATS_PERIOD_SECONDS = int(os.getenv("ANALYZER_AREA_STATS_PERIOD_SECONDS", 300))
+ANALYZER_AREA_STATS_TTL_SECONDS = int(os.getenv("ANALYZER_AREA_STATS_TTL_SECONDS", ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS))
 ANALYTICS_CONVERGENCE_PERIOD_SECONDS = int(os.getenv("ANALYTICS_CONVERGENCE_PERIOD_SECONDS", 900))
 
 # CI filter (opt-in allowlist mode)
@@ -335,6 +341,24 @@ if ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["refresh_queueboard_snapshots"] = {
         "task": "analyzer.refresh_queueboard_snapshots",
         "schedule": ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS,
+        "kwargs": {
+            "cache_key": "default",
+            "fanout": True,
+        },
+    }
+if ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["refresh_reviewer_assignments"] = {
+        "task": "analyzer.refresh_reviewer_assignments",
+        "schedule": ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS,
+        "kwargs": {
+            "cache_key": "default",
+            "fanout": True,
+        },
+    }
+if ANALYZER_AREA_STATS_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["refresh_area_stats"] = {
+        "task": "analyzer.refresh_area_stats",
+        "schedule": ANALYZER_AREA_STATS_PERIOD_SECONDS,
         "kwargs": {
             "cache_key": "default",
             "fanout": True,
