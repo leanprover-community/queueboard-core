@@ -46,8 +46,23 @@ def _relativedelta_dict(total_seconds: float) -> dict:
     return {"days": days, "hours": hours, "minutes": minutes, "seconds": secs}
 
 
-def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict]) -> CIStatus:
+def _ci_status_for_pr(
+    pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict], head_state: str | None
+) -> CIStatus:
     """Coarse CI rollup aligned with legacy determine_ci_status."""
+
+    def _from_head_state(val: str | None) -> CIStatus | None:
+        if not val:
+            return None
+        s = val.upper()
+        if s == "SUCCESS":
+            return CIStatus.Pass
+        if s in ("FAILURE", "ERROR"):
+            return CIStatus.Fail
+        if s in ("PENDING", "EXPECTED"):
+            return CIStatus.Running
+        return None
+
     statuses = []
     for cr in check_runs:
         status = cr["status"]
@@ -74,14 +89,24 @@ def _ci_status_for_pr(pr_id: int, check_runs: Sequence[dict], status_contexts: S
             statuses.append(CIStatus.Pass)
 
     if not statuses:
-        return CIStatus.Missing
+        head = _from_head_state(head_state)
+        return head or CIStatus.Missing
     if CIStatus.Running in statuses:
         return CIStatus.Running
     if CIStatus.Fail in statuses:
         return CIStatus.Fail
-    if CIStatus.FailInessential in statuses:
+    base = CIStatus.FailInessential if CIStatus.FailInessential in statuses else CIStatus.Pass
+    head = _from_head_state(head_state)
+    if head is None:
+        return base
+    if head == CIStatus.Fail:
+        # Treat untracked failures as inessential when tracked checks passed.
         return CIStatus.FailInessential
-    return CIStatus.Pass
+    if head == CIStatus.Running and base == CIStatus.Pass:
+        return CIStatus.Running
+    if head == CIStatus.Pass and base == CIStatus.Missing:
+        return CIStatus.Pass
+    return base
 
 
 def _forbidden_queue_labels(default_branch: str) -> set[str]:
@@ -200,6 +225,7 @@ class QueueboardSnapshotBuilder:
                 pr.id,
                 check_runs=ci_checks.get(pr.id, []),
                 status_contexts=ci_statuses.get(pr.id, []),
+                head_state=getattr(pr, "head_ci_state", None),
             )
             ci_value = ci_status.value if isinstance(ci_status, CIStatus) else str(ci_status)
             pr_status = _classify_pr_status(

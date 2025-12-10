@@ -136,6 +136,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
           commit {
             oid
             statusCheckRollup {
+              state
               contexts(first: 100) {
                 nodes {
                   __typename

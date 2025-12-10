@@ -15,17 +15,27 @@ class TestEngagementBackfillTask(TestCase):
     def setUp(self) -> None:
         self.repo: Repository = make_repo()
 
-    def _make_pr(self, number: int, *, state: str = "open", engagement_synced: bool = False) -> PullRequest:
+    def _make_pr(
+        self,
+        number: int,
+        *,
+        state: str = "open",
+        engagement_synced: bool = False,
+        head_ci_state: str | None = None,
+    ) -> PullRequest:
         last_synced = timezone.now() if engagement_synced else None
         pr = make_pr(self.repo, number, state=state, last_synced_at=last_synced)
         if engagement_synced:
             pr.engagement_synced_at = pr.last_synced_at or timezone.now()
-            pr.save(update_fields=["engagement_synced_at"])
+        if head_ci_state is not None:
+            pr.head_ci_state = head_ci_state
+        if engagement_synced or head_ci_state is not None:
+            pr.save(update_fields=["engagement_synced_at", "head_ci_state"])
         return pr
 
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
     def test_skips_when_no_candidates(self, mock_sync_pr_task) -> None:
-        self._make_pr(1, engagement_synced=True)
+        self._make_pr(1, engagement_synced=True, head_ci_state="SUCCESS")
 
         res = backfill_repo_engagement_task(self.repo.id, limit=10)
 
@@ -37,7 +47,7 @@ class TestEngagementBackfillTask(TestCase):
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
     def test_enqueues_missing_engagement_up_to_limit(self, mock_sync_pr_task) -> None:
         # One up-to-date PR and two needing engagement.
-        self._make_pr(1, engagement_synced=True)
+        self._make_pr(1, engagement_synced=True, head_ci_state="SUCCESS")
         needs1 = self._make_pr(2)
         needs2 = self._make_pr(3)
 
@@ -78,3 +88,14 @@ class TestEngagementBackfillTask(TestCase):
 
         self.assertEqual(res.get("enqueued"), 1)
         mock_sync_pr_task.delay.assert_called_once_with(self.repo.id, open_pr.number)
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_includes_missing_head_ci_state(self, mock_sync_pr_task) -> None:
+        # Engagement synced but head_ci_state missing should still be enqueued.
+        pr = self._make_pr(1, engagement_synced=True, head_ci_state=None)
+
+        res = backfill_repo_engagement_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("enqueued"), 1)
+        self.assertEqual(res.get("remaining"), 0)
+        mock_sync_pr_task.delay.assert_called_once_with(self.repo.id, pr.number)

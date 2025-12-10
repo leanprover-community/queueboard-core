@@ -65,7 +65,8 @@ plan to move the logic into `qb_site/` (Django + Celery + DRF).
 - Legacy queue time uses `TotalQueueTime` seconds; Analyzer emits `total_queue_time.value_td` as seconds and a richer
   `data_status` map. The port should map statuses back to legacy semantics (`missing` → 0 but tracked).
 - CI rollup parity differs: Analyzer treats cancelled checks as inessential without name allowlisting. Weighting uses the
-  legacy `determine_PR_status`, so CI inputs must match.
+  legacy `determine_PR_status`, so CI inputs must match. We now persist GitHub's head commit rollup
+  (`head_ci_state`) to detect untracked failures as inessential without storing every job.
 - Legacy filters queue PRs by default-branch labels/CI + dashboard logic; Analyzer queue lists come from
   `QueueboardSnapshotBuilder` + `QueueRuleSet`. We should keep using the same dashboard partition for picking PRs.
 
@@ -115,6 +116,9 @@ plan to move the logic into `qb_site/` (Django + Celery + DRF).
     3) Stores the payload (and metadata such as counts, generated_at, etag) for API serving.
   - Hook into existing beat schedules or snapshot build pipeline so assignments refresh alongside snapshots.
   - Admin/CLI hooks to force a rebuild for a repo/rule set.
+  - CI rollup parity: persist `head_ci_state` on `PullRequest` from the bundle’s `statusCheckRollup.state` and
+    treat “head is red but tracked checks passed” as inessential failure in snapshot rollup; backfill by
+    re-syncing open PRs and include missing `head_ci_state` in engagement backfill/convergence metrics.
 
 - **API surface (DRF)**
   - `GET /api/v1/queueboard/automatic_assignments?repo=owner/name[&rule_set_id=...]`

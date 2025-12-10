@@ -87,6 +87,9 @@ class PullRequest(TimestampedModel):
     commits_backfill_done = models.BooleanField(default=False)
     commits_earliest_synced_at = models.DateTimeField(null=True, blank=True)
 
+    # Head commit rollup status (GitHub statusCheckRollup.state) for coarse CI signal.
+    head_ci_state = models.CharField(max_length=20, null=True, blank=True)
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["repository", "number"], name="syncer_pullrequest_repo_number_unique"),
