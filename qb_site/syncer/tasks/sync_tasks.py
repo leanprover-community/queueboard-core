@@ -143,7 +143,17 @@ def sync_pr_task(  # type: ignore[no-redef]
 
     pr_db = PullRequest.objects.filter(repository=repo, number=int(number)).first()
     needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
-    if pr_db and pr_db.last_synced_at and gh_updated and gh_updated <= pr_db.last_synced_at and not needs_engagement:
+    # Ensure we fill head rollup state even if updatedAt hasn’t changed.
+    needs_head_ci = bool(pr_db and pr_db.head_ci_state is None)
+    # Even when updatedAt is unchanged, we may need to sync to fill engagement/head CI rollup or backfill history.
+    if (
+        pr_db
+        and pr_db.last_synced_at
+        and gh_updated
+        and gh_updated <= pr_db.last_synced_at
+        and not needs_engagement
+        and not needs_head_ci
+    ):
         # PR unchanged, but we may still spend backfill budget on older timeline pages.
         pages_used = 0
         events_created = 0
