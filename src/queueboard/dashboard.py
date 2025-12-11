@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 
-# This script reads in API json files displays the data in an HTML dashboard.
-# This takes 2 (optional) input arguments,
-# the first giving the name of the directory to place the output files ("gh-pages" by default)
-# the second giving the name of the directory where the api files are ("api" by default)
+# Render dashboard HTML from API payloads. Use --gh-pages-dir/--api-dir (or the legacy
+# positional args) to pick directories. Pass --api to fetch payloads from
+# QUEUEBOARD_API_BASE_URL into the API directory before rendering.
 
+import argparse
+import json
+import os
 import sys
 import shutil
 from importlib.resources import files, as_file
 from datetime import datetime, timedelta, timezone
 from os import path, makedirs
 from typing import List, NamedTuple, Tuple
+
+import requests
 
 from dateutil import parser, relativedelta, tz
 
@@ -418,6 +422,128 @@ def write_webpage(body: str, outfile: str, use_tables: bool = True, standard: bo
         )
         footer = f"{script}</body>\n</html>"
         print(f"{HTML_HEADER}\n{body}\n{footer}", file=fi)
+
+
+def _parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Render dashboard HTML from API payloads.")
+    parser.add_argument(
+        "--gh-pages-dir",
+        default=None,
+        help="Directory to write HTML output (default: gh-pages).",
+    )
+    parser.add_argument(
+        "--api-dir",
+        default=None,
+        help="Directory containing API payloads (default: api).",
+    )
+    parser.add_argument(
+        "--api",
+        action="store_true",
+        help="Fetch API payloads from the queueboard server into the API directory before rendering.",
+    )
+    parser.add_argument(
+        "--api-base-url",
+        default=os.environ.get("QUEUEBOARD_API_BASE_URL"),
+        help="Base URL for queueboard API calls (e.g. https://queueboard.example.com).",
+    )
+    parser.add_argument(
+        "--api-token",
+        default=os.environ.get("QUEUEBOARD_API_TOKEN"),
+        help="Bearer token for API requests; omit or leave empty for anonymous access.",
+    )
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get("QUEUEBOARD_REPO", "leanprover-community/mathlib4"),
+        help="Repository in owner/name format for API calls.",
+    )
+    parser.add_argument(
+        "--rule-set-id",
+        default=os.environ.get("QUEUEBOARD_RULE_SET_ID"),
+        help="Optional rule set id to pass through to API endpoints.",
+    )
+    parser.add_argument(
+        "--cache-key",
+        default=os.environ.get("QUEUEBOARD_CACHE_KEY"),
+        help="Optional cache key override for API endpoints.",
+    )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Ask the server to refresh cached payloads before serving (API fetch only).",
+    )
+    # Legacy positional arguments remain accepted for compatibility.
+    parser.add_argument("legacy_gh_pages_dir", nargs="?", help="Legacy gh-pages directory positional argument.")
+    parser.add_argument("legacy_api_dir", nargs="?", help="Legacy api directory positional argument.")
+    return parser.parse_args(argv)
+
+
+def _api_get(endpoint: str, *, base_url: str, token: str | None, params: dict) -> dict:
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+    if response.status_code == 202:
+        raise RuntimeError(f"API endpoint {endpoint} is still preparing data (202 Accepted); retry with --refresh or later.")
+    response.raise_for_status()
+    return response.json()
+
+
+def _write_json(data: dict, dest: str) -> None:
+    with open(dest, "w") as fi:
+        json.dump(data, fi, indent=2)
+        fi.write("\n")
+
+
+def _fetch_api_payloads(args: argparse.Namespace, api_dir: str) -> None:
+    base_url = args.api_base_url
+    if not base_url:
+        print("error: --api-base-url or QUEUEBOARD_API_BASE_URL is required when using --api", file=sys.stderr)
+        sys.exit(1)
+
+    makedirs(api_dir, exist_ok=True)
+    params: dict[str, str | int | bool] = {"repo": args.repo}
+    if args.rule_set_id:
+        params["rule_set_id"] = args.rule_set_id
+    if args.cache_key:
+        params["cache_key"] = args.cache_key
+    if args.refresh:
+        params["refresh"] = True
+
+    snapshot = _api_get(
+        "v1/queueboard/snapshot",
+        base_url=base_url,
+        token=args.api_token,
+        params=params,
+    )
+    _write_json(snapshot, path.join(api_dir, "snapshot.json"))
+
+    auto_assignments_raw = _api_get(
+        "v1/queueboard/automatic-assignments",
+        base_url=base_url,
+        token=args.api_token,
+        params=params,
+    )
+    auto_assignments = auto_assignments_raw.get("automatic_assignments", auto_assignments_raw)
+    _write_json(auto_assignments, path.join(api_dir, "automatic_assignments.json"))
+
+    area_stats_raw = _api_get(
+        "v1/queueboard/area-stats",
+        base_url=base_url,
+        token=args.api_token,
+        params=params,
+    )
+    area_stats = area_stats_raw.get("area_stats", area_stats_raw)
+    _write_json(area_stats, path.join(api_dir, "area_stats.json"))
+
+    dependency_graph = _api_get(
+        "v1/queueboard/dependency-graph",
+        base_url=base_url,
+        token=args.api_token,
+        params=params,
+    )
+    _write_json(dependency_graph, path.join(api_dir, "dependency_graph.json"))
+    print(f"Fetched API payloads into {api_dir}")
 
 
 ### Main logic: generating the various webpages ###
@@ -943,13 +1069,14 @@ def write_triage_page(
 
 
 def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1]:
-        global GH_PAGES_DIR
-        GH_PAGES_DIR = sys.argv[1]  # "gh-pages" by default
+    args = _parse_args(sys.argv[1:])
+    global GH_PAGES_DIR
+    global API_DIR
+    GH_PAGES_DIR = args.gh_pages_dir or args.legacy_gh_pages_dir or GH_PAGES_DIR  # "gh-pages" by default
+    API_DIR = args.api_dir or args.legacy_api_dir or API_DIR  # "api" by default
 
-    if len(sys.argv) > 2 and sys.argv[2]:
-        global API_DIR
-        API_DIR = sys.argv[2]  # "api" by default
+    if args.api:
+        _fetch_api_payloads(args, API_DIR)
 
     snapshot_path = path.join(API_DIR, "snapshot.json")
     if path.exists(snapshot_path):
