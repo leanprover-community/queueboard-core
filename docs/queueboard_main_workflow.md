@@ -31,12 +31,12 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
       with:
         ref: master
 
     - name: "Checkout queueboard-core"
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
       with:
         repository: leanprover-community/queueboard-core
         ref: master
@@ -50,12 +50,12 @@ jobs:
         cp queueboard-core/reviewer-topics.json .
 
     - name: "Setup Python"
-      uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+      uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
       with:
         python-version: "3.12"
 
     - name: "Setup uv"
-      uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244 # v7.1.4
 
     - name: Install queueboard-core (editable)
       run: |
@@ -97,6 +97,7 @@ jobs:
         scripts/download_missing_outdated_PRs.sh
 
     - name: "Update aggregate data file (again)"
+      id: update-aggregate-again
       if: ${{ !cancelled() }}
       run: |
         # Write files with aggregate PR data, to "processed_data/{all_pr,open_pr,assignment}_data.json".
@@ -127,17 +128,32 @@ jobs:
         # The other workflow does not push to this branch, so this should be fine.
         git push
 
+    - name: Upload artifact containing files used to generate API
+      id: upload-pre-api-artifact
+      if: ${{ !cancelled() && (steps.download-json.outcome == 'success') && (steps.update-aggregate-again.outcome == 'success') }}
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+      with:
+        name: pre-api-artifact
+        path: |
+          queue.json
+          all-open-PRs-1.json
+          all-open-PRs-2a.json
+          all-open-PRs-2b.json
+          all-open-PRs-3.json
+          processed_data/open_pr_data.json
+          processed_data/assignment_data.json
+
     - name: "Generate the data used in dashboard generation"
       id: generate-dashboard-data
       if: ${{ !cancelled() && (steps.download-json.outcome == 'success') }}
       run: |
-        uv run python -m queueboard.dashboard_data "all-open-PRs-1.json" "all-open-PRs-2.json" "all-open-PRs-3.json"
+        uv run python -m queueboard.dashboard_data "all-open-PRs-1.json" "all-open-PRs-2a.json" "all-open-PRs-2b.json" "all-open-PRs-3.json"
         rm all-open-PRs-*.json queue.json
 
     - name: Upload artifact containing API files
       id: upload-api-artifact
       if: ${{ !cancelled() && (steps.generate-dashboard-data.outcome == 'success') }}
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
       with:
         name: api-artifact
         path: api/
