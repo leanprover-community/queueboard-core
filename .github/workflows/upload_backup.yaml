@@ -1,0 +1,134 @@
+name: Build sanitized analytics snapshot
+
+on:
+  workflow_dispatch:  # manual trigger
+  # TODO: add input to allow choosing which backup
+  schedule:
+    - cron: "0 6 * * *" # 06:00 UTC every day
+
+jobs:
+  build-snapshot:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: analytics_source
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Used by psql / export scripts
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/analytics_source
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: "Setup Python"
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+
+      # - name: "Setup uv"
+      #   uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client curl
+
+      - name: Install Heroku CLI
+        run: |
+          curl https://cli-assets.heroku.com/install.sh | sh
+
+      - name: Install Python dependencies (optional)
+        if: hashFiles('requirements-analytics.txt') != ''
+        run: |
+          pip install -r requirements-analytics.txt
+
+      # 1. Download latest Heroku PG backup (inline)
+      - name: Download latest Heroku PG backup
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
+          # TODO: use workflow_dispatch input (if present) to choose which backup to use
+        run: |
+          # Heroku CLI will use HEROKU_API_KEY automatically in CI
+          heroku pg:backups:download \
+            --app "$HEROKU_APP_NAME" \
+            --output backup.dump
+
+      # 2. Restore backup into local Postgres (inline)
+      - name: Restore backup into local Postgres
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # Wait for Postgres service to be ready (just in case)
+          for i in {1..10}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              echo "Postgres is ready"
+              break
+            fi
+            echo "Waiting for Postgres..."
+            sleep 3
+          done
+
+          # Restore the Heroku custom-format dump into analytics_source
+          pg_restore --verbose --clean --no-acl --no-owner \
+            -h localhost -p 5432 -U postgres \
+            -d analytics_source \
+            backup.dump
+
+      # 3. Sanitize the database (inline wrapper around sanitize_database.sql)
+      - name: Sanitize database
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          mkdir -p artifacts
+
+          # Apply your sanitization SQL: drop/truncate sensitive tables,
+          # scrub PII columns, etc.
+          psql "$DATABASE_URL" -f scripts/sanitize_database.sql
+
+      # 4. Export sanitized data for offline analysis (inline)
+      - name: Export analytics datasets
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        run: |
+          mkdir -p artifacts/data
+
+          # (A) Export a sanitized Postgres dump
+          PGPASSWORD=postgres pg_dump \
+            --no-acl --no-owner \
+            -h localhost -p 5432 -U postgres \
+            -d analytics_source \
+            -Fc \
+            -f artifacts/sanitized.dump
+
+          # (B) Delegate richer exports (Parquet/CSV/etc.) to Python
+          # Implement all the details inside export_for_analysis.py
+          python scripts/export_for_analysis.py \
+            --database-url "$DATABASE_URL" \
+            --output-dir artifacts/data
+
+      # 5. Upload artifacts
+      - name: Upload sanitized Postgres dump
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: sanitized-pg-dump
+          path: artifacts/sanitized.dump
+
+      - name: Upload analytics datasets
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: analytics-datasets
+          path: artifacts/data
