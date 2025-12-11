@@ -164,9 +164,33 @@ jobs:
       run: |
         uv run python -m queueboard.dashboard
 
+    - name: "Generate dashboard from API (rule set 1)"
+      id: generate-dashboard-api-rs1
+      if: ${{ !cancelled() && (steps.generate-dashboard-data.outcome == 'success') }}
+      env:
+        QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+      run: |
+        uv run python -m queueboard.dashboard \
+          --api \
+          --rule-set-id 1 \
+          --gh-pages-dir gh-pages/test-rule-set-1 \
+          --api-dir api-rule-set-1
+
+    - name: "Generate dashboard from API (rule set 2)"
+      id: generate-dashboard-api-rs2
+      if: ${{ !cancelled() && (steps.generate-dashboard-data.outcome == 'success') }}
+      env:
+        QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+      run: |
+        uv run python -m queueboard.dashboard \
+          --api \
+          --rule-set-id 2 \
+          --gh-pages-dir gh-pages/test-rule-set-2 \
+          --api-dir api-rule-set-2
+
     - name: Upload artifact
       id: pages-artifact
-      if: ${{ !cancelled() && (steps.generate-dashboard.outcome == 'success') }}
+      if: ${{ !cancelled() && (steps.generate-dashboard.outcome == 'success') && (steps.generate-dashboard-api-rs1.outcome == 'success') && (steps.generate-dashboard-api-rs2.outcome == 'success') }}
       uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
       with:
         path: gh-pages
