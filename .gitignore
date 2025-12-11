@@ -6,3 +6,4 @@ test/**/gh-pages
 test/**/api
 test/**/pre-api-artifact
 celerybeat-schedule*
+/artifacts/
