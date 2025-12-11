@@ -77,6 +77,10 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - `aggregate_info.json`, `draft_PRs.json`, `nondraft_PRs.json`, `CI_status.json`, `all_pr_status.json`, and `prs_to_list.json` are still written for CLI consumers using `CustomJSONEncoder` wrappers (`__type__`, `__module__`, `__data__`). The API should avoid emitting this encoding; any adapter can regenerate these shapes from the snapshot.
 - `automatic_assignments.json`, `area_stats.json`, and `dependency_graph.json` are copied verbatim into `gh-pages/` and will need server-side equivalents (or to be derived from the snapshot payloads).
 - `queue.json` from GitHub search is now optional and used only for comparison during development; queue membership comes from label/CI/draft classification.
+- Parity notes (server vs. documented shape):
+  - Queue timing fields (`first_on_queue`, `total_queue_time`, `last_status_change` / `last_queue_status_change`) are currently emitted as objects, e.g. `{"status": "valid", "date": "..."}` (and `current_status` values `"OnQueue"/"OffQueue"`), while the contract shows the legacy list form (`["valid", "..."]`) with `current_status` as `PRStatus`. Clients expecting the list form need a compatibility layer; prefer server-side normalization or update the contract and keep tolerant parsing.
+  - API endpoints for area stats and automatic assignments wrap payloads in `{area_stats: ..., meta: ...}` / `{automatic_assignments: ..., meta: ...}`. Legacy files were the naked payloads; adapters should unwrap as needed, or we should standardize the API shape and reflect it here.
+  - The snapshot includes an extra `data_status` map per PR (files/assignees/approvals/comments/queue). This is additive and not part of the legacy contract; document if we intend to keep it.
 
 ## Database coverage (current vs. needed)
 - Covered today:

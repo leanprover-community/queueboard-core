@@ -190,9 +190,17 @@ def _aggregate_from_snapshot(pr_number: int, payload: Dict) -> AggregatePRInfo:
     foq = payload.get("first_on_queue")
     first_on_queue = None
     if foq:
-        status = DataStatus.fromStr(foq[0])
-        time = parser.isoparse(foq[1]) if foq[1] else None
-        first_on_queue = (status, time)
+        status = None
+        time = None
+        if isinstance(foq, (list, tuple)) and len(foq) >= 2:
+            status = DataStatus.fromStr(foq[0])
+            time = parser.isoparse(foq[1]) if foq[1] else None
+        elif isinstance(foq, dict):
+            status = DataStatus.fromStr(foq.get("status"))
+            date_str = foq.get("date") or foq.get("time")
+            time = parser.isoparse(date_str) if date_str else None
+        if status is not None:
+            first_on_queue = (status, time)
 
     return AggregatePRInfo(
         payload["is_draft"],
