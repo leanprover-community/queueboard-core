@@ -116,13 +116,9 @@ def truncate_tables(
         before = count_rows(conn, table)
         if not dry_run:
             with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(sql.Identifier(table))
-                )
+                cur.execute(sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY CASCADE").format(sql.Identifier(table)))
         after = 0 if not dry_run else before
-        manifest.append(
-            {"table": table, "action": "truncate", "status": "ok", "rows_before": before, "rows_after": after}
-        )
+        manifest.append({"table": table, "action": "truncate", "status": "ok", "rows_before": before, "rows_after": after})
 
 
 def scrub_tables(

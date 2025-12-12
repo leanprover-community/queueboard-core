@@ -53,9 +53,7 @@ def table_exists(conn: psycopg.Connection[Any], table: str) -> bool:
 
 def export_table_csv(conn: psycopg.Connection[Any], name: str, query: str, output_path: str) -> None:
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with conn.cursor() as cur, cur.copy(f"COPY ({query}) TO STDOUT WITH CSV HEADER") as copy, open(
-        output_path, "wb"
-    ) as out:
+    with conn.cursor() as cur, cur.copy(f"COPY ({query}) TO STDOUT WITH CSV HEADER") as copy, open(output_path, "wb") as out:
         for data in copy:
             out.write(data)
     print(f"Wrote {name} -> {output_path} (csv)")
