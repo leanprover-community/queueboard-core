@@ -134,6 +134,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
         }
         nodes {
           commit {
+            committedDate
             oid
             statusCheckRollup {
               state
