@@ -74,13 +74,13 @@ def _token_cost_from_result(res: Dict[str, Any]) -> int:
     total = 0
     events = res.get("rate_events")
     has_events = isinstance(events, list)
-    if has_events:
+    if has_events and events:
         for ev in events:
             if isinstance(ev, dict):
                 total += _as_int(ev.get("cost"))
     if "discovery_cost" in res:
         total += _as_int(res.get("discovery_cost"))
-    elif not has_events:
+    elif not has_events or not events:
         rl = res.get("rate_limit") or {}
         if isinstance(rl, dict):
             total += _as_int(rl.get("cost"))
@@ -102,10 +102,9 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     repo_q = q.filter(task_name="syncer.sync_repo_since")
     pr_q = q.filter(task_name="syncer.sync_pr")
 
-    token_cost_total = 0
-    for tr in q.only("result"):
-        res = _parse_json(tr.result)
-        token_cost_total += _token_cost_from_result(res)
+    def _iter_results(qs):
+        for tr in qs.only("result"):
+            yield _parse_json(tr.result)
 
     # PR tasks
     pr_count = pr_q.count()
@@ -121,8 +120,8 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         pr_avg_s = 0.0
     # Sum token cost from rate_events if present
     pr_cost = 0
-    for tr in pr_q.only("result"):
-        res = _parse_json(tr.result)
+    pr_cost_total = 0
+    for res in _iter_results(pr_q):
         events = res.get("rate_events") or []
         if isinstance(events, list):
             for ev in events:
@@ -130,6 +129,7 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
                     pr_cost += int(ev.get("cost") or 0)
                 except Exception:
                     pass
+        pr_cost_total += _token_cost_from_result(res)
 
     # Repo tasks
     repo_count = repo_q.count()
@@ -146,8 +146,8 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     repo_discovered = 0
     repo_enqueued = 0
     repo_disc_cost = 0
-    for tr in repo_q.only("result"):
-        res = _parse_json(tr.result)
+    repo_cost_total = 0
+    for res in _iter_results(repo_q):
         try:
             repo_discovered += int(res.get("discovered") or 0)
             repo_enqueued += int(res.get("enqueued") or 0)
@@ -159,6 +159,15 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
                 repo_disc_cost += int(rl.get("cost") or 0)
         except Exception:
             pass
+        repo_cost_total += _token_cost_from_result(res)
+
+    # Other tasks (backfill/commit-history/CI) token cost
+    other_cost_total = 0
+    other_q = q.exclude(task_name__in=["syncer.sync_pr", "syncer.sync_repo_since"])
+    for res in _iter_results(other_q):
+        other_cost_total += _token_cost_from_result(res)
+
+    token_cost_total = pr_cost_total + repo_cost_total + other_cost_total
 
     # DB activity (rows created in the window)
     rows_pr = PullRequest.objects.filter(created_at__gte=start, created_at__lt=now).count()
