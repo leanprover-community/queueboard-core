@@ -58,6 +58,7 @@ class TestPRSyncIntegration(TestCase):
                 "nodes": [
                     {
                         "commit": {
+                            "committedDate": "2025-10-20T00:05:00Z",
                             "oid": "abc123abc123abc123abc123abc123abc123abcd",
                             "statusCheckRollup": {
                                 "contexts": {
@@ -118,6 +119,34 @@ class TestPRSyncIntegration(TestCase):
         self.assertEqual(res["events_created"], 3)
         self.assertEqual(res["checkruns_upserted"], 1)
         self.assertEqual(res["statusctx_upserted"], 1)
+
+    def test_marks_head_ci_unavailable_for_stale_missing_rollup(self) -> None:
+        svc = PRSyncService()
+        bundle = self._make_min_bundle()
+        bundle["createdAt"] = "2020-01-01T00:00:00Z"
+        bundle["updatedAt"] = "2020-01-01T00:10:00Z"
+        bundle["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
+        bundle["commits"]["nodes"][0]["commit"]["committedDate"] = "2020-01-01T00:05:00Z"
+
+        svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
+
+        pr = PullRequest.objects.get(repository=self.repo, number=1)
+        self.assertEqual(pr.head_ci_state, "UNAVAILABLE")
+
+    def test_skips_unavailable_for_recent_missing_rollup(self) -> None:
+        svc = PRSyncService()
+        bundle = self._make_min_bundle()
+        recent = timezone.now() - timezone.timedelta(days=30)
+        iso_recent = recent.isoformat()
+        bundle["createdAt"] = iso_recent
+        bundle["updatedAt"] = iso_recent
+        bundle["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
+        bundle["commits"]["nodes"][0]["commit"]["committedDate"] = iso_recent
+
+        svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
+
+        pr = PullRequest.objects.get(repository=self.repo, number=1)
+        self.assertIsNone(pr.head_ci_state)
 
     def test_idempotent_reingest(self) -> None:
         svc = PRSyncService()
