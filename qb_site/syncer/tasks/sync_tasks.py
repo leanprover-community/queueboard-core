@@ -514,6 +514,8 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             return {"skipped": True, "reason": "lock_not_acquired"}
 
         client = GitHubClient()
+        rate_events: list[dict] = []
+
         # Determine cutoff
         if since_iso:
             cutoff_iso = since_iso
@@ -540,6 +542,18 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         rl = client.get_last_rate_limit() or {}
         remaining = rl.get("remaining") if isinstance(rl, dict) else None
         reset_at = rl.get("resetAt") if isinstance(rl, dict) else None
+        if isinstance(rl, dict):
+            try:
+                rate_events.append(
+                    {
+                        "label": "repo_discovery",
+                        "cost": rl.get("cost"),
+                        "remaining": rl.get("remaining"),
+                        "resetAt": rl.get("resetAt"),
+                    }
+                )
+            except Exception:
+                pass
 
         enqueued = 0
         threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
@@ -620,6 +634,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             "low_budget": bool(low_budget),
             "batch_max": int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30)),
             "discovery_cost": rl.get("cost") if isinstance(rl, dict) else None,
+            "rate_events": rate_events,
         }
 
 

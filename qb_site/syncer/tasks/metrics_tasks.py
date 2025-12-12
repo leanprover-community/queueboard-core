@@ -65,6 +65,9 @@ def _queue_depth(queue_name: str) -> int | None:
 def _token_cost_from_result(res: Dict[str, Any]) -> int:
     """Extract token cost from a task result without double-counting."""
 
+    if not isinstance(res, dict):
+        return 0
+
     def _as_int(val: Any) -> int:
         try:
             return int(val)

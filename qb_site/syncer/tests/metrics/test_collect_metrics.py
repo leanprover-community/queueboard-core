@@ -42,6 +42,7 @@ class TestCollectMetrics(TestCase):
                 "discovered": 5,
                 "enqueued": 3,
                 "rate_limit": {"cost": 10},
+                "rate_events": [{"label": "repo_discovery", "cost": 10}],
             },
         )
         self._mk_task(
@@ -66,6 +67,15 @@ class TestCollectMetrics(TestCase):
                 "rate_limit": {"cost": 3},
             },
         )
+        self._mk_task(
+            "syncer.sync_ci_for_shas",
+            {
+                "repo": "o/r",
+                "rate_events": [{"label": "ci_page", "cost": 4}],
+            },
+        )
+        # Non-dict result should be ignored for token cost aggregation
+        self._mk_task("syncer.collect_convergence", 5)
 
         res = collect_metrics_task()
         self.assertIn("id", res)
@@ -73,6 +83,6 @@ class TestCollectMetrics(TestCase):
         # Validate a few aggregates
         self.assertEqual(snap.pr_tasks, 1)
         self.assertEqual(snap.pr_token_cost, 50)
-        self.assertEqual(snap.token_cost_total, 75)
+        self.assertEqual(snap.token_cost_total, 79)
         self.assertEqual(snap.repo_discovered, 5)
         self.assertEqual(snap.repo_enqueued, 3)
