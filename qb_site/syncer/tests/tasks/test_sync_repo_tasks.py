@@ -23,12 +23,15 @@ class TestSyncRepoTasks(TestCase):
         mock_lock.return_value.__enter__.return_value = True
         gh = MockClient.return_value
         gh.get_changed_pr_numbers.return_value = [1, 2, 3]
-        gh.get_last_rate_limit.return_value = {"remaining": 4999, "resetAt": "2025-11-01T00:00:00Z"}
+        gh.get_last_rate_limit.return_value = {"remaining": 4999, "resetAt": "2025-11-01T00:00:00Z", "cost": 9}
 
         res = sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
         self.assertFalse(res.get("skipped"))
         self.assertEqual(res.get("discovered"), 3)
         self.assertEqual(res.get("enqueued"), 3)
+        self.assertEqual(
+            res.get("rate_events"), [{"label": "repo_discovery", "cost": 9, "remaining": 4999, "resetAt": "2025-11-01T00:00:00Z"}]
+        )
         # Ensure per-PR tasks were enqueued with parent headers
         self.assertEqual(mock_enqueue.call_count, 3)
 
