@@ -37,6 +37,8 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
     client = GitHubClient()
     used_pages = 0
     enqueued = 0
+    rate_events: list[dict] = []
+    rl_snapshot: Dict[str, Any] = {}
 
     # Resolve effective page_size and max_pages from settings when not explicitly provided.
     eff_page_size = int(page_size) if page_size is not None else int(getattr(settings, "SYNCER_HISTORY_BACKFILL_PAGE_SIZE", 50))
@@ -63,6 +65,20 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
             after=after,
             states=st,
         )
+        rl = client.get_last_rate_limit() or {}
+        if isinstance(rl, dict):
+            rl_snapshot = rl
+            try:
+                rate_events.append(
+                    {
+                        "label": "prs_created_page",
+                        "cost": rl.get("cost"),
+                        "remaining": rl.get("remaining"),
+                        "resetAt": rl.get("resetAt"),
+                    }
+                )
+            except Exception:
+                pass
         repo_node = (data.get("data") or {}).get("repository") or {}
         conn = repo_node.get("pullRequests") or {}
         nodes = conn.get("nodes") or []
@@ -116,6 +132,8 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
         "enqueued": enqueued,
         "completed": bool(cursor.completed),
         "states": st,
+        "rate_events": rate_events,
+        "rate_limit": rl_snapshot,
     }
 
 

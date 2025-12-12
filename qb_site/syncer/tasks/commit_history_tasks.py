@@ -20,6 +20,21 @@ def harvest_commit_history_task(
         return {"skipped": True, "reason": "pr_not_found"}
 
     client = GitHubClient()
+    rate_events: list[dict] = []
+
+    def rate_log(rl: dict) -> None:
+        try:
+            rate_events.append(
+                {
+                    "label": "commit_history_page",
+                    "cost": rl.get("cost"),
+                    "remaining": rl.get("remaining"),
+                    "resetAt": rl.get("resetAt"),
+                }
+            )
+        except Exception:
+            pass
+
     shas, state = harvest_commit_history_with_cursor(
         client=client,
         pr=pr,
@@ -27,6 +42,7 @@ def harvest_commit_history_task(
         max_pages=max_pages,
         page_size=page_size,
         since_iso=since_iso,
+        rate_log=rate_log,
     )
     missing: list[str] = []
     if shas:
@@ -84,6 +100,8 @@ def harvest_commit_history_task(
         "attempts": state.attempts,
         "ci_task_id": ci_task_id,
         "ci_missing": missing,
+        "rate_events": rate_events,
+        "rate_limit": client.get_last_rate_limit() or {},
     }
 
 

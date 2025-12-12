@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from django.db import transaction
 from django.utils import timezone
@@ -18,6 +18,7 @@ def harvest_commit_history_shas(
     max_pages: int = 1,
     page_size: int = 20,
     since_iso: Optional[str] = None,
+    rate_log: Optional[Callable[[dict], None]] = None,
 ) -> List[str]:
     """Collect commit SHAs by walking history from a starting SHA backwards."""
     seen: set[str] = set()
@@ -33,6 +34,10 @@ def harvest_commit_history_shas(
             after=cursor,
             since=since_iso,
         )
+        if rate_log:
+            rl = client.get_last_rate_limit() or {}
+            if isinstance(rl, dict):
+                rate_log(rl)
         commit_obj = ((data.get("data") or {}).get("repository") or {}).get("object") or {}
         history = (commit_obj.get("history") or {}) if commit_obj.get("__typename") == "Commit" else {}
         nodes = history.get("nodes") or []
@@ -60,6 +65,7 @@ def harvest_commit_history_with_cursor(
     max_pages: int = 1,
     page_size: int = 20,
     since_iso: Optional[str] = None,
+    rate_log: Optional[Callable[[dict], None]] = None,
 ) -> tuple[List[str], CommitHistoryHarvest]:
     """Harvest commit SHAs using a persisted cursor; returns (shas, cursor_row)."""
     state, _ = CommitHistoryHarvest.objects.select_for_update().get_or_create(
@@ -91,6 +97,10 @@ def harvest_commit_history_with_cursor(
             after=cursor,
             since=state.cutoff_ts.isoformat() if state.cutoff_ts else since_iso,
         )
+        if rate_log:
+            rl = client.get_last_rate_limit() or {}
+            if isinstance(rl, dict):
+                rate_log(rl)
         commit_obj = ((data.get("data") or {}).get("repository") or {}).get("object") or {}
         history = (commit_obj.get("history") or {}) if commit_obj.get("__typename") == "Commit" else {}
         nodes = history.get("nodes") or []

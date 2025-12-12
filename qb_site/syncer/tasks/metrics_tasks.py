@@ -7,7 +7,7 @@ persists them to ``SyncerMetricsSnapshot``. The collector summarizes:
 - PR/Repo task throughput and durations from django-celery-results
 - Low-budget/deferred counts
 - Discovery/enqueue totals
-- Optional token cost totals (from instrumented per-PR ``rate_events`` and repo discovery cost)
+- Token cost totals (from instrumented per-PR ``rate_events``, repo discovery cost, and any other task snapshots)
 - DB row inserts in the window and total database size
 
 This snapshot enables sizing hosting resources and monitoring token usage trends
@@ -62,6 +62,31 @@ def _queue_depth(queue_name: str) -> int | None:
         return None
 
 
+def _token_cost_from_result(res: Dict[str, Any]) -> int:
+    """Extract token cost from a task result without double-counting."""
+
+    def _as_int(val: Any) -> int:
+        try:
+            return int(val)
+        except Exception:
+            return 0
+
+    total = 0
+    events = res.get("rate_events")
+    has_events = isinstance(events, list)
+    if has_events:
+        for ev in events:
+            if isinstance(ev, dict):
+                total += _as_int(ev.get("cost"))
+    if "discovery_cost" in res:
+        total += _as_int(res.get("discovery_cost"))
+    elif not has_events:
+        rl = res.get("rate_limit") or {}
+        if isinstance(rl, dict):
+            total += _as_int(rl.get("cost"))
+    return total
+
+
 @shared_task(name="syncer.collect_metrics")
 def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     """Collect and persist a metrics snapshot for the last 15 minutes.
@@ -76,6 +101,11 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     q = TaskResult.objects.filter(date_done__gte=start, date_done__lt=now)
     repo_q = q.filter(task_name="syncer.sync_repo_since")
     pr_q = q.filter(task_name="syncer.sync_pr")
+
+    token_cost_total = 0
+    for tr in q.only("result"):
+        res = _parse_json(tr.result)
+        token_cost_total += _token_cost_from_result(res)
 
     # PR tasks
     pr_count = pr_q.count()
@@ -167,6 +197,7 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         repo_discovered=repo_discovered,
         repo_enqueued=repo_enqueued,
         repo_discovery_cost=repo_disc_cost,
+        token_cost_total=token_cost_total,
         rows_pull_request=rows_pr,
         rows_timeline_event=rows_tl,
         rows_check_run=rows_cr,
@@ -186,4 +217,5 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         "db_size_bytes": db_size,
         "queue_default_depth": queue_default_depth,
         "queue_github_depth": queue_github_depth,
+        "token_cost_total": token_cost_total,
     }
