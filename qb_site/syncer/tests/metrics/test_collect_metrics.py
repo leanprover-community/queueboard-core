@@ -44,6 +44,13 @@ class TestCollectMetrics(TestCase):
                 "rate_limit": {"cost": 10},
             },
         )
+        self._mk_task(
+            "syncer.harvest_commit_history",
+            {
+                "repo": "o/r",
+                "rate_events": [{"label": "commit_history_page", "cost": 7}],
+            },
+        )
 
         res = collect_metrics_task()
         self.assertIn("id", res)
@@ -51,5 +58,6 @@ class TestCollectMetrics(TestCase):
         # Validate a few aggregates
         self.assertEqual(snap.pr_tasks, 1)
         self.assertEqual(snap.pr_token_cost, 50)
+        self.assertEqual(snap.token_cost_total, 67)
         self.assertEqual(snap.repo_discovered, 5)
         self.assertEqual(snap.repo_enqueued, 3)

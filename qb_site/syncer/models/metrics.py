@@ -23,6 +23,7 @@ class SyncerMetricsSnapshot(models.Model):
     pr_failures = models.IntegerField(default=0)
     pr_avg_duration_s = models.FloatField(default=0.0)
     pr_token_cost = models.IntegerField(default=0)  # sum of rate_events.cost when present
+    token_cost_total = models.IntegerField(default=0)  # all token usage observed in the window
 
     # Repo task throughput
     repo_tasks = models.IntegerField(default=0)
