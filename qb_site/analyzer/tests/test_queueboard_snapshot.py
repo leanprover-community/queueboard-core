@@ -83,6 +83,12 @@ class QueueboardSnapshotBuilderTests(TestCase):
         pr1 = self._make_pr(1, author=self.user, labels=("t-analysis",))
         pr2 = self._make_pr(2, labels=("awaiting-zulip",))
         pr3 = self._make_pr(3, is_draft=True)
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_ci_success=True,
+            forbidden_label_names=["awaiting-zulip"],
+        )
 
         # CI success for pr1
         self._add_ci(pr1)
@@ -94,7 +100,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
             depends_on_number=42,
         )
 
-        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
 
         self.assertEqual(snapshot["meta"]["repository"], "leanprover-community/mathlib4")
         self.assertEqual(snapshot["meta"]["schema_version"], "v1-draft")
@@ -116,6 +122,33 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(set(snapshot["lists"]["draft_prs"]), {3})
         self.assertEqual(snapshot["lists"]["dashboards"]["Queue"], [1])
         self.assertEqual(snapshot["lists"]["dashboards"]["NeedsDecision"], [2])
+
+    def test_queue_membership_respects_rule_set_ci_requirement(self):
+        pr = self._make_pr(60)
+        rule_set_ci = QueueRuleSet.objects.create(repository=self.repo, version=1, require_ci_success=True)
+        rule_set_no_ci = QueueRuleSet.objects.create(repository=self.repo, version=2, require_ci_success=False)
+
+        builder = QueueboardSnapshotBuilder(chunk_size=1)
+        snapshot_ci = builder.build(self.repo, rule_set=rule_set_ci)
+        snapshot_no_ci = builder.build(self.repo, rule_set=rule_set_no_ci)
+
+        self.assertNotIn(pr.number, snapshot_ci["lists"]["dashboards"]["Queue"])
+        self.assertIn(pr.number, snapshot_no_ci["lists"]["dashboards"]["Queue"])
+
+    def test_queue_membership_respects_required_labels(self):
+        pr_allowed = self._make_pr(61, labels=("t-analysis",))
+        pr_blocked = self._make_pr(62)
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            required_label_names=["t-analysis"],
+            forbidden_label_names=["wip"],
+        )
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+
+        self.assertIn(pr_allowed.number, snapshot["lists"]["dashboards"]["Queue"])
+        self.assertNotIn(pr_blocked.number, snapshot["lists"]["dashboards"]["Queue"])
 
     def test_build_and_store_creates_snapshot_row(self):
         pr1 = self._make_pr(10, labels=("t-analysis",))
@@ -150,7 +183,8 @@ class QueueboardSnapshotBuilderTests(TestCase):
     def test_build_and_store_updates_existing_snapshot(self):
         pr1 = self._make_pr(20, labels=("t-analysis",))
         builder = QueueboardSnapshotBuilder(chunk_size=2)
-        first = builder.build_and_store(self.repo, cache_key="k")
+        rule_set = QueueRuleSet.objects.create(repository=self.repo, version=1, require_ci_success=True)
+        first = builder.build_and_store(self.repo, cache_key="k", rule_set=rule_set)
         self.assertEqual(QueueSnapshot.objects.count(), 1)
         self.assertEqual(first.queue_count, 0)  # no CI yet
 
@@ -167,7 +201,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         )
         self._make_pr(21, labels=("awaiting-zulip",))
 
-        updated = builder.build_and_store(self.repo, cache_key="k")
+        updated = builder.build_and_store(self.repo, cache_key="k", rule_set=rule_set)
         self.assertEqual(QueueSnapshot.objects.count(), 1)
         self.assertEqual(updated.pr_count, 2)
         self.assertEqual(updated.queue_count, 1)

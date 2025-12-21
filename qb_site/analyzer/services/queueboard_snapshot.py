@@ -10,6 +10,7 @@ from typing import Dict, Iterable, List, Sequence
 from django.db.models import QuerySet
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot
+from analyzer.services.queue_rules import QueueRules, rules_for_rule_set
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
@@ -215,7 +216,7 @@ class QueueboardSnapshotBuilder:
         contradictory: List[int] = []
         all_prs: List[int] = []
 
-        forbidden_labels = _forbidden_queue_labels(repository.default_branch)
+        rules = rules_for_rule_set(effective_rule_set) if effective_rule_set else QueueRules()
         now = datetime.now(timezone.utc)
         stale_queue_threshold = now - timedelta(days=3)
         stale_queue_assigned_threshold = now - timedelta(days=14)
@@ -286,12 +287,12 @@ class QueueboardSnapshotBuilder:
 
             # NOTE(parity): legacy determine_pr_dashboards drops merge-conflict PRs from Queue
             # and can optionally source queue.json; this path always uses aggregate data and keeps
-            # merge-conflict PRs in Queue membership.
-            on_queue = (
-                not pr.is_draft
-                and pr.base_ref_name == repository.default_branch
-                and ci_value == CIStatus.Pass.value
-                and forbidden_labels.isdisjoint(label_names_lc)
+            # merge-conflict PRs in Queue membership unless forbidden by the ruleset.
+            on_queue = pr.base_ref_name == repository.default_branch and rules.is_on_queue(
+                is_open=True,
+                is_draft=pr.is_draft,
+                labels=label_names,
+                ci_ok=(ci_value == CIStatus.Pass.value),
             )
             if on_queue:
                 queue_prs.append(pr.number)
