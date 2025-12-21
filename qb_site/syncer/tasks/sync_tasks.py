@@ -141,7 +141,13 @@ def sync_pr_task(  # type: ignore[no-redef]
     else:
         gh_updated = None
 
+    header_state = str(pr_node.get("state", "")).lower() if pr_node else None
+    header_is_draft = bool(pr_node.get("isDraft")) if pr_node is not None else None
+
     pr_db = PullRequest.objects.filter(repository=repo, number=int(number)).first()
+    state_mismatch = bool(pr_db and header_state and pr_db.state != header_state)
+    draft_mismatch = bool(pr_db and header_is_draft is not None and pr_db.is_draft != header_is_draft)
+    needs_state_refresh = state_mismatch or draft_mismatch
     needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
     # Ensure we fill head rollup state even if updatedAt hasn’t changed.
     needs_head_ci = bool(pr_db and pr_db.head_ci_state is None)
@@ -151,6 +157,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         and pr_db.last_synced_at
         and gh_updated
         and gh_updated <= pr_db.last_synced_at
+        and not needs_state_refresh
         and not needs_engagement
         and not needs_head_ci
     ):
