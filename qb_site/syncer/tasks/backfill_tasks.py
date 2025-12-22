@@ -219,7 +219,15 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
             "states": result_states,
         }
 
-    candidates = list(queryset.order_by("-gh_updated_at", "-id")[:limit_int])
+    candidates: list[PullRequest] = []
+    # Prefer open PRs first when they are in scope.
+    if db_states is None or "open" in db_states:
+        open_qs = queryset.filter(state="open").order_by("-gh_updated_at", "-id")[:limit_int]
+        candidates.extend(open_qs)
+    remaining = max(limit_int - len(candidates), 0)
+    if remaining > 0:
+        qs_rest = queryset.exclude(state="open").order_by("-gh_updated_at", "-id")[:remaining]
+        candidates.extend(qs_rest)
 
     backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1))
     backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1))
