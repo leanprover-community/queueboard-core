@@ -105,6 +105,7 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = os.getenv("DJANGO_TIME_ZONE", "UTC")
 USE_I18N = True
 USE_TZ = True
+FORMAT_MODULE_PATH = "qb_site.formats"
 DATETIME_FORMAT = "Y-m-d H:i:s"
 SHORT_DATETIME_FORMAT = "Y-m-d H:i:s"
 
