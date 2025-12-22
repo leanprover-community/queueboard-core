@@ -151,12 +151,18 @@ def sync_pr_task(  # type: ignore[no-redef]
     needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
     # Ensure we fill head rollup state even if updatedAt hasn’t changed.
     needs_head_ci = bool(pr_db and pr_db.head_ci_state is None)
+    last_synced_cutoff = None
+    if pr_db and pr_db.last_synced_at:
+        eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
+        last_synced_cutoff = pr_db.last_synced_at - timedelta(seconds=max(0, eps))
+        if timezone.is_naive(last_synced_cutoff):
+            last_synced_cutoff = timezone.make_aware(last_synced_cutoff)
     # Even when updatedAt is unchanged, we may need to sync to fill engagement/head CI rollup or backfill history.
     if (
         pr_db
-        and pr_db.last_synced_at
+        and last_synced_cutoff
         and gh_updated
-        and gh_updated <= pr_db.last_synced_at
+        and gh_updated <= last_synced_cutoff
         and not needs_state_refresh
         and not needs_engagement
         and not needs_head_ci

@@ -214,7 +214,8 @@ class PRSyncService:
             existing = PullRequest.objects.filter(repository=repo, number=number).only("last_synced_at").first()
             if existing and existing.last_synced_at:
                 # subtract a small epsilon to avoid boundary-equal misses
-                dt = existing.last_synced_at - timedelta(seconds=2)
+                eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
+                dt = existing.last_synced_at - timedelta(seconds=max(0, eps))
                 if timezone.is_naive(dt):
                     dt = timezone.make_aware(dt)
                 dt_utc = dt.astimezone(pytimezone.utc)

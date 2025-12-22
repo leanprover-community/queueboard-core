@@ -4,6 +4,7 @@ from unittest import mock
 
 from django.test import TestCase
 from django.utils import timezone
+from django.conf import settings
 
 from core.models import Repository
 from syncer.models import PullRequest
@@ -36,12 +37,13 @@ class TestCommitBackfillOnly(TestCase):
         gh = MockClient.return_value
 
         # Header older than last_synced_at → up-to-date path
+        eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
         gh.get_pr_header.return_value = {
             "data": {
                 "repository": {
                     "pullRequest": {
                         "number": 11,
-                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=1)).isoformat(),
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=eps + 1)).isoformat(),
                     }
                 }
             }
@@ -134,12 +136,13 @@ class TestCommitBackfillOnly(TestCase):
         gh = MockClient.return_value
 
         # Header older than last_synced_at → up-to-date path
+        eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
         gh.get_pr_header.return_value = {
             "data": {
                 "repository": {
                     "pullRequest": {
                         "number": 12,
-                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=1)).isoformat(),
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=eps + 1)).isoformat(),
                     }
                 }
             }

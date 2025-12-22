@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Sequence
 
 from celery import shared_task
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import DateTimeField, ExpressionWrapper, F, Q
 from django.utils import timezone
 
 from core.models import Repository
@@ -196,7 +196,17 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
     if db_states is not None:
         queryset = queryset.filter(state__in=list(db_states))
 
-    queryset = queryset.filter(Q(timeline_backfill_done=False) | Q(commits_backfill_done=False))
+    eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 300))
+    stale_cutoff = ExpressionWrapper(
+        F("gh_updated_at") - timezone.timedelta(seconds=max(0, eps)),
+        output_field=DateTimeField(),
+    )
+    queryset = queryset.filter(
+        Q(timeline_backfill_done=False)
+        | Q(commits_backfill_done=False)
+        | Q(last_synced_at__isnull=True)
+        | Q(last_synced_at__lt=stale_cutoff)
+    )
     total_incomplete = queryset.count()
 
     limit_int = int(limit)

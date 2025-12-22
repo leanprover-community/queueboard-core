@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 
 from core.models import Repository
 from syncer.models import PullRequest
@@ -28,6 +29,7 @@ class TestIncompletePrBackfillTask(TestCase):
             state=state,
             timeline_backfill_done=timeline_done,
             commits_backfill_done=commits_done,
+            last_synced_at=timezone.now(),
         )
 
     def test_skips_when_no_incomplete_prs(self) -> None:
@@ -90,3 +92,21 @@ class TestIncompletePrBackfillTask(TestCase):
         self.assertEqual(res_closed.get("enqueued"), 1)
         self.assertEqual(res_closed.get("remaining"), 0)
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_includes_stale_last_synced_prs(self, mock_sync_pr_task) -> None:
+        now = timezone.now()
+        stale_pr = self._make_pr(4, timeline_done=True, commits_done=True)
+        stale_pr.gh_updated_at = now
+        stale_pr.last_synced_at = now - timezone.timedelta(minutes=10)
+        stale_pr.save(update_fields=["gh_updated_at", "last_synced_at"])
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("enqueued"), 1)
+        mock_sync_pr_task.delay.assert_called_once_with(
+            self.repo.id,
+            stale_pr.number,
+            backfill_timeline_pages=mock.ANY,
+            backfill_commit_pages=mock.ANY,
+        )

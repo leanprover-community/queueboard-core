@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from django.test import TestCase
 from django.utils import timezone
+from django.conf import settings
+from datetime import timezone as dt_timezone
 
 from core.models.repository import Repository
 from syncer.models import (
@@ -417,14 +419,18 @@ class TestPRSyncIntegration(TestCase):
             dry_run=False,
         )
 
-        # Assert since was passed to bundle and paging with expected epsilon (-2s)
+        # Assert since was passed to bundle and paging with expected epsilon
         self.assertTrue(fc.bundle_calls)
         b = fc.bundle_calls[0]
-        self.assertEqual(b["since"], "2025-10-20T00:04:58Z")
+        eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
+        expected_since = (
+            (pr.last_synced_at - timezone.timedelta(seconds=eps)).astimezone(dt_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+        self.assertEqual(b["since"], expected_since)
         self.assertTrue(fc.timeline_page_calls)
         t = fc.timeline_page_calls[0]
         self.assertEqual(t["after"], "t1")
-        self.assertEqual(t["since"], "2025-10-20T00:04:58Z")
+        self.assertEqual(t["since"], expected_since)
 
         # Two timeline events total ingested (bundle + page)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 2)
