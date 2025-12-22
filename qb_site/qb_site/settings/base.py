@@ -105,6 +105,8 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = os.getenv("DJANGO_TIME_ZONE", "UTC")
 USE_I18N = True
 USE_TZ = True
+DATETIME_FORMAT = "Y-m-d H:i:s"
+SHORT_DATETIME_FORMAT = "Y-m-d H:i:s"
 
 STATIC_URL = "/static/"
 STATIC_ROOT = os.getenv("DJANGO_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
