@@ -123,3 +123,22 @@ class TestIncompletePrBackfillTask(TestCase):
 
         self.assertEqual(res.get("enqueued"), 0)
         mock_sync_pr_task.delay.assert_not_called()
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_prefers_open_prs_when_incomplete(self, mock_sync_pr_task) -> None:
+        open_pr = self._make_pr(6, state="open", timeline_done=False, commits_done=True)
+        closed_pr = self._make_pr(7, state="closed", timeline_done=False, commits_done=True)
+        open_pr.gh_updated_at = timezone.now() - timezone.timedelta(days=2)
+        closed_pr.gh_updated_at = timezone.now()
+        open_pr.save(update_fields=["gh_updated_at"])
+        closed_pr.save(update_fields=["gh_updated_at"])
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=1)
+
+        self.assertEqual(res.get("enqueued"), 1)
+        mock_sync_pr_task.delay.assert_called_once_with(
+            self.repo.id,
+            open_pr.number,
+            backfill_timeline_pages=mock.ANY,
+            backfill_commit_pages=mock.ANY,
+        )
