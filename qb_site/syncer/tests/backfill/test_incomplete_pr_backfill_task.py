@@ -110,3 +110,16 @@ class TestIncompletePrBackfillTask(TestCase):
             backfill_timeline_pages=mock.ANY,
             backfill_commit_pages=mock.ANY,
         )
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_skips_when_last_synced_within_epsilon(self, mock_sync_pr_task) -> None:
+        now = timezone.now()
+        pr = self._make_pr(5, timeline_done=True, commits_done=True)
+        pr.gh_updated_at = now
+        pr.last_synced_at = now - timezone.timedelta(minutes=1)
+        pr.save(update_fields=["gh_updated_at", "last_synced_at"])
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("enqueued"), 0)
+        mock_sync_pr_task.delay.assert_not_called()

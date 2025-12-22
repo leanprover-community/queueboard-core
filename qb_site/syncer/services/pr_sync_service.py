@@ -249,15 +249,20 @@ class PRSyncService:
         result = self.sync_pull_request_bundle(repo, pr, dry_run=dry_run)
         # Load PR object for possible paging/backfill steps
         pr_obj = PullRequest.objects.get(repository=repo, number=number)
-        # Seed timeline backfill state from bundle pageInfo if missing
+        # Seed timeline backfill state from bundle pageInfo if missing.
+        # Only mark done when the bundle is unfiltered (no timelineSince) so we
+        # don't treat a filtered window as full history.
         tl_conn0 = pr.get("timelineItems") or {}
         page0 = tl_conn0.get("pageInfo") or {}
         if not pr_obj.timeline_backfill_cursor:
             start_cur = page0.get("startCursor")
             if start_cur:
                 pr_obj.timeline_backfill_cursor = start_cur
-                pr_obj.timeline_backfill_done = not bool(page0.get("hasPreviousPage"))
-                pr_obj.save(update_fields=["timeline_backfill_cursor", "timeline_backfill_done"])
+                update_fields = ["timeline_backfill_cursor"]
+                if timeline_since_iso is None:
+                    pr_obj.timeline_backfill_done = not bool(page0.get("hasPreviousPage"))
+                    update_fields.append("timeline_backfill_done")
+                pr_obj.save(update_fields=update_fields)
         # Seed commits backfill state from bundle pageInfo if missing.
         # Note: we only mark commits_backfill_done=True here when the bundle
         # already includes the entire commits connection (hasPreviousPage=False),
