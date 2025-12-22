@@ -110,3 +110,31 @@ class TestSyncPrTaskSkip(TestCase):
         self.assertFalse(res.get("skipped"))
         self.assertEqual(res.get("status"), "synced")
         mock_sync.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.PRSyncService.sync_pull_request")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_skip_respects_epsilon_window(self, MockClient, mock_sync) -> None:
+        pr = self._make_pr(13, last_synced_at=timezone.now())
+        eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
+
+        gh = MockClient.return_value
+        gh.get_pr_header.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 13,
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=max(eps - 1, 0))).isoformat(),
+                        "state": "OPEN",
+                        "isDraft": False,
+                    }
+                }
+            }
+        }
+        gh.get_last_rate_limit.return_value = {"remaining": 4990, "cost": 1, "resetAt": "2030-01-01T00:00:00Z"}
+        mock_sync.return_value = {}
+
+        res = sync_pr_task.apply(kwargs={"repo_id": self.repo.id, "number": 13}).get()
+
+        self.assertFalse(res.get("skipped"))
+        self.assertEqual(res.get("status"), "synced")
+        mock_sync.assert_called_once()
