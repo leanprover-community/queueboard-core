@@ -70,7 +70,8 @@
     "github_handle": "grunweg",
     "zulip_handle": "@**Michael Rothgang**",
     "top_level": ["t-differential-geometry", "t-analysis", "t-topology", "t-linter", "tech debt"],
-    "free_form": ""
+    "free_form": "",
+    "temporary_break": true
   },
   {
     "github_handle": "RemyDegenne",
