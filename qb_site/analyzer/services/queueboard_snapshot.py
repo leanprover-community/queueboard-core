@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Sequence
 
 from django.db.models import QuerySet
 
-from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot
+from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
 from analyzer.services.queue_rules import QueueRules, rules_for_rule_set
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
@@ -47,83 +47,181 @@ def _relativedelta_dict(total_seconds: float) -> dict:
     return {"days": days, "hours": hours, "minutes": minutes, "seconds": secs}
 
 
-def _ci_status_for_pr(
-    pr_id: int, check_runs: Sequence[dict], status_contexts: Sequence[dict], head_state: str | None
-) -> CIStatus:
-    """Coarse CI rollup aligned with legacy determine_ci_status.
-
-    Differences vs. legacy:
-    - No inessential job-name allowlist; any tracked failure is treated as fail unless head rollup indicates
-      an untracked failure (see below).
-    - Uses head commit rollup (statusCheckRollup.state) to downgrade to FailInessential when all tracked
-      contexts pass but GitHub shows the head as failing.
-    - Treats missing contexts as Missing unless head rollup is present (then uses head state).
-    """
-
-    def _from_head_state(val: str | None) -> CIStatus | None:
-        if not val:
-            return None
-        s = val.upper()
-        if s == "SUCCESS":
-            return CIStatus.Pass
-        if s in ("FAILURE", "ERROR"):
-            return CIStatus.Fail
-        if s in ("PENDING", "EXPECTED"):
-            return CIStatus.Running
-        return None
-
-    any_running = False
-    any_fail = False
-
+def _latest_ci_head_sha(check_runs: Sequence[dict], status_contexts: Sequence[dict]) -> str | None:
+    latest_ts: datetime | None = None
+    latest_sha: str | None = None
     for cr in check_runs:
-        status_raw = cr.get("status")
-        conclusion_raw = cr.get("conclusion")
-        name = cr.get("name") or ""
-        status = str(status_raw or "").upper()
-        conclusion = str(conclusion_raw or "").upper() if conclusion_raw is not None else None
+        ts = cr.get("gh_completed_at") or cr.get("gh_started_at")
+        head_sha = cr.get("head_sha")
+        if not ts or not head_sha:
+            continue
+        if latest_ts is None or ts > latest_ts:
+            latest_ts = ts
+            latest_sha = head_sha
+    for sc in status_contexts:
+        ts = sc.get("gh_created_at")
+        head_sha = sc.get("head_sha")
+        if not ts or not head_sha:
+            continue
+        if latest_ts is None or ts > latest_ts:
+            latest_ts = ts
+            latest_sha = head_sha
+    return latest_sha
 
-        if status in {"IN_PROGRESS", "QUEUED", "PENDING"}:
+
+def _head_sha_for_pr(
+    *,
+    pr_id: int,
+    revision_heads: dict[int, str],
+    check_runs: Sequence[dict],
+    status_contexts: Sequence[dict],
+) -> str | None:
+    head_sha = revision_heads.get(pr_id)
+    if head_sha:
+        return head_sha
+    return _latest_ci_head_sha(check_runs, status_contexts)
+
+
+def _find_latest_check_run(
+    check_runs: Sequence[dict],
+    *,
+    name: str,
+    head_sha: str | None,
+) -> dict | None:
+    name_lc = name.lower()
+    best: dict | None = None
+    best_ts: datetime | None = None
+    for cr in check_runs:
+        if (cr.get("name") or "").lower() != name_lc:
+            continue
+        if head_sha and cr.get("head_sha") != head_sha:
+            continue
+        ts = cr.get("gh_completed_at") or cr.get("gh_started_at")
+        if ts is None:
+            continue
+        if best_ts is None or ts > best_ts:
+            best = cr
+            best_ts = ts
+    return best
+
+
+def _find_latest_status_context(
+    status_contexts: Sequence[dict],
+    *,
+    name: str,
+    head_sha: str | None,
+) -> dict | None:
+    name_lc = name.lower()
+    best: dict | None = None
+    best_ts: datetime | None = None
+    for sc in status_contexts:
+        if (sc.get("name") or "").lower() != name_lc:
+            continue
+        if head_sha and sc.get("head_sha") != head_sha:
+            continue
+        ts = sc.get("gh_created_at")
+        if ts is None:
+            continue
+        if best_ts is None or ts > best_ts:
+            best = sc
+            best_ts = ts
+    return best
+
+
+def _required_contexts_status(
+    *,
+    required_contexts: Sequence[str],
+    check_runs: Sequence[dict],
+    status_contexts: Sequence[dict],
+    head_sha: str | None,
+) -> CIStatus:
+    if not head_sha:
+        return CIStatus.Missing
+
+    any_fail = False
+    any_running = False
+    any_missing = False
+
+    for ctx_name in required_contexts:
+        cr = _find_latest_check_run(check_runs, name=ctx_name, head_sha=head_sha)
+        if cr is not None:
+            status_raw = cr.get("status")
+            conclusion_raw = cr.get("conclusion")
+            status = str(status_raw or "").upper()
+            conclusion = str(conclusion_raw or "").upper() if conclusion_raw is not None else None
+            if status in {"IN_PROGRESS", "QUEUED", "PENDING"}:
+                any_running = True
+                continue
+            if conclusion in {CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED}:
+                continue
+            if conclusion in {CheckRunConclusion.FAILURE, CheckRunConclusion.CANCELLED, CheckRunConclusion.TIMED_OUT}:
+                any_fail = True
+                continue
+            if conclusion is None and status == CheckRunStatus.COMPLETED:
+                any_fail = True
+                continue
             any_running = True
             continue
-        if conclusion in {CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED}:
-            continue
-        if conclusion in {CheckRunConclusion.FAILURE, CheckRunConclusion.CANCELLED, CheckRunConclusion.TIMED_OUT}:
-            any_fail = True
-        elif conclusion is None and status == CheckRunStatus.COMPLETED:
-            # Completed with no conclusion: treat as failure to be conservative.
-            any_fail = True
 
-    for sc in status_contexts:
+        sc = _find_latest_status_context(status_contexts, name=ctx_name, head_sha=head_sha)
+        if sc is None:
+            any_missing = True
+            continue
         state = sc.get("state")
+        if state == StatusContextState.SUCCESS:
+            continue
         if state == StatusContextState.PENDING:
             any_running = True
-        elif state in (StatusContextState.FAILURE, StatusContextState.ERROR):
-            any_fail = True
-        elif state == StatusContextState.SUCCESS:
             continue
+        if state in (StatusContextState.FAILURE, StatusContextState.ERROR):
+            any_fail = True
+            continue
+        any_running = True
 
-    base: CIStatus
     if any_fail:
-        base = CIStatus.Fail
-    elif any_running:
-        base = CIStatus.Running
-    else:
-        # No tracked failures/running; pass if we saw any contexts, missing otherwise.
-        base = CIStatus.Pass if check_runs or status_contexts else CIStatus.Missing
-
-    head = _from_head_state(head_state)
-    if head is None:
-        return base
-    if base == CIStatus.Fail:
         return CIStatus.Fail
-    if head == CIStatus.Fail and base == CIStatus.Pass:
-        # Tracked contexts are green, but GitHub shows red for the head commit → treat as inessential failure.
-        return CIStatus.FailInessential
-    if head == CIStatus.Running and base in (CIStatus.Pass, CIStatus.Missing):
+    if any_missing:
+        return CIStatus.Missing
+    if any_running:
         return CIStatus.Running
-    if head == CIStatus.Pass and base == CIStatus.Missing:
-        return CIStatus.Pass
-    return base
+    return CIStatus.Pass
+
+
+def _ci_status_for_pr(
+    *,
+    pr_id: int,
+    rule_set: QueueRuleSet | None,
+    check_runs: Sequence[dict],
+    status_contexts: Sequence[dict],
+    head_state: str | None,
+    revision_heads: dict[int, str],
+) -> tuple[CIStatus, bool]:
+    """CI rollup aligned with queue rule set semantics."""
+
+    if not rule_set or not rule_set.require_ci_success:
+        return (CIStatus.Pass, True)
+
+    required = [ctx for ctx in (rule_set.required_ci_contexts or []) if isinstance(ctx, str) and ctx.strip()]
+    if not required:
+        return (CIStatus.Pass, True)
+
+    head_sha = _head_sha_for_pr(
+        pr_id=pr_id,
+        revision_heads=revision_heads,
+        check_runs=check_runs,
+        status_contexts=status_contexts,
+    )
+    required_status = _required_contexts_status(
+        required_contexts=required,
+        check_runs=check_runs,
+        status_contexts=status_contexts,
+        head_sha=head_sha,
+    )
+    if required_status == CIStatus.Pass:
+        if (head_state or "").upper() in ("FAILURE", "ERROR"):
+            return (CIStatus.FailInessential, True)
+        return (CIStatus.Pass, True)
+    return (required_status, False)
 
 
 def _forbidden_queue_labels(default_branch: str) -> set[str]:
@@ -187,6 +285,7 @@ class QueueboardSnapshotBuilder:
         label_map = self._labels_for_repo(repository)
         dependency_map = self._dependencies_for_repo(repository)
         ci_checks, ci_statuses = self._ci_inputs_for_repo(repository)
+        revision_heads = self._revision_heads_for_repo(repository)
         queue_windows = self._queue_windows_for_repo(repository, rule_set=effective_rule_set)
 
         prs: Dict[int, dict] = {}
@@ -238,11 +337,13 @@ class QueueboardSnapshotBuilder:
                 generated_at=generated_at,
             )
 
-            ci_status = _ci_status_for_pr(
-                pr.id,
+            ci_status, ci_ok = _ci_status_for_pr(
+                pr_id=pr.id,
+                rule_set=effective_rule_set,
                 check_runs=ci_checks.get(pr.id, []),
                 status_contexts=ci_statuses.get(pr.id, []),
                 head_state=getattr(pr, "head_ci_state", None),
+                revision_heads=revision_heads,
             )
             ci_value = ci_status.value if isinstance(ci_status, CIStatus) else str(ci_status)
             pr_status = _classify_pr_status(
@@ -292,7 +393,7 @@ class QueueboardSnapshotBuilder:
                 is_open=True,
                 is_draft=pr.is_draft,
                 labels=label_names,
-                ci_ok=(ci_value == CIStatus.Pass.value),
+                ci_ok=ci_ok,
             )
             if on_queue:
                 queue_prs.append(pr.number)
@@ -424,7 +525,7 @@ class QueueboardSnapshotBuilder:
     def _queue_data_status(self, pr: PullRequest, windows: list[tuple], rule_set: QueueRuleSet | None) -> DataStatus:
         if not getattr(pr, "timeline_backfill_done", False):
             return "missing"
-        if rule_set and rule_set.require_ci_success and not windows:
+        if rule_set and rule_set.require_ci_success and (rule_set.required_ci_contexts or []) and not windows:
             return "missing"
         return "valid"
 
@@ -485,8 +586,22 @@ class QueueboardSnapshotBuilder:
         return acc
 
     def _ci_inputs_for_repo(self, repository: Repository):
-        checks_qs = CheckRun.objects.filter(pull_request__repository=repository).values("pull_request_id", "status", "conclusion")
-        statuses_qs = StatusContext.objects.filter(pull_request__repository=repository).values("pull_request_id", "state")
+        checks_qs = CheckRun.objects.filter(pull_request__repository=repository).values(
+            "pull_request_id",
+            "name",
+            "status",
+            "conclusion",
+            "head_sha",
+            "gh_started_at",
+            "gh_completed_at",
+        )
+        statuses_qs = StatusContext.objects.filter(pull_request__repository=repository).values(
+            "pull_request_id",
+            "name",
+            "state",
+            "head_sha",
+            "gh_created_at",
+        )
 
         check_map: Dict[int, List[dict]] = defaultdict(list)
         for cr in checks_qs.iterator():
@@ -497,6 +612,21 @@ class QueueboardSnapshotBuilder:
             status_map[sc["pull_request_id"]].append(sc)
 
         return check_map, status_map
+
+    def _revision_heads_for_repo(self, repository: Repository) -> Dict[int, str]:
+        acc: Dict[int, str] = {}
+        qs = PRRevision.objects.filter(pull_request__repository=repository).order_by(
+            "pull_request_id",
+            "-from_ts",
+            "-seq",
+            "-id",
+        )
+        for rev in qs.iterator():
+            if rev.pull_request_id in acc:
+                continue
+            if rev.head_sha:
+                acc[rev.pull_request_id] = rev.head_sha
+        return acc
 
     def _build_pr_entry(
         self,
