@@ -70,7 +70,7 @@ Notes:
 - `prs_to_list` is now computed from our aggregate data by default; `queue.json` (GitHub search) is only used for an optional parity check when present.
 - Dependency graph, area stats, and automatic assignments stay separate for now.
 
-Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`).
+Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`). `ci_status` is rule-set aware: required CI contexts gate queue membership; missing required contexts yield `missing`; `fail-inessential` indicates the required contexts pass but the head rollup reports a failure.
 
 ## Current filesystem artifacts (post-refactor)
 - Snapshot is the normalized contract; everything else is compatibility scaffolding for the legacy renderer.
@@ -128,7 +128,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Steps:
   1) Fetch open PRs for the repo; prefetch labels/engagement fields.
   2) Build `AggregatePRInfo` per PR from stored fields; map completeness→`DataStatus`; format `head_repo` from owner/name.
-  3) Compute coarse `CI_status` from `CheckRun`/`StatusContext` (legacy `determine_ci_status` rules).
+  3) Compute `CI_status` using the active rule set: required contexts must pass for the current head SHA (fallback to latest CI head when revisions are absent). Missing required contexts yield `missing`; failing required contexts yield `fail`; required contexts passing with a failing head rollup yield `fail-inessential`.
   4) Classify labels/CI/draft into `PRStatus` via `classify_pr_state` with the selected rule set.
   5) Timeline-derived stats (`last_status_change`, `first_on_queue`, `total_queue_time`) from `PRTimelineEvent`; apply DataStatus mapping based on sync/backfill state.
   6) Compute dashboards (`prs_to_list`) and stale metrics from the DB (replace `queue.json`).
@@ -154,10 +154,10 @@ Future cleanup
 - Builder: a `QueueboardSnapshotBuilder` that chunk-iterates open PRs (e.g., 200–500 via `values()`/`iterator`) and assembles `prs`/`lists` in one pass, backed by keyed maps loaded up front:
   - Labels: `pr_id -> [(name, color, url)]`
   - Dependencies: `pr_id -> [dep_number]`
-  - CI: `pr_id -> coarse ci_status` from latest `CheckRun`/`StatusContext`
+  - CI: `pr_id -> rule-set-aware ci_status` from required contexts (`CheckRun`/`StatusContext`) plus head rollup for `fail-inessential`
   - Timeline: stream `PRTimelineEvent` ordered by `(pr_id, occurred_at)` to compute `last_status_change` / `first_on_queue` / `total_queue_time` per PR; if this is too heavy, read from precomputed queue windows/table instead.
   - Engagement fields: `modified_files`, `assignees`, `approvals`, `commenters`, `number_total_comments`, plus completeness flags mapped to `DataStatus`.
-- Queue rules: same as legacy aggregate path (master-only, CI pass, exclude WIP/help-wanted/awaiting-* etc.); `queue.json` is not required and can be used only for optional parity checks during development.
+- Queue rules: governed by the selected rule set (label/draft/open requirements and required CI contexts); `queue.json` is not required and can be used only for optional parity checks during development.
 - Caching: Celery task builds the snapshot and stores it (Redis or `QueueSnapshot` table with compressed JSON keyed by repo + rule_set_id + generated_at); DRF view serves cached payload with ETag/Last-Modified and can enqueue refresh instead of computing in-request.
 - Extras: dependency graph, area stats, and automatic assignments can be computed from the already-built per-PR dicts or a lightweight second pass over the snapshot payload.
 - Ops: drop per-PR temporaries inside the loop, log counts/durations, guard missing data via `DataStatus`, and add admin/CLI triggers plus TTL cleanup for stale snapshots.
@@ -169,7 +169,7 @@ Future cleanup
 - If reviewer suggestions/area stats/dependency graph move server-side, precompute them in dedicated tasks or cache them alongside the snapshot payload.
 
 ### Progress (implemented)
-- `QueueboardSnapshotBuilder` in Analyzer: chunked DB reads; populates snapshot `prs` with metadata, labels, dependencies, coarse CI (legacy determine_ci_status rules), PR status (legacy classify_pr_state rules), head/base refs, engagement fields and `data_status` for files/assignees/approvals/comments; builds dashboards for all legacy buckets (Queue, stale variants, ready-to-merge/delegated/maintainer, tech debt, needs-*, approved, bad title, unlabelled, contradictory, All) plus draft/nondraft lists.
+- `QueueboardSnapshotBuilder` in Analyzer: chunked DB reads; populates snapshot `prs` with metadata, labels, dependencies, rule-set-aware CI (required contexts + head rollup), PR status (legacy classify_pr_state rules), head/base refs, engagement fields and `data_status` for files/assignees/approvals/comments; builds dashboards for all legacy buckets (Queue, stale variants, ready-to-merge/delegated/maintainer, tech debt, needs-*, approved, bad title, unlabelled, contradictory, All) plus draft/nondraft lists. Queue membership uses required-contexts success rather than overall CI green.
 - `QueueSnapshot` model in Analyzer to persist cached payloads with counts/etag/cache_key; builder can `build_and_store(...)`.
 - Tests for builder/storage live under `qb_site/analyzer/tests/test_queueboard_snapshot.py`.
 - Dependency graph endpoint (`QueueboardDependencyGraphView`) serves `dependency_graph.json` derived from cached snapshots with matching ETag/Last-Modified semantics; `DependencyGraphBuilder` mirrors the legacy D3 shape (nodes/links/metadata, dynamic repo URLs, draft detection via flag/WIP labels). API tests cover 200/304/202/stale refresh paths.
