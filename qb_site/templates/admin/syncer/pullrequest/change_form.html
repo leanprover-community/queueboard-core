@@ -146,6 +146,90 @@
 {% else %}
 <p>No revisions for this PR yet.</p>
 {% endif %}
+<h2>Revision build state</h2>
+{% if prrevisionbuildstate_list_url %}
+<p>
+  <a href="{{ prrevisionbuildstate_list_url }}">View all revision build states for this PR</a>
+</p>
+{% endif %}
+{% if revision_build_state %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Builder version</th>
+      <th>Revision version</th>
+      <th>Built through</th>
+      <th>Dirty from</th>
+      <th>CI checked rev</th>
+      <th>CI checked at</th>
+      <th>Windows built rev</th>
+      <th>Windows built at</th>
+      <th>Tail revision</th>
+      <th>Last built at</th>
+      <th>Updated at</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <a href="{% url 'admin:analyzer_prrevisionbuildstate_change' revision_build_state.id %}">{{ revision_build_state.builder_version }}</a>
+      </td>
+      <td>{{ revision_build_state.revision_version }}</td>
+      <td>{{ revision_build_state.built_through_ts }}</td>
+      <td>{{ revision_build_state.dirty_from_ts }}</td>
+      <td>{{ revision_build_state.ci_checked_revision_version }}</td>
+      <td>{{ revision_build_state.ci_checked_at }}</td>
+      <td>{{ revision_build_state.windows_built_revision_version }}</td>
+      <td>{{ revision_build_state.windows_built_at }}</td>
+      <td>
+        {% if revision_build_state.tail_revision %}
+        <a href="{% url 'admin:analyzer_prrevision_change' revision_build_state.tail_revision_id %}">{{ revision_build_state.tail_revision }}</a>
+        {% else %}
+        -
+        {% endif %}
+      </td>
+      <td>{{ revision_build_state.last_built_at }}</td>
+      <td>{{ revision_build_state.updated_at }}</td>
+    </tr>
+  </tbody>
+</table>
+{% else %}
+<p>No revision build state for this PR yet.</p>
+{% endif %}
+<h2>Queue windows (latest 10)</h2>
+{% if prqueuewindow_list_url %}
+<p>
+  <a href="{{ prqueuewindow_list_url }}">View all queue windows for this PR</a>
+</p>
+{% endif %}
+{% if queue_windows %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Rule set</th>
+      <th>From</th>
+      <th>To</th>
+      <th>Cycle</th>
+      <th>Created at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for window in queue_windows %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:analyzer_prqueuewindow_change' window.id %}">{{ window.rule_set }}</a>
+      </td>
+      <td>{{ window.from_ts }}</td>
+      <td>{{ window.to_ts }}</td>
+      <td>{{ window.cycle_index }}</td>
+      <td>{{ window.created_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No queue windows for this PR yet.</p>
+{% endif %}
 <h2>Check runs (latest 10)</h2>
 {% if checkrun_list_url %}
 <p>
@@ -211,6 +295,42 @@
 </table>
 {% else %}
 <p>No status contexts for this PR yet.</p>
+{% endif %}
+<h2>Commit history harvests (latest 10)</h2>
+{% if commithistoryharvest_list_url %}
+<p>
+  <a href="{{ commithistoryharvest_list_url }}">View all commit history harvests for this PR</a>
+</p>
+{% endif %}
+{% if commit_history_harvests %}
+<table class="listing">
+  <thead>
+    <tr>
+      <th>Start SHA</th>
+      <th>Has more</th>
+      <th>Cutoff</th>
+      <th>Last harvested</th>
+      <th>Attempts</th>
+      <th>Updated at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for harvest in commit_history_harvests %}
+    <tr>
+      <td>
+        <a href="{% url 'admin:syncer_commithistoryharvest_change' harvest.id %}">{{ harvest.start_sha }}</a>
+      </td>
+      <td>{{ harvest.has_more }}</td>
+      <td>{{ harvest.cutoff_ts }}</td>
+      <td>{{ harvest.last_harvested_at }}</td>
+      <td>{{ harvest.attempts }}</td>
+      <td>{{ harvest.updated_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No commit history harvests for this PR yet.</p>
 {% endif %}
 <h2>Dependencies (parsed from body)</h2>
 {% if prdependency_list_url %}

@@ -22,7 +22,7 @@ from .models import (
     RepoBackfillCursor,
     CommitHistoryHarvest,
 )
-from analyzer.models import PRRevision, PRDependency, PRDependencyState
+from analyzer.models import PRRevision, PRDependency, PRDependencyState, PRQueueWindow, PRRevisionBuildState
 from analyzer.services.revisions import rebuild_pr_revisions
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 from analyzer.tasks.dependencies import rebuild_pr_dependencies_task
@@ -350,8 +350,18 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 labels = PRLabel.objects.filter(pull_request=pr).select_related("label_def").order_by("-created_at")[:10]
                 timeline_events = PRTimelineEvent.objects.filter(pull_request=pr).order_by("-occurred_at", "-id")[:10]
                 revisions = PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id")[:10]
+                revision_build_state = (
+                    PRRevisionBuildState.objects.filter(pull_request=pr).select_related("tail_revision").first()
+                )
+                queue_windows = (
+                    PRQueueWindow.objects.filter(pull_request=pr).select_related("rule_set").order_by("-from_ts", "-id")[:10]
+                )
                 check_runs = CheckRun.objects.filter(pull_request=pr).order_by("-gh_completed_at", "-id")[:10]
                 status_contexts = StatusContext.objects.filter(pull_request=pr).order_by("-gh_created_at", "-id")[:10]
+                commit_history_harvests = CommitHistoryHarvest.objects.filter(pull_request=pr).order_by(
+                    "-updated_at",
+                    "-id",
+                )[:10]
                 dependencies = PRDependency.objects.filter(pull_request=pr).select_related("depends_on_pull_request")[:20]
                 dep_state = PRDependencyState.objects.filter(pull_request=pr).first()
                 extra.update(
@@ -362,13 +372,25 @@ class PullRequestAdmin(ReadOnlyAdmin):
                         "labels": labels,
                         "timeline_events": timeline_events,
                         "revisions": revisions,
+                        "revision_build_state": revision_build_state,
+                        "queue_windows": queue_windows,
                         "check_runs": check_runs,
                         "status_contexts": status_contexts,
+                        "commit_history_harvests": commit_history_harvests,
                         "timeline_list_url": f"{reverse('admin:syncer_prtimelineevent_changelist')}?pull_request__id__exact={pr.id}",
                         "checkrun_list_url": f"{reverse('admin:syncer_checkrun_changelist')}?pull_request__id__exact={pr.id}",
                         "statuscontext_list_url": f"{reverse('admin:syncer_statuscontext_changelist')}?pull_request__id__exact={pr.id}",
                         "prrevision_list_url": f"{reverse('admin:analyzer_prrevision_changelist')}?pull_request__id__exact={pr.id}",
+                        "prrevisionbuildstate_list_url": (
+                            f"{reverse('admin:analyzer_prrevisionbuildstate_changelist')}?pull_request__id__exact={pr.id}"
+                        ),
+                        "prqueuewindow_list_url": (
+                            f"{reverse('admin:analyzer_prqueuewindow_changelist')}?pull_request__id__exact={pr.id}"
+                        ),
                         "prdependency_list_url": f"{reverse('admin:analyzer_prdependency_changelist')}?pull_request__id__exact={pr.id}",
+                        "commithistoryharvest_list_url": (
+                            f"{reverse('admin:syncer_commithistoryharvest_changelist')}?pull_request__id__exact={pr.id}"
+                        ),
                         "dependencies": dependencies,
                         "dependency_state": dep_state,
                     }
