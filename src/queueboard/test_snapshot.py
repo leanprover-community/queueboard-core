@@ -134,6 +134,78 @@ def _assert_snapshot(snapshot: dict, work: Path) -> None:
         assert sorted(int(n) for n in snap_queue) == sorted(expected_queue), "Queue dashboard mismatch vs queue.json"
 
 
+def _write_snapshot(work: Path, payload: dict) -> None:
+    api_dir = work / "api"
+    api_dir.mkdir(parents=True, exist_ok=True)
+    with (api_dir / "snapshot.json").open("w") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _assert_queue_status_fallback_parsing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        pr_payload = {
+            "state": "open",
+            "is_draft": False,
+            "base_branch": "master",
+            "branch_name": "feature",
+            "head_repo": "leanprover-community",
+            "last_updated": "2024-01-01T00:00:00+00:00",
+            "author": "alice",
+            "title": "feat: test",
+            "description": "desc",
+            "labels": [],
+            "additions": 1,
+            "deletions": 0,
+            "modified_files": [],
+            "number_modified_files": 0,
+            "approvals": [],
+            "assignees": [],
+            "users_commented": ["valid", []],
+            "number_total_comments": 0,
+            "direct_dependencies": [],
+            "ci_status": "pass",
+            "pr_status": "AwaitingReview",
+            "last_status_change": {
+                "status": "valid",
+                "time": "2024-01-02T00:00:00+00:00",
+                "delta": {"days": 1},
+                "current_status": "OnQueue",
+            },
+            "first_on_queue": ["valid", "2024-01-01T00:00:00+00:00"],
+            "total_queue_time": {"status": "valid", "value_td": 3600, "value_rd": {"hours": 1}, "explanation": ""},
+        }
+        pr_payload_2 = dict(pr_payload)
+        pr_payload_2["author"] = "bob"
+        pr_payload_2["pr_status"] = "Blocked"
+        pr_payload_2["last_status_change"] = {
+            "status": "valid",
+            "time": "2024-01-03T00:00:00+00:00",
+            "delta": {"days": 2},
+            "current_status": "OffQueue",
+        }
+        snapshot = {
+            "meta": {
+                "schema_version": "v1-draft",
+                "generated_at": "2024-01-02T00:00:00+00:00",
+                "repository": "leanprover-community/mathlib4",
+                "rule_set_id": "test",
+            },
+            "prs": {"1": pr_payload, "2": pr_payload_2},
+            "lists": {"draft_prs": [], "nondraft_prs": [1, 2], "dashboards": {"Queue": [1]}},
+        }
+        _write_snapshot(work, snapshot)
+        from queueboard.snapshot import load_snapshot
+
+        aggregate_info, *_ = load_snapshot(str(work / "api"))
+        parsed = aggregate_info["1"].last_status_change
+        assert parsed is not None, "Expected queue status fallback to yield LastStatusChange"
+        assert parsed.current_status == PRStatus.AwaitingReview, "Expected fallback to use pr_status"
+        parsed_2 = aggregate_info["2"].last_status_change
+        assert parsed_2 is not None, "Expected OffQueue fallback to yield LastStatusChange"
+        assert parsed_2.current_status == PRStatus.Blocked, "Expected OffQueue fallback to use pr_status"
+
+
 def main() -> None:
     src = _source_dir()
     with tempfile.TemporaryDirectory() as tmp:
@@ -142,6 +214,7 @@ def main() -> None:
         _run_dashboard_data(work)
         snapshot = _load_snapshot(work)
         _assert_snapshot(snapshot, work)
+        _assert_queue_status_fallback_parsing()
         print("test_snapshot: OK — snapshot.json matches legacy API outputs for test/newtest fixtures")
 
 
