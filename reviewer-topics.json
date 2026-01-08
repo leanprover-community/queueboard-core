@@ -10,7 +10,8 @@
     "zulip_handle": "@**Kevin Buzzard**",
     "top_level": ["t-number-theory", "t-algebra", "t-ring-theory"],
     "free_form": "",
-    "maximum_capacity": 5
+    "maximum_capacity": 5,
+    "temporary_break": true
   },
   {
     "github_handle": "tb65536",
