@@ -349,7 +349,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
                         break
                 labels = PRLabel.objects.filter(pull_request=pr).select_related("label_def").order_by("-created_at")[:10]
                 timeline_events = PRTimelineEvent.objects.filter(pull_request=pr).order_by("-occurred_at", "-id")[:10]
-                revisions = PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id")[:10]
+                revisions = PRRevision.objects.filter(pull_request=pr).order_by("-seq", "-from_ts", "-id")[:10]
                 revision_build_state = (
                     PRRevisionBuildState.objects.filter(pull_request=pr).select_related("tail_revision").first()
                 )
