@@ -155,13 +155,16 @@ def _parse_timedelta(seconds: float | int | None):
     return timedelta(seconds=seconds)
 
 
-def _parse_last_status_change(payload: Dict | None) -> LastStatusChange | None:
+def _parse_last_status_change(payload: Dict | None, *, fallback_status: str | None = None) -> LastStatusChange | None:
     if not payload:
         return None
     status = DataStatus.fromStr(payload["status"])
     time = parser.isoparse(payload["time"]) if payload.get("time") else None
     delta = _parse_relativedelta(payload.get("delta"))
-    current = PRStatus.tryFrom_str(payload.get("current_status"))
+    raw_current = payload.get("current_status")
+    current = PRStatus.tryFrom_str(raw_current)
+    if current is None and raw_current in {"OnQueue", "OffQueue"} and fallback_status:
+        current = PRStatus.tryFrom_str(fallback_status)
     if time is None or current is None:
         return None
     return LastStatusChange(status, time, delta, current)
@@ -223,7 +226,7 @@ def _aggregate_from_snapshot(pr_number: int, payload: Dict) -> AggregatePRInfo:
         payload.get("assignees", []),
         uc_tuple or (DataStatus.Missing, []),
         payload.get("number_total_comments"),
-        _parse_last_status_change(payload.get("last_status_change")),
+        _parse_last_status_change(payload.get("last_status_change"), fallback_status=payload.get("pr_status")),
         first_on_queue,
         _parse_total_queue_time(payload.get("total_queue_time")),
     )
