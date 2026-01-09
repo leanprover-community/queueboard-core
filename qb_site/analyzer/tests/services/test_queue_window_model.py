@@ -91,6 +91,10 @@ class TestPRQueueWindowModel(TestCase):
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 6))
         self.assertEqual(windows[0].to_ts, _dt(2024, 9, 12))
         self.assertEqual(windows[0].cycle_index, 0)
+        self.assertEqual(windows[0].duration_seconds_closed, 6 * 24 * 60 * 60)
+        self.assertEqual(windows[0].cumulative_seconds_closed, 6 * 24 * 60 * 60)
+        self.assertEqual(windows[0].window_count, 1)
+        self.assertEqual(windows[0].first_on_queue_ts, _dt(2024, 9, 6))
 
     def test_rebuild_persists_open_ended_queue_window(self) -> None:
         pr = self._mk_pr(2)
@@ -123,3 +127,7 @@ class TestPRQueueWindowModel(TestCase):
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 6))
         self.assertIsNone(windows[0].to_ts)
         self.assertEqual(windows[0].cycle_index, 0)
+        self.assertEqual(windows[0].duration_seconds_closed, 0)
+        self.assertEqual(windows[0].cumulative_seconds_closed, 0)
+        self.assertEqual(windows[0].window_count, 1)
+        self.assertEqual(windows[0].first_on_queue_ts, _dt(2024, 9, 6))

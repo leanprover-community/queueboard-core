@@ -18,6 +18,10 @@ class PRQueueWindow(models.Model):
 
     # Monotone counter within (pr, rule_set), grouping consecutive queue segments.
     cycle_index = models.PositiveIntegerField()
+    duration_seconds_closed = models.BigIntegerField(default=0)
+    cumulative_seconds_closed = models.BigIntegerField(default=0)
+    window_count = models.PositiveIntegerField(default=0)
+    first_on_queue_ts = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

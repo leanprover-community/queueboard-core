@@ -421,13 +421,18 @@ class QueueboardSnapshotBuilderTests(TestCase):
         window1_start = self.now - timedelta(days=2)
         window1_end = self.now - timedelta(days=1)
         window2_start = self.now - timedelta(hours=12)
-        window2_end = self.now + timedelta(hours=1)
+        window2_end = None
+        duration1 = int((window1_end - window1_start).total_seconds())
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=rule_set,
             from_ts=window1_start,
             to_ts=window1_end,
             cycle_index=0,
+            duration_seconds_closed=duration1,
+            cumulative_seconds_closed=duration1,
+            window_count=2,
+            first_on_queue_ts=window1_start,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -435,6 +440,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
             from_ts=window2_start,
             to_ts=window2_end,
             cycle_index=1,
+            duration_seconds_closed=0,
+            cumulative_seconds_closed=duration1,
+            window_count=2,
+            first_on_queue_ts=window1_start,
         )
 
         class FixedDateTime(datetime):
@@ -474,6 +483,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
             from_ts=window_start,
             to_ts=None,
             cycle_index=0,
+            duration_seconds_closed=0,
+            cumulative_seconds_closed=0,
+            window_count=1,
+            first_on_queue_ts=window_start,
         )
 
         class FixedDateTime(datetime):
@@ -494,3 +507,38 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(entry["last_queue_status_change"]["time"], window_start.isoformat())
         self.assertEqual(entry["last_queue_status_change"]["current_status"], "OnQueue")
         self.assertEqual(entry["last_queue_status_change"]["delta"]["hours"], 6)
+
+    def test_queue_timeline_fields_tail_explanation(self) -> None:
+        rule_set = QueueRuleSet.objects.create(repository=self.repo, version=3)
+        pr = self._make_pr(103)
+        window_count = 6
+        starts = [self.now - timedelta(hours=6 - idx) for idx in range(window_count)]
+        ends = [start + timedelta(hours=1) for start in starts]
+        cumulative = 0
+        for idx, (start, end) in enumerate(zip(starts, ends)):
+            duration = int((end - start).total_seconds())
+            cumulative += duration
+            PRQueueWindow.objects.create(
+                pull_request=pr,
+                rule_set=rule_set,
+                from_ts=start,
+                to_ts=end,
+                cycle_index=idx,
+                duration_seconds_closed=duration,
+                cumulative_seconds_closed=cumulative,
+                window_count=window_count,
+                first_on_queue_ts=starts[0],
+            )
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz:
+                    return self.now
+                return self.now.replace(tzinfo=None)
+
+        with patch("analyzer.services.queueboard_snapshot.datetime", FixedDateTime):
+            snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo, rule_set=rule_set)
+
+        entry = snapshot["prs"][pr.number]
+        self.assertTrue(entry["total_queue_time"]["explanation"].endswith("(last 5 of 6)"))
