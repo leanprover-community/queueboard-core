@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, List, Optional, Tuple
 
+from django.db import models
 from django.utils import timezone
 
 from core.models import Repository
@@ -543,3 +544,10 @@ def rebuild_queue_windows_for_ruleset(
     deleted, _ = qs.delete()
 
     return QueueWindowRebuildResult(created=created, updated=updated, deleted=deleted, status="rebuilt", reason=None)
+
+
+def queue_windows_need_rollup_backfill(*, pr: PullRequest, rule_set: QueueRuleSet) -> bool:
+    qs = PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)
+    if not qs.exists():
+        return False
+    return qs.filter(models.Q(window_count=0) | models.Q(first_on_queue_ts__isnull=True)).exists()

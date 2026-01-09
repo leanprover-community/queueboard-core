@@ -21,6 +21,7 @@ class TestCollectConvergenceTask(TestCase):
             timeline_backfill_done=False,
             commits_backfill_done=True,
             files_incomplete=True,
+            head_sha=None,
             state="open",
             gh_created_at=now,
             gh_updated_at=now,
@@ -40,6 +41,7 @@ class TestCollectConvergenceTask(TestCase):
             timeline_backfill_done=True,
             commits_backfill_done=False,
             engagement_synced_at=None,
+            head_sha="a" * 40,
             state="open",
             gh_created_at=now,
             gh_updated_at=now,
@@ -67,4 +69,5 @@ class TestCollectConvergenceTask(TestCase):
         self.assertEqual(snap.prs_missing_engagement, 2)
         self.assertEqual(snap.prs_engagement_incomplete, 1)
         self.assertEqual(snap.prs_missing_head_ci_state, 2)
+        self.assertEqual(snap.prs_missing_head_sha, 1)
         self.assertEqual(res["rows_created"], 1)

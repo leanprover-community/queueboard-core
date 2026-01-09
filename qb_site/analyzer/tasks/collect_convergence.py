@@ -68,6 +68,14 @@ def collect_analyzer_convergence_task() -> dict:
                 missing = prs_with_rev.annotate(has_win=Exists(rs_windows)).filter(has_win=False).count()
                 ci_gated_missing_windows += missing
 
+        missing_rollups = (
+            PRQueueWindow.objects.filter(pull_request__repository=repo)
+            .filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+            .values("pull_request_id")
+            .distinct()
+            .count()
+        )
+
         dep_missing = base_prs.filter(dependency_state__isnull=True).count()
         dep_stale = (
             base_prs.filter(dependency_state__isnull=False).filter(
@@ -85,6 +93,7 @@ def collect_analyzer_convergence_task() -> dict:
             windows_stale=windows_stale,
             ci_not_checked=ci_not_checked,
             ci_gated_missing_windows=ci_gated_missing_windows,
+            prs_missing_queue_window_rollups=missing_rollups,
             prs_missing_dependency_state=dep_missing,
             prs_stale_dependency_state=dep_stale,
         )
@@ -96,6 +105,7 @@ def collect_analyzer_convergence_task() -> dict:
                 "windows_stale": windows_stale,
                 "ci_not_checked": ci_not_checked,
                 "ci_gated_missing_windows": ci_gated_missing_windows,
+                "prs_missing_queue_window_rollups": missing_rollups,
                 "prs_missing_dependency_state": dep_missing,
                 "prs_stale_dependency_state": dep_stale,
             }

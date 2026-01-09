@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.utils import timezone
 
-from analyzer.models import AnalyzerConvergenceSnapshot, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.models import AnalyzerConvergenceSnapshot, PRQueueWindow, PRRevision, PRRevisionBuildState, QueueRuleSet
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from core.models import Repository
 from syncer.models import PullRequest
@@ -61,6 +61,15 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         )
         # PR missing timeline/commits backfill
         pr3 = self._mk_pr(3, timeline_done=False)
+        PRQueueWindow.objects.create(
+            pull_request=pr2,
+            rule_set=self.rule_set,
+            from_ts=pr2.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=0,
+            first_on_queue_ts=None,
+        )
 
         res = collect_analyzer_convergence_task.apply().get()
         snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
@@ -68,8 +77,9 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertEqual(snap.pr_no_revisions, 1)
         self.assertEqual(snap.windows_stale, 1)
         self.assertEqual(snap.ci_not_checked, 1)
-        # CI-gated windows missing (pr1 no revisions, pr2 has revisions but no windows)
-        self.assertGreaterEqual(snap.ci_gated_missing_windows, 1)
+        # CI-gated missing windows only counts PRs with revisions; pr2 has a window row.
+        self.assertEqual(snap.ci_gated_missing_windows, 0)
         self.assertEqual(snap.prs_missing_dependency_state, 2)
         self.assertEqual(snap.prs_stale_dependency_state, 0)
+        self.assertEqual(snap.prs_missing_queue_window_rollups, 1)
         self.assertEqual(res["rows_created"], 1)

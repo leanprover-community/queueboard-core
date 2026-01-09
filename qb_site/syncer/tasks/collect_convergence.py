@@ -34,6 +34,7 @@ def collect_syncer_convergence_task() -> dict:
             .count()
         )
         missing_head_ci = qs.filter(head_ci_state__isnull=True).count()
+        missing_head_sha = qs.filter(Q(head_sha__isnull=True) | Q(head_sha="")).count()
 
         SyncerConvergenceSnapshot.objects.create(
             repository=repo,
@@ -46,6 +47,7 @@ def collect_syncer_convergence_task() -> dict:
             prs_missing_engagement=engagement_missing,
             prs_engagement_incomplete=engagement_incomplete,
             prs_missing_head_ci_state=missing_head_ci,
+            prs_missing_head_sha=missing_head_sha,
         )
         rows += 1
         per_repo.append(
@@ -58,6 +60,7 @@ def collect_syncer_convergence_task() -> dict:
                 "prs_missing_engagement": engagement_missing,
                 "prs_engagement_incomplete": engagement_incomplete,
                 "prs_missing_head_ci_state": missing_head_ci,
+                "prs_missing_head_sha": missing_head_sha,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo}

@@ -151,3 +151,29 @@ class TestProcessPRTask(TestCase):
         self.assertEqual(qwin.get("status"), "rebuilt")
         self.assertEqual(res["ci_backfill"].get("status"), "skipped")
         self.assertEqual(res["ci_backfill"].get("planned"), 0)
+
+    def test_rebuilds_when_rollup_fields_missing(self) -> None:
+        pr = self._mk_pr(4)
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=0,
+            first_on_queue_ts=None,
+        )
+
+        class _StubRes:
+            strategy = "noop"
+            created = 0
+            deleted = 0
+
+        with patch("analyzer.tasks.process_pr.rebuild_pr_revisions", return_value=_StubRes()):
+            res = process_pr(pr, client=self._StubClient())
+
+        self.assertEqual(res["status"], "ok")
+        qwin = PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).order_by("-from_ts").first()
+        self.assertIsNotNone(qwin)
+        self.assertGreaterEqual(qwin.window_count, 1)
+        self.assertIsNotNone(qwin.first_on_queue_ts)
