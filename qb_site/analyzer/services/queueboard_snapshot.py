@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Dict, Iterable, List, Sequence
 
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
 from analyzer.services.queue_rules import QueueRules, rules_for_rule_set
@@ -72,10 +72,14 @@ def _latest_ci_head_sha(check_runs: Sequence[dict], status_contexts: Sequence[di
 def _head_sha_for_pr(
     *,
     pr_id: int,
+    pr_head_sha: str | None,
     revision_heads: dict[int, str],
     check_runs: Sequence[dict],
     status_contexts: Sequence[dict],
 ) -> str | None:
+    head_sha = pr_head_sha
+    if head_sha:
+        return head_sha
     head_sha = revision_heads.get(pr_id)
     if head_sha:
         return head_sha
@@ -203,6 +207,7 @@ def _required_contexts_status(
 def _ci_status_for_pr(
     *,
     pr_id: int,
+    pr_head_sha: str | None,
     rule_set: QueueRuleSet | None,
     check_runs: Sequence[dict],
     status_contexts: Sequence[dict],
@@ -220,6 +225,7 @@ def _ci_status_for_pr(
 
     head_sha = _head_sha_for_pr(
         pr_id=pr_id,
+        pr_head_sha=pr_head_sha,
         revision_heads=revision_heads,
         check_runs=check_runs,
         status_contexts=status_contexts,
@@ -289,7 +295,8 @@ class QueueboardSnapshotBuilder:
     def build(self, repository: Repository, rule_set: QueueRuleSet | None = None) -> dict:
         generated_at = datetime.now(timezone.utc)
         effective_rule_set = rule_set or self._default_rule_set(repository)
-        need_ci_data = self._requires_ci_data(effective_rule_set)
+        required_contexts = self._required_contexts(effective_rule_set)
+        need_ci_data = bool(required_contexts)
         pr_qs = (
             PullRequest.objects.filter(repository=repository, state=PullRequestState.OPEN)
             .select_related("author")
@@ -299,8 +306,20 @@ class QueueboardSnapshotBuilder:
         label_map = self._labels_for_repo(repository)
         dependency_map = self._dependencies_for_repo(repository)
         if need_ci_data:
-            ci_checks, ci_statuses = self._ci_inputs_for_repo(repository)
-            revision_heads = self._revision_heads_for_repo(repository)
+            head_sha_map = self._head_shas_for_repo(repository)
+            missing_head_pr_ids = {pr_id for pr_id, sha in head_sha_map.items() if not sha}
+            revision_heads = {}
+            if missing_head_pr_ids:
+                revision_heads = self._revision_heads_for_repo(repository, pr_ids=missing_head_pr_ids)
+            head_shas = {sha for sha in head_sha_map.values() if sha}
+            head_shas.update(revision_heads.values())
+            missing_head_pr_ids = {pr_id for pr_id in missing_head_pr_ids if pr_id not in revision_heads}
+            ci_checks, ci_statuses = self._ci_inputs_for_repo(
+                repository,
+                head_shas=head_shas,
+                required_contexts=required_contexts,
+                missing_head_pr_ids=missing_head_pr_ids,
+            )
         else:
             ci_checks = {}
             ci_statuses = {}
@@ -358,6 +377,7 @@ class QueueboardSnapshotBuilder:
 
             ci_status, ci_ok = _ci_status_for_pr(
                 pr_id=pr.id,
+                pr_head_sha=(pr.head_sha or "").strip() or None,
                 rule_set=effective_rule_set,
                 check_runs=ci_checks.get(pr.id, []),
                 status_contexts=ci_statuses.get(pr.id, []),
@@ -616,11 +636,45 @@ class QueueboardSnapshotBuilder:
                 acc[dep.pull_request_id].append(dep.depends_on_number)
         return acc
 
-    def _ci_inputs_for_repo(self, repository: Repository):
-        checks_qs = CheckRun.objects.filter(
+    def _ci_inputs_for_repo(
+        self,
+        repository: Repository,
+        *,
+        head_shas: set[str],
+        required_contexts: Sequence[str],
+        missing_head_pr_ids: set[int],
+    ):
+        base_checks_qs = CheckRun.objects.filter(
             pull_request__repository=repository,
             pull_request__state=PullRequestState.OPEN,
-        ).values(
+        )
+        base_statuses_qs = StatusContext.objects.filter(
+            pull_request__repository=repository,
+            pull_request__state=PullRequestState.OPEN,
+        )
+
+        check_map: Dict[int, List[dict]] = defaultdict(list)
+        status_map: Dict[int, List[dict]] = defaultdict(list)
+
+        name_filter = Q()
+        for ctx in required_contexts:
+            name_filter |= Q(name__istartswith=ctx)
+
+        checks_head_qs = base_checks_qs.none()
+        if head_shas:
+            checks_head_qs = base_checks_qs.filter(head_sha__in=head_shas)
+            if required_contexts:
+                checks_head_qs = checks_head_qs.filter(name_filter)
+        checks_missing_qs = base_checks_qs.filter(pull_request_id__in=missing_head_pr_ids) if missing_head_pr_ids else None
+
+        statuses_head_qs = base_statuses_qs.none()
+        if head_shas:
+            statuses_head_qs = base_statuses_qs.filter(head_sha__in=head_shas)
+            if required_contexts:
+                statuses_head_qs = statuses_head_qs.filter(name_filter)
+        statuses_missing_qs = base_statuses_qs.filter(pull_request_id__in=missing_head_pr_ids) if missing_head_pr_ids else None
+
+        for cr in checks_head_qs.values(
             "pull_request_id",
             "name",
             "status",
@@ -628,29 +682,41 @@ class QueueboardSnapshotBuilder:
             "head_sha",
             "gh_started_at",
             "gh_completed_at",
-        )
-        statuses_qs = StatusContext.objects.filter(
-            pull_request__repository=repository,
-            pull_request__state=PullRequestState.OPEN,
-        ).values(
+        ).iterator():
+            check_map[cr["pull_request_id"]].append(cr)
+        if checks_missing_qs is not None:
+            for cr in checks_missing_qs.values(
+                "pull_request_id",
+                "name",
+                "status",
+                "conclusion",
+                "head_sha",
+                "gh_started_at",
+                "gh_completed_at",
+            ).iterator():
+                check_map[cr["pull_request_id"]].append(cr)
+
+        for sc in statuses_head_qs.values(
             "pull_request_id",
             "name",
             "state",
             "head_sha",
             "gh_created_at",
-        )
-
-        check_map: Dict[int, List[dict]] = defaultdict(list)
-        for cr in checks_qs.iterator():
-            check_map[cr["pull_request_id"]].append(cr)
-
-        status_map: Dict[int, List[dict]] = defaultdict(list)
-        for sc in statuses_qs.iterator():
+        ).iterator():
             status_map[sc["pull_request_id"]].append(sc)
+        if statuses_missing_qs is not None:
+            for sc in statuses_missing_qs.values(
+                "pull_request_id",
+                "name",
+                "state",
+                "head_sha",
+                "gh_created_at",
+            ).iterator():
+                status_map[sc["pull_request_id"]].append(sc)
 
         return check_map, status_map
 
-    def _revision_heads_for_repo(self, repository: Repository) -> Dict[int, str]:
+    def _revision_heads_for_repo(self, repository: Repository, *, pr_ids: set[int] | None = None) -> Dict[int, str]:
         acc: Dict[int, str] = {}
         qs = PRRevision.objects.filter(
             pull_request__repository=repository,
@@ -661,6 +727,8 @@ class QueueboardSnapshotBuilder:
             "-seq",
             "-id",
         )
+        if pr_ids:
+            qs = qs.filter(pull_request_id__in=pr_ids)
         for rev in qs.iterator():
             if rev.pull_request_id in acc:
                 continue
@@ -668,11 +736,18 @@ class QueueboardSnapshotBuilder:
                 acc[rev.pull_request_id] = rev.head_sha
         return acc
 
-    def _requires_ci_data(self, rule_set: QueueRuleSet | None) -> bool:
+    def _required_contexts(self, rule_set: QueueRuleSet | None) -> list[str]:
         if not rule_set or not rule_set.require_ci_success:
-            return False
+            return []
         required = rule_set.required_ci_contexts or []
-        return any(isinstance(ctx, str) and ctx.strip() for ctx in required)
+        return [ctx.strip() for ctx in required if isinstance(ctx, str) and ctx.strip()]
+
+    def _head_shas_for_repo(self, repository: Repository) -> Dict[int, str]:
+        qs = PullRequest.objects.filter(
+            repository=repository,
+            state=PullRequestState.OPEN,
+        ).values_list("id", "head_sha")
+        return {pr_id: (head_sha or "").strip() for pr_id, head_sha in qs.iterator()}
 
     def _build_pr_entry(
         self,
