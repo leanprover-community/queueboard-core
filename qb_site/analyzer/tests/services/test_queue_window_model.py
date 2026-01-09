@@ -91,3 +91,35 @@ class TestPRQueueWindowModel(TestCase):
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 6))
         self.assertEqual(windows[0].to_ts, _dt(2024, 9, 12))
         self.assertEqual(windows[0].cycle_index, 0)
+
+    def test_rebuild_persists_open_ended_queue_window(self) -> None:
+        pr = self._mk_pr(2)
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha1",
+            from_ts=_dt(2024, 9, 1),
+            to_ts=None,
+            seq=0,
+        )
+        # Blocked from Sep 1–6, then unblocked and still on queue at as_of.
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=_dt(2024, 9, 1),
+            label_name="blocked-by-other-PR",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.UNLABELED,
+            occurred_at=_dt(2024, 9, 6),
+            label_name="blocked-by-other-PR",
+        )
+
+        res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=self.rules, as_of=_dt(2024, 9, 20))
+        self.assertEqual(res.deleted, 0)
+
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].from_ts, _dt(2024, 9, 6))
+        self.assertIsNone(windows[0].to_ts)
+        self.assertEqual(windows[0].cycle_index, 0)

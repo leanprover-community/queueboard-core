@@ -554,7 +554,9 @@ class QueueboardSnapshotBuilder:
         total_seconds = 0
         explanation_parts: list[str] = []
         for start, end in windows:
-            end_clamped = end if end <= generated_at else generated_at
+            end_clamped = end or generated_at
+            if end_clamped > generated_at:
+                end_clamped = generated_at
             if start >= end_clamped:
                 continue
             total_seconds += (end_clamped - start).total_seconds()
@@ -571,8 +573,12 @@ class QueueboardSnapshotBuilder:
         last_change = None
         if windows:
             last_start, last_end = windows[-1]
-            on_queue = last_start <= generated_at < last_end
-            change_time = last_start if on_queue else last_end
+            if last_end is None:
+                on_queue = last_start <= generated_at
+                change_time = last_start
+            else:
+                on_queue = last_start <= generated_at < last_end
+                change_time = last_start if on_queue else last_end
             delta_seconds = (generated_at - change_time).total_seconds()
             last_change = {
                 "status": data_status,
