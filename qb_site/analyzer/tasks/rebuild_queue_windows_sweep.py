@@ -24,6 +24,8 @@ def rebuild_queue_windows_sweep_task(
     total_prs_skipped_up_to_date = 0
     total_prs_skipped_no_revisions = 0
     total_rulesets_skipped_out_of_bounds = 0
+    total_prs_stale_ruleset = 0
+    total_prs_rebuilt_stale_ruleset = 0
     processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
 
@@ -52,6 +54,8 @@ def rebuild_queue_windows_sweep_task(
         repo_prs_skipped_up_to_date: list[int] = []
         repo_prs_skipped_no_revisions: list[int] = []
         repo_rulesets_skipped_out_of_bounds: list[int] = []
+        repo_prs_stale_ruleset: list[int] = []
+        repo_prs_rebuilt_stale_ruleset: list[int] = []
         repo_limit_hit = False
 
         rulesets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
@@ -84,6 +88,10 @@ def rebuild_queue_windows_sweep_task(
                 if queue_windows_need_rollup_backfill(pr=pr, rule_set=rs):
                     stale_ruleset = True
                     break
+            if stale_ruleset:
+                pr_num = int(pr.number)
+                if pr_num not in repo_prs_stale_ruleset:
+                    repo_prs_stale_ruleset.append(pr_num)
             if (
                 state.windows_built_revision_version is not None
                 and state.windows_built_revision_version == state.revision_version
@@ -117,6 +125,10 @@ def rebuild_queue_windows_sweep_task(
                 if res.created or res.updated or res.deleted:
                     rebuilt_any = True
             if rebuilt_any:
+                if stale_ruleset:
+                    pr_num = int(pr.number)
+                    if pr_num not in repo_prs_rebuilt_stale_ruleset:
+                        repo_prs_rebuilt_stale_ruleset.append(pr_num)
                 state.windows_built_revision_version = state.revision_version
                 state.windows_built_at = now_ts
                 state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
@@ -129,6 +141,8 @@ def rebuild_queue_windows_sweep_task(
         total_prs_skipped_up_to_date += len(repo_prs_skipped_up_to_date)
         total_prs_skipped_no_revisions += len(repo_prs_skipped_no_revisions)
         total_rulesets_skipped_out_of_bounds += len(repo_rulesets_skipped_out_of_bounds)
+        total_prs_stale_ruleset += len(repo_prs_stale_ruleset)
+        total_prs_rebuilt_stale_ruleset += len(repo_prs_rebuilt_stale_ruleset)
         per_repo.append(
             {
                 "repo": f"{repo.owner}/{repo.name}",
@@ -137,6 +151,8 @@ def rebuild_queue_windows_sweep_task(
                 "prs_skipped_up_to_date": repo_prs_skipped_up_to_date,
                 "prs_skipped_no_revisions": repo_prs_skipped_no_revisions,
                 "rulesets_skipped_out_of_bounds": repo_rulesets_skipped_out_of_bounds,
+                "prs_stale_ruleset": repo_prs_stale_ruleset,
+                "prs_rebuilt_stale_ruleset": repo_prs_rebuilt_stale_ruleset,
                 "limit_hit": repo_limit_hit,
             }
         )
@@ -149,6 +165,8 @@ def rebuild_queue_windows_sweep_task(
         "prs_skipped_up_to_date": total_prs_skipped_up_to_date,
         "prs_skipped_no_revisions": total_prs_skipped_no_revisions,
         "rulesets_skipped_out_of_bounds": total_rulesets_skipped_out_of_bounds,
+        "prs_stale_ruleset": total_prs_stale_ruleset,
+        "prs_rebuilt_stale_ruleset": total_prs_rebuilt_stale_ruleset,
         "only_complete_backfill": bool(only_complete_backfill),
         "per_repo": per_repo,
     }
