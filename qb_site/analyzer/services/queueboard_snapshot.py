@@ -300,7 +300,7 @@ class QueueboardSnapshotBuilder:
         pr_qs = (
             PullRequest.objects.filter(repository=repository, state=PullRequestState.OPEN)
             .select_related("author")
-            .order_by("number")
+            .order_by("-gh_updated_at", "-number")
         )
 
         label_map = self._labels_for_repo(repository)
