@@ -54,8 +54,8 @@ def read_json_files() -> JSONInputData:
                     file=sys.stderr,
                 )
             all_open_prs.extend(open_prs)
-    # Ensure deterministic ordering regardless of API page order.
-    all_open_prs.sort(key=lambda pr: (pr.updatedAt, pr.number), reverse=True)
+    # Ensure deterministic ordering regardless of API page order (oldest updated first).
+    all_open_prs.sort(key=lambda pr: (pr.updatedAt, pr.number))
     with open(path.join("processed_data", "open_pr_data.json"), "r") as f:
         aggregate_info = parse_aggregate_file(json.load(f))
     return JSONInputData(aggregate_info, all_open_prs)
