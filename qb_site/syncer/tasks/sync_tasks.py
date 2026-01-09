@@ -151,6 +151,8 @@ def sync_pr_task(  # type: ignore[no-redef]
     needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
     # Ensure we fill head rollup state even if updatedAt hasn’t changed.
     needs_head_ci = bool(pr_db and pr_db.head_ci_state is None)
+    # Ensure we fill head SHA even if updatedAt hasn’t changed.
+    needs_head_sha = bool(pr_db and not (pr_db.head_sha or "").strip())
     last_synced_cutoff = None
     if pr_db and pr_db.last_synced_at:
         eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 2))
@@ -166,6 +168,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         and not needs_state_refresh
         and not needs_engagement
         and not needs_head_ci
+        and not needs_head_sha
     ):
         # PR unchanged, but we may still spend backfill budget on older timeline pages.
         pages_used = 0

@@ -289,6 +289,7 @@ class QueueboardSnapshotBuilder:
     def build(self, repository: Repository, rule_set: QueueRuleSet | None = None) -> dict:
         generated_at = datetime.now(timezone.utc)
         effective_rule_set = rule_set or self._default_rule_set(repository)
+        need_ci_data = self._requires_ci_data(effective_rule_set)
         pr_qs = (
             PullRequest.objects.filter(repository=repository, state=PullRequestState.OPEN)
             .select_related("author")
@@ -297,8 +298,13 @@ class QueueboardSnapshotBuilder:
 
         label_map = self._labels_for_repo(repository)
         dependency_map = self._dependencies_for_repo(repository)
-        ci_checks, ci_statuses = self._ci_inputs_for_repo(repository)
-        revision_heads = self._revision_heads_for_repo(repository)
+        if need_ci_data:
+            ci_checks, ci_statuses = self._ci_inputs_for_repo(repository)
+            revision_heads = self._revision_heads_for_repo(repository)
+        else:
+            ci_checks = {}
+            ci_statuses = {}
+            revision_heads = {}
         queue_windows = self._queue_windows_for_repo(repository, rule_set=effective_rule_set)
 
         prs: Dict[int, dict] = {}
@@ -519,7 +525,10 @@ class QueueboardSnapshotBuilder:
         return obj
 
     def _labels_for_repo(self, repository: Repository) -> Dict[int, List[dict]]:
-        qs: QuerySet[PRLabel] = PRLabel.objects.filter(pull_request__repository=repository).select_related("label_def")
+        qs: QuerySet[PRLabel] = PRLabel.objects.filter(
+            pull_request__repository=repository,
+            pull_request__state=PullRequestState.OPEN,
+        ).select_related("label_def")
         acc: Dict[int, List[dict]] = defaultdict(list)
         for pl in qs.iterator():
             label = pl.label_def
@@ -527,7 +536,7 @@ class QueueboardSnapshotBuilder:
         return acc
 
     def _queue_windows_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, List[tuple]]:
-        qs = PRQueueWindow.objects.filter(pull_request__repository=repository)
+        qs = PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
         if rule_set:
             qs = qs.filter(rule_set=rule_set)
         acc: Dict[int, List[tuple]] = defaultdict(list)
@@ -597,7 +606,10 @@ class QueueboardSnapshotBuilder:
         return QueueRuleSet.objects.filter(repository=repository, is_active=True).order_by("-version", "-id").first()
 
     def _dependencies_for_repo(self, repository: Repository) -> Dict[int, List[int]]:
-        qs: QuerySet[PRDependency] = PRDependency.objects.filter(pull_request__repository=repository)
+        qs: QuerySet[PRDependency] = PRDependency.objects.filter(
+            pull_request__repository=repository,
+            pull_request__state=PullRequestState.OPEN,
+        )
         acc: Dict[int, List[int]] = defaultdict(list)
         for dep in qs.iterator():
             if dep.depends_on_repository_id == repository.id:
@@ -605,7 +617,10 @@ class QueueboardSnapshotBuilder:
         return acc
 
     def _ci_inputs_for_repo(self, repository: Repository):
-        checks_qs = CheckRun.objects.filter(pull_request__repository=repository).values(
+        checks_qs = CheckRun.objects.filter(
+            pull_request__repository=repository,
+            pull_request__state=PullRequestState.OPEN,
+        ).values(
             "pull_request_id",
             "name",
             "status",
@@ -614,7 +629,10 @@ class QueueboardSnapshotBuilder:
             "gh_started_at",
             "gh_completed_at",
         )
-        statuses_qs = StatusContext.objects.filter(pull_request__repository=repository).values(
+        statuses_qs = StatusContext.objects.filter(
+            pull_request__repository=repository,
+            pull_request__state=PullRequestState.OPEN,
+        ).values(
             "pull_request_id",
             "name",
             "state",
@@ -634,7 +652,10 @@ class QueueboardSnapshotBuilder:
 
     def _revision_heads_for_repo(self, repository: Repository) -> Dict[int, str]:
         acc: Dict[int, str] = {}
-        qs = PRRevision.objects.filter(pull_request__repository=repository).order_by(
+        qs = PRRevision.objects.filter(
+            pull_request__repository=repository,
+            pull_request__state=PullRequestState.OPEN,
+        ).order_by(
             "pull_request_id",
             "-from_ts",
             "-seq",
@@ -646,6 +667,12 @@ class QueueboardSnapshotBuilder:
             if rev.head_sha:
                 acc[rev.pull_request_id] = rev.head_sha
         return acc
+
+    def _requires_ci_data(self, rule_set: QueueRuleSet | None) -> bool:
+        if not rule_set or not rule_set.require_ci_success:
+            return False
+        required = rule_set.required_ci_contexts or []
+        return any(isinstance(ctx, str) and ctx.strip() for ctx in required)
 
     def _build_pr_entry(
         self,
