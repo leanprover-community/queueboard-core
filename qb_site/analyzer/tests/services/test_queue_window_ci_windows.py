@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet, PRQueueWindow, PRRevision
-from syncer.models import PullRequest, CheckRun, PRTimelineEvent, PRTimelineEventType
+from syncer.models import PullRequest, CheckRun, PRTimelineEvent, PRTimelineEventType, StatusContext
 from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
 from analyzer.services.revisions import rebuild_pr_revisions
 
@@ -112,6 +112,55 @@ class TestQueueWindowCIWindows(TestCase):
         self.assertEqual(len(windows), 1)
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 4))
         self.assertEqual(windows[0].to_ts, _dt(2024, 9, 8))
+
+    def test_ci_prefix_matches_check_run_name(self) -> None:
+        pr = self._mk_pr(10)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+
+        # Required context is "lint", but the actual check run is suffixed.
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_OK_FORK",
+            head_sha="sha1",
+            name="lint (fork)",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 3),
+            gh_completed_at=_dt(2024, 9, 3),
+        )
+
+        res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=self.rules, as_of=_dt(2024, 9, 6))
+        self.assertEqual(res.deleted, 0)
+
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].from_ts, _dt(2024, 9, 3))
+        self.assertEqual(windows[0].to_ts, _dt(2024, 9, 6))
+
+    def test_ci_prefix_matches_status_context_name(self) -> None:
+        pr = self._mk_pr(11)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_OK_FORK",
+            head_sha="sha1",
+            name="lint (fork)",
+            state="SUCCESS",
+            description="ok",
+            target_url=None,
+            gh_created_at=_dt(2024, 9, 4),
+        )
+
+        res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=self.rules, as_of=_dt(2024, 9, 6))
+        self.assertEqual(res.deleted, 0)
+
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].from_ts, _dt(2024, 9, 4))
+        self.assertEqual(windows[0].to_ts, _dt(2024, 9, 6))
 
     def test_ci_windows_across_force_push_and_revisions(self) -> None:
         pr = self._mk_pr(2)
