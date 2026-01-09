@@ -90,3 +90,45 @@ class TestQueueWindowsCI(TestCase):
         # At Sep 7, the SUCCESS snapshot is visible, so CI is ok and the PR is on the queue.
         later = _dt(2024, 9, 7)
         self.assertTrue(is_on_queue_at(pr, at=later))
+
+    def test_required_contexts_require_all_matching_jobs(self) -> None:
+        pr = self._mk_pr(2)
+        at = _dt(2024, 9, 6)
+
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC3",
+            rest_id=None,
+            head_sha="h1",
+            name="lint / linux",
+            state="SUCCESS",
+            target_url=None,
+            description=None,
+            gh_created_at=_dt(2024, 9, 4),
+        )
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC4",
+            rest_id=None,
+            head_sha="h1",
+            name="lint / mac",
+            state="FAILURE",
+            target_url=None,
+            description=None,
+            gh_created_at=_dt(2024, 9, 5),
+        )
+        self.assertFalse(is_on_queue_at(pr, at=at))
+
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC5",
+            rest_id=None,
+            head_sha="h1",
+            name="lint / mac",
+            state="SUCCESS",
+            target_url=None,
+            description=None,
+            gh_created_at=_dt(2024, 9, 7),
+        )
+        later = _dt(2024, 9, 8)
+        self.assertTrue(is_on_queue_at(pr, at=later))

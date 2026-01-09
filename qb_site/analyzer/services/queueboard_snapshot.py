@@ -122,50 +122,68 @@ def _matching_status_contexts(
     return matches
 
 
+def _check_run_status(cr: dict) -> CIStatus:
+    status_raw = cr.get("status")
+    conclusion_raw = cr.get("conclusion")
+    status = str(status_raw or "").upper()
+    conclusion = str(conclusion_raw or "").upper() if conclusion_raw is not None else None
+    if status in {"IN_PROGRESS", "QUEUED", "PENDING"}:
+        return CIStatus.Running
+    if conclusion in {CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED}:
+        return CIStatus.Pass
+    if conclusion in {CheckRunConclusion.FAILURE, CheckRunConclusion.CANCELLED, CheckRunConclusion.TIMED_OUT}:
+        return CIStatus.Fail
+    if conclusion is None and status == CheckRunStatus.COMPLETED:
+        return CIStatus.Fail
+    return CIStatus.Running
+
+
+def _status_context_status(sc: dict) -> CIStatus:
+    state = sc.get("state")
+    if state == StatusContextState.SUCCESS:
+        return CIStatus.Pass
+    if state == StatusContextState.PENDING:
+        return CIStatus.Running
+    if state in (StatusContextState.FAILURE, StatusContextState.ERROR):
+        return CIStatus.Fail
+    return CIStatus.Running
+
+
 def _context_status_from_matches(check_runs: list[dict], status_contexts: list[dict]) -> CIStatus:
-    has_success = False
-    has_fail = False
-    has_running = False
+    latest: dict[str, tuple[datetime, CIStatus]] = {}
 
     for cr in check_runs:
-        status_raw = cr.get("status")
-        conclusion_raw = cr.get("conclusion")
-        status = str(status_raw or "").upper()
-        conclusion = str(conclusion_raw or "").upper() if conclusion_raw is not None else None
-        if status in {"IN_PROGRESS", "QUEUED", "PENDING"}:
-            has_running = True
+        name = cr.get("name")
+        ts = cr.get("gh_completed_at") or cr.get("gh_started_at")
+        if not name or not ts:
             continue
-        if conclusion in {CheckRunConclusion.SUCCESS, CheckRunConclusion.NEUTRAL, CheckRunConclusion.SKIPPED}:
-            has_success = True
-            continue
-        if conclusion in {CheckRunConclusion.FAILURE, CheckRunConclusion.CANCELLED, CheckRunConclusion.TIMED_OUT}:
-            has_fail = True
-            continue
-        if conclusion is None and status == CheckRunStatus.COMPLETED:
-            has_fail = True
-            continue
-        has_running = True
+        key = name.lower()
+        status = _check_run_status(cr)
+        current = latest.get(key)
+        if current is None or ts > current[0]:
+            latest[key] = (ts, status)
 
     for sc in status_contexts:
-        state = sc.get("state")
-        if state == StatusContextState.SUCCESS:
-            has_success = True
+        name = sc.get("name")
+        ts = sc.get("gh_created_at")
+        if not name or not ts:
             continue
-        if state == StatusContextState.PENDING:
-            has_running = True
-            continue
-        if state in (StatusContextState.FAILURE, StatusContextState.ERROR):
-            has_fail = True
-            continue
-        has_running = True
+        key = name.lower()
+        status = _status_context_status(sc)
+        current = latest.get(key)
+        if current is None or ts > current[0]:
+            latest[key] = (ts, status)
 
-    if has_success:
-        return CIStatus.Pass
-    if has_fail:
+    if not latest:
+        return CIStatus.Missing
+
+    any_fail = any(status == CIStatus.Fail for _, status in latest.values())
+    if any_fail:
         return CIStatus.Fail
-    if has_running:
+    any_running = any(status == CIStatus.Running for _, status in latest.values())
+    if any_running:
         return CIStatus.Running
-    return CIStatus.Missing
+    return CIStatus.Pass
 
 
 def _required_contexts_status(

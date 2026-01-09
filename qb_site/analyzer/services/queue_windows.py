@@ -38,8 +38,46 @@ def _normalize_label(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
-def _context_name_matches(name: str | None, required_prefix: str) -> bool:
-    return (name or "").lower().startswith(required_prefix.lower())
+def _merge_latest_ci_status(
+    latest: dict[str, tuple[datetime, bool]],
+    *,
+    name: str | None,
+    ts: datetime | None,
+    ok: bool,
+) -> None:
+    if not name or ts is None:
+        return
+    key = name.strip().lower()
+    if not key:
+        return
+    current = latest.get(key)
+    if current is None or ts > current[0]:
+        latest[key] = (ts, ok)
+
+
+def _latest_ci_statuses_for_prefix(
+    pr: PullRequest,
+    *,
+    required_prefix: str,
+    at: datetime,
+    head_sha: str | None,
+) -> dict[str, bool]:
+    latest: dict[str, tuple[datetime, bool]] = {}
+
+    cr_qs = CheckRun.objects.filter(pull_request=pr, name__istartswith=required_prefix, gh_completed_at__lte=at)
+    if head_sha:
+        cr_qs = cr_qs.filter(head_sha=head_sha)
+    for cr in cr_qs:
+        ts = cr.gh_completed_at or cr.gh_started_at
+        _merge_latest_ci_status(latest, name=cr.name, ts=ts, ok=_check_run_ok(cr))
+
+    sc_qs = StatusContext.objects.filter(pull_request=pr, name__istartswith=required_prefix, gh_created_at__lte=at)
+    if head_sha:
+        sc_qs = sc_qs.filter(head_sha=head_sha)
+    for sc in sc_qs:
+        _merge_latest_ci_status(latest, name=sc.name, ts=sc.gh_created_at, ok=_status_context_ok(sc))
+
+    return {name: status for name, (_, status) in latest.items()}
 
 
 @dataclass
@@ -185,28 +223,12 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
     ok = True
     for ctx_name in required:
         ctx_norm = _normalize_label(ctx_name)
-        # Prefer CheckRun where names match the required prefix (case-insensitive).
-        cr_qs = CheckRun.objects.filter(pull_request=pr, name__istartswith=ctx_norm, gh_completed_at__lte=at)
-        if head_sha:
-            cr_qs = cr_qs.filter(head_sha=head_sha)
-        cr = cr_qs.order_by("-gh_completed_at", "-gh_started_at", "-id").first()
-        if cr is not None:
-            if not _check_run_ok(cr) or not _context_name_matches(cr.name, ctx_norm):
-                return False
-            continue
-
-        sc_qs = StatusContext.objects.filter(pull_request=pr, name__istartswith=ctx_norm, gh_created_at__lte=at)
-        if head_sha:
-            sc_qs = sc_qs.filter(head_sha=head_sha)
-        sc = sc_qs.order_by("-gh_created_at", "-id").first()
-        if sc is not None:
-            if not _status_context_ok(sc) or not _context_name_matches(sc.name, ctx_norm):
-                return False
-            continue
-
-        # No snapshot at all for this required context: treat as not ok.
-        ok = False
-        break
+        latest_statuses = _latest_ci_statuses_for_prefix(pr, required_prefix=ctx_norm, at=at, head_sha=head_sha)
+        if not latest_statuses:
+            ok = False
+            break
+        if not all(latest_statuses.values()):
+            return False
 
     return ok
 

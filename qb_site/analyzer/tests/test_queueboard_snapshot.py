@@ -141,6 +141,22 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertNotIn(pr.number, snapshot_ci["lists"]["dashboards"]["Queue"])
         self.assertIn(pr.number, snapshot_no_ci["lists"]["dashboards"]["Queue"])
 
+    def test_required_contexts_require_all_matching_jobs(self):
+        pr = self._make_pr(61, labels=("t-analysis",))
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_ci_success=True,
+            required_ci_contexts=["lint"],
+        )
+
+        self._add_ci(pr, name="lint / linux", conclusion=CheckRunConclusion.SUCCESS)
+        self._add_ci(pr, name="lint / mac", conclusion=CheckRunConclusion.FAILURE)
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+
+        self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "fail")
+
     def test_ci_requirement_disabled_when_no_required_contexts(self):
         pr = self._make_pr(65)
         rule_set = QueueRuleSet.objects.create(
