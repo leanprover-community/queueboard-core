@@ -37,6 +37,10 @@ def _normalize_label(name: str | None) -> str:
     return (name or "").strip().lower()
 
 
+def _context_name_matches(name: str | None, required_prefix: str) -> bool:
+    return (name or "").lower().startswith(required_prefix.lower())
+
+
 @dataclass
 class _State:
     labels: set[str]
@@ -180,22 +184,22 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
     ok = True
     for ctx_name in required:
         ctx_norm = _normalize_label(ctx_name)
-        # Prefer CheckRun where names match exactly (case-insensitive).
-        cr_qs = CheckRun.objects.filter(pull_request=pr, name__iexact=ctx_norm, gh_completed_at__lte=at)
+        # Prefer CheckRun where names match the required prefix (case-insensitive).
+        cr_qs = CheckRun.objects.filter(pull_request=pr, name__istartswith=ctx_norm, gh_completed_at__lte=at)
         if head_sha:
             cr_qs = cr_qs.filter(head_sha=head_sha)
         cr = cr_qs.order_by("-gh_completed_at", "-gh_started_at", "-id").first()
         if cr is not None:
-            if not _check_run_ok(cr):
+            if not _check_run_ok(cr) or not _context_name_matches(cr.name, ctx_norm):
                 return False
             continue
 
-        sc_qs = StatusContext.objects.filter(pull_request=pr, name__iexact=ctx_norm, gh_created_at__lte=at)
+        sc_qs = StatusContext.objects.filter(pull_request=pr, name__istartswith=ctx_norm, gh_created_at__lte=at)
         if head_sha:
             sc_qs = sc_qs.filter(head_sha=head_sha)
         sc = sc_qs.order_by("-gh_created_at", "-id").first()
         if sc is not None:
-            if not _status_context_ok(sc):
+            if not _status_context_ok(sc) or not _context_name_matches(sc.name, ctx_norm):
                 return False
             continue
 
@@ -289,7 +293,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             # CheckRun completions
             for ts in CheckRun.objects.filter(
                 pull_request=pr,
-                name__iexact=ctx_norm,
+                name__istartswith=ctx_norm,
                 gh_completed_at__isnull=False,
                 gh_completed_at__gte=t0,
                 gh_completed_at__lte=as_of,
@@ -298,7 +302,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             # StatusContext creation
             for ts in StatusContext.objects.filter(
                 pull_request=pr,
-                name__iexact=ctx_norm,
+                name__istartswith=ctx_norm,
                 gh_created_at__gte=t0,
                 gh_created_at__lte=as_of,
             ).values_list("gh_created_at", flat=True):
