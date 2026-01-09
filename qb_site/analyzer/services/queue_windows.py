@@ -12,7 +12,7 @@ from analyzer.services.queue_rules import QueueRules, load_rules_for_repo, rules
 from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType, StatusContext
 
 
-QueueWindow = Tuple[datetime, datetime]
+QueueWindow = Tuple[datetime, Optional[datetime]]
 
 
 @dataclass
@@ -251,13 +251,17 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 current_start = ts
             current_on = new_on
 
-        end = as_of
+        end = None
         closed_ts = pr.closed_at or pr.merged_at
-        if closed_ts is not None and closed_ts < end:
+        if closed_ts is not None and closed_ts <= as_of:
             end = closed_ts
 
-        if current_on and current_start is not None and current_start < end:
-            windows.append((current_start, end))
+        if current_on and current_start is not None:
+            if end is None:
+                if current_start < as_of:
+                    windows.append((current_start, None))
+            elif current_start < end:
+                windows.append((current_start, end))
 
         return windows
 
@@ -366,13 +370,15 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
 
         current_on = new_on
 
-    # Close any trailing open window at ``as_of``, respecting closure time if
-    # the PR was closed/merged earlier.
+    # Close any trailing open window; use None for open-ended windows.
     if current_on and current_start is not None:
-        end = as_of
-        if closed_ts is not None and closed_ts < end:
+        end = None
+        if closed_ts is not None and closed_ts <= as_of:
             end = closed_ts
-        if current_start < end:
+        if end is None:
+            if current_start < as_of:
+                windows.append((current_start, None))
+        elif current_start < end:
             windows.append((current_start, end))
 
     return windows
@@ -391,7 +397,7 @@ def total_queue_time_for_pr(pr: PullRequest, *, as_of: Optional[datetime] = None
     if as_of is None:
         as_of = timezone.now()
     windows = queue_windows_for_pr(pr, as_of=as_of)
-    total_seconds = sum((end - start).total_seconds() for start, end in windows)
+    total_seconds = sum(((end or as_of) - start).total_seconds() for start, end in windows)
     return QueueSummary(pr=pr, as_of=as_of, total_seconds=total_seconds)
 
 

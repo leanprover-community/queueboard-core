@@ -455,3 +455,42 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(entry["last_queue_status_change"]["time"], window2_start.isoformat())
         self.assertEqual(entry["last_queue_status_change"]["current_status"], "OnQueue")
         self.assertEqual(entry["last_queue_status_change"]["delta"]["hours"], 12)
+
+    def test_snapshot_queue_fields_with_open_ended_window(self) -> None:
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+        )
+        pr = self._make_pr(102)
+        window_start = self.now - timedelta(hours=6)
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rule_set,
+            from_ts=window_start,
+            to_ts=None,
+            cycle_index=0,
+        )
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz:
+                    return self.now
+                return self.now.replace(tzinfo=None)
+
+        with patch("analyzer.services.queueboard_snapshot.datetime", FixedDateTime):
+            snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo, rule_set=rule_set)
+
+        entry = snapshot["prs"][pr.number]
+        self.assertEqual(entry["first_on_queue"]["status"], "valid")
+        self.assertEqual(entry["first_on_queue"]["date"], window_start.isoformat())
+        self.assertEqual(entry["total_queue_time"]["status"], "valid")
+        self.assertEqual(entry["total_queue_time"]["value_td"], 6 * 60 * 60)
+        self.assertEqual(entry["last_queue_status_change"]["time"], window_start.isoformat())
+        self.assertEqual(entry["last_queue_status_change"]["current_status"], "OnQueue")
+        self.assertEqual(entry["last_queue_status_change"]["delta"]["hours"], 6)

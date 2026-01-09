@@ -76,7 +76,7 @@ class TestQueueWindows(TestCase):
         self.assertEqual(len(windows), 1)
         start, end = windows[0]
         self.assertEqual(start, _dt(2024, 9, 6))
-        self.assertEqual(end, as_of)
+        self.assertIsNone(end)
 
         summary = total_queue_time_for_pr(pr, as_of=as_of)
         # Expect 4 full days on the queue: Sep 6–10.

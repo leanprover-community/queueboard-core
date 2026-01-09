@@ -137,7 +137,7 @@ class TestQueueWindowCIWindows(TestCase):
         windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
         self.assertEqual(len(windows), 1)
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 3))
-        self.assertEqual(windows[0].to_ts, _dt(2024, 9, 6))
+        self.assertIsNone(windows[0].to_ts)
 
     def test_ci_prefix_matches_status_context_name(self) -> None:
         pr = self._mk_pr(11)
@@ -160,7 +160,7 @@ class TestQueueWindowCIWindows(TestCase):
         windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
         self.assertEqual(len(windows), 1)
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 4))
-        self.assertEqual(windows[0].to_ts, _dt(2024, 9, 6))
+        self.assertIsNone(windows[0].to_ts)
 
     def test_ci_windows_across_force_push_and_revisions(self) -> None:
         pr = self._mk_pr(2)
@@ -201,12 +201,12 @@ class TestQueueWindowCIWindows(TestCase):
         windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
         # Expect:
         # - First window from Sep 3 (sha1 CI success) until Sep 6 (revision boundary).
-        # - Second window from Sep 9 (sha2 CI success) until Sep 12 (as_of).
+        # - Second window from Sep 9 (sha2 CI success) and still open at as_of.
         self.assertEqual(len(windows), 2)
         self.assertEqual(windows[0].from_ts, _dt(2024, 9, 3))
         self.assertEqual(windows[0].to_ts, _dt(2024, 9, 6))
         self.assertEqual(windows[1].from_ts, _dt(2024, 9, 9))
-        self.assertEqual(windows[1].to_ts, _dt(2024, 9, 12))
+        self.assertIsNone(windows[1].to_ts)
 
     def test_missing_or_pending_ci_yields_no_windows(self) -> None:
         pr = self._mk_pr(3)

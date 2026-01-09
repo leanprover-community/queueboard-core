@@ -14,7 +14,7 @@ class PRQueueWindow(models.Model):
     rule_set = models.ForeignKey("analyzer.QueueRuleSet", on_delete=models.CASCADE, related_name="queue_windows")
 
     from_ts = models.DateTimeField()
-    to_ts = models.DateTimeField()
+    to_ts = models.DateTimeField(null=True, blank=True)
 
     # Monotone counter within (pr, rule_set), grouping consecutive queue segments.
     cycle_index = models.PositiveIntegerField()
