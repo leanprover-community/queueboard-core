@@ -354,6 +354,7 @@ class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "windows_stale",
         "ci_not_checked",
         "ci_gated_missing_windows",
+        "prs_missing_queue_window_rollups",
         "prs_missing_dependency_state",
         "prs_stale_dependency_state",
     )
@@ -368,6 +369,7 @@ class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "windows_stale",
         "ci_not_checked",
         "ci_gated_missing_windows",
+        "prs_missing_queue_window_rollups",
         "prs_missing_dependency_state",
         "prs_stale_dependency_state",
         "created_at",
