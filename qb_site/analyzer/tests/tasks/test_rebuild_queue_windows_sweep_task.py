@@ -81,3 +81,30 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertEqual(res["windows_rebuilt"], 0)
         # Ensure no new windows were created
         self.assertEqual(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).count(), 0)
+
+    def test_rebuilds_when_rollup_fields_missing(self) -> None:
+        pr = self._mk_pr(3)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=timezone.now(),
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=0,
+            first_on_queue_ts=None,
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["windows_rebuilt"], 1)
+        qwin = PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).order_by("-from_ts").first()
+        self.assertIsNotNone(qwin)
+        self.assertGreaterEqual(qwin.window_count, 1)
+        self.assertIsNotNone(qwin.first_on_queue_ts)

@@ -20,6 +20,7 @@ class SyncerConvergenceSnapshot(models.Model):
     prs_missing_engagement = models.IntegerField(default=0)
     prs_engagement_incomplete = models.IntegerField(default=0)
     prs_missing_head_ci_state = models.IntegerField(default=0)
+    prs_missing_head_sha = models.IntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -5,7 +5,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from analyzer.models import QueueRuleSet, PRRevisionBuildState, PRRevision
-from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
+from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_ruleset
 from core.models import Repository
 from syncer.models import PullRequest
 
@@ -79,6 +79,9 @@ def rebuild_queue_windows_sweep_task(
             stale_ruleset = False
             for rs in rulesets:
                 if state.windows_built_at and rs.updated_at and state.windows_built_at < rs.updated_at:
+                    stale_ruleset = True
+                    break
+                if queue_windows_need_rollup_backfill(pr=pr, rule_set=rs):
                     stale_ruleset = True
                     break
             if (

@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from analyzer.services.revisions import rebuild_pr_revisions
-from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
+from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_ruleset
 from analyzer.models import QueueRuleSet
 from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from syncer.services.github_client import GitHubClient
@@ -42,8 +42,15 @@ def process_pr(
         "enqueued": [],
     }
     queue_results: dict[int, dict[str, int]] = {}
-    if strategy != "noop":
-        for rule_set in QueueRuleSet.objects.filter(repository=pr.repository, is_active=True):
+    rulesets = list(QueueRuleSet.objects.filter(repository=pr.repository, is_active=True))
+    rollup_missing = False
+    for rule_set in rulesets:
+        if queue_windows_need_rollup_backfill(pr=pr, rule_set=rule_set):
+            rollup_missing = True
+            break
+
+    if strategy != "noop" or rollup_missing:
+        for rule_set in rulesets:
             created_at = pr.gh_created_at
             if rule_set.effective_from and created_at < rule_set.effective_from:
                 queue_results[int(rule_set.id)] = {"status": "skipped", "reason": "pr_before_ruleset_effective_from"}

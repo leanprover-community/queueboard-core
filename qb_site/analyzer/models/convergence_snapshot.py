@@ -15,6 +15,7 @@ class AnalyzerConvergenceSnapshot(models.Model):
     windows_stale = models.IntegerField(default=0)
     ci_not_checked = models.IntegerField(default=0)
     ci_gated_missing_windows = models.IntegerField(default=0)
+    prs_missing_queue_window_rollups = models.IntegerField(default=0)
     prs_missing_dependency_state = models.IntegerField(default=0)
     prs_stale_dependency_state = models.IntegerField(default=0)
 
