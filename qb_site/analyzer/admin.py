@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from django.contrib import admin
 from django.http import HttpResponseRedirect
+from django.template.response import TemplateResponse
+from django.utils import timezone
 from django.urls import reverse
 from django.utils.html import format_html
 
@@ -137,6 +139,33 @@ class QueueRuleSetAdmin(admin.ModelAdmin):
     search_fields = ("repository__owner", "repository__name", "version", "description")
     raw_id_fields = ("repository",)
     readonly_fields = ("created_at", "updated_at")
+    actions = ("bump_ruleset_timestamps",)
+
+    def bump_ruleset_timestamps(self, request, queryset):
+        if request.POST.get("post") == "yes":
+            now = timezone.now()
+            updated = queryset.update(updated_at=now)
+            self.message_user(
+                request,
+                f"Bumped updated_at for {updated} queue rule set(s); queue windows will rebuild on next sweep.",
+            )
+            return HttpResponseRedirect(request.get_full_path())
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Confirm queue rule set timestamp bump",
+            "queryset": queryset,
+            "action_name": "bump_ruleset_timestamps",
+            "action_checkbox_name": admin.helpers.ACTION_CHECKBOX_NAME,
+            "cancel_url": reverse("admin:analyzer_queueruleset_changelist"),
+        }
+        return TemplateResponse(
+            request,
+            "admin/analyzer/queueruleset/bump_timestamps_confirmation.html",
+            context,
+        )
+
+    bump_ruleset_timestamps.short_description = "Bump timestamps (force queue window rebuild)"
 
 
 @admin.register(PRQueueWindow)
