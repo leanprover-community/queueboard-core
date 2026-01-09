@@ -324,7 +324,8 @@ class QueueboardSnapshotBuilder:
             ci_checks = {}
             ci_statuses = {}
             revision_heads = {}
-        queue_windows = self._queue_windows_for_repo(repository, rule_set=effective_rule_set)
+        queue_windows = self._queue_window_latest_for_repo(repository, rule_set=effective_rule_set)
+        queue_tails = self._queue_window_tails_for_repo(repository, rule_set=effective_rule_set)
 
         prs: Dict[int, dict] = {}
         draft_prs: List[int] = []
@@ -367,10 +368,13 @@ class QueueboardSnapshotBuilder:
             label_names = {lab["name"] for lab in labels}
             label_names_lc = {name.lower() for name in label_names}
             all_prs.append(pr.number)
-            windows = queue_windows.get(pr.id, [])
-            queue_status = self._queue_data_status(pr, windows, effective_rule_set)
+            window_summary = queue_windows.get(pr.id)
+            tail_windows = queue_tails.get(pr.id, [])
+            has_windows = bool(window_summary)
+            queue_status = self._queue_data_status(pr, has_windows, effective_rule_set)
             queue_fields = self._queue_fields_for_pr(
-                windows=windows,
+                window_summary=window_summary,
+                tail_windows=tail_windows,
                 data_status=queue_status,
                 generated_at=generated_at,
             )
@@ -555,66 +559,110 @@ class QueueboardSnapshotBuilder:
             acc[pl.pull_request_id].append({"name": label.name, "color": label.color, "url": _label_url(repository, label.name)})
         return acc
 
-    def _queue_windows_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, List[tuple]]:
+    def _queue_window_latest_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, dict]:
+        if rule_set is None:
+            return {}
         qs = PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
-        if rule_set:
-            qs = qs.filter(rule_set=rule_set)
-        acc: Dict[int, List[tuple]] = defaultdict(list)
-        for win in qs.order_by("pull_request_id", "from_ts").iterator():
-            acc[win.pull_request_id].append((win.from_ts, win.to_ts))
+        qs = qs.filter(rule_set=rule_set)
+        acc: Dict[int, dict] = {}
+        last_pr_id = None
+        for win in qs.order_by("pull_request_id", "-from_ts", "-id").iterator():
+            if win.pull_request_id == last_pr_id:
+                continue
+            last_pr_id = win.pull_request_id
+            acc[win.pull_request_id] = {
+                "from_ts": win.from_ts,
+                "to_ts": win.to_ts,
+                "duration_seconds_closed": win.duration_seconds_closed,
+                "cumulative_seconds_closed": win.cumulative_seconds_closed,
+                "window_count": win.window_count,
+                "first_on_queue_ts": win.first_on_queue_ts,
+            }
         return acc
 
-    def _queue_data_status(self, pr: PullRequest, windows: list[tuple], rule_set: QueueRuleSet | None) -> DataStatus:
+    def _queue_window_tails_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, list[dict]]:
+        if rule_set is None:
+            return {}
+        qs = PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
+        qs = qs.filter(rule_set=rule_set)
+        acc: Dict[int, list[dict]] = defaultdict(list)
+        counts: Dict[int, int] = defaultdict(int)
+        for win in qs.order_by("pull_request_id", "-from_ts", "-id").iterator():
+            pr_id = win.pull_request_id
+            if counts[pr_id] >= 5:
+                continue
+            acc[pr_id].append({"from": _isoformat(win.from_ts), "to": _isoformat(win.to_ts)})
+            counts[pr_id] += 1
+        for pr_id, windows in acc.items():
+            acc[pr_id] = list(reversed(windows))
+        return acc
+
+    def _queue_data_status(self, pr: PullRequest, has_windows: bool, rule_set: QueueRuleSet | None) -> DataStatus:
         if not getattr(pr, "timeline_backfill_done", False):
             return "missing"
-        if rule_set and rule_set.require_ci_success and (rule_set.required_ci_contexts or []) and not windows:
+        if rule_set and rule_set.require_ci_success and (rule_set.required_ci_contexts or []) and not has_windows:
             return "missing"
         return "valid"
 
-    def _queue_fields_for_pr(self, *, windows: list[tuple], data_status: DataStatus, generated_at: datetime) -> dict:
-        if not windows and data_status != "valid":
+    def _queue_fields_for_pr(
+        self,
+        *,
+        window_summary: dict | None,
+        tail_windows: list[dict],
+        data_status: DataStatus,
+        generated_at: datetime,
+    ) -> dict:
+        if not window_summary and data_status != "valid":
             return {
                 "first_on_queue": {"status": data_status, "date": None},
                 "total_queue_time": {"status": data_status, "value_td": None, "value_rd": None, "explanation": ""},
                 "last_queue_status_change": None,
             }
 
-        first_date = _isoformat(windows[0][0]) if windows else None
-        total_seconds = 0
+        first_on_queue_ts = window_summary.get("first_on_queue_ts") if window_summary else None
+        first_date = _isoformat(first_on_queue_ts) if first_on_queue_ts else None
+        total_seconds = 0.0
         explanation_parts: list[str] = []
-        for start, end in windows:
-            end_clamped = end or generated_at
-            if end_clamped > generated_at:
-                end_clamped = generated_at
-            if start >= end_clamped:
-                continue
-            total_seconds += (end_clamped - start).total_seconds()
-            explanation_parts.append(f"{_isoformat(start)} → {_isoformat(end_clamped)}")
+        if window_summary:
+            total_seconds = float(window_summary.get("cumulative_seconds_closed") or 0)
+            window_start = window_summary.get("from_ts")
+            window_end = window_summary.get("to_ts")
+            if window_start and window_end is None and generated_at >= window_start:
+                total_seconds += (generated_at - window_start).total_seconds()
+            for win in tail_windows:
+                start = win.get("from")
+                end = win.get("to")
+                if end is None:
+                    end = _isoformat(generated_at)
+                if start:
+                    explanation_parts.append(f"{start} → {end}")
 
         value_rd = _relativedelta_dict(total_seconds)
         total_queue_time = {
             "status": data_status,
             "value_td": int(total_seconds),
             "value_rd": value_rd,
-            "explanation": "; ".join(explanation_parts),
+            "explanation": self._format_queue_explanation(explanation_parts, window_summary),
         }
 
         last_change = None
-        if windows:
-            last_start, last_end = windows[-1]
-            if last_end is None:
-                on_queue = last_start <= generated_at
-                change_time = last_start
-            else:
-                on_queue = last_start <= generated_at < last_end
-                change_time = last_start if on_queue else last_end
-            delta_seconds = (generated_at - change_time).total_seconds()
-            last_change = {
-                "status": data_status,
-                "time": _isoformat(change_time),
-                "delta": _relativedelta_dict(delta_seconds),
-                "current_status": "OnQueue" if on_queue else "OffQueue",
-            }
+        if window_summary:
+            last_start = window_summary.get("from_ts")
+            last_end = window_summary.get("to_ts")
+            if last_start:
+                if last_end is None:
+                    on_queue = last_start <= generated_at
+                    change_time = last_start
+                else:
+                    on_queue = last_start <= generated_at < last_end
+                    change_time = last_start if on_queue else last_end
+                delta_seconds = (generated_at - change_time).total_seconds()
+                last_change = {
+                    "status": data_status,
+                    "time": _isoformat(change_time),
+                    "delta": _relativedelta_dict(delta_seconds),
+                    "current_status": "OnQueue" if on_queue else "OffQueue",
+                }
 
         return {
             "first_on_queue": {"status": data_status, "date": first_date},
@@ -748,6 +796,17 @@ class QueueboardSnapshotBuilder:
             state=PullRequestState.OPEN,
         ).values_list("id", "head_sha")
         return {pr_id: (head_sha or "").strip() for pr_id, head_sha in qs.iterator()}
+
+    def _format_queue_explanation(self, parts: list[str], window_summary: dict | None) -> str:
+        if not parts:
+            return ""
+        count = 0
+        if window_summary:
+            count = int(window_summary.get("window_count") or 0)
+        tail_count = len(parts)
+        if count > tail_count and tail_count > 0:
+            return f"{'; '.join(parts)} (last {tail_count} of {count})"
+        return "; ".join(parts)
 
     def _build_pr_entry(
         self,

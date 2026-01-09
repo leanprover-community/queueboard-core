@@ -478,14 +478,29 @@ def rebuild_queue_windows_for_ruleset(
     created = 0
     updated = 0
 
+    window_count = len(windows)
+    first_on_queue_ts = windows[0][0] if windows else None
+    cumulative_seconds = 0
+
     expected_starts: List[datetime] = []
     for cycle_index, (start, end) in enumerate(windows):
+        duration_seconds = 0
+        if end is not None:
+            duration_seconds = int((end - start).total_seconds())
+        cumulative_seconds += duration_seconds
         expected_starts.append(start)
         obj, was_created = PRQueueWindow.objects.get_or_create(
             pull_request=pr,
             rule_set=rule_set,
             from_ts=start,
-            defaults={"to_ts": end, "cycle_index": cycle_index},
+            defaults={
+                "to_ts": end,
+                "cycle_index": cycle_index,
+                "duration_seconds_closed": duration_seconds,
+                "cumulative_seconds_closed": cumulative_seconds,
+                "window_count": window_count,
+                "first_on_queue_ts": first_on_queue_ts,
+            },
         )
         if was_created:
             created += 1
@@ -497,8 +512,29 @@ def rebuild_queue_windows_for_ruleset(
             if obj.cycle_index != cycle_index:
                 obj.cycle_index = cycle_index
                 changed = True
+            if obj.duration_seconds_closed != duration_seconds:
+                obj.duration_seconds_closed = duration_seconds
+                changed = True
+            if obj.cumulative_seconds_closed != cumulative_seconds:
+                obj.cumulative_seconds_closed = cumulative_seconds
+                changed = True
+            if obj.window_count != window_count:
+                obj.window_count = window_count
+                changed = True
+            if obj.first_on_queue_ts != first_on_queue_ts:
+                obj.first_on_queue_ts = first_on_queue_ts
+                changed = True
             if changed:
-                obj.save(update_fields=["to_ts", "cycle_index"])
+                obj.save(
+                    update_fields=[
+                        "to_ts",
+                        "cycle_index",
+                        "duration_seconds_closed",
+                        "cumulative_seconds_closed",
+                        "window_count",
+                        "first_on_queue_ts",
+                    ]
+                )
                 updated += 1
 
     qs = PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)
