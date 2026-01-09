@@ -48,6 +48,7 @@ class PullRequest(TimestampedModel):
     # Branches and fork context
     base_ref_name = models.CharField(max_length=255)
     head_ref_name = models.CharField(max_length=255)
+    head_sha = models.CharField(max_length=64, null=True, blank=True)
     head_repo_owner_login = models.CharField(max_length=255)
     head_repo_name = models.CharField(max_length=255)
 

@@ -25,6 +25,7 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
       mergedAt
       baseRefName
       headRefName
+      headRefOid
       headRepositoryOwner { login }
       headRepository { name }
       additions

@@ -276,7 +276,7 @@ def backfill_repo_engagement_task(  # type: ignore[no-redef]
 ) -> Dict[str, Any]:
     """Enqueue PR syncs to populate engagement fields (files/assignees/comments/approvals) and head CI rollup.
 
-    Targets PRs missing engagement data or head rollup (engagement_synced_at/head_ci_state is null).
+    Targets PRs missing engagement data, head rollup, or head SHA.
     """
     repo = Repository.objects.get(id=int(repo_id))
 
@@ -305,7 +305,9 @@ def backfill_repo_engagement_task(  # type: ignore[no-redef]
     if db_states is not None:
         queryset = queryset.filter(state__in=list(db_states))
 
-    queryset = queryset.filter(Q(engagement_synced_at__isnull=True) | Q(head_ci_state__isnull=True))
+    queryset = queryset.filter(
+        Q(engagement_synced_at__isnull=True) | Q(head_ci_state__isnull=True) | Q(head_sha__isnull=True) | Q(head_sha="")
+    )
     total_needs_engagement = queryset.count()
 
     limit_int = int(limit)
