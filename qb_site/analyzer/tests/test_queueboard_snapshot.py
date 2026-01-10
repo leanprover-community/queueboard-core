@@ -268,6 +268,13 @@ class QueueboardSnapshotBuilderTests(TestCase):
         pr_awaiting_zulip = self._make_pr(33, labels=("awaiting-zulip",))
         pr_help = self._make_pr(34, labels=("help-wanted",))
         self._make_pr(35, is_draft=True)
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_ci_success=True,
+            required_ci_contexts=["lint"],
+            forbidden_label_names=["merge-conflict"],
+        )
 
         # CI for queue entry
         CheckRun.objects.create(
