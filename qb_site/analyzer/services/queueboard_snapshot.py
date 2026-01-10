@@ -304,6 +304,32 @@ def _has_any(labels: set[str], names: tuple[str, ...]) -> bool:
     return any(name in labels for name in names)
 
 
+def _is_queue_candidate(
+    *,
+    rules: QueueRules,
+    is_open: bool,
+    is_draft: bool,
+    labels: set[str],
+    ci_ok: bool | None,
+    allow_forbidden_label: str | None = None,
+) -> bool:
+    if rules.require_open and not is_open:
+        return False
+    if rules.require_not_draft and is_draft:
+        return False
+    if rules.required_labels and not rules.required_labels.issubset(labels):
+        return False
+    if rules.forbidden_labels:
+        forbidden = set(rules.forbidden_labels)
+        if allow_forbidden_label:
+            forbidden.discard(allow_forbidden_label.lower())
+        if labels & forbidden:
+            return False
+    if rules.require_ci_success and ci_ok is not True:
+        return False
+    return True
+
+
 @dataclass
 class QueueboardSnapshotBuilder:
     """Build a queueboard snapshot from DB state with bounded memory."""
@@ -447,32 +473,35 @@ class QueueboardSnapshotBuilder:
                     if _has_contradictory_labels(label_names_lc):
                         contradictory.append(pr.number)
 
-            # NOTE(parity): legacy determine_pr_dashboards drops merge-conflict PRs from Queue
-            # and can optionally source queue.json; this path always uses aggregate data and keeps
-            # merge-conflict PRs in Queue membership unless forbidden by the ruleset.
-            on_queue = pr.base_ref_name == repository.default_branch and rules.is_on_queue(
+            # NOTE(parity): legacy determine_pr_dashboards builds queue candidates before
+            # splitting merge-conflict PRs into NeedsMerge. Mirror that behavior while
+            # still honoring ruleset requirements.
+            queue_candidate = pr.base_ref_name == repository.default_branch and _is_queue_candidate(
+                rules=rules,
                 is_open=True,
                 is_draft=pr.is_draft,
-                labels=label_names,
+                labels=label_names_lc,
                 ci_ok=ci_ok,
+                allow_forbidden_label="merge-conflict",
             )
-            if on_queue:
-                queue_prs.append(pr.number)
-                if "new-contributor" in label_names_lc:
-                    queue_new_contrib.append(pr.number)
-                if "easy" in label_names_lc:
-                    queue_easy.append(pr.number)
-                if any(lbl in label_names_lc for lbl in ("tech debt", "longest-pole")):
-                    queue_tech_debt.append(pr.number)
-                if (pr.assignees or []) and pr.gh_updated_at < stale_queue_assigned_threshold:
-                    queue_stale_assigned.append(pr.number)
-                if not pr.assignees and pr.gh_updated_at < stale_queue_threshold:
-                    queue_stale_unassigned.append(pr.number)
+            if queue_candidate:
+                if "merge-conflict" in label_names_lc:
+                    needs_merge.append(pr.number)
+                else:
+                    queue_prs.append(pr.number)
+                    if "new-contributor" in label_names_lc:
+                        queue_new_contrib.append(pr.number)
+                    if "easy" in label_names_lc:
+                        queue_easy.append(pr.number)
+                    if any(lbl in label_names_lc for lbl in ("tech debt", "longest-pole")):
+                        queue_tech_debt.append(pr.number)
+                    if (pr.assignees or []) and pr.gh_updated_at < stale_queue_assigned_threshold:
+                        queue_stale_assigned.append(pr.number)
+                    if not pr.assignees and pr.gh_updated_at < stale_queue_threshold:
+                        queue_stale_unassigned.append(pr.number)
 
             if "awaiting-zulip" in label_names_lc:
                 needs_decision.append(pr.number)
-            if "merge-conflict" in label_names_lc and on_queue:
-                needs_merge.append(pr.number)
             # NOTE(parity): legacy InessentialCIFails also filters out blocked/help-wanted/etc.
             # labels; here we include all default-branch FailInessential nondraft PRs.
             if ci_value == CIStatus.FailInessential.value and pr.base_ref_name == repository.default_branch and not pr.is_draft:
