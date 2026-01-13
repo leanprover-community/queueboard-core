@@ -79,7 +79,7 @@ for pr in $(cat "missing_prs.txt" | grep --invert-match "^--" | head --lines 50)
   fi
   i=$((i+1))
   echo "Attempting to backfill data for PR $pr"
-  download_pr $pr
+  download_pr $pr || { echo "$pr" >> "broken_pr_data.txt"; continue; }
 done
 # If there were less than two "missing" PRs to backfill, backfill PRs from `closed_prs_to_backfill.txt`.
 # Order these randomly to ensure that any one PR which ought to be stubborn
@@ -97,7 +97,7 @@ for pr in $(cat "closed_prs_to_backfill.txt" | grep --invert-match "^--" | head 
     continue
   fi
   echo "Attempting to backfill data for PR $pr"
-  download_normal $pr
+  download_normal $pr || { echo "$pr" >> "broken_pr_data.txt"; continue; }
   if [ $i -eq 2 ]; then
     break;
   fi
