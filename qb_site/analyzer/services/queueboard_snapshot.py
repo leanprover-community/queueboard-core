@@ -853,8 +853,8 @@ class QueueboardSnapshotBuilder:
             count = int(window_summary.get("window_count") or 0)
         tail_count = len(parts)
         if count > tail_count and tail_count > 0:
-            return f"{'; '.join(parts)} (last {tail_count} of {count})"
-        return "; ".join(parts)
+            return f"{'\n'.join(parts)} (last {tail_count} of {count})"
+        return "\n".join(parts)
 
     def _format_queue_window(
         self,
