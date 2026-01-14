@@ -564,4 +564,37 @@ class QueueboardSnapshotBuilderTests(TestCase):
             snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo, rule_set=rule_set)
 
         entry = snapshot["prs"][pr.number]
-        self.assertTrue(entry["total_queue_time"]["explanation"].endswith("(last 5 of 6)"))
+        explanation = entry["total_queue_time"]["explanation"]
+        self.assertIn("from 2025-01-01 07:00 to 2025-01-01 08:00 (1 hour)", explanation)
+        self.assertIn("from 2025-01-01 11:00 to 2025-01-01 12:00 (1 hour)", explanation)
+        self.assertTrue(explanation.endswith("(last 5 of 6)"))
+
+    def test_queue_timeline_fields_open_window_explanation(self) -> None:
+        rule_set = QueueRuleSet.objects.create(repository=self.repo, version=4)
+        pr = self._make_pr(104)
+        window_start = self.now - timedelta(hours=6)
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rule_set,
+            from_ts=window_start,
+            to_ts=None,
+            cycle_index=0,
+            duration_seconds_closed=0,
+            cumulative_seconds_closed=0,
+            window_count=1,
+            first_on_queue_ts=window_start,
+        )
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz:
+                    return self.now
+                return self.now.replace(tzinfo=None)
+
+        with patch("analyzer.services.queueboard_snapshot.datetime", FixedDateTime):
+            snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo, rule_set=rule_set)
+
+        entry = snapshot["prs"][pr.number]
+        explanation = entry["total_queue_time"]["explanation"]
+        self.assertIn("since 2025-01-01 06:00 (6 hours)", explanation)

@@ -7,6 +7,7 @@ import hashlib
 import json
 from typing import Dict, Iterable, List, Sequence
 
+from dateutil import relativedelta
 from django.db.models import Q, QuerySet
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
@@ -18,6 +19,7 @@ from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
 from syncer.models.status_context import StatusContext, StatusContextState
 from queueboard.classify_pr_state import determine_PR_status, label_categorisation_rules, LabelKind, PRState, PRStatus
 from queueboard.ci_status import CIStatus
+from queueboard.util import format_delta
 
 
 DataStatus = str  # "valid" | "incomplete" | "missing"
@@ -679,10 +681,9 @@ class QueueboardSnapshotBuilder:
             for win in tail_windows:
                 start = win.get("from")
                 end = win.get("to")
-                if end is None:
-                    end = _isoformat(generated_at)
-                if start:
-                    explanation_parts.append(f"{start} → {end}")
+                explanation = self._format_queue_window(start, end, generated_at=generated_at)
+                if explanation:
+                    explanation_parts.append(explanation)
 
         value_rd = _relativedelta_dict(total_seconds)
         total_queue_time = {
@@ -854,6 +855,29 @@ class QueueboardSnapshotBuilder:
         if count > tail_count and tail_count > 0:
             return f"{'; '.join(parts)} (last {tail_count} of {count})"
         return "; ".join(parts)
+
+    def _format_queue_window(
+        self,
+        start: str | None,
+        end: str | None,
+        *,
+        generated_at: datetime,
+    ) -> str | None:
+        if not start:
+            return None
+        try:
+            start_dt = datetime.fromisoformat(start)
+        except ValueError:
+            return f"{start} → {end}" if end else str(start)
+        if end:
+            try:
+                end_dt = datetime.fromisoformat(end)
+            except ValueError:
+                return f"{start} → {end}"
+            delta = relativedelta.relativedelta(end_dt, start_dt)
+            return f"from {start_dt:%Y-%m-%d %H:%M} to {end_dt:%Y-%m-%d %H:%M} ({format_delta(delta)})"
+        delta = relativedelta.relativedelta(generated_at, start_dt)
+        return f"since {start_dt:%Y-%m-%d %H:%M} ({format_delta(delta)})"
 
     def _build_pr_entry(
         self,
