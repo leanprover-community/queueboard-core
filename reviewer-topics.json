@@ -114,7 +114,7 @@
   {
     "github_handle": "joneugster",
     "zulip_handle": "@**Jon Eugster**",
-    "top_level": ["t-meta", "t-linter", "CI", "documentation", "tech debt", "t-data", "t-category-theory", "t-algebra", "t-algebraic-geometry", "t-condensed"],
+    "top_level": ["t-meta", "t-linter", "CI", "t-data", "tech debt", "t-category-theory", "t-algebra", "t-algebraic-geometry", "t-condensed"],
     "free_form": "Currently, I prefer reviewing meta-programming PRs (or other technical aspects) over mathematical content."
   },
   {
