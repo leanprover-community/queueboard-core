@@ -152,7 +152,8 @@ def sync_pr_task(  # type: ignore[no-redef]
     needs_state_refresh = state_mismatch or draft_mismatch
     needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
     # Ensure we fill head rollup state even if updatedAt hasn’t changed.
-    needs_head_ci = bool(pr_db and pr_db.head_ci_state is None)
+    pending_head_states = {"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED"}
+    needs_head_ci = bool(pr_db and (pr_db.head_ci_state is None or str(pr_db.head_ci_state).upper() in pending_head_states))
     # Ensure we fill head SHA even if updatedAt hasn’t changed.
     needs_head_sha = bool(pr_db and not (pr_db.head_sha or "").strip())
     last_synced_cutoff = None

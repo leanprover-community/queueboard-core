@@ -46,7 +46,8 @@ class PRSyncService:
         checkruns_upserted = 0
         statusctx_upserted = 0
         head_ci_state: str | None = None
-        latest_head_commit_at = None
+        head_commit_at = None
+        head_oid = pr_bundle.get("headRefOid") or ""
 
         def _parse_dt(val: str | None):
             if not val:
@@ -65,10 +66,11 @@ class PRSyncService:
             contexts = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
             rollup_state = (commit.get("statusCheckRollup") or {}).get("state")
             committed_at = _parse_dt(commit.get("committedDate"))
-            if committed_at is not None and (latest_head_commit_at is None or committed_at > latest_head_commit_at):
-                latest_head_commit_at = committed_at
-            if rollup_state is not None:
-                head_ci_state = str(rollup_state)
+            if head_oid and sha == head_oid:
+                if committed_at is not None:
+                    head_commit_at = committed_at
+                if rollup_state is not None:
+                    head_ci_state = str(rollup_state)
             cr_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "CheckRun"]
             sc_contexts = [c for c in contexts if isinstance(c, dict) and c.get("__typename") == "StatusContext"]
             cr_res = sync_check_runs(pr_obj, cr_contexts, sha)
@@ -82,7 +84,12 @@ class PRSyncService:
 
         # If the bundle was fetched successfully but no head rollup exists, stamp UNAVAILABLE for stale PRs
         if head_ci_state is None:
-            head_activity_ts = latest_head_commit_at
+            head_activity_ts = head_commit_at
+            updated_at = pr_obj.gh_updated_at
+            if updated_at is not None and timezone.is_naive(updated_at):
+                updated_at = timezone.make_aware(updated_at)
+            if updated_at is not None and (head_activity_ts is None or updated_at > head_activity_ts):
+                head_activity_ts = updated_at
             created_at = pr_obj.gh_created_at
             if created_at is not None and timezone.is_naive(created_at):
                 created_at = timezone.make_aware(created_at)

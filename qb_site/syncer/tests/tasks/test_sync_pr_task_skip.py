@@ -21,12 +21,12 @@ class TestSyncPrTaskSkip(TestCase):
     def tearDown(self) -> None:
         self._enqueue_patcher.stop()
 
-    def _make_pr(self, number: int, last_synced_at=None):
+    def _make_pr(self, number: int, last_synced_at=None, *, head_ci_state: str = "SUCCESS"):
         if last_synced_at is None:
             last_synced_at = timezone.now()
         pr = make_pr(self.repo, number, last_synced_at=last_synced_at)
         pr.engagement_synced_at = last_synced_at
-        pr.head_ci_state = "SUCCESS"
+        pr.head_ci_state = head_ci_state
         pr.save(update_fields=["engagement_synced_at", "head_ci_state"])
         return pr
 
@@ -134,6 +134,33 @@ class TestSyncPrTaskSkip(TestCase):
         mock_sync.return_value = {}
 
         res = sync_pr_task.apply(kwargs={"repo_id": self.repo.id, "number": 13}).get()
+
+        self.assertFalse(res.get("skipped"))
+        self.assertEqual(res.get("status"), "synced")
+        mock_sync.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.PRSyncService.sync_pull_request")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_no_skip_when_head_ci_pending(self, MockClient, mock_sync) -> None:
+        pr = self._make_pr(15, last_synced_at=timezone.now(), head_ci_state="PENDING")
+
+        gh = MockClient.return_value
+        gh.get_pr_header.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 15,
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=1)).isoformat(),
+                        "state": "OPEN",
+                        "isDraft": False,
+                    }
+                }
+            }
+        }
+        gh.get_last_rate_limit.return_value = {"remaining": 4990, "cost": 1, "resetAt": "2030-01-01T00:00:00Z"}
+        mock_sync.return_value = {}
+
+        res = sync_pr_task.apply(kwargs={"repo_id": self.repo.id, "number": 15}).get()
 
         self.assertFalse(res.get("skipped"))
         self.assertEqual(res.get("status"), "synced")
