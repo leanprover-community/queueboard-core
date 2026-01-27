@@ -121,13 +121,15 @@ def rebuild_queue_windows_sweep_task(
             rebuilt_any = bool(
                 int(summary.get("created", 0) or 0) or int(summary.get("updated", 0) or 0) or int(summary.get("deleted", 0) or 0)
             )
+            if stale_ruleset:
+                if pr_num not in repo_prs_rebuilt_stale_ruleset and rebuilt_any:
+                    repo_prs_rebuilt_stale_ruleset.append(pr_num)
+            # Mark windows as rebuilt for the current revision even if the rebuild is a no-op.
+            # This prevents endless rechecks after ruleset timestamp bumps.
+            state.windows_built_revision_version = state.revision_version
+            state.windows_built_at = now_ts
+            state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
             if rebuilt_any:
-                if stale_ruleset:
-                    if pr_num not in repo_prs_rebuilt_stale_ruleset:
-                        repo_prs_rebuilt_stale_ruleset.append(pr_num)
-                state.windows_built_revision_version = state.revision_version
-                state.windows_built_at = now_ts
-                state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
                 repo_rebuilt += 1
 
             repo_prs += 1

@@ -83,3 +83,42 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertEqual(snap.prs_stale_dependency_state, 0)
         self.assertEqual(snap.prs_missing_queue_window_rollups, 1)
         self.assertEqual(res["rows_created"], 1)
+
+    def test_windows_stale_clears_after_sweep_updates_built_at(self) -> None:
+        pr = self._mk_pr(10)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        old_built_at = timezone.now() - timezone.timedelta(days=3)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=old_built_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        # Bump ruleset timestamp to mark PR stale in convergence.
+        self.rule_set.updated_at = timezone.now()
+        self.rule_set.save(update_fields=["updated_at"])
+
+        res_before = collect_analyzer_convergence_task.apply().get()
+        snap_before = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap_before)
+        self.assertEqual(snap_before.windows_stale, 1)
+        self.assertEqual(res_before["rows_created"], 1)
+
+        from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
+
+        rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        res_after = collect_analyzer_convergence_task.apply().get()
+        snap_after = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap_after)
+        self.assertEqual(snap_after.windows_stale, 0)
+        self.assertEqual(res_after["rows_created"], 1)
