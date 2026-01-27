@@ -124,3 +124,22 @@ class TestQueueWindows(TestCase):
         on_queue = who_was_on_queue_at(repo=self.repo, at=at_later)
         self.assertIn(pr1, on_queue)
         self.assertIn(pr2, on_queue)
+
+    def test_created_as_draft_blocks_queue_until_ready(self) -> None:
+        pr = self._mk_pr(5)
+        # Created as draft (no ConvertToDraft event), ready on Sep 5.
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.READY_FOR_REVIEW,
+            occurred_at=_dt(2024, 9, 5),
+        )
+
+        self.assertFalse(is_on_queue_at(pr, at=_dt(2024, 9, 4)))
+        self.assertTrue(is_on_queue_at(pr, at=_dt(2024, 9, 6)))
+
+        as_of = _dt(2024, 9, 10)
+        windows = queue_windows_for_pr(pr, as_of=as_of)
+        self.assertEqual(len(windows), 1)
+        start, end = windows[0]
+        self.assertEqual(start, _dt(2024, 9, 5))
+        self.assertIsNone(end)

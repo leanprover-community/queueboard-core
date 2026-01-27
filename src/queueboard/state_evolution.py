@@ -384,7 +384,7 @@ def _process_data(data: dict) -> Metadata:
     # draft status, e.g. five toggles and not-draft means the PR started as draft.
     # Logically, this is the XOR of the values "draft was toggled overall" and "final state is draft".
     # This is truthy iff the draft state was toggled an odd number of times.
-    draft_toggled_overall = len([e for e in events if e.change in [MarkedDraft, MarkedReady]]) % 2
+    draft_toggled_overall = len([e for e in events if isinstance(e.change, (MarkedDraft, MarkedReady))]) % 2
     final_draft_state = inner_data["isDraft"]
     created_as_draft = draft_toggled_overall ^ final_draft_state
 

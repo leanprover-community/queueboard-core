@@ -88,12 +88,27 @@ class _State:
     ci_ok: Optional[bool]
 
 
-def _initial_state(pr: PullRequest) -> _State:
+def _initial_state(pr: PullRequest, *, created_as_draft: bool) -> _State:
     # Start with empty label set; label history is derived solely from timeline events.
     # Treat the PR as open from creation until closed/merged (or until explicit
     # CLOSED/REOPENED timeline events say otherwise). This avoids relying on the
     # current ``state`` field when reconstructing historical windows.
-    return _State(labels=set(), is_draft=bool(pr.is_draft), is_open=True, ci_ok=None)
+    return _State(labels=set(), is_draft=created_as_draft, is_open=True, ci_ok=None)
+
+
+def _created_as_draft(pr: PullRequest, timeline_events: Iterable[PRTimelineEvent]) -> bool:
+    """Infer draft state at creation.
+
+    GitHub does not emit ConvertToDraft events at creation time, so a PR created as
+    draft only shows up later via a ReadyForReview event. The first draft-related
+    event therefore determines the initial draft state.
+    """
+    for ev in timeline_events:
+        if ev.type == PRTimelineEventType.READY_FOR_REVIEW:
+            return True
+        if ev.type == PRTimelineEventType.CONVERT_TO_DRAFT:
+            return False
+    return bool(pr.is_draft)
 
 
 def _iter_state_events(pr: PullRequest):
@@ -114,9 +129,10 @@ def _iter_state_events(pr: PullRequest):
 
 def _state_at_time(pr: PullRequest, *, at: datetime) -> _State:
     """Compute label/open/draft state for a PR at a specific instant."""
-    state = _initial_state(pr)
+    timeline_events = list(_iter_state_events(pr))
+    state = _initial_state(pr, created_as_draft=_created_as_draft(pr, timeline_events))
     t0 = pr.gh_created_at
-    for ev in _iter_state_events(pr):
+    for ev in timeline_events:
         ts = ev.occurred_at
         if ts < t0:
             continue
@@ -234,7 +250,8 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
 
 
 def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: datetime) -> List[QueueWindow]:
-    state = _initial_state(pr)
+    timeline_events = list(_iter_state_events(pr))
+    state = _initial_state(pr, created_as_draft=_created_as_draft(pr, timeline_events))
     t0 = pr.gh_created_at
 
     # Label-only rulesets (no CI gating) can use a simpler builder that ignores CI.
@@ -243,7 +260,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
         current_start: Optional[datetime] = t0 if current_on else None
         windows: List[QueueWindow] = []
 
-        for ev in _iter_state_events(pr):
+        for ev in timeline_events:
             ts = ev.occurred_at
             if ts < t0:
                 continue
@@ -291,7 +308,6 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
     # CI-gated rulesets: build windows from a combined event timeline and evaluate
     # rules (including CI and PRRevision) at each boundary.
     # Collect timeline events up front for incremental state updates.
-    timeline_events = list(_iter_state_events(pr))
     closed_ts = pr.closed_at or pr.merged_at
 
     # Collect boundary times where queue membership may change:
