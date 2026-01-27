@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.db import transaction
 
 from analyzer.services.revisions import rebuild_pr_revisions
-from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_ruleset
+from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
 from analyzer.models import QueueRuleSet
 from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from syncer.services.github_client import GitHubClient
@@ -41,7 +41,7 @@ def process_pr(
         "planned": 0,
         "enqueued": [],
     }
-    queue_results: dict[int, dict[str, int]] = {}
+    queue_results: dict[int, dict[str, object]] = {}
     rulesets = list(QueueRuleSet.objects.filter(repository=pr.repository, is_active=True))
     rollup_missing = False
     for rule_set in rulesets:
@@ -50,23 +50,8 @@ def process_pr(
             break
 
     if strategy != "noop" or rollup_missing:
-        for rule_set in rulesets:
-            created_at = pr.gh_created_at
-            if rule_set.effective_from and created_at < rule_set.effective_from:
-                queue_results[int(rule_set.id)] = {"status": "skipped", "reason": "pr_before_ruleset_effective_from"}
-                continue
-            if rule_set.effective_to and created_at >= rule_set.effective_to:
-                queue_results[int(rule_set.id)] = {"status": "skipped", "reason": "pr_on_or_after_ruleset_effective_to"}
-                continue
-            rebuild = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rule_set)
-            queue_results[int(rule_set.id)] = {
-                "created": int(rebuild.created),
-                "updated": int(rebuild.updated),
-                "deleted": int(rebuild.deleted),
-                "status": getattr(rebuild, "status", None),
-            }
-            if getattr(rebuild, "reason", None):
-                queue_results[int(rule_set.id)]["reason"] = rebuild.reason
+        summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=rulesets)
+        queue_results = summary.get("per_ruleset", {}) or {}
         # Harvest commit history per force-push segment baseline to surface missed heads via Syncer task.
         fps = list(
             pr.timeline_events.filter(type="HEAD_FORCE_PUSHED")

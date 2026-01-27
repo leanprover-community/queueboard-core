@@ -20,6 +20,7 @@ from .queue_windows import (
     QueueWindow,
     is_on_queue_at,
     queue_windows_for_pr,
+    rebuild_queue_windows_for_pr,
     total_queue_time_for_pr,
     who_was_on_queue_at,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "QueueSummary",
     "QueueWindow",
     "queue_windows_for_pr",
+    "rebuild_queue_windows_for_pr",
     "total_queue_time_for_pr",
     "is_on_queue_at",
     "who_was_on_queue_at",

@@ -5,7 +5,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from analyzer.models import QueueRuleSet, PRRevisionBuildState, PRRevision
-from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_ruleset
+from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
 
@@ -108,25 +108,21 @@ def rebuild_queue_windows_sweep_task(
                     repo_prs_skipped_no_revisions.append(pr_num)
                 continue
 
-            rebuilt_any = False
-            for rs in rulesets:
-                created_at = pr.gh_created_at
-                if rs.effective_from and created_at < rs.effective_from:
-                    pr_num = int(pr.number)
-                    if pr_num not in repo_rulesets_skipped_out_of_bounds:
-                        repo_rulesets_skipped_out_of_bounds.append(pr_num)
-                    continue
-                if rs.effective_to and created_at >= rs.effective_to:
-                    pr_num = int(pr.number)
-                    if pr_num not in repo_rulesets_skipped_out_of_bounds:
-                        repo_rulesets_skipped_out_of_bounds.append(pr_num)
-                    continue
-                res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rs)
-                if res.created or res.updated or res.deleted:
-                    rebuilt_any = True
+            summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=rulesets)
+            per_ruleset = summary.get("per_ruleset", {}) or {}
+            pr_num = int(pr.number)
+            if any(
+                res.get("reason") in {"pr_before_ruleset_effective_from", "pr_on_or_after_ruleset_effective_to"}
+                for res in per_ruleset.values()
+                if isinstance(res, dict)
+            ):
+                if pr_num not in repo_rulesets_skipped_out_of_bounds:
+                    repo_rulesets_skipped_out_of_bounds.append(pr_num)
+            rebuilt_any = bool(
+                int(summary.get("created", 0) or 0) or int(summary.get("updated", 0) or 0) or int(summary.get("deleted", 0) or 0)
+            )
             if rebuilt_any:
                 if stale_ruleset:
-                    pr_num = int(pr.number)
                     if pr_num not in repo_prs_rebuilt_stale_ruleset:
                         repo_prs_rebuilt_stale_ruleset.append(pr_num)
                 state.windows_built_revision_version = state.revision_version

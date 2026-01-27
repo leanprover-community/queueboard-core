@@ -46,6 +46,7 @@ def sync_pr_task(  # type: ignore[no-redef]
     max_timeline_pages: int = 0,
     max_commit_pages: int = 0,
     dry_run: bool = False,
+    force: bool = False,
     timeline_since_iso: Optional[str] = None,
     backfill_timeline_pages: int = 0,
     backfill_commit_pages: int = 0,
@@ -91,6 +92,7 @@ def sync_pr_task(  # type: ignore[no-redef]
                     max_timeline_pages=max_timeline_pages,
                     max_commit_pages=max_commit_pages,
                     dry_run=dry_run,
+                    force=force,
                     timeline_since_iso=timeline_since_iso,
                     backfill_commit_pages=backfill_commit_pages,
                 )
@@ -169,6 +171,7 @@ def sync_pr_task(  # type: ignore[no-redef]
         and not needs_engagement
         and not needs_head_ci
         and not needs_head_sha
+        and not force
     ):
         # PR unchanged, but we may still spend backfill budget on older timeline pages.
         pages_used = 0
@@ -212,6 +215,7 @@ def sync_pr_task(  # type: ignore[no-redef]
                         "commitsM": commitsM,
                         "max_timeline_pages": max_timeline_pages,
                         "max_commit_pages": max_commit_pages,
+                        "force": force,
                         "backfill_timeline_pages": backfill_timeline_pages,
                         "backfill_commit_pages": backfill_commit_pages,
                     },
@@ -386,6 +390,7 @@ def sync_pr_task(  # type: ignore[no-redef]
                 "commitsM": commitsM,
                 "max_timeline_pages": max_timeline_pages,
                 "max_commit_pages": max_commit_pages,
+                "force": force,
                 "backfill_timeline_pages": backfill_timeline_pages,
                 "backfill_commit_pages": backfill_commit_pages,
             },
@@ -451,6 +456,7 @@ def sync_pr_task(  # type: ignore[no-redef]
             "commitsM": commitsM,
             "max_timeline_pages": max_timeline_pages,
             "max_commit_pages": max_commit_pages,
+            "force": force,
             "backfill_timeline_pages": backfill_timeline_pages,
             "backfill_commit_pages": backfill_commit_pages,
         },

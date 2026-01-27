@@ -584,6 +584,67 @@ def rebuild_queue_windows_for_ruleset(
     return QueueWindowRebuildResult(created=created, updated=updated, deleted=deleted, status="rebuilt", reason=None)
 
 
+def rebuild_queue_windows_for_pr(
+    *,
+    pr: PullRequest,
+    rule_sets: Optional[List[QueueRuleSet]] = None,
+    as_of: Optional[datetime] = None,
+) -> dict[str, object]:
+    rulesets = rule_sets or list(QueueRuleSet.objects.filter(repository=pr.repository, is_active=True))
+    summary: dict[str, object] = {
+        "rulesets": len(rulesets),
+        "created": 0,
+        "updated": 0,
+        "deleted": 0,
+        "skipped": 0,
+        "skipped_out_of_bounds": 0,
+        "per_ruleset": {},
+    }
+    created_at = pr.gh_created_at
+
+    per_ruleset: dict[int, dict[str, object]] = {}
+    for rule_set in rulesets:
+        if created_at and rule_set.effective_from and created_at < rule_set.effective_from:
+            per_ruleset[int(rule_set.id)] = {
+                "created": 0,
+                "updated": 0,
+                "deleted": 0,
+                "status": "skipped",
+                "reason": "pr_before_ruleset_effective_from",
+            }
+            summary["skipped"] = int(summary["skipped"]) + 1
+            summary["skipped_out_of_bounds"] = int(summary["skipped_out_of_bounds"]) + 1
+            continue
+        if created_at and rule_set.effective_to and created_at >= rule_set.effective_to:
+            per_ruleset[int(rule_set.id)] = {
+                "created": 0,
+                "updated": 0,
+                "deleted": 0,
+                "status": "skipped",
+                "reason": "pr_on_or_after_ruleset_effective_to",
+            }
+            summary["skipped"] = int(summary["skipped"]) + 1
+            summary["skipped_out_of_bounds"] = int(summary["skipped_out_of_bounds"]) + 1
+            continue
+
+        res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rule_set, as_of=as_of)
+        per_ruleset[int(rule_set.id)] = {
+            "created": int(res.created),
+            "updated": int(res.updated),
+            "deleted": int(res.deleted),
+            "status": getattr(res, "status", None),
+            "reason": getattr(res, "reason", None),
+        }
+        summary["created"] = int(summary["created"]) + int(res.created)
+        summary["updated"] = int(summary["updated"]) + int(res.updated)
+        summary["deleted"] = int(summary["deleted"]) + int(res.deleted)
+        if getattr(res, "status", None) == "skipped":
+            summary["skipped"] = int(summary["skipped"]) + 1
+
+    summary["per_ruleset"] = per_ruleset
+    return summary
+
+
 def queue_windows_need_rollup_backfill(*, pr: PullRequest, rule_set: QueueRuleSet) -> bool:
     qs = PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)
     if not qs.exists():

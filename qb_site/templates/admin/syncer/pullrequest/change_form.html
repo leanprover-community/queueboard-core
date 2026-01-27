@@ -5,12 +5,15 @@
 <div style="margin-bottom: 1em;">
   <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.25rem;">
     <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_sync' original.pk %}">Enqueue sync</a>
+    <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_sync_force' original.pk %}">Force sync</a>
     <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_sync_dry' original.pk %}">Enqueue DRY-RUN sync</a>
     <a class="button" href="{% url 'admin:syncer_pullrequest_enqueue_ci_sha' original.pk %}">Enqueue CI by SHA</a>
   </div>
   <div style="display:flex; flex-wrap:wrap; gap:0.5rem;">
     <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_rebuild' original.pk %}">Analyzer: Rebuild
       revisions</a>
+    <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_rebuild_queue_windows' original.pk %}">Analyzer:
+      Rebuild queue windows</a>
     <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_enqueue_missing_ci' original.pk %}">Analyzer:
       Enqueue missing CI</a>
     <a class="button" href="{% url 'admin:syncer_pullrequest_analyzer_rebuild_dependencies' original.pk %}">Analyzer:

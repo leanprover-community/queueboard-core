@@ -22,8 +22,9 @@ from .models import (
     RepoBackfillCursor,
     CommitHistoryHarvest,
 )
-from analyzer.models import PRRevision, PRDependency, PRDependencyState, PRQueueWindow, PRRevisionBuildState
+from analyzer.models import PRRevision, PRDependency, PRDependencyState, PRQueueWindow, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.revisions import rebuild_pr_revisions
+from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 from analyzer.tasks.dependencies import rebuild_pr_dependencies_task
 
@@ -239,6 +240,11 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 name="syncer_pullrequest_enqueue_sync",
             ),
             path(
+                "<path:object_id>/enqueue-sync-force/",
+                self.admin_site.admin_view(self.enqueue_sync_force_view),
+                name="syncer_pullrequest_enqueue_sync_force",
+            ),
+            path(
                 "<path:object_id>/enqueue-sync-dry/",
                 self.admin_site.admin_view(self.enqueue_sync_dry_view),
                 name="syncer_pullrequest_enqueue_sync_dry",
@@ -262,6 +268,11 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 "<path:object_id>/analyzer-rebuild-dependencies/",
                 self.admin_site.admin_view(self.analyzer_rebuild_dependencies_view),
                 name="syncer_pullrequest_analyzer_rebuild_dependencies",
+            ),
+            path(
+                "<path:object_id>/analyzer-rebuild-queue-windows/",
+                self.admin_site.admin_view(self.analyzer_rebuild_queue_windows_view),
+                name="syncer_pullrequest_analyzer_rebuild_queue_windows",
             ),
         ]
         return custom + urls
@@ -430,6 +441,38 @@ class PullRequestAdmin(ReadOnlyAdmin):
             },
         )
 
+    def enqueue_sync_force_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": False},
+            )
+        from syncer.tasks.sync_tasks import sync_pr_task
+        from django.conf import settings
+
+        async_result = sync_pr_task.delay(
+            pr.repository_id,
+            pr.number,
+            force=True,
+            backfill_timeline_pages=int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1)),
+            backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
+        )
+        self.message_user(request, f"Enqueued FORCE sync for PR #{pr.number}: task_id={async_result.id}")
+        return TemplateResponse(
+            request,
+            "admin/syncer/pullrequest/enqueue_sync.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Enqueued FORCE PR sync",
+                "enqueued": [(pr, async_result.id)],
+                "dry_run": False,
+                "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
+                "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+            },
+        )
+
     def enqueue_sync_dry_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
         pr = self.get_object(request, object_id)
         if pr is None:
@@ -565,6 +608,30 @@ class PullRequestAdmin(ReadOnlyAdmin):
             return self.change_view(request, object_id)
         async_res = rebuild_pr_dependencies_task.delay(pr.id)
         self.message_user(request, f"Analyzer: enqueued dependency rebuild; task_id={async_res.id}")
+        return self.change_view(request, object_id)
+
+    def analyzer_rebuild_queue_windows_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
+        pr = self.get_object(request, object_id)
+        if pr is None:
+            self.message_user(request, "PR not found")
+            return self.change_view(request, object_id)
+        rulesets = list(QueueRuleSet.objects.filter(repository=pr.repository, is_active=True))
+        if not rulesets:
+            self.message_user(request, "Analyzer: no active queue rule sets for this repository")
+            return self.change_view(request, object_id)
+        summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=rulesets)
+        created = int(summary.get("created", 0) or 0)
+        updated = int(summary.get("updated", 0) or 0)
+        deleted = int(summary.get("deleted", 0) or 0)
+        skipped = int(summary.get("skipped", 0) or 0)
+        self.message_user(
+            request,
+            (
+                "Analyzer: queue windows rebuilt for "
+                f"PR #{pr.number}; rulesets={len(rulesets)}, created={created}, "
+                f"updated={updated}, deleted={deleted}, skipped={skipped}"
+            ),
+        )
         return self.change_view(request, object_id)
 
     actions = [
