@@ -58,7 +58,7 @@
 
 {% if log_lines %}
 <h2>{% trans "Verbose log" %}</h2>
-<pre style="background:#f8f8f8; padding:1em; border:1px solid #ddd;">{% for line in log_lines %}{{ line }}{% if not forloop.last %}\n{% endif %}{% endfor %}</pre>
+<pre style="background:#f8f8f8; padding:1em; border:1px solid #ddd; white-space: pre-wrap; word-break: break-word;">{% for line in log_lines %}{{ line }}{% if not forloop.last %}\n{% endif %}{% endfor %}</pre>
 {% endif %}
 
 <p><a href="{{ changelist_url }}">{% trans "Return to reviewer preferences" %}</a></p>

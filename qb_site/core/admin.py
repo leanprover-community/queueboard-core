@@ -568,6 +568,12 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
         result = None
         log_lines: list[str] = []
 
+        def append_log(message: str) -> None:
+            # Normalize escaped newlines coming from logs.
+            normalized = message.replace("\\n", "\n")
+            for part in normalized.splitlines() or [""]:
+                log_lines.append(part)
+
         if request.method == "POST":
             form = ReviewerTopicsImportForm(request.POST, request.FILES)
             if form.is_valid():
@@ -588,7 +594,7 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
                         create_missing_users=create_missing_users,
                         create_missing_repo_default_branch=create_repo_branch,
                         verbose=verbose,
-                        logger=log_lines.append,
+                        logger=append_log,
                     )
                 except ReviewerTopicsImportError as exc:
                     form.add_error(None, str(exc))
