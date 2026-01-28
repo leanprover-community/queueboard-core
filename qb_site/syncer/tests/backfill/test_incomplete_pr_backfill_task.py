@@ -125,6 +125,22 @@ class TestIncompletePrBackfillTask(TestCase):
         mock_sync_pr_task.delay.assert_not_called()
 
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_includes_pending_head_ci_state(self, mock_sync_pr_task) -> None:
+        pr = self._make_pr(8, timeline_done=True, commits_done=True)
+        pr.head_ci_state = "PENDING"
+        pr.save(update_fields=["head_ci_state"])
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("enqueued"), 1)
+        mock_sync_pr_task.delay.assert_called_once_with(
+            self.repo.id,
+            pr.number,
+            backfill_timeline_pages=mock.ANY,
+            backfill_commit_pages=mock.ANY,
+        )
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
     def test_prefers_open_prs_when_incomplete(self, mock_sync_pr_task) -> None:
         open_pr = self._make_pr(6, state="open", timeline_done=False, commits_done=True)
         closed_pr = self._make_pr(7, state="closed", timeline_done=False, commits_done=True)

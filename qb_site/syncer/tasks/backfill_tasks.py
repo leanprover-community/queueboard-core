@@ -206,6 +206,7 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         | Q(commits_backfill_done=False)
         | Q(last_synced_at__isnull=True)
         | Q(last_synced_at__lt=stale_cutoff)
+        | Q(head_ci_state__iexact="PENDING")
     )
     total_incomplete = queryset.count()
 
