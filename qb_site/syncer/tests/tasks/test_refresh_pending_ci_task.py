@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import itertools
 from unittest import mock
 
 from django.test import TestCase
@@ -9,6 +10,7 @@ from django.utils import timezone
 from core.models import Repository
 from syncer.models import PullRequest, CheckRun, StatusContext
 from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task, sync_ci_for_shas_task
+from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.factories import make_repo, make_pr
 
 
@@ -16,19 +18,26 @@ class TestRefreshPendingCITask(TestCase):
     def setUp(self) -> None:
         self.repo: Repository = make_repo()
         self.pr: PullRequest = make_pr(self.repo, 1)
+        self._id_counter = itertools.count(1)
 
     def _make_checkrun(
         self,
         *,
+        pr: PullRequest | None = None,
+        node_id: str | None = None,
         status: str = "IN_PROGRESS",
-        head_sha: str = "sha1",
+        head_sha: str | None = "sha1",
         started_at_delta_hours: int = 1,
         last_synced_at_delta_hours: int | None = None,
     ) -> CheckRun:
         now = timezone.now()
+        if pr is None:
+            pr = self.pr
+        if node_id is None:
+            node_id = f"CR{next(self._id_counter)}"
         cr = CheckRun.objects.create(
-            pull_request=self.pr,
-            github_node_id="CR1",
+            pull_request=pr,
+            github_node_id=node_id,
             head_sha=head_sha,
             name="ci/test",
             status=status,
@@ -46,15 +55,21 @@ class TestRefreshPendingCITask(TestCase):
     def _make_status(
         self,
         *,
+        pr: PullRequest | None = None,
+        node_id: str | None = None,
         state: str = "PENDING",
-        head_sha: str = "sha1",
+        head_sha: str | None = "sha1",
         created_delta_hours: int = 1,
         last_synced_at_delta_hours: int | None = None,
     ) -> StatusContext:
         now = timezone.now()
+        if pr is None:
+            pr = self.pr
+        if node_id is None:
+            node_id = f"SC{next(self._id_counter)}"
         sc = StatusContext.objects.create(
-            pull_request=self.pr,
-            github_node_id="SC1",
+            pull_request=pr,
+            github_node_id=node_id,
             rest_id=None,
             head_sha=head_sha,
             name="bors",
@@ -107,3 +122,105 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(res.get("prs_enqueued"), 0)
         self.assertEqual(res.get("shas_enqueued"), 0)
         mock_sync_ci_for_shas.delay.assert_not_called()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_refresh_after_pr_sync_pending(self, mock_sync_ci_for_shas) -> None:
+        svc = PRSyncService()
+        now = timezone.now()
+        recent = (now - timedelta(minutes=5)).isoformat()
+        started = (now - timedelta(minutes=2)).isoformat()
+        bundle = {
+            "number": 5,
+            "state": "OPEN",
+            "isDraft": False,
+            "title": "Pending CI",
+            "body": "",
+            "createdAt": recent,
+            "updatedAt": recent,
+            "baseRefName": "master",
+            "headRefName": "b",
+            "headRefOid": "sha_pending",
+            "headRepositoryOwner": {"login": "o"},
+            "headRepository": {"name": "r"},
+            "additions": 0,
+            "deletions": 0,
+            "changedFiles": 0,
+            "author": {"login": "alice"},
+            "labels": {"nodes": []},
+            "timelineItems": {"nodes": []},
+            "commits": {
+                "nodes": [
+                    {
+                        "commit": {
+                            "oid": "sha_pending",
+                            "statusCheckRollup": {
+                                "contexts": {
+                                    "nodes": [
+                                        {
+                                            "__typename": "CheckRun",
+                                            "id": "CR_pending",
+                                            "name": "build",
+                                            "status": "IN_PROGRESS",
+                                            "conclusion": None,
+                                            "startedAt": started,
+                                            "completedAt": None,
+                                        }
+                                    ]
+                                }
+                            },
+                        }
+                    }
+                ]
+            },
+        }
+        svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
+
+        mock_sync_ci_for_shas.delay.return_value.id = "task-2"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        self.assertIn(5, res.get("prs_considered_numbers", []))
+        items = res.get("items") or []
+        self.assertEqual(items[0]["number"], 5)
+        self.assertEqual(items[0]["shas"], ["sha_pending"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_scans_past_ineligible_prs_to_find_actionable(self, mock_sync_ci_for_shas) -> None:
+        now = timezone.now()
+        pr1 = make_pr(self.repo, 10, gh_updated_at=now - timedelta(hours=3))
+        pr2 = make_pr(self.repo, 11, gh_updated_at=now - timedelta(hours=2))
+        pr3 = make_pr(self.repo, 12, gh_updated_at=now - timedelta(hours=1))
+
+        # pr1: stale pending (too old)
+        self._make_checkrun(
+            pr=pr1,
+            status="IN_PROGRESS",
+            head_sha="sha_old",
+            started_at_delta_hours=48,
+            last_synced_at_delta_hours=0,
+        )
+        # pr2: recent pending but too old by last_synced_at relative to origin
+        self._make_status(
+            pr=pr2,
+            state="PENDING",
+            head_sha="sha_old2",
+            created_delta_hours=48,
+            last_synced_at_delta_hours=0,
+        )
+        # pr3: actionable pending
+        self._make_status(pr=pr3, state="PENDING", head_sha="sha_ok", created_delta_hours=1)
+
+        mock_sync_ci_for_shas.delay.return_value.id = "task-3"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=1, max_shas_per_pr=5, max_pending_hours=12)
+
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        self.assertEqual(res.get("prs_skipped_stale"), 2)
+        self.assertIn(10, res.get("prs_considered_numbers", []))
+        self.assertIn(11, res.get("prs_considered_numbers", []))
+        self.assertIn(12, res.get("prs_considered_numbers", []))
+        items = res.get("items") or []
+        self.assertEqual(items[0]["number"], 12)
+        self.assertEqual(items[0]["shas"], ["sha_ok"])
+        mock_sync_ci_for_shas.delay.assert_called_once()

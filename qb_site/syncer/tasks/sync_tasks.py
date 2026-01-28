@@ -863,24 +863,32 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     max_age = timedelta(hours=max_pending_hours)
 
     total_pending_prs = prs_qs.count()
-    prs = list(prs_qs[:max_prs_int])
     prs_enqueued = 0
     shas_enqueued = 0
     per_pr: list[dict[str, Any]] = []
+    considered_numbers: list[int] = []
+    skipped_stale = 0
+    skipped_no_eligible = 0
 
     now = timezone.now()
 
-    for pr in prs:
+    # Gather actionable PRs by scanning until we have max_prs_int eligible.
+    actionable_found = 0
+    for pr in prs_qs.iterator():
+        considered_numbers.append(int(pr.number))
+
         # Pending CheckRuns with acceptable "pending duration".
         cr_qs = CheckRun.objects.filter(pull_request=pr).exclude(status="COMPLETED")
         eligible_cr_shas: set[str] = set()
+        has_recent_pending = False
         for cr in cr_qs:
             origin = cr.gh_started_at or cr.gh_completed_at or cr.created_at
             if origin is None:
                 origin = now
             if cr.last_synced_at is None or (cr.last_synced_at - origin) < max_age:
-                if cr.head_sha:
-                    eligible_cr_shas.add(cr.head_sha)
+                has_recent_pending = True
+                # head_sha should always be present for ingested CI rows.
+                eligible_cr_shas.add(cr.head_sha)
 
         # Pending StatusContexts with acceptable "pending duration".
         sc_qs = StatusContext.objects.filter(pull_request=pr, state="PENDING")
@@ -890,13 +898,21 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             if origin_sc is None:
                 origin_sc = now
             if sc.last_synced_at is None or (sc.last_synced_at - origin_sc) < max_age:
-                if sc.head_sha:
-                    eligible_sc_shas.add(sc.head_sha)
+                has_recent_pending = True
+                # head_sha should always be present for ingested CI rows.
+                eligible_sc_shas.add(sc.head_sha)
 
         shas = list(eligible_cr_shas | eligible_sc_shas)
         if not shas:
+            if not has_recent_pending:
+                skipped_stale += 1
+            else:
+                skipped_no_eligible += 1
+            if actionable_found >= max_prs_int:
+                break
             continue
         shas = shas[:max_shas_int]
+        actionable_found += 1
 
         # Enqueue CI refresh for these SHAs.
         pages_per_sha = int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
@@ -917,17 +933,24 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
                 "task_id": async_res.id,
             }
         )
+        if actionable_found >= max_prs_int:
+            break
 
     return {
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
-        "prs_considered": len(prs),
+        "prs_considered": len(considered_numbers),
+        "prs_considered_numbers": considered_numbers,
         "prs_enqueued": prs_enqueued,
         "shas_enqueued": shas_enqueued,
-        "backlog_prs": total_pending_prs,
+        "backlog_prs": max(0, total_pending_prs - len(considered_numbers)),
+        "backlog_prs_total": total_pending_prs,
+        "backlog_prs_actionable_scanned": actionable_found,
         "max_prs": max_prs_int,
         "max_shas_per_pr": max_shas_int,
         "max_pending_hours": int(max_pending_hours),
+        "prs_skipped_stale": skipped_stale,
+        "prs_skipped_no_eligible": skipped_no_eligible,
         "items": per_pr,
     }
 
