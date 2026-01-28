@@ -55,6 +55,27 @@ class TestCollectConvergenceTask(TestCase):
             deletions=0,
             changed_files_count=0,
         )
+        PullRequest.objects.create(
+            repository=self.repo,
+            number=3,
+            timeline_backfill_done=True,
+            commits_backfill_done=True,
+            head_ci_state="PENDING",
+            engagement_synced_at=now,
+            head_sha="b" * 40,
+            state="open",
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="o",
+            head_repo_name="r",
+            title="t3",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+        )
         CommitHistoryHarvest.objects.create(pull_request_id=2, start_sha="a" * 40, has_more=True)
         RepoBackfillCursor.objects.create(repository=self.repo, completed=False)
 
@@ -63,7 +84,7 @@ class TestCollectConvergenceTask(TestCase):
         self.assertIsNotNone(snap)
         self.assertEqual(snap.timeline_backfill_pending, 1)
         self.assertEqual(snap.commits_backfill_pending, 1)
-        self.assertEqual(snap.incomplete_prs, 2)
+        self.assertEqual(snap.incomplete_prs, 3)
         self.assertEqual(snap.harvest_jobs_open, 1)
         self.assertFalse(snap.history_cursor_completed)
         self.assertEqual(snap.prs_missing_engagement, 2)

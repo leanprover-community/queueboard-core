@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from celery import shared_task
+from django.conf import settings
+from django.db.models import DateTimeField, ExpressionWrapper, F, Q
 from django.utils import timezone
-
-from django.db.models import Q
 
 from syncer.models import PullRequest, CommitHistoryHarvest, RepoBackfillCursor, SyncerConvergenceSnapshot
 from core.models import Repository
@@ -20,7 +20,18 @@ def collect_syncer_convergence_task() -> dict:
         qs = PullRequest.objects.filter(repository=repo)
         timeline_pending = qs.filter(timeline_backfill_done=False).count()
         commits_pending = qs.filter(commits_backfill_done=False).count()
-        incomplete = qs.filter(Q(timeline_backfill_done=False) | Q(commits_backfill_done=False)).count()
+        eps = int(getattr(settings, "SYNCER_LAST_SYNC_EPSILON_SECONDS", 300))
+        stale_cutoff = ExpressionWrapper(
+            F("gh_updated_at") - timezone.timedelta(seconds=max(0, eps)),
+            output_field=DateTimeField(),
+        )
+        incomplete = qs.filter(
+            Q(timeline_backfill_done=False)
+            | Q(commits_backfill_done=False)
+            | Q(last_synced_at__isnull=True)
+            | Q(last_synced_at__lt=stale_cutoff)
+            | Q(head_ci_state__iexact="PENDING")
+        ).count()
         harvest_open = CommitHistoryHarvest.objects.filter(pull_request__repository=repo, has_more=True).count()
         cursor = RepoBackfillCursor.objects.filter(repository=repo).first()
         history_completed = bool(cursor.completed) if cursor else False
