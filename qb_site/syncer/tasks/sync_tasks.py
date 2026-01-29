@@ -844,13 +844,20 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     # Identify PRs that currently have any pending CI.
     pending_cr = CheckRun.objects.filter(pull_request=OuterRef("pk")).exclude(status="COMPLETED")
     pending_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), state="PENDING")
+    # Identify PRs whose head SHA has no CI contexts stored at all.
+    head_cr = CheckRun.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
+    head_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
 
     prs_qs = (
         PullRequest.objects.filter(repository=repo)
         .annotate(
             has_pending_ci=Exists(pending_cr) | Exists(pending_sc),
+            has_head_cr=Exists(head_cr),
+            has_head_sc=Exists(head_sc),
         )
-        .filter(has_pending_ci=True)
+        .filter(
+            Q(has_pending_ci=True) | (Q(head_sha__isnull=False) & ~Q(head_sha="") & Q(has_head_cr=False) & Q(has_head_sc=False))
+        )
         .order_by("gh_updated_at", "id")
     )
 
@@ -865,6 +872,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     total_pending_prs = prs_qs.count()
     prs_enqueued = 0
     shas_enqueued = 0
+    prs_missing_head_ci = 0
+    shas_missing_head_ci = 0
     per_pr: list[dict[str, Any]] = []
     considered_numbers: list[int] = []
     skipped_stale = 0
@@ -876,6 +885,12 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     actionable_found = 0
     for pr in prs_qs.iterator():
         considered_numbers.append(int(pr.number))
+
+        missing_head_ci = (
+            bool(getattr(pr, "head_sha", None))
+            and not bool(getattr(pr, "has_head_cr", False))
+            and not bool(getattr(pr, "has_head_sc", False))
+        )
 
         # Pending CheckRuns with acceptable "pending duration".
         cr_qs = CheckRun.objects.filter(pull_request=pr).exclude(status="COMPLETED")
@@ -902,7 +917,14 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
                 # head_sha should always be present for ingested CI rows.
                 eligible_sc_shas.add(sc.head_sha)
 
-        shas = list(eligible_cr_shas | eligible_sc_shas)
+        shas: list[str] = []
+        item_reason = "pending_ci"
+        if missing_head_ci and pr.head_sha:
+            shas.append(pr.head_sha)
+            item_reason = "missing_head_ci"
+        for sha in sorted(eligible_cr_shas | eligible_sc_shas):
+            if sha not in shas:
+                shas.append(sha)
         if not shas:
             if not has_recent_pending:
                 skipped_stale += 1
@@ -926,11 +948,15 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         )
         prs_enqueued += 1
         shas_enqueued += len(shas)
+        if missing_head_ci and pr.head_sha:
+            prs_missing_head_ci += 1
+            shas_missing_head_ci += 1
         per_pr.append(
             {
                 "number": int(pr.number),
                 "shas": shas,
                 "task_id": async_res.id,
+                "reason": item_reason,
             }
         )
         if actionable_found >= max_prs_int:
@@ -943,6 +969,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         "prs_considered_numbers": considered_numbers,
         "prs_enqueued": prs_enqueued,
         "shas_enqueued": shas_enqueued,
+        "prs_missing_head_ci": prs_missing_head_ci,
+        "shas_missing_head_ci": shas_missing_head_ci,
         "backlog_prs": max(0, total_pending_prs - len(considered_numbers)),
         "backlog_prs_total": total_pending_prs,
         "backlog_prs_actionable_scanned": actionable_found,

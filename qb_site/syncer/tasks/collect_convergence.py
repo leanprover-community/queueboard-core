@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from celery import shared_task
 from django.conf import settings
-from django.db.models import DateTimeField, ExpressionWrapper, F, Q
+from django.db.models import DateTimeField, ExpressionWrapper, F, Q, Exists, OuterRef
 from django.utils import timezone
 
-from syncer.models import PullRequest, CommitHistoryHarvest, RepoBackfillCursor, SyncerConvergenceSnapshot
+from syncer.models import (
+    PullRequest,
+    CommitHistoryHarvest,
+    RepoBackfillCursor,
+    SyncerConvergenceSnapshot,
+    CheckRun,
+    StatusContext,
+)
 from core.models import Repository
 
 
@@ -46,6 +53,16 @@ def collect_syncer_convergence_task() -> dict:
         )
         missing_head_ci = qs.filter(head_ci_state__isnull=True).count()
         missing_head_sha = qs.filter(Q(head_sha__isnull=True) | Q(head_sha="")).count()
+        head_cr = CheckRun.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
+        head_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
+        missing_head_contexts = (
+            qs.filter(state="open")
+            .filter(head_sha__isnull=False)
+            .exclude(head_sha="")
+            .annotate(has_head_cr=Exists(head_cr), has_head_sc=Exists(head_sc))
+            .filter(has_head_cr=False, has_head_sc=False)
+            .count()
+        )
 
         SyncerConvergenceSnapshot.objects.create(
             repository=repo,
@@ -59,6 +76,7 @@ def collect_syncer_convergence_task() -> dict:
             prs_engagement_incomplete=engagement_incomplete,
             prs_missing_head_ci_state=missing_head_ci,
             prs_missing_head_sha=missing_head_sha,
+            prs_missing_head_ci_contexts=missing_head_contexts,
         )
         rows += 1
         per_repo.append(
@@ -72,6 +90,7 @@ def collect_syncer_convergence_task() -> dict:
                 "prs_engagement_incomplete": engagement_incomplete,
                 "prs_missing_head_ci_state": missing_head_ci,
                 "prs_missing_head_sha": missing_head_sha,
+                "prs_missing_head_ci_contexts": missing_head_contexts,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo}

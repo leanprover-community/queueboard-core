@@ -84,14 +84,55 @@ class TestRefreshPendingCITask(TestCase):
         return sc
 
     def test_skips_when_no_pending_ci(self) -> None:
-        # No CheckRuns/StatusContexts at all: nothing to enqueue.
+        # No CheckRuns/StatusContexts at all and no head SHA: nothing to enqueue.
+        self.pr.head_sha = None
+        self.pr.save(update_fields=["head_sha", "updated_at"])
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
         self.assertEqual(res.get("prs_enqueued"), 0)
         self.assertEqual(res.get("shas_enqueued"), 0)
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_enqueues_when_head_sha_missing_contexts(self, mock_sync_ci_for_shas) -> None:
+        # Head SHA is set but no contexts exist for it: enqueue CI-by-SHA refresh.
+        self.pr.head_sha = "sha_missing"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        mock_sync_ci_for_shas.delay.return_value.id = "task-1"
+
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["number"], 1)
+        self.assertEqual(items[0]["shas"], ["sha_missing"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    def test_skips_when_head_sha_has_contexts(self) -> None:
+        # Completed CI exists for head SHA; no pending -> no enqueue.
+        self._make_checkrun(status="COMPLETED", head_sha=self.pr.head_sha, started_at_delta_hours=1)
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_enqueues_when_head_sha_differs_from_existing_contexts(self, mock_sync_ci_for_shas) -> None:
+        # Existing CI contexts are for a different head SHA; current head is missing.
+        self._make_checkrun(status="COMPLETED", head_sha="old_sha", started_at_delta_hours=1)
+        self.pr.head_sha = "new_sha"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        mock_sync_ci_for_shas.delay.return_value.id = "task-2"
+
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["shas"], ["new_sha"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_enqueues_for_recent_pending_ci(self, mock_sync_ci_for_shas) -> None:
         # One PR with a pending CheckRun that has never been explicitly synced.
+        self.pr.head_sha = "shaA"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
         self._make_checkrun(status="IN_PROGRESS", head_sha="shaA", started_at_delta_hours=1, last_synced_at_delta_hours=None)
 
         # Avoid hitting the real broker; run task in-process and assert we request CI for the expected SHA.
@@ -111,6 +152,8 @@ class TestRefreshPendingCITask(TestCase):
     def test_timeout_excludes_old_pending_ci(self, mock_sync_ci_for_shas) -> None:
         # Pending CheckRun whose pending_duration exceeds max_pending_hours should be skipped.
         # Origin is taken from gh_started_at; last_synced_at is far enough after origin.
+        self.pr.head_sha = "shaB"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
         self._make_checkrun(
             status="IN_PROGRESS",
             head_sha="shaB",
@@ -125,6 +168,8 @@ class TestRefreshPendingCITask(TestCase):
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_refresh_after_pr_sync_pending(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = None
+        self.pr.save(update_fields=["head_sha", "updated_at"])
         svc = PRSyncService()
         now = timezone.now()
         recent = (now - timedelta(minutes=5)).isoformat()
@@ -188,9 +233,9 @@ class TestRefreshPendingCITask(TestCase):
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_scans_past_ineligible_prs_to_find_actionable(self, mock_sync_ci_for_shas) -> None:
         now = timezone.now()
-        pr1 = make_pr(self.repo, 10, gh_updated_at=now - timedelta(hours=3))
-        pr2 = make_pr(self.repo, 11, gh_updated_at=now - timedelta(hours=2))
-        pr3 = make_pr(self.repo, 12, gh_updated_at=now - timedelta(hours=1))
+        pr1 = make_pr(self.repo, 10, gh_updated_at=now - timedelta(hours=3), head_sha="sha_old")
+        pr2 = make_pr(self.repo, 11, gh_updated_at=now - timedelta(hours=2), head_sha="sha_old2")
+        pr3 = make_pr(self.repo, 12, gh_updated_at=now - timedelta(hours=1), head_sha="sha_ok")
 
         # pr1: stale pending (too old)
         self._make_checkrun(
