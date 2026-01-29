@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Sequence
 from datetime import timedelta
 
 from celery import shared_task
+from django.db import models
 from dateutil import parser as dtparser
 from django.utils import timezone
 from django.conf import settings
@@ -858,7 +859,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         .filter(
             Q(has_pending_ci=True) | (Q(head_sha__isnull=False) & ~Q(head_sha="") & Q(has_head_cr=False) & Q(has_head_sc=False))
         )
-        .order_by("gh_updated_at", "id")
+        .annotate(state_rank=models.Case(models.When(state="open", then=0), default=1, output_field=models.IntegerField()))
+        .order_by("state_rank", "gh_updated_at", "id")
     )
 
     from django.utils import timezone
@@ -890,6 +892,7 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             bool(getattr(pr, "head_sha", None))
             and not bool(getattr(pr, "has_head_cr", False))
             and not bool(getattr(pr, "has_head_sc", False))
+            and str(getattr(pr, "head_ci_state", "")).upper() != "UNAVAILABLE"
         )
 
         # Pending CheckRuns with acceptable "pending duration".

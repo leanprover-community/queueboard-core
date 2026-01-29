@@ -114,6 +114,18 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(res.get("shas_enqueued"), 0)
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_skips_missing_head_ci_when_unavailable(self, mock_sync_ci_for_shas) -> None:
+        # Missing head contexts should be ignored when head_ci_state is UNAVAILABLE.
+        self.pr.head_sha = "sha_missing"
+        self.pr.head_ci_state = "UNAVAILABLE"
+        self.pr.save(update_fields=["head_sha", "head_ci_state", "updated_at"])
+
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+        mock_sync_ci_for_shas.delay.assert_not_called()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_enqueues_when_head_sha_differs_from_existing_contexts(self, mock_sync_ci_for_shas) -> None:
         # Existing CI contexts are for a different head SHA; current head is missing.
         self._make_checkrun(status="COMPLETED", head_sha="old_sha", started_at_delta_hours=1)
@@ -126,6 +138,20 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(res.get("shas_enqueued"), 1)
         items = res.get("items") or []
         self.assertEqual(items[0]["shas"], ["new_sha"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_open_prs_prioritized_over_closed(self, mock_sync_ci_for_shas) -> None:
+        now = timezone.now()
+        closed_pr = make_pr(self.repo, 20, state="closed", gh_updated_at=now - timedelta(hours=2), head_sha="sha_closed")
+        open_pr = make_pr(self.repo, 21, state="open", gh_updated_at=now - timedelta(hours=1), head_sha="sha_open")
+        self._make_checkrun(pr=open_pr, status="IN_PROGRESS", head_sha="sha_open", started_at_delta_hours=1)
+
+        mock_sync_ci_for_shas.delay.return_value.id = "task-4"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=1, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["number"], 21)
         mock_sync_ci_for_shas.delay.assert_called_once()
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
