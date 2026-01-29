@@ -971,6 +971,7 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_engagement_incomplete",
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
+        "prs_missing_head_ci_contexts",
     )
     list_filter = ("repository", "history_cursor_completed")
     date_hierarchy = "collected_at"
@@ -988,6 +989,7 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_engagement_incomplete",
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
+        "prs_missing_head_ci_contexts",
         "created_at",
     )
 
