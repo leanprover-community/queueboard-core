@@ -19,7 +19,7 @@ def sync_ci_for_sha(
     max_pages: int = 1,
     rate_log: Optional[Callable[[str, dict], None]] = None,
     require_pr_association: bool = False,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Fetch CI contexts for a commit SHA and upsert them for the given PR.
 
     Strategy
@@ -27,7 +27,7 @@ def sync_ci_for_sha(
     - Fallback to the base repository (repository.owner/name) when the object is missing.
     - Paginate contexts(first:100, after) up to max_pages and upsert CheckRun/StatusContext rows.
 
-    Returns a dict with created/updated counts.
+    Returns a dict with created/updated counts plus classification metadata.
     """
     created_cr = 0
     updated_cr = 0
@@ -46,12 +46,16 @@ def sync_ci_for_sha(
     # Collect contexts from any candidate repo that has the commit.
     assoc_prs: list[dict[str, Any]] = []
     context_pages: list[list[dict[str, Any]]] = []
+    repos_checked: list[dict[str, Any]] = []
     found_repos: list[tuple[str, str]] = []
+    repo_used: Optional[tuple[str, str]] = None
     for o, n in repo_candidates:
         d = _fetch(o, n, after=None)
         repo_node = (d.get("data") or {}).get("repository") or {}
         obj = repo_node.get("object")
-        if obj and isinstance(obj, dict) and obj.get("__typename") == "Commit":
+        found_commit = bool(obj and isinstance(obj, dict) and obj.get("__typename") == "Commit")
+        repos_checked.append({"owner": o, "name": n, "found_commit": found_commit})
+        if found_commit:
             found_repos.append((o, n))
             contexts_conn = (obj.get("statusCheckRollup") or {}).get("contexts") or {}
             aprs = (obj.get("associatedPullRequests") or {}).get("nodes") or []
@@ -62,6 +66,8 @@ def sync_ci_for_sha(
             while pages < max_pages and contexts_conn is not None:
                 nodes = contexts_conn.get("nodes") or []
                 if nodes:
+                    if repo_used is None:
+                        repo_used = (o, n)
                     context_pages.append(nodes)
                 if rate_log is not None:
                     rl = client.get_last_rate_limit()
@@ -80,21 +86,16 @@ def sync_ci_for_sha(
         else:
             log.debug("CI by SHA: commit %s not found in %s/%s", sha, o, n)
 
-    if not context_pages:
-        log.debug(
-            "CI by SHA: no contexts found for %s sha=%s (candidates=%s)",
-            pr,
-            sha,
-            [(o, n) for o, n in repo_candidates],
-        )
-        return {"checkruns_created": 0, "checkruns_updated": 0, "status_created": 0, "status_updated": 0}
+    found_commit_any = bool(found_repos)
+    found_contexts = bool(context_pages)
 
     # Optional association guard to avoid writing CI unrelated to this PR
-    if require_pr_association:
+    association_required = bool(require_pr_association)
+    association_matched = False
+    if association_required:
         pr_owner = pr.repository.owner
         pr_name = pr.repository.name
         pr_number = int(pr.number)
-        is_associated = False
         for ap in assoc_prs:
             try:
                 repo = ap.get("repository") or {}
@@ -105,16 +106,83 @@ def sync_ci_for_sha(
                 owner_login = name_login = None
                 num = None
             if owner_login == pr_owner and name_login == pr_name and num == pr_number:
-                is_associated = True
+                association_matched = True
                 break
-        if not is_associated:
+        if not association_matched:
             log.debug(
                 "CI by SHA: skipping sha=%s for %s due to missing associated PR in GitHub payload",
                 sha,
                 pr,
             )
-            # Skip ingestion
-            return {"checkruns_created": 0, "checkruns_updated": 0, "status_created": 0, "status_updated": 0}
+
+    if not found_commit_any:
+        log.debug(
+            "CI by SHA: commit not found for %s sha=%s (candidates=%s)",
+            pr,
+            sha,
+            [(o, n) for o, n in repo_candidates],
+        )
+        return {
+            "checkruns_created": 0,
+            "checkruns_updated": 0,
+            "status_created": 0,
+            "status_updated": 0,
+            "result": "not_found",
+            "found_commit": False,
+            "found_contexts": False,
+            "repos_checked": repos_checked,
+            "repo_used": None,
+            "pages_fetched": 0,
+            "assoc_prs_count": len(assoc_prs),
+            "association_required": association_required,
+            "association_matched": association_matched,
+            "sha": sha,
+            "pr": f"{pr.repository.owner}/{pr.repository.name}#{pr.number}",
+        }
+
+    if association_required and not association_matched:
+        return {
+            "checkruns_created": 0,
+            "checkruns_updated": 0,
+            "status_created": 0,
+            "status_updated": 0,
+            "result": "skipped_association",
+            "found_commit": found_commit_any,
+            "found_contexts": found_contexts,
+            "repos_checked": repos_checked,
+            "repo_used": {"owner": repo_used[0], "name": repo_used[1]} if repo_used else None,
+            "pages_fetched": len(context_pages),
+            "assoc_prs_count": len(assoc_prs),
+            "association_required": association_required,
+            "association_matched": association_matched,
+            "sha": sha,
+            "pr": f"{pr.repository.owner}/{pr.repository.name}#{pr.number}",
+        }
+
+    if not found_contexts:
+        log.debug(
+            "CI by SHA: no contexts found for %s sha=%s (candidates=%s)",
+            pr,
+            sha,
+            [(o, n) for o, n in repo_candidates],
+        )
+        return {
+            "checkruns_created": 0,
+            "checkruns_updated": 0,
+            "status_created": 0,
+            "status_updated": 0,
+            "result": "empty",
+            "found_commit": True,
+            "found_contexts": False,
+            "repos_checked": repos_checked,
+            "repo_used": None,
+            "pages_fetched": 0,
+            "assoc_prs_count": len(assoc_prs),
+            "association_required": association_required,
+            "association_matched": association_matched,
+            "sha": sha,
+            "pr": f"{pr.repository.owner}/{pr.repository.name}#{pr.number}",
+        }
 
     # Ingest contexts, deduping by github node id across repos/pages.
     seen_cr_ids: set[str] = set()
@@ -180,4 +248,15 @@ def sync_ci_for_sha(
         "checkruns_updated": updated_cr,
         "status_created": created_sc,
         "status_updated": updated_sc,
+        "result": "ok",
+        "found_commit": found_commit_any,
+        "found_contexts": found_contexts,
+        "repos_checked": repos_checked,
+        "repo_used": {"owner": repo_used[0], "name": repo_used[1]} if repo_used else None,
+        "pages_fetched": len(context_pages),
+        "assoc_prs_count": len(assoc_prs),
+        "association_required": association_required,
+        "association_matched": association_matched,
+        "sha": sha,
+        "pr": f"{pr.repository.owner}/{pr.repository.name}#{pr.number}",
     }

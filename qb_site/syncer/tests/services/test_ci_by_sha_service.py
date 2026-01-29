@@ -181,3 +181,81 @@ class TestCIBySHAService(TestCase):
         gh.get_ci_by_commit.side_effect = _get
         res = sync_ci_for_sha(self.pr, "ghi789", client=gh, max_pages=1)
         self.assertGreaterEqual(res.get("checkruns_created", 0), 2)
+
+    @mock.patch("syncer.services.ci_by_sha_service.GitHubClient")
+    def test_require_pr_association_skips_when_missing(self, MockClient) -> None:
+        gh = MockClient.return_value
+        page = {
+            "data": {
+                "repository": {
+                    "object": {
+                        "__typename": "Commit",
+                        "associatedPullRequests": {"nodes": []},
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "id": "CR_assoc",
+                                        "name": "ci/assoc",
+                                        "status": "COMPLETED",
+                                        "conclusion": "SUCCESS",
+                                        "startedAt": "2024-01-04T00:01:00Z",
+                                        "completedAt": "2024-01-04T00:02:00Z",
+                                        "detailsUrl": None,
+                                        "externalId": None,
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        gh.get_ci_by_commit.return_value = page
+        res = sync_ci_for_sha(self.pr, "assoc123", client=gh, max_pages=1, require_pr_association=True)
+        self.assertEqual(res.get("checkruns_created", 0), 0)
+        self.assertEqual(res.get("checkruns_updated", 0), 0)
+        self.assertEqual(res.get("status_created", 0), 0)
+        self.assertEqual(res.get("status_updated", 0), 0)
+
+    @mock.patch("syncer.services.ci_by_sha_service.GitHubClient")
+    def test_require_pr_association_allows_when_matched(self, MockClient) -> None:
+        gh = MockClient.return_value
+        page = {
+            "data": {
+                "repository": {
+                    "object": {
+                        "__typename": "Commit",
+                        "associatedPullRequests": {
+                            "nodes": [
+                                {
+                                    "number": int(self.pr.number),
+                                    "repository": {"owner": {"login": self.pr.repository.owner}, "name": self.pr.repository.name},
+                                }
+                            ]
+                        },
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "__typename": "StatusContext",
+                                        "id": "SC_assoc",
+                                        "context": "lint",
+                                        "state": "SUCCESS",
+                                        "targetUrl": None,
+                                        "description": None,
+                                        "createdAt": "2024-01-04T00:01:30Z",
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        gh.get_ci_by_commit.return_value = page
+        res = sync_ci_for_sha(self.pr, "assoc456", client=gh, max_pages=1, require_pr_association=True)
+        self.assertGreaterEqual(res.get("status_created", 0), 1)
