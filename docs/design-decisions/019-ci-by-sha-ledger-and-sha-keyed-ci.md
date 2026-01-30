@@ -18,39 +18,39 @@ This decision has two parts:
 ## Decision (Part 1: CI-by-SHA backoff ledger)
 - Introduce a persistent, per-repository SHA ledger that records CI-by-SHA fetch attempts and results.
 - Gate all CI-by-SHA enqueue paths on this ledger to avoid repeated requests for SHAs that are known to be empty/expired.
-- Keep the ledger agnostic to PRs; it should be keyed by repository + head SHA.
+- Keep the ledger agnostic to PRs; it should be keyed by repository + SHA.
 
 ### Proposed data model
-- New model: `syncer.CIShaFetchState` (name TBD, in `qb_site/syncer/models/`):
+- New model: `syncer.CIShaFetchState` (in `qb_site/syncer/models/`):
   - `repository` (FK)
-  - `head_sha` (char(64), indexed)
+  - `sha` (char(64), indexed)
   - `last_attempted_at` (DateTime)
   - `last_success_at` (DateTime, nullable)
-  - `last_result` (enum/string: `ok`, `empty`, `error`, `expired`)
+  - `last_result` (enum/string: `ok`, `empty`, `not_found`, `error`, `skipped_association`)
   - `attempts` (int)
-  - `next_retry_at` (DateTime, nullable) or derive via policy
-- Unique constraint on `(repository, head_sha)`.
+- Unique constraint on `(repository, sha)`.
+- Backoff windows are derived from settings rather than stored in the row.
 
 ### Enqueue policy
-- Add a helper (e.g., `syncer.services.ci_backoff.should_enqueue_ci_sha(...)`) that:
+- Add a helper (`syncer.services.ci_backoff.should_enqueue_ci_sha(...)`) that:
   - Allows enqueue if there is no ledger row.
-  - Allows enqueue if `last_result=ok` but data might be stale (optional policy).
-  - Skips enqueue if:
-    - `last_result in {empty, expired}` and `last_attempted_at` is within cooldown,
-    - OR `next_retry_at` is in the future.
+  - Skips enqueue when `last_result` indicates stale data and the cooldown has not elapsed.
+  - Treats `skipped_association` as a no-op result (no backoff); this should be deprecated once CI is SHA-keyed.
 - Default cooldowns (configurable settings):
-  - `SYNCER_CI_SHA_BACKOFF_EMPTY_HOURS` (e.g., 24 * 30)
-  - `SYNCER_CI_SHA_BACKOFF_ERROR_MINUTES` (e.g., 30)
+  - `SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS` (default 300)
+  - `SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS` (default 300)
+- `not_found` is treated as an infinite cooldown (no retries).
 
 ### Write policy
-- Update ledger in the CI-by-SHA ingest path (single source of truth):
-  - `syncer.services.ci_by_sha_service.sync_ci_for_sha` should report whether contexts were found.
-  - After each SHA fetch, update `CIShaFetchState`:
-    - `ok` if contexts found and written,
-    - `empty` if no contexts returned,
-    - `error` if the fetch failed (rate limit / errors),
-    - optionally `expired` if GitHub returns a specific not-found/permission response for old SHAs.
-- Treat `empty` as the common expired case unless a distinct error is detected.
+- Update ledger in the CI-by-SHA ingest path:
+  - `syncer.services.ci_by_sha_service.sync_ci_for_sha` returns a result classification.
+  - `syncer.services.ci_backoff.record_ci_sha_fetch` persists attempts after each SHA fetch.
+  - Result mapping:
+    - `ok`: contexts found (regardless of allowlist filtering)
+    - `empty`: commit exists but `statusCheckRollup` is null or contexts list empty
+    - `not_found`: commit object missing in all candidate repos
+    - `skipped_association`: association guard failed (when enabled)
+    - `error`: request failed (exceptions)
 
 ### Integration points
 - Apply the guard before enqueueing CI-by-SHA in:
@@ -58,13 +58,16 @@ This decision has two parts:
   - `analyzer.plan_missing_ci` (revision-based backfill),
   - `syncer.harvest_commit_history_task` (commit-history missing/pending),
   - admin or manual enqueue tools if they go through shared helpers.
-- Expose counts in task results (e.g., `shas_skipped_backoff`).
+- Expose counts in task results:
+  - `shas_skipped_backoff`, `prs_skipped_backoff` (refresh task)
+  - `ci_shas_skipped_backoff` (commit history task)
+  - `prs_skipped_backoff` (analyzer backfill task)
 
 ### Tests
-- Unit tests for the ledger policy (no row, recent empty, old empty, error backoff).
+- Unit tests for the ledger policy (no row, empty cooldown, error cooldown, not_found infinite).
 - Integration tests that show:
   - Missing-head backstop skips when ledger says `empty` and cooldown not elapsed.
-  - A changed head SHA bypasses old backoff (new key).
+  - A changed SHA bypasses old backoff (new key).
 
 ## Decision (Part 2: Migration to SHA-keyed CI storage)
 - Add SHA-keyed CI tables and transition the analyzer to read by SHA with PR fallbacks.
@@ -124,7 +127,7 @@ This decision has two parts:
 - Add a new migration for `CIShaFetchState` (and later for SHA-keyed CI tables).
 - Extend admin/convergence metrics to monitor:
   - `prs_missing_head_ci_contexts` (open PRs with missing head contexts),
-  - `ci_sha_backoff_skips` (optional),
+  - `shas_skipped_backoff` / `prs_skipped_backoff`,
   - ledger row counts per repo.
 - For Part 2, perform dual-write before switching reads.
 
