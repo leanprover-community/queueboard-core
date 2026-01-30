@@ -34,6 +34,8 @@ from queueboard.mathlib_dashboards import Dashboard, short_description, long_des
 from queueboard.util import format_delta
 from queueboard.snapshot import load_snapshot
 
+QUEUE_DATA_STATUS: dict[int, str] = {}
+
 
 ### Helper methods: writing HTML code for various parts of the generated webpage ###
 
@@ -164,6 +166,19 @@ def hide(code: str) -> str:
     return f'<div style="display:none">{code}</div>' if code else ""
 
 
+def _unknown_queue_tooltip(pr_number: int, *, field_label: str) -> str:
+    status = QUEUE_DATA_STATUS.get(pr_number)
+    if status == "missing":
+        reason = "data_status.queue=missing (timeline backfill incomplete or CI-gated windows missing)"
+    elif status == "incomplete":
+        reason = "data_status.queue=incomplete (backfill still in progress)"
+    elif status:
+        reason = f"data_status.queue={status}"
+    else:
+        reason = "data_status.queue unavailable"
+    return f"{field_label} unavailable; {reason}"
+
+
 # Compute the table entries about a sequence of PRs.
 # |page| is the name of the current webpage (e.g. "review_dashboard.html"),
 # |id| is the fragment ID of the current table (e.g. "queue").
@@ -284,8 +299,10 @@ def _compute_pr_entries(
             entries.append(f'{prefix} <a title="{tooltip}">{format_delta(rd)} ago</a>')
 
         # Always start this column with a <div> with display:none, this is important for auto-detecting the column type!
-        real_update = f'{hide(" ")}<a title="the last actual update for this PR could not be determined">unknown</a>'
-        total_time = f'{hide(" ")}<a title="this PR\'s total time in review could not be determined">unknown</a>'
+        unknown_update = _unknown_queue_tooltip(pr.number, field_label="Last status change")
+        unknown_total = _unknown_queue_tooltip(pr.number, field_label="Total time in review")
+        real_update = f'{hide(" ")}<a title="{unknown_update}">unknown</a>'
+        total_time = f'{hide(" ")}<a title="{unknown_total}">unknown</a>'
         if pr_info:
             last_update = aggregate_information[pr_number].last_status_change
             if last_update is not None and last_update.status != DataStatus.Missing:
@@ -1088,7 +1105,10 @@ def main() -> None:
             all_pr_status,
             base_branch,
             prs_to_list,
+            queue_data_status,
         ) = load_snapshot(API_DIR)
+        global QUEUE_DATA_STATUS
+        QUEUE_DATA_STATUS = queue_data_status
     else:
         aggregate_info = load_from_json_file(path.join(API_DIR, "aggregate_info.json"))
         draft_PRs = load_from_json_file(path.join(API_DIR, "draft_PRs.json"))

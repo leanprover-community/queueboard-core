@@ -8,7 +8,7 @@ from django.utils import timezone
 from analyzer.models import PRRevision, PRRevisionBuildState
 from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 from core.models import Repository
-from syncer.models import CIShaFetchState, CheckRun, PullRequest
+from syncer.models import CIShaFetchState, CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType
 
 
 class TestPlanMissingCITask(TestCase):
@@ -55,7 +55,7 @@ class TestPlanMissingCITask(TestCase):
         self.assertEqual(res["ci_tasks"], 1)
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
-    def test_skips_when_already_checked_for_version(self, mock_enqueue) -> None:
+    def test_rechecks_when_already_checked_for_version(self, mock_enqueue) -> None:
         pr = self._mk_pr_with_revision(2, "sha-old")
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         state.ci_checked_revision_version = state.revision_version
@@ -64,11 +64,11 @@ class TestPlanMissingCITask(TestCase):
 
         res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
 
-        mock_enqueue.assert_not_called()
+        mock_enqueue.assert_called_once()
         state.refresh_from_db()
         self.assertEqual(state.ci_checked_revision_version, state.revision_version)
-        self.assertEqual(res["prs_checked"], 0)
-        self.assertEqual(res["ci_tasks"], 0)
+        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["ci_tasks"], 1)
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
     def test_marks_checked_even_without_missing_ci(self, mock_enqueue) -> None:
@@ -103,7 +103,7 @@ class TestPlanMissingCITask(TestCase):
             sha="sha-blocked",
             last_attempted_at=timezone.now(),
             last_success_at=None,
-            last_result="not_found",
+            last_result="error",
             attempts=1,
         )
 
@@ -115,3 +115,97 @@ class TestPlanMissingCITask(TestCase):
         self.assertEqual(res["prs_checked"], 1)
         self.assertEqual(res["ci_tasks"], 0)
         self.assertEqual(res["prs_skipped_backoff"], 1)
+
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_skips_terminal_fetch_state(self, mock_enqueue) -> None:
+        pr = self._mk_pr_with_revision(6, "sha-terminal")
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha-terminal",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
+
+        mock_enqueue.assert_not_called()
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.ci_checked_revision_version, state.revision_version)
+        self.assertIsNotNone(state.ci_checked_at)
+        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["ci_tasks"], 0)
+        self.assertEqual(res["prs_skipped_backoff"], 0)
+
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_force_push_heads_skip_terminal_and_progress(self, mock_enqueue) -> None:
+        pr = self._mk_pr_with_revision(7, "rev1")
+        t0 = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="fp_before",
+            after_sha="fp_after",
+        )
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="fp_before",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="filtered",
+            attempts=1,
+        )
+
+        plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 5, "pages_per_sha": 1}).get()
+
+        mock_enqueue.assert_called_once()
+        _, call_kwargs = mock_enqueue.call_args
+        shas = call_kwargs.get("shas") or []
+        self.assertIn("fp_after", shas)
+        self.assertIn("rev1", shas)
+        self.assertNotIn("fp_before", shas)
+
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_two_sweeps_converge_after_terminal(self, mock_enqueue) -> None:
+        pr = self._mk_pr_with_revision(8, "sha1")
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha2",
+            from_ts=pr.gh_created_at + timezone.timedelta(hours=1),
+            to_ts=None,
+            seq=1,
+        )
+
+        # First sweep should enqueue both heads (no CI, no terminal fetch state).
+        plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 5, "pages_per_sha": 1}).get()
+        self.assertTrue(mock_enqueue.called)
+        _, call_kwargs = mock_enqueue.call_args
+        shas = set(call_kwargs.get("shas") or [])
+        self.assertIn("sha1", shas)
+        self.assertIn("sha2", shas)
+
+        # Mark both as terminal outcomes.
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha1",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="empty",
+            attempts=1,
+        )
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha2",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+
+        mock_enqueue.reset_mock()
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 5, "pages_per_sha": 1}).get()
+
+        mock_enqueue.assert_not_called()
+        self.assertEqual(res["ci_tasks"], 0)

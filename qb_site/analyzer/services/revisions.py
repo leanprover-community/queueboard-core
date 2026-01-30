@@ -442,7 +442,33 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     return RebuildResult(created=created, deleted=deleted, strategy=strategy)
 
 
-def next_revision_backfill_shas(pr: PullRequest, limit: int = 2) -> list[str]:
+def revision_candidate_shas(pr: PullRequest) -> list[str]:
+    """Return ordered candidate head SHAs from force-push events and PRRevision rows."""
+    seen: set[str] = set()
+    candidates: list[tuple[datetime, str]] = []
+
+    for ev in PRTimelineEvent.objects.filter(pull_request=pr, type=PRTimelineEventType.HEAD_FORCE_PUSHED).order_by(
+        "occurred_at", "id"
+    ):
+        for sha in (ev.before_sha, ev.after_sha):
+            if not sha or sha in seen:
+                continue
+            seen.add(sha)
+            ts = ev.occurred_at or timezone.now()
+            candidates.append((ts, sha))
+
+    for rev in PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id"):
+        sha = rev.head_sha or ""
+        if not sha or sha in seen:
+            continue
+        seen.add(sha)
+        candidates.append((rev.from_ts, sha))
+
+    candidates.sort(key=lambda item: item[0])
+    return [sha for _, sha in candidates]
+
+
+def next_revision_backfill_shas(pr: PullRequest, limit: int = 2, *, skip_shas: set[str] | None = None) -> list[str]:
     """Return up to `limit` head SHAs whose CI appears missing or still pending.
 
     Heuristic: select candidate head SHAs (older first) where:
@@ -456,32 +482,8 @@ def next_revision_backfill_shas(pr: PullRequest, limit: int = 2) -> list[str]:
     """
     if limit <= 0:
         return []
-    seen: set[str] = set()
-    candidates: list[tuple[datetime, str]] = []
-
-    # Timeline before/after heads in chronological order.
-    for ev in PRTimelineEvent.objects.filter(pull_request=pr, type=PRTimelineEventType.HEAD_FORCE_PUSHED).order_by(
-        "occurred_at", "id"
-    ):
-        for sha in (ev.before_sha, ev.after_sha):
-            if not sha:
-                continue
-            if sha in seen:
-                continue
-            seen.add(sha)
-            ts = ev.occurred_at or timezone.now()
-            candidates.append((ts, sha))
-
-    # Existing revision heads (in order).
-    for rev in PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id"):
-        sha = rev.head_sha or ""
-        if not sha or sha in seen:
-            continue
-        seen.add(sha)
-        candidates.append((rev.from_ts, sha))
-
-    # Oldest-first
-    candidates.sort(key=lambda item: item[0])
+    candidates = revision_candidate_shas(pr)
+    skip = skip_shas or set()
 
     # Snapshot CI presence up-front to avoid repeated queries per candidate.
     status_ctx_rows = StatusContext.objects.filter(pull_request=pr).values_list("head_sha", "state")
@@ -508,7 +510,9 @@ def next_revision_backfill_shas(pr: PullRequest, limit: int = 2) -> list[str]:
             cr_pending.add(head_sha)
 
     shas: list[str] = []
-    for _, sha in candidates:
+    for sha in candidates:
+        if sha in skip:
+            continue
         has_cr = sha in cr_any
         has_sc = sha in sc_any
         pending_status_only = sha in sc_pending and sha not in sc_completed

@@ -246,6 +246,7 @@ def load_snapshot(api_dir: str):
     all_pr_status: Dict[str, PRStatus] = {}
     CI_status: Dict[str, CIStatus] = {}
     base_branch: Dict[str, str] = {}
+    queue_data_status: Dict[int, str] = {}
 
     for num_str, payload in prs_payload.items():
         number = int(num_str)
@@ -257,6 +258,10 @@ def load_snapshot(api_dir: str):
             status = PRStatus.tryFrom_str(payload["pr_status"])
             if status:
                 all_pr_status[num_str] = status
+        data_status = payload.get("data_status") or {}
+        queue_status = data_status.get("queue")
+        if isinstance(queue_status, str) and queue_status:
+            queue_data_status[number] = queue_status
 
     draft_prs = [
         _to_basic(int(n), aggregate_info[str(n)]) for n in snapshot["lists"].get("draft_prs", []) if str(n) in aggregate_info
@@ -274,4 +279,4 @@ def load_snapshot(api_dir: str):
             continue
         prs_to_list[dash] = [_to_basic(int(n), aggregate_info[str(n)]) for n in pr_numbers if str(n) in aggregate_info]
 
-    return aggregate_info, draft_prs, nondraft_prs, CI_status, all_pr_status, base_branch, prs_to_list
+    return aggregate_info, draft_prs, nondraft_prs, CI_status, all_pr_status, base_branch, prs_to_list, queue_data_status

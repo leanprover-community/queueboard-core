@@ -6,7 +6,7 @@ from django.utils import timezone
 from analyzer.models import AnalyzerConvergenceSnapshot, PRQueueWindow, PRRevision, PRRevisionBuildState, QueueRuleSet
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from core.models import Repository
-from syncer.models import PullRequest
+from syncer.models import CheckRun, CIShaFetchState, PullRequest
 
 
 class TestCollectAnalyzerConvergenceTask(TestCase):
@@ -55,9 +55,48 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr2,
             revision_version=2,
-            ci_checked_revision_version=None,
+            ci_checked_revision_version=2,
             windows_built_revision_version=1,
             windows_built_at=pr2.gh_created_at,
+        )
+        # PR with revisions and a CI-by-SHA fetch state (should not count as "not checked").
+        pr4 = self._mk_pr(4)
+        PRRevision.objects.create(pull_request=pr4, head_sha="b1", from_ts=pr4.gh_created_at, to_ts=None, seq=0)
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="b1",
+            last_attempted_at=timezone.now(),
+            last_result="empty",
+            attempts=1,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr4,
+            rule_set=self.rule_set,
+            from_ts=pr4.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr4.gh_created_at,
+        )
+        # PR with revisions and existing CI rows (should not count as "not checked").
+        pr5 = self._mk_pr(5)
+        PRRevision.objects.create(pull_request=pr5, head_sha="c1", from_ts=pr5.gh_created_at, to_ts=None, seq=0)
+        CheckRun.objects.create(
+            pull_request=pr5,
+            github_node_id="cr-1",
+            head_sha="c1",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr5,
+            rule_set=self.rule_set,
+            from_ts=pr5.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr5.gh_created_at,
         )
         # PR missing timeline/commits backfill
         pr3 = self._mk_pr(3, timeline_done=False)
@@ -79,7 +118,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertEqual(snap.ci_not_checked, 1)
         # CI-gated missing windows only counts PRs with revisions; pr2 has a window row.
         self.assertEqual(snap.ci_gated_missing_windows, 0)
-        self.assertEqual(snap.prs_missing_dependency_state, 2)
+        self.assertEqual(snap.prs_missing_dependency_state, 4)
         self.assertEqual(snap.prs_stale_dependency_state, 0)
         self.assertEqual(snap.prs_missing_queue_window_rollups, 1)
         self.assertEqual(res["rows_created"], 1)

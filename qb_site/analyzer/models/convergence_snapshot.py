@@ -13,6 +13,7 @@ class AnalyzerConvergenceSnapshot(models.Model):
 
     pr_no_revisions = models.IntegerField(default=0)
     windows_stale = models.IntegerField(default=0)
+    # Count of PRRevision head SHAs with no CI rows and no CIShaFetchState attempts.
     ci_not_checked = models.IntegerField(default=0)
     ci_gated_missing_windows = models.IntegerField(default=0)
     prs_missing_queue_window_rollups = models.IntegerField(default=0)

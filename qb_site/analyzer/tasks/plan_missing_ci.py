@@ -5,10 +5,10 @@ from django.conf import settings
 from django.utils import timezone
 
 from analyzer.models import PRRevision, PRRevisionBuildState
-from analyzer.services.revisions import next_revision_backfill_shas
+from analyzer.services.revisions import next_revision_backfill_shas, revision_candidate_shas
 from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from core.models import Repository
-from syncer.models import PullRequest
+from syncer.models import CIShaFetchState, PullRequest
 
 
 @shared_task(name="analyzer.plan_missing_ci")
@@ -23,9 +23,10 @@ def plan_missing_ci_backfill_task(
     """Plan CI-by-SHA backfill for revision heads missing CI across active repositories.
 
     - Skips PRs without timeline backfill or without any PRRevision rows.
-    - Skips PRs whose PRRevisionBuildState has ci_checked_revision_version matching revision_version.
-    - Marks ci_checked_revision_version/ci_checked_at after checking a PR, even when no CI is enqueued,
-      so we avoid repeatedly re-checking expired/missing CI until revisions change.
+    - Uses CIShaFetchState terminal results (ok/empty/filtered/not_found) to avoid re-enqueueing
+      revision heads that have already been checked to a terminal outcome.
+    - Marks ci_checked_revision_version/ci_checked_at after checking a PR as telemetry only; it is
+      not used as a skip gate.
     """
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     total_enqueued = 0
@@ -78,15 +79,22 @@ def plan_missing_ci_backfill_task(
                 continue
 
             state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
-            # Skip if already checked for this revision_version.
-            if state.revision_version and state.ci_checked_revision_version == state.revision_version:
-                repo_prs_skipped_already_checked.append(int(pr.number))
-                continue
             if not PRRevision.objects.filter(pull_request=pr).exists():
                 repo_prs_skipped_no_revisions.append(int(pr.number))
                 continue
 
-            shas = next_revision_backfill_shas(pr, limit=int(shas_per_pr))
+            candidate_shas = revision_candidate_shas(pr)
+            terminal_shas: set[str] = set()
+            if candidate_shas:
+                terminal_results = {"ok", "empty", "filtered", "not_found"}
+                terminal_shas = set(
+                    CIShaFetchState.objects.filter(
+                        repository=repo,
+                        sha__in=candidate_shas,
+                        last_result__in=terminal_results,
+                    ).values_list("sha", flat=True)
+                )
+            shas = next_revision_backfill_shas(pr, limit=int(shas_per_pr), skip_shas=terminal_shas)
             if shas:
                 task_id = enqueue_ci_by_shas(
                     pr=pr,
