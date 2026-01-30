@@ -21,6 +21,7 @@ from .models import (
     SyncerConvergenceSnapshot,
     RepoBackfillCursor,
     CommitHistoryHarvest,
+    CIShaFetchState,
 )
 from analyzer.models import PRRevision, PRDependency, PRDependencyState, PRQueueWindow, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.revisions import rebuild_pr_revisions
@@ -1042,3 +1043,28 @@ class CommitHistoryHarvestAdmin(ReadOnlyAdmin):
         return cur[:16] + "…" if len(cur) > 16 else cur
 
     cursor_short.short_description = "cursor"  # type: ignore[attr-defined]
+
+
+@admin.register(CIShaFetchState)
+class CIShaFetchStateAdmin(ReadOnlyAdmin):
+    list_display = (
+        "repository",
+        "sha",
+        "last_result",
+        "last_attempted_at",
+        "last_success_at",
+        "attempts",
+        "updated_at",
+    )
+    search_fields = ("repository__owner", "repository__name", "sha")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "sha",
+        "last_result",
+        "last_attempted_at",
+        "last_success_at",
+        "attempts",
+        "created_at",
+        "updated_at",
+    )

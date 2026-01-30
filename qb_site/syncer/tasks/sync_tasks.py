@@ -17,7 +17,7 @@ from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
-from syncer.services.ci_backoff import should_enqueue_ci_sha
+from syncer.services.ci_backoff import should_enqueue_ci_sha, record_ci_sha_fetch
 from syncer.models import CheckRun, StatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -795,6 +795,7 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
             require_pr_association=require_assoc,
         )
         result = str(res.get("result") or "ok")
+        record_ci_sha_fetch(pr=pr, sha=sha, result=result)
         if len(per_sha_results) < per_sha_cap:
             per_sha_results.append(
                 {
