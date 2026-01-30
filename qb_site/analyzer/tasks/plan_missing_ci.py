@@ -25,8 +25,8 @@ def plan_missing_ci_backfill_task(
     - Skips PRs without timeline backfill or without any PRRevision rows.
     - Uses CIShaFetchState terminal results (ok/empty/filtered/not_found) to avoid re-enqueueing
       revision heads that have already been checked to a terminal outcome.
-    - Marks ci_checked_revision_version/ci_checked_at after checking a PR as telemetry only; it is
-      not used as a skip gate.
+    - Marks ci_checked_revision_version only when no actionable SHAs remain for the current
+      revision_version; this is used as a skip gate for future sweeps.
     """
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     total_enqueued = 0
@@ -79,6 +79,10 @@ def plan_missing_ci_backfill_task(
                 continue
 
             state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+            # Skip if we already confirmed there were no actionable SHAs for this revision version.
+            if state.revision_version and state.ci_checked_revision_version == state.revision_version:
+                repo_prs_skipped_already_checked.append(int(pr.number))
+                continue
             if not PRRevision.objects.filter(pull_request=pr).exists():
                 repo_prs_skipped_no_revisions.append(int(pr.number))
                 continue
@@ -108,8 +112,9 @@ def plan_missing_ci_backfill_task(
                     repo_enqueued += 1
                 else:
                     repo_prs_skipped_backoff.append(int(pr.number))
-            # Mark that we have checked this revision_version (even if nothing was enqueued).
-            state.ci_checked_revision_version = state.revision_version
+            # Mark the revision version as checked only when there are no actionable SHAs.
+            if not shas:
+                state.ci_checked_revision_version = state.revision_version
             state.ci_checked_at = now_ts
             state.save(update_fields=["ci_checked_revision_version", "ci_checked_at", "updated_at"])
 

@@ -49,13 +49,13 @@ class TestPlanMissingCITask(TestCase):
 
         mock_enqueue.assert_called_once()
         state = PRRevisionBuildState.objects.get(pull_request=pr)
-        self.assertEqual(state.ci_checked_revision_version, state.revision_version)
+        self.assertIsNone(state.ci_checked_revision_version)
         self.assertIsNotNone(state.ci_checked_at)
         self.assertEqual(res["prs_checked"], 1)
         self.assertEqual(res["ci_tasks"], 1)
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
-    def test_rechecks_when_already_checked_for_version(self, mock_enqueue) -> None:
+    def test_skips_when_already_checked_for_version(self, mock_enqueue) -> None:
         pr = self._mk_pr_with_revision(2, "sha-old")
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         state.ci_checked_revision_version = state.revision_version
@@ -64,11 +64,12 @@ class TestPlanMissingCITask(TestCase):
 
         res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
 
-        mock_enqueue.assert_called_once()
+        mock_enqueue.assert_not_called()
         state.refresh_from_db()
         self.assertEqual(state.ci_checked_revision_version, state.revision_version)
-        self.assertEqual(res["prs_checked"], 1)
-        self.assertEqual(res["ci_tasks"], 1)
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertEqual(res["ci_tasks"], 0)
+        self.assertEqual(res["prs_skipped_already_checked"], 1)
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
     def test_marks_checked_even_without_missing_ci(self, mock_enqueue) -> None:
@@ -110,7 +111,7 @@ class TestPlanMissingCITask(TestCase):
         res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
 
         state = PRRevisionBuildState.objects.get(pull_request=pr)
-        self.assertEqual(state.ci_checked_revision_version, state.revision_version)
+        self.assertIsNone(state.ci_checked_revision_version)
         self.assertIsNotNone(state.ci_checked_at)
         self.assertEqual(res["prs_checked"], 1)
         self.assertEqual(res["ci_tasks"], 0)
@@ -209,3 +210,44 @@ class TestPlanMissingCITask(TestCase):
 
         mock_enqueue.assert_not_called()
         self.assertEqual(res["ci_tasks"], 0)
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.ci_checked_revision_version, state.revision_version)
+
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_marks_checked_only_when_no_actionable_shas(self, mock_enqueue) -> None:
+        pr = self._mk_pr_with_revision(9, "sha-one")
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha-two",
+            from_ts=pr.gh_created_at + timezone.timedelta(hours=1),
+            to_ts=None,
+            seq=1,
+        )
+
+        # First sweep should enqueue and should NOT mark checked.
+        plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 5, "pages_per_sha": 1}).get()
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertIsNone(state.ci_checked_revision_version)
+
+        # Mark both SHAs as terminal; second sweep should mark checked.
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha-one",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="empty",
+            attempts=1,
+        )
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha-two",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+
+        mock_enqueue.reset_mock()
+        plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 5, "pages_per_sha": 1}).get()
+        state.refresh_from_db()
+        self.assertEqual(state.ci_checked_revision_version, state.revision_version)

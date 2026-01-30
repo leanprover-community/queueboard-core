@@ -124,7 +124,7 @@ Stage C: Compute windows and sets
   - PR detail object tools:
     - Analyzer: Rebuild revisions (gated on `timeline_backfill_done`).
     - Analyzer: Enqueue missing CI (uses revision windows to select missing head SHAs and enqueues Syncer CI‑by‑SHA).
-  - Periodic sweep: Celery beat runs `analyzer.plan_missing_ci` to enqueue CI‑by‑SHA for revision heads lacking CI, skipping PRs whose `ci_checked_revision_version` matches the current `revision_version`.
+- Periodic sweep: Celery beat runs `analyzer.plan_missing_ci` to enqueue CI‑by‑SHA for revision heads lacking CI. A PR is skipped only when `ci_checked_revision_version` matches `revision_version`, which now means the sweep found no actionable SHAs for that revision version.
   - Periodic sweep: Celery beat runs `analyzer.rebuild_revisions_sweep` to refresh `PRRevision` for eligible PRs (timeline backfill done; optional commits backfill), so revisions converge even without `sync_pr` triggers.
   - Periodic sweep: Celery beat runs `analyzer.rebuild_queue_windows_sweep` to rebuild `PRQueueWindow` when `revision_version` changed or rulesets were updated, stamping `windows_built_revision_version`/`windows_built_at` on the PR state.
 - Commands
