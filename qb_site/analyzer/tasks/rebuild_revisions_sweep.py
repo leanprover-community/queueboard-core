@@ -52,8 +52,7 @@ def rebuild_revisions_sweep_task(
                 repo_rebuilt += 1
             repo_prs += 1
             total_prs_considered += 1
-            if len(processed_pr_numbers) < max_pr_list:
-                processed_pr_numbers.append(int(pr.number))
+            processed_pr_numbers.append(int(pr.number))
         total_rebuilt += repo_rebuilt
         total_prs_skipped_limit += repo_prs_skipped_limit_count
         per_repo.append(

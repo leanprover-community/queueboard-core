@@ -167,8 +167,7 @@ def rebuild_queue_windows_sweep_task(
 
             repo_prs += 1
             total_prs += 1
-            if len(processed_pr_numbers) < max_pr_list:
-                processed_pr_numbers.append(int(pr.number))
+            processed_pr_numbers.append(int(pr.number))
         total_rebuilt += repo_rebuilt
         total_prs_skipped_up_to_date += len(repo_prs_skipped_up_to_date_seen)
         total_rulesets_skipped_out_of_bounds += len(repo_rulesets_skipped_out_of_bounds_seen)
