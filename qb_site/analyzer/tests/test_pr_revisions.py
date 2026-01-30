@@ -75,6 +75,20 @@ class TestPRRevisions(TestCase):
         self.assertEqual(revs[2].from_ts, t1)
         self.assertIsNone(revs[2].to_ts)
 
+    def test_build_from_head_sha_when_ci_missing(self) -> None:
+        pr = self._mk_pr(2)
+        pr.head_sha = "seed123"
+        pr.save(update_fields=["head_sha"])
+
+        res = rebuild_pr_revisions(pr)
+
+        self.assertEqual(res.deleted, 0)
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 1)
+        self.assertEqual(revs[0].head_sha, "seed123")
+        self.assertEqual(revs[0].from_ts, pr.gh_created_at)
+        self.assertIsNone(revs[0].to_ts)
+
     def test_build_state_updated_on_full_rebuild(self) -> None:
         pr = self._mk_pr(9)
         created = pr.gh_created_at
@@ -120,6 +134,7 @@ class TestPRRevisions(TestCase):
 
     def test_rebuild_noop_when_state_clean_and_no_new_signals(self) -> None:
         pr = self._mk_pr(12)
+        PRRevision.objects.create(pull_request=pr, head_sha="seed", from_ts=pr.gh_created_at, to_ts=None, seq=0)
         # Seed a clean state that claims to be built through t1.
         t1 = pr.gh_created_at + timezone.timedelta(hours=1)
         PRRevisionBuildState.objects.create(
@@ -151,6 +166,7 @@ class TestPRRevisions(TestCase):
 
     def test_rebuild_noop_without_new_signals_autodetect(self) -> None:
         pr = self._mk_pr(14)
+        PRRevision.objects.create(pull_request=pr, head_sha="seed", from_ts=pr.gh_created_at, to_ts=None, seq=0)
         t1 = pr.gh_created_at + timezone.timedelta(hours=1)
         PRRevisionBuildState.objects.create(
             pull_request=pr,
@@ -163,6 +179,25 @@ class TestPRRevisions(TestCase):
         self.assertEqual(res.strategy, "noop")
         self.assertEqual(res.created, 0)
         self.assertEqual(res.deleted, 0)
+
+    def test_rebuild_runs_when_no_revisions_exist(self) -> None:
+        pr = self._mk_pr(14)
+        pr.head_sha = "seed123"
+        pr.save(update_fields=["head_sha"])
+        t1 = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=t1,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+
+        res = rebuild_pr_revisions(pr, latest_signal_ts=t1)
+
+        self.assertNotEqual(res.strategy, "noop")
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 1)
+        self.assertEqual(revs[0].head_sha, "seed123")
 
     def test_rebuild_append_strategy_when_clean_and_new_signal(self) -> None:
         pr = self._mk_pr(15)

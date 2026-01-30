@@ -54,7 +54,8 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
     Heuristics (best-effort):
     - Prefer the most recent CheckRun.head_sha for the PR.
     - Otherwise prefer the most recent StatusContext.head_sha for the PR.
-    - Return None if neither exists.
+    - Otherwise fall back to PullRequest.head_sha when present.
+    - Return None if none exists.
     """
     cr = (
         CheckRun.objects.filter(pull_request=pr)
@@ -67,6 +68,8 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
     sc = StatusContext.objects.filter(pull_request=pr).exclude(head_sha="").order_by("-gh_created_at", "-id").first()
     if sc and sc.head_sha:
         return sc.head_sha
+    if getattr(pr, "head_sha", None):
+        return pr.head_sha
     return None
 
 
@@ -330,7 +333,13 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         needs_full = True
 
     has_existing = PRRevision.objects.filter(pull_request=pr).exists()
-    if not needs_full and state.built_through_ts and latest_signal_ts and latest_signal_ts <= state.built_through_ts:
+    if (
+        not needs_full
+        and state.built_through_ts
+        and latest_signal_ts
+        and latest_signal_ts <= state.built_through_ts
+        and has_existing
+    ):
         # Nothing new beyond what we have already processed; no work.
         return RebuildResult(created=0, deleted=0, strategy="noop")
     if not needs_full and state.built_through_ts is not None and has_existing:
