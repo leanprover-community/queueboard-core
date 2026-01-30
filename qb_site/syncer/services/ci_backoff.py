@@ -1,9 +1,30 @@
 from __future__ import annotations
 
 from django.conf import settings
+from datetime import timedelta
+
 from django.utils import timezone
 
 from syncer.models import CIShaFetchState, PullRequest
+
+
+def _is_ci_sha_settled(
+    *,
+    pr: PullRequest,
+    state: CIShaFetchState,
+    now: timezone.datetime,
+) -> bool:
+    settle_seconds = int(getattr(settings, "SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS", 0))
+    hard_cap_days = int(getattr(settings, "SYNCER_CI_SHA_HARD_CAP_DAYS", 0))
+    if hard_cap_days > 0 and pr.gh_updated_at:
+        if now - pr.gh_updated_at >= timedelta(days=hard_cap_days):
+            return True
+    if settle_seconds <= 0:
+        return False
+    start_ts = state.created_at or state.last_attempted_at
+    if start_ts is None:
+        return False
+    return (now - start_ts).total_seconds() >= settle_seconds
 
 
 def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = None) -> bool:
@@ -19,16 +40,20 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
     if state is None:
         return True
     last = state.last_result or ""
+    now = timezone.now()
     if last in {"not_found", "filtered"}:
-        return False
+        return not _is_ci_sha_settled(pr=pr, state=state, now=now)
     if last == "skipped_association":
         return True
-    now = timezone.now()
     age = now - state.last_attempted_at
     if last == "empty":
+        if _is_ci_sha_settled(pr=pr, state=state, now=now):
+            return False
         cooldown = int(getattr(settings, "SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS", 300))
         return age.total_seconds() >= cooldown
     if last == "error":
+        if _is_ci_sha_settled(pr=pr, state=state, now=now):
+            return False
         cooldown = int(getattr(settings, "SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS", 300))
         return age.total_seconds() >= cooldown
     return True
@@ -61,6 +86,9 @@ def record_ci_sha_fetch(
     )
     if created:
         return
+    if state.last_result == "ok" and result != "ok":
+        updates.pop("last_result", None)
+        updates.pop("last_success_at", None)
     state.attempts = int(state.attempts or 0) + 1
     for field, value in updates.items():
         setattr(state, field, value)

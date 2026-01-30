@@ -34,24 +34,32 @@ This decision has two parts:
 ### Enqueue policy
 - Add a helper (`syncer.services.ci_backoff.should_enqueue_ci_sha(...)`) that:
   - Allows enqueue if there is no ledger row.
-  - Skips enqueue when `last_result` indicates stale data and the cooldown has not elapsed.
+  - Applies cooldowns for `empty` and `error`.
   - Treats `skipped_association` as a no-op result (no backoff); this should be deprecated once CI is SHA-keyed.
+  - Treats `not_found`/`filtered`/`empty` as terminal only after the settle window (or hard cap) has elapsed.
 - Default cooldowns (configurable settings):
   - `SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS` (default 300)
   - `SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS` (default 300)
-- `not_found` and `filtered` are treated as infinite cooldowns (no retries).
+- Settle window / hard cap (configurable settings):
+  - `SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS` (default 1800)
+  - `SYNCER_CI_SHA_HARD_CAP_DAYS` (default 400)
+- The settle window is keyed off the first ledger observation (`created_at`), so downtime does not accidentally skip work.
+- The hard cap is keyed off the PR's `gh_updated_at` to avoid re-fetching very old SHAs indefinitely.
 
 ### Write policy
 - Update ledger in the CI-by-SHA ingest path:
   - `syncer.services.ci_by_sha_service.sync_ci_for_sha` returns a result classification.
   - `syncer.services.ci_backoff.record_ci_sha_fetch` persists attempts after each SHA fetch.
   - Result mapping:
-    - `ok`: contexts found (regardless of allowlist filtering)
+    - `ok`: at least one context saved (after allowlist + filters)
     - `empty`: commit exists but `statusCheckRollup` is null or contexts list empty
     - `not_found`: commit object missing in all candidate repos
     - `skipped_association`: association guard failed (when enabled)
     - `filtered`: contexts returned but all filtered out by allowlists
     - `error`: request failed (exceptions)
+- Sticky OK semantics:
+  - Once a SHA is marked `ok`, later non-`ok` results do not overwrite `last_result`/`last_success_at`.
+  - `attempts` and `last_attempted_at` still advance on every fetch.
 
 ### Integration points
 - Apply the guard before enqueueing CI-by-SHA in:
@@ -65,7 +73,7 @@ This decision has two parts:
   - `prs_skipped_backoff` (analyzer backfill task)
 
 ### Tests
-- Unit tests for the ledger policy (no row, empty cooldown, error cooldown, not_found infinite).
+- Unit tests for the ledger policy (no row, empty cooldown, error cooldown, settle-window behavior).
 - Integration tests that show:
   - Missing-head backstop skips when ledger says `empty` and cooldown not elapsed.
   - A changed SHA bypasses old backoff (new key).
@@ -124,7 +132,7 @@ This decision has two parts:
 - Some tasks will need updated metrics and tests to account for the ledger and new tables.
 
 ## Operational Notes
-- Add new settings for CI-by-SHA backoff cooldowns.
+- Add new settings for CI-by-SHA backoff cooldowns and settle-window behavior.
 - Add a new migration for `CIShaFetchState` (and later for SHA-keyed CI tables).
 - Extend admin/convergence metrics to monitor:
   - `prs_missing_head_ci_contexts` (open PRs with missing head contexts),

@@ -85,6 +85,7 @@ def plan_missing_ci_backfill_task(
             state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
             candidate_shas = revision_candidate_shas(pr)
             terminal_shas: set[str] = set()
+            error_shas: set[str] = set()
             if candidate_shas:
                 terminal_results = {"ok", "empty", "filtered", "not_found"}
                 terminal_shas = set(
@@ -94,7 +95,25 @@ def plan_missing_ci_backfill_task(
                         last_result__in=terminal_results,
                     ).values_list("sha", flat=True)
                 )
-            shas = next_revision_backfill_shas(pr, limit=int(shas_per_pr), skip_shas=terminal_shas)
+                error_shas = set(
+                    CIShaFetchState.objects.filter(
+                        repository=repo,
+                        sha__in=candidate_shas,
+                        last_result="error",
+                    ).values_list("sha", flat=True)
+                )
+            if error_shas:
+                prioritized = [sha for sha in candidate_shas if sha in error_shas] + [
+                    sha for sha in candidate_shas if sha not in error_shas
+                ]
+            else:
+                prioritized = None
+            shas = next_revision_backfill_shas(
+                pr,
+                limit=int(shas_per_pr),
+                skip_shas=terminal_shas,
+                candidates_override=prioritized,
+            )
             if shas:
                 task_id = enqueue_ci_by_shas(
                     pr=pr,

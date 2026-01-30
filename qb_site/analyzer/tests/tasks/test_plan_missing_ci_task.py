@@ -96,6 +96,32 @@ class TestPlanMissingCITask(TestCase):
         self.assertEqual(res["prs_checked"], 1)
         self.assertEqual(res["ci_tasks"], 0)
 
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_prioritizes_error_shas(self, mock_enqueue) -> None:
+        pr = self._mk_pr_with_revision(4, "sha-ok")
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha-error",
+            from_ts=pr.gh_created_at + timezone.timedelta(hours=2),
+            to_ts=None,
+            seq=1,
+        )
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha-error",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="error",
+            attempts=1,
+        )
+
+        plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 1, "pages_per_sha": 1}).get()
+
+        mock_enqueue.assert_called_once()
+        _, call_kwargs = mock_enqueue.call_args
+        shas = call_kwargs.get("shas") or []
+        self.assertEqual(shas, ["sha-error"])
+
     def test_skips_when_backoff_blocks_enqueue(self) -> None:
         pr = self._mk_pr_with_revision(4, "sha-blocked")
         CIShaFetchState.objects.create(

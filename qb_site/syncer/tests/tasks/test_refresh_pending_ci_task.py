@@ -4,7 +4,7 @@ from datetime import timedelta
 import itertools
 from unittest import mock
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import Repository
@@ -106,11 +106,12 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(items[0]["shas"], ["sha_missing"])
         mock_sync_ci_for_shas.delay.assert_called_once()
 
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=60)
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_skips_when_head_sha_backoff_not_found(self, mock_sync_ci_for_shas) -> None:
         self.pr.head_sha = "sha_missing"
         self.pr.save(update_fields=["head_sha", "updated_at"])
-        CIShaFetchState.objects.create(
+        state = CIShaFetchState.objects.create(
             repository=self.repo,
             sha="sha_missing",
             last_attempted_at=timezone.now(),
@@ -118,6 +119,7 @@ class TestRefreshPendingCITask(TestCase):
             last_result="not_found",
             attempts=1,
         )
+        CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(seconds=120))
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
         self.assertEqual(res.get("prs_enqueued"), 0)
         self.assertEqual(res.get("shas_enqueued"), 0)
@@ -125,11 +127,12 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(res.get("shas_skipped_backoff"), 1)
         mock_sync_ci_for_shas.delay.assert_not_called()
 
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=60)
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_skips_when_head_sha_backoff_filtered(self, mock_sync_ci_for_shas) -> None:
         self.pr.head_sha = "sha_filtered"
         self.pr.save(update_fields=["head_sha", "updated_at"])
-        CIShaFetchState.objects.create(
+        state = CIShaFetchState.objects.create(
             repository=self.repo,
             sha="sha_filtered",
             last_attempted_at=timezone.now(),
@@ -137,6 +140,51 @@ class TestRefreshPendingCITask(TestCase):
             last_result="filtered",
             attempts=2,
         )
+        CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(seconds=120))
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+        self.assertEqual(res.get("prs_skipped_backoff"), 1)
+        self.assertEqual(res.get("shas_skipped_backoff"), 1)
+        mock_sync_ci_for_shas.delay.assert_not_called()
+
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=3600)
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_enqueues_when_head_sha_backoff_not_found_within_settle_window(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = "sha_missing"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        state = CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha_missing",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+        CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(minutes=5))
+        mock_sync_ci_for_shas.delay.return_value.id = "task-1"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["shas"], ["sha_missing"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=3600, SYNCER_CI_SHA_HARD_CAP_DAYS=400)
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_skips_when_head_sha_backoff_past_hard_cap(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = "sha_filtered"
+        self.pr.gh_updated_at = timezone.now() - timedelta(days=401)
+        self.pr.save(update_fields=["head_sha", "gh_updated_at", "updated_at"])
+        state = CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha_filtered",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="filtered",
+            attempts=2,
+        )
+        CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(minutes=5))
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
         self.assertEqual(res.get("prs_enqueued"), 0)
         self.assertEqual(res.get("shas_enqueued"), 0)

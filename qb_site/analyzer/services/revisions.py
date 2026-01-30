@@ -477,7 +477,13 @@ def revision_candidate_shas(pr: PullRequest) -> list[str]:
     return [sha for _, sha in candidates]
 
 
-def next_revision_backfill_shas(pr: PullRequest, limit: int = 2, *, skip_shas: set[str] | None = None) -> list[str]:
+def next_revision_backfill_shas(
+    pr: PullRequest,
+    limit: int = 2,
+    *,
+    skip_shas: set[str] | None = None,
+    candidates_override: list[str] | None = None,
+) -> list[str]:
     """Return up to `limit` head SHAs whose CI appears missing or still pending.
 
     Heuristic: select candidate head SHAs (older first) where:
@@ -491,7 +497,7 @@ def next_revision_backfill_shas(pr: PullRequest, limit: int = 2, *, skip_shas: s
     """
     if limit <= 0:
         return []
-    candidates = revision_candidate_shas(pr)
+    candidates = candidates_override if candidates_override is not None else revision_candidate_shas(pr)
     skip = skip_shas or set()
 
     # Snapshot CI presence up-front to avoid repeated queries per candidate.

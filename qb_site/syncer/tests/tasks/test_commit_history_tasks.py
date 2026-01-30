@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from django.test import TestCase
+from datetime import timedelta
+
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from unittest.mock import patch
 
@@ -158,9 +160,10 @@ class TestCommitHistoryTasks(TestCase):
         mock_ci.assert_called_once()
         self.assertEqual(set(res["ci_missing"]), {"sha_pending", "sha_queued"})
 
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=60)
     def test_harvest_task_skips_backoff_shas(self) -> None:
         state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha4")
-        CIShaFetchState.objects.create(
+        blocked = CIShaFetchState.objects.create(
             repository=self.repo,
             sha="sha_blocked",
             last_attempted_at=timezone.now(),
@@ -168,6 +171,7 @@ class TestCommitHistoryTasks(TestCase):
             last_result="not_found",
             attempts=1,
         )
+        CIShaFetchState.objects.filter(pk=blocked.pk).update(created_at=timezone.now() - timedelta(seconds=120))
         with patch(
             "syncer.tasks.commit_history_tasks.harvest_commit_history_with_cursor",
             return_value=(["sha_blocked"], state),
