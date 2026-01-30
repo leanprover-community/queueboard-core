@@ -42,7 +42,6 @@ class TestEngagementBackfillTask(TestCase):
 
         self.assertEqual(res.get("repo"), f"{self.repo.owner}/{self.repo.name}")
         self.assertEqual(res.get("enqueued"), 0)
-        self.assertEqual(res.get("remaining"), 0)
         self.assertEqual(res.get("states"), ["OPEN", "MERGED", "CLOSED"])
 
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
@@ -55,7 +54,6 @@ class TestEngagementBackfillTask(TestCase):
         res = backfill_repo_engagement_task(self.repo.id, limit=1)
 
         self.assertEqual(res.get("enqueued"), 1)
-        self.assertEqual(res.get("remaining"), 1)
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
         # Should have targeted one of the two needing engagement.
         enqueued_numbers = {call.args[1] for call in mock_sync_pr_task.delay.call_args_list}
@@ -68,7 +66,6 @@ class TestEngagementBackfillTask(TestCase):
 
         res_open_only = backfill_repo_engagement_task(self.repo.id, limit=10, states=["OPEN"])
         self.assertEqual(res_open_only.get("enqueued"), 1)
-        self.assertEqual(res_open_only.get("remaining"), 0)
         self.assertEqual(res_open_only.get("states"), ["OPEN"])
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
 
@@ -76,7 +73,6 @@ class TestEngagementBackfillTask(TestCase):
 
         res_closed = backfill_repo_engagement_task(self.repo.id, limit=10, states=["CLOSED", "MERGED"])
         self.assertEqual(res_closed.get("enqueued"), 1)
-        self.assertEqual(res_closed.get("remaining"), 0)
         self.assertEqual(res_closed.get("states"), ["CLOSED", "MERGED"])
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
 
@@ -98,7 +94,6 @@ class TestEngagementBackfillTask(TestCase):
         res = backfill_repo_engagement_task(self.repo.id, limit=10)
 
         self.assertEqual(res.get("enqueued"), 1)
-        self.assertEqual(res.get("remaining"), 0)
         mock_sync_pr_task.delay.assert_called_once_with(self.repo.id, pr.number)
 
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
@@ -108,5 +103,4 @@ class TestEngagementBackfillTask(TestCase):
         res = backfill_repo_engagement_task(self.repo.id, limit=10)
 
         self.assertEqual(res.get("enqueued"), 1)
-        self.assertEqual(res.get("remaining"), 0)
         mock_sync_pr_task.delay.assert_called_once_with(self.repo.id, pr.number)

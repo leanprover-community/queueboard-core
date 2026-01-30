@@ -65,8 +65,6 @@ class DependencyTaskTests(TestCase):
         state = PRDependencyState.objects.get(pull_request=pr_open)
         self.assertIsNotNone(state.last_checked_at)
         self.assertEqual(state.builder_version, 1)
-        # Closed missing suppressed when only_open=True.
-        self.assertEqual(res["categories"]["closed_missing"]["total"], 0)
         self.assertEqual(res["categories"]["closed_missing"]["queued"], 0)
 
     def test_builder_version_filter_skips_mismatched(self) -> None:
@@ -164,7 +162,6 @@ class DependencyTaskTests(TestCase):
         self.assertEqual(enqueued_ids, [pr_open_new.id])
         self.assertNotIn(pr_closed_old.id, enqueued_ids)
         self.assertEqual(res["categories"]["open_missing"]["queued"], 1)
-        self.assertEqual(res["categories"]["closed_missing"]["total"], 1)
         self.assertEqual(res["categories"]["closed_missing"]["queued"], 0)
 
     @patch("analyzer.tasks.dependencies.rebuild_pr_dependencies_task")

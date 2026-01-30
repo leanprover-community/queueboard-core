@@ -288,7 +288,6 @@ class TestRefreshPendingCITask(TestCase):
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
         self.assertEqual(res.get("prs_enqueued"), 1)
         self.assertEqual(res.get("shas_enqueued"), 1)
-        self.assertIn(5, res.get("prs_considered_numbers", []))
         items = res.get("items") or []
         self.assertEqual(items[0]["number"], 5)
         self.assertEqual(items[0]["shas"], ["sha_pending"])
@@ -326,9 +325,6 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(res.get("prs_enqueued"), 1)
         self.assertEqual(res.get("shas_enqueued"), 1)
         self.assertEqual(res.get("prs_skipped_stale"), 2)
-        self.assertIn(10, res.get("prs_considered_numbers", []))
-        self.assertIn(11, res.get("prs_considered_numbers", []))
-        self.assertIn(12, res.get("prs_considered_numbers", []))
         items = res.get("items") or []
         self.assertEqual(items[0]["number"], 12)
         self.assertEqual(items[0]["shas"], ["sha_ok"])

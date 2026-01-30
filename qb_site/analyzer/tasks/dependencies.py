@@ -57,12 +57,11 @@ def rebuild_dependencies_sweep_task(
     total_deleted = 0
     total_prs = 0
     total_enqueued = 0
-    processed_pr_numbers: list[int] = []
     category_totals: dict[str, dict[str, object]] = {
-        "open_missing": {"total": 0, "queued": 0, "queued_numbers": []},
-        "open_stale": {"total": 0, "queued": 0, "queued_numbers": []},
-        "closed_missing": {"total": 0, "queued": 0, "queued_numbers": []},
-        "closed_stale": {"total": 0, "queued": 0, "queued_numbers": []},
+        "open_missing": {"queued": 0},
+        "open_stale": {"queued": 0},
+        "closed_missing": {"queued": 0},
+        "closed_stale": {"queued": 0},
     }
     per_repo: list[dict] = []
 
@@ -98,10 +97,10 @@ def rebuild_dependencies_sweep_task(
         repo_prs = 0
         repo_enqueued = 0
         repo_categories: dict[str, dict[str, object]] = {
-            "open_missing": {"total": 0, "queued": 0, "queued_numbers": []},
-            "open_stale": {"total": 0, "queued": 0, "queued_numbers": []},
-            "closed_missing": {"total": 0, "queued": 0, "queued_numbers": []},
-            "closed_stale": {"total": 0, "queued": 0, "queued_numbers": []},
+            "open_missing": {"queued": 0},
+            "open_stale": {"queued": 0},
+            "closed_missing": {"queued": 0},
+            "closed_stale": {"queued": 0},
         }
 
         def _process_pr(pr: PullRequest, category_key: str) -> bool:
@@ -109,16 +108,13 @@ def rebuild_dependencies_sweep_task(
             if repo_prs >= int(max_prs_per_repo):
                 return False
             repo_prs += 1
-            processed_pr_numbers.append(int(pr.number))
             total_prs += 1
             if fanout:
                 rebuild_pr_dependencies_task.delay(pr.id, builder_version=builder_version)
                 repo_enqueued += 1
                 total_enqueued += 1
                 repo_categories[category_key]["queued"] = int(repo_categories[category_key]["queued"]) + 1
-                repo_categories[category_key]["queued_numbers"].append(int(pr.number))
                 category_totals[category_key]["queued"] = int(category_totals[category_key]["queued"]) + 1
-                category_totals[category_key]["queued_numbers"].append(f"{repo.owner}/{repo.name}#{int(pr.number)}")
                 return True
 
             res = rebuild_pr_dependencies(pr)
@@ -131,9 +127,7 @@ def rebuild_dependencies_sweep_task(
             state.builder_version = int(builder_version)
             state.save(update_fields=["last_checked_at", "last_body_hash", "builder_version", "updated_at"])
             repo_categories[category_key]["queued"] = int(repo_categories[category_key]["queued"]) + 1
-            repo_categories[category_key]["queued_numbers"].append(int(pr.number))
             category_totals[category_key]["queued"] = int(category_totals[category_key]["queued"]) + 1
-            category_totals[category_key]["queued_numbers"].append(f"{repo.owner}/{repo.name}#{int(pr.number)}")
             return True
 
         # Category definitions (ordered)
@@ -177,9 +171,6 @@ def rebuild_dependencies_sweep_task(
         )
 
         for key, qs in categories:
-            total_in_cat = qs.count()
-            repo_categories[key]["total"] = int(total_in_cat)
-            category_totals[key]["total"] = int(category_totals[key]["total"]) + int(total_in_cat)
             if repo_prs >= int(max_prs_per_repo):
                 continue
             for pr in qs.iterator(chunk_size=100):
@@ -209,7 +200,6 @@ def rebuild_dependencies_sweep_task(
         "updated": total_updated,
         "deleted": total_deleted,
         "enqueued": total_enqueued,
-        "prs_processed_numbers": processed_pr_numbers,
         "only_open": bool(only_open),
         "max_prs_per_repo": int(max_prs_per_repo),
         "builder_version": int(builder_version),

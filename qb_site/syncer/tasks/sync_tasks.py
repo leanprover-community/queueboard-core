@@ -899,7 +899,6 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         max_pending_hours = int(getattr(settings, "SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
     max_age = timedelta(hours=max_pending_hours)
 
-    total_pending_prs = prs_qs.count()
     prs_enqueued = 0
     shas_enqueued = 0
     prs_missing_head_ci = 0
@@ -907,7 +906,6 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     shas_skipped_backoff = 0
     prs_skipped_backoff = 0
     per_pr: list[dict[str, Any]] = []
-    considered_numbers: list[int] = []
     skipped_stale = 0
     skipped_no_eligible = 0
 
@@ -916,8 +914,6 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     # Gather actionable PRs by scanning until we have max_prs_int eligible.
     actionable_found = 0
     for pr in prs_qs.iterator():
-        considered_numbers.append(int(pr.number))
-
         missing_head_ci = (
             bool(getattr(pr, "head_sha", None))
             and not bool(getattr(pr, "has_head_cr", False))
@@ -1007,16 +1003,13 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     return {
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
-        "prs_considered": len(considered_numbers),
-        "prs_considered_numbers": considered_numbers,
+        "prs_considered": actionable_found,
         "prs_enqueued": prs_enqueued,
         "shas_enqueued": shas_enqueued,
         "prs_missing_head_ci": prs_missing_head_ci,
         "shas_missing_head_ci": shas_missing_head_ci,
         "prs_skipped_backoff": prs_skipped_backoff,
         "shas_skipped_backoff": shas_skipped_backoff,
-        "backlog_prs": max(0, total_pending_prs - len(considered_numbers)),
-        "backlog_prs_total": total_pending_prs,
         "backlog_prs_actionable_scanned": actionable_found,
         "max_prs": max_prs_int,
         "max_shas_per_pr": max_shas_int,

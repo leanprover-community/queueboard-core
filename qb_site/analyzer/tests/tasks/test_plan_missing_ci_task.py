@@ -69,7 +69,6 @@ class TestPlanMissingCITask(TestCase):
         self.assertEqual(state.ci_checked_revision_version, state.revision_version)
         self.assertEqual(res["prs_checked"], 0)
         self.assertEqual(res["ci_tasks"], 0)
-        self.assertEqual(res["prs_skipped_already_checked"], 1)
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
     def test_marks_checked_even_without_missing_ci(self, mock_enqueue) -> None:

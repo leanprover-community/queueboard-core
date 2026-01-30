@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from celery import shared_task
 from django.conf import settings
+from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
 from analyzer.models import PRRevision, PRRevisionBuildState
@@ -28,19 +29,18 @@ def plan_missing_ci_backfill_task(
     - Marks ci_checked_revision_version only when no actionable SHAs remain for the current
       revision_version; this is used as a skip gate for future sweeps.
     """
+    max_pr_list = 10
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     total_enqueued = 0
     total_prs_considered = 0
-    total_prs_skipped_no_backfill = 0
-    total_prs_skipped_no_revisions = 0
-    total_prs_skipped_already_checked = 0
     total_prs_skipped_limit = 0
     total_prs_skipped_backoff = 0
     processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
     now_ts = timezone.now()
     for repo in repos:
-        pr_qs = (
+        has_revisions = PRRevision.objects.filter(pull_request=OuterRef("pk"))
+        pr_qs_base = (
             PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
             .select_related("repository", "revision_build_state")
             .only(
@@ -56,37 +56,33 @@ def plan_missing_ci_backfill_task(
                 "revision_build_state__ci_checked_revision_version",
                 "revision_build_state__ci_checked_at",
             )
+            .annotate(has_revisions=Exists(has_revisions))
+            .filter(has_revisions=True)
         )
         if only_complete_backfill:
-            pr_qs = pr_qs.filter(commits_backfill_done=True)
-        pr_qs = pr_qs.order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
+            pr_qs_base = pr_qs_base.filter(commits_backfill_done=True)
+
+        already_checked_filter = Q(revision_build_state__revision_version__gt=0) & Q(
+            revision_build_state__ci_checked_revision_version=F("revision_build_state__revision_version")
+        )
+
+        pr_qs = pr_qs_base.exclude(already_checked_filter).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
         repo_enqueued = 0
         repo_prs = 0
-        repo_prs_skipped_no_backfill: list[int] = []
-        repo_prs_skipped_no_revisions: list[int] = []
-        repo_prs_skipped_already_checked: list[int] = []
         repo_prs_skipped_limit: list[int] = []
         repo_prs_skipped_backoff: list[int] = []
+        repo_prs_skipped_limit_count = 0
+        repo_prs_skipped_backoff_count = 0
         repo_limit_hit = False
         for pr in pr_qs:
             if repo_prs >= int(max_prs_per_repo):
                 repo_limit_hit = True
-                repo_prs_skipped_limit.append(int(pr.number))
+                repo_prs_skipped_limit_count += 1
+                if len(repo_prs_skipped_limit) < max_pr_list:
+                    repo_prs_skipped_limit.append(int(pr.number))
                 break
 
-            if not getattr(pr, "timeline_backfill_done", False):
-                repo_prs_skipped_no_backfill.append(int(pr.number))
-                continue
-
             state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
-            # Skip if we already confirmed there were no actionable SHAs for this revision version.
-            if state.revision_version and state.ci_checked_revision_version == state.revision_version:
-                repo_prs_skipped_already_checked.append(int(pr.number))
-                continue
-            if not PRRevision.objects.filter(pull_request=pr).exists():
-                repo_prs_skipped_no_revisions.append(int(pr.number))
-                continue
-
             candidate_shas = revision_candidate_shas(pr)
             terminal_shas: set[str] = set()
             if candidate_shas:
@@ -111,7 +107,9 @@ def plan_missing_ci_backfill_task(
                 if task_id:
                     repo_enqueued += 1
                 else:
-                    repo_prs_skipped_backoff.append(int(pr.number))
+                    repo_prs_skipped_backoff_count += 1
+                    if len(repo_prs_skipped_backoff) < max_pr_list:
+                        repo_prs_skipped_backoff.append(int(pr.number))
             # Mark the revision version as checked only when there are no actionable SHAs.
             if not shas:
                 state.ci_checked_revision_version = state.revision_version
@@ -120,22 +118,17 @@ def plan_missing_ci_backfill_task(
 
             repo_prs += 1
             total_prs_considered += 1
-            processed_pr_numbers.append(int(pr.number))
+            if len(processed_pr_numbers) < max_pr_list:
+                processed_pr_numbers.append(int(pr.number))
 
         total_enqueued += repo_enqueued
-        total_prs_skipped_no_backfill += len(repo_prs_skipped_no_backfill)
-        total_prs_skipped_no_revisions += len(repo_prs_skipped_no_revisions)
-        total_prs_skipped_already_checked += len(repo_prs_skipped_already_checked)
-        total_prs_skipped_limit += len(repo_prs_skipped_limit)
-        total_prs_skipped_backoff += len(repo_prs_skipped_backoff)
+        total_prs_skipped_limit += repo_prs_skipped_limit_count
+        total_prs_skipped_backoff += repo_prs_skipped_backoff_count
         per_repo.append(
             {
                 "repo": f"{repo.owner}/{repo.name}",
                 "prs_checked": repo_prs,
                 "ci_tasks": repo_enqueued,
-                "prs_skipped_no_backfill": repo_prs_skipped_no_backfill,
-                "prs_skipped_no_revisions": repo_prs_skipped_no_revisions,
-                "prs_skipped_already_checked": repo_prs_skipped_already_checked,
                 "prs_skipped_limit": repo_prs_skipped_limit,
                 "prs_skipped_backoff": repo_prs_skipped_backoff,
                 "limit_hit": repo_limit_hit,
@@ -147,9 +140,6 @@ def plan_missing_ci_backfill_task(
         "prs_checked": total_prs_considered,
         "prs_checked_numbers": processed_pr_numbers,
         "ci_tasks": total_enqueued,
-        "prs_skipped_no_backfill": total_prs_skipped_no_backfill,
-        "prs_skipped_no_revisions": total_prs_skipped_no_revisions,
-        "prs_skipped_already_checked": total_prs_skipped_already_checked,
         "prs_skipped_limit": total_prs_skipped_limit,
         "prs_skipped_backoff": total_prs_skipped_backoff,
         "per_repo": per_repo,

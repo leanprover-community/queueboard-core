@@ -42,8 +42,6 @@ class TestIncompletePrBackfillTask(TestCase):
         self.assertEqual(res.get("repo"), f"{self.repo.owner}/{self.repo.name}")
         self.assertEqual(res.get("repo_id"), self.repo.id)
         self.assertEqual(res.get("enqueued"), 0)
-        # remaining should reflect the number of incomplete PRs (zero)
-        self.assertEqual(res.get("remaining"), 0)
         self.assertEqual(res.get("states"), ["OPEN", "MERGED", "CLOSED"])
 
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
@@ -63,7 +61,6 @@ class TestIncompletePrBackfillTask(TestCase):
         self.assertEqual(res.get("repo_id"), self.repo.id)
         self.assertEqual(res.get("enqueued"), 1)
         # There were two incomplete PRs; after enqueuing one, one should remain.
-        self.assertEqual(res.get("remaining"), 1)
         self.assertIn("OPEN", res.get("states") or [])
         mock_sync_pr_task.delay.assert_called_once()
 
@@ -79,7 +76,6 @@ class TestIncompletePrBackfillTask(TestCase):
         self.assertEqual(res_open_only.get("states"), ["OPEN"])
         # Both PRs are incomplete, but only one matches the OPEN state.
         self.assertEqual(res_open_only.get("enqueued"), 1)
-        self.assertEqual(res_open_only.get("remaining"), 0)
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
 
         mock_sync_pr_task.delay.reset_mock()
@@ -90,7 +86,6 @@ class TestIncompletePrBackfillTask(TestCase):
         # but only the closed PR should be enqueued.
         self.assertEqual(res_closed.get("states"), ["CLOSED", "MERGED"])
         self.assertEqual(res_closed.get("enqueued"), 1)
-        self.assertEqual(res_closed.get("remaining"), 0)
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
 
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")

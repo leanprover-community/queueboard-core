@@ -208,15 +208,12 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         | Q(last_synced_at__lt=stale_cutoff)
         | Q(head_ci_state__iexact="PENDING")
     )
-    total_incomplete = queryset.count()
-
     limit_int = int(limit)
-    if limit_int <= 0 or total_incomplete == 0:
+    if limit_int <= 0:
         return {
             "repo": f"{repo.owner}/{repo.name}",
             "repo_id": repo.id,
             "enqueued": 0,
-            "remaining": total_incomplete,
             "states": result_states,
         }
 
@@ -243,13 +240,10 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         )
         enqueued += 1
 
-    remaining_after = max(total_incomplete - enqueued, 0)
     return {
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
         "enqueued": enqueued,
-        "remaining": remaining_after,
-        "backlog": total_incomplete,
         "states": result_states,
     }
 
@@ -309,15 +303,12 @@ def backfill_repo_engagement_task(  # type: ignore[no-redef]
     queryset = queryset.filter(
         Q(engagement_synced_at__isnull=True) | Q(head_ci_state__isnull=True) | Q(head_sha__isnull=True) | Q(head_sha="")
     )
-    total_needs_engagement = queryset.count()
-
     limit_int = int(limit)
-    if limit_int <= 0 or total_needs_engagement == 0:
+    if limit_int <= 0:
         return {
             "repo": f"{repo.owner}/{repo.name}",
             "repo_id": repo.id,
             "enqueued": 0,
-            "remaining": total_needs_engagement,
             "states": result_states,
         }
 
@@ -336,13 +327,10 @@ def backfill_repo_engagement_task(  # type: ignore[no-redef]
         sync_pr_task.delay(repo.id, int(pr.number))
         enqueued += 1
 
-    remaining_after = max(total_needs_engagement - enqueued, 0)
     return {
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
         "enqueued": enqueued,
-        "remaining": remaining_after,
-        "backlog": total_needs_engagement,
         "states": result_states,
     }
 
