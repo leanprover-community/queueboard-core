@@ -252,27 +252,32 @@ SYNCER_CI_ALLOW_CHECKRUN_NAMES = os.getenv("SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")
 SYNCER_CI_ALLOW_STATUS_NAMES = os.getenv("SYNCER_CI_ALLOW_STATUS_NAMES", "")
 
 # Beat schedule: periodically enqueue repo syncs for active repositories.
-CELERY_BEAT_SCHEDULE = {
-    "sync_active_repos": {
+CELERY_BEAT_SCHEDULE = {}
+if SYNCER_ACTIVE_REPOS_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["sync_active_repos"] = {
         "task": "syncer.sync_active_repos",
         "schedule": SYNCER_ACTIVE_REPOS_PERIOD_SECONDS,
-    },
-    "collect_syncer_metrics": {
+    }
+if 900 > 0:
+    CELERY_BEAT_SCHEDULE["collect_syncer_metrics"] = {
         "task": "syncer.collect_metrics",
         "schedule": 900,  # 15 minutes
-    },
-    "backfill_repo_history": {
+    }
+if SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["backfill_repo_history"] = {
         "task": "syncer.backfill_repo_history_active",
         "schedule": SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS,
-    },
-    "backfill_repo_incomplete_prs": {
+    }
+if SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["backfill_repo_incomplete_prs"] = {
         "task": "syncer.backfill_repo_incomplete_prs_active",
         "schedule": SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS,
         "kwargs": {
             "limit": SYNCER_INCOMPLETE_BACKFILL_LIMIT,
         },
-    },
-    "refresh_pending_ci_for_active_repos": {
+    }
+if SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["refresh_pending_ci_for_active_repos"] = {
         "task": "syncer.refresh_pending_ci_for_active_repos",
         "schedule": SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS,
         "kwargs": {
@@ -280,8 +285,9 @@ CELERY_BEAT_SCHEDULE = {
             "max_shas_per_pr": SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR,
             "max_pending_hours": SYNCER_PENDING_CI_MAX_AGE_HOURS,
         },
-    },
-    "harvest_commit_history": {
+    }
+if SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["harvest_commit_history"] = {
         "task": "syncer.harvest_commit_history_sweep",
         "schedule": SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS,
         "kwargs": {
@@ -289,8 +295,9 @@ CELERY_BEAT_SCHEDULE = {
             "max_pages": SYNCER_COMMIT_HISTORY_SWEEP_MAX_PAGES,
             "page_size": SYNCER_COMMIT_HISTORY_SWEEP_PAGE_SIZE,
         },
-    },
-    "analyzer_missing_ci": {
+    }
+if ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["analyzer_missing_ci"] = {
         "task": "analyzer.plan_missing_ci",
         "schedule": ANALYZER_MISSING_CI_SWEEP_PERIOD_SECONDS,
         "kwargs": {
@@ -298,24 +305,27 @@ CELERY_BEAT_SCHEDULE = {
             "shas_per_pr": ANALYZER_MISSING_CI_SWEEP_SHAS_PER_PR,
             "only_complete_backfill": ANALYZER_MISSING_CI_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
-    },
-    "analyzer_revision_sweep": {
+    }
+if ANALYZER_REVISION_SWEEP_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["analyzer_revision_sweep"] = {
         "task": "analyzer.rebuild_revisions_sweep",
         "schedule": ANALYZER_REVISION_SWEEP_PERIOD_SECONDS,
         "kwargs": {
             "max_prs_per_repo": ANALYZER_REVISION_SWEEP_MAX_PRS_PER_REPO,
             "only_complete_backfill": ANALYZER_REVISION_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
-    },
-    "analyzer_queue_windows_sweep": {
+    }
+if ANALYZER_QUEUE_WINDOWS_SWEEP_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["analyzer_queue_windows_sweep"] = {
         "task": "analyzer.rebuild_queue_windows_sweep",
         "schedule": ANALYZER_QUEUE_WINDOWS_SWEEP_PERIOD_SECONDS,
         "kwargs": {
             "max_prs_per_repo": ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO,
             "only_complete_backfill": ANALYZER_QUEUE_WINDOWS_SWEEP_ONLY_COMPLETE_BACKFILL,
         },
-    },
-    "analyzer_dependency_sweep": {
+    }
+if ANALYZER_DEPENDENCY_SWEEP_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["analyzer_dependency_sweep"] = {
         "task": "analyzer.rebuild_dependencies_sweep",
         "schedule": ANALYZER_DEPENDENCY_SWEEP_PERIOD_SECONDS,
         "kwargs": {
@@ -324,16 +334,16 @@ CELERY_BEAT_SCHEDULE = {
             "builder_version": ANALYZER_DEPENDENCY_SWEEP_BUILDER_VERSION,
             "fanout": ANALYZER_DEPENDENCY_SWEEP_FANOUT,
         },
-    },
-    "collect_convergence": {
+    }
+if ANALYTICS_CONVERGENCE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["collect_convergence"] = {
         "task": "syncer.collect_convergence",
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
-    },
-    "collect_analyzer_convergence": {
+    }
+    CELERY_BEAT_SCHEDULE["collect_analyzer_convergence"] = {
         "task": "analyzer.collect_convergence",
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
-    },
-}
+    }
 # Optional engagement backfill; disable by setting SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS<=0
 if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["backfill_repo_engagement"] = {
