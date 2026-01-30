@@ -17,6 +17,7 @@ from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
+from syncer.services.ci_backoff import should_enqueue_ci_sha
 from syncer.models import CheckRun, StatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -699,6 +700,7 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
     client = GitHubClient()
 
     rate_events: list[dict] = []
+    per_sha_cap = 50
 
     def rate_log(label: str, rl_snap: dict) -> None:
         try:
@@ -743,6 +745,10 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
             "remaining_shas": list(remaining_shas),
             "rate_limit": rl,
             "rate_events": rate_events,
+            "results_by_result": {},
+            "per_sha_results": [],
+            "per_sha_results_truncated": False,
+            "per_sha_results_cap": per_sha_cap,
         }
 
     # Guard on budget before starting
@@ -761,6 +767,8 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
     done: list[str] = []
     todo: list[str] = [s for s in shas if s]
     total_counts = {"checkruns_created": 0, "checkruns_updated": 0, "status_created": 0, "status_updated": 0}
+    per_sha_results: list[dict[str, Any]] = []
+    results_by_result: dict[str, int] = {}
 
     for sha in todo:
         # Check budget before each SHA
@@ -772,6 +780,9 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
             return _defer(reset_at, remaining)
 
         if dry_run:
+            if len(per_sha_results) < per_sha_cap:
+                per_sha_results.append({"sha": sha, "result": "dry_run"})
+            results_by_result["dry_run"] = results_by_result.get("dry_run", 0) + 1
             done.append(sha)
             continue
 
@@ -783,6 +794,18 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
             rate_log=rate_log,
             require_pr_association=require_assoc,
         )
+        result = str(res.get("result") or "ok")
+        if len(per_sha_results) < per_sha_cap:
+            per_sha_results.append(
+                {
+                    "sha": sha,
+                    "result": result,
+                    "found_commit": bool(res.get("found_commit")),
+                    "found_contexts": bool(res.get("found_contexts")),
+                    "counts": {k: int(res.get(k, 0)) for k in total_counts.keys()},
+                }
+            )
+        results_by_result[result] = results_by_result.get(result, 0) + 1
         for k in total_counts.keys():
             total_counts[k] += int(res.get(k, 0))
         done.append(sha)
@@ -794,6 +817,10 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
         "number": int(number),
         "shas_done": done,
         "counts": total_counts,
+        "results_by_result": results_by_result,
+        "per_sha_results": per_sha_results,
+        "per_sha_results_truncated": len(todo) > per_sha_cap,
+        "per_sha_results_cap": per_sha_cap,
         "rate_limit": rl_final,
         "rate_events": rate_events,
     }
@@ -937,9 +964,12 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
                 break
             continue
         shas = shas[:max_shas_int]
-        actionable_found += 1
+        shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="refresh_pending_ci")]
 
         # Enqueue CI refresh for these SHAs.
+        if not shas:
+            continue
+        actionable_found += 1
         pages_per_sha = int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
         async_res = sync_ci_for_shas_task.delay(
             repo_id=repo.id,

@@ -8,6 +8,7 @@ from syncer.models.status_context import StatusContextState
 from syncer.services.github_client import GitHubClient
 from syncer.services.commit_history import harvest_commit_history_with_cursor
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task
+from syncer.services.ci_backoff import should_enqueue_ci_sha
 
 
 @shared_task(name="syncer.harvest_commit_history")
@@ -79,6 +80,9 @@ def harvest_commit_history_task(
             if missing_ci or pending_status_only or pending_check_run:
                 missing.append(sha)
     ci_task_id = None
+    if missing:
+        gated = [sha for sha in missing if should_enqueue_ci_sha(pr=pr, sha=sha, reason="commit_history")]
+        missing = gated
     if missing:
         ci_res = sync_ci_for_shas_task.delay(
             repo_id=pr.repository_id,

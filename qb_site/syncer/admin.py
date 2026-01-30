@@ -508,6 +508,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
     def enqueue_ci_sha_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
         from django.conf import settings
         from syncer.tasks.sync_tasks import sync_ci_for_shas_task
+        from syncer.services.ci_backoff import should_enqueue_ci_sha
 
         pr = self.get_object(request, object_id)
         if pr is None:
@@ -531,6 +532,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 if t not in seen:
                     seen.add(t)
                     shas.append(t)
+            shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="admin.enqueue_ci_sha")]
             max_pages = int(pages) if pages and pages.isdigit() else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
             if shas:
                 async_result = sync_ci_for_shas_task.delay(

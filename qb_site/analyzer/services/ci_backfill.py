@@ -5,6 +5,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 from core.models import Repository
 from syncer.models import PullRequest
+from syncer.services.ci_backoff import should_enqueue_ci_sha
 from analyzer.services.revisions import next_revision_backfill_shas
 
 
@@ -57,10 +58,13 @@ def enqueue_ci_by_shas(
     # Local import to keep Analyzer decoupled at import time and easy to test
     from syncer.tasks.sync_tasks import sync_ci_for_shas_task  # type: ignore
 
+    filtered = [sha for sha in shas if sha and should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.enqueue_ci_by_shas")]
+    if not filtered:
+        return ""
     res = sync_ci_for_shas_task.delay(
         repo_id=pr.repository_id,
         number=int(pr.number),
-        shas=list(shas),
+        shas=list(filtered),
         max_pages_per_sha=int(pages_per_sha),
         require_pr_association=bool(require_pr_association),
     )
