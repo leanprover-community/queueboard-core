@@ -44,6 +44,7 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
       - Store label_name for label events
     """
     created = 0
+    updated = 0
     reset_commits_backfill = False
     earliest_new_ts = None
     type_map = {
@@ -104,6 +105,26 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
                 earliest_new_ts = occurred_at
             if ev_type == PRTimelineEventType.HEAD_FORCE_PUSHED:
                 reset_commits_backfill = True
+        else:
+            update_fields: list[str] = []
+            if label_name and not obj.label_name:
+                obj.label_name = label_name
+                update_fields.append("label_name")
+            if assignee_login and not obj.assignee_login:
+                obj.assignee_login = assignee_login
+                update_fields.append("assignee_login")
+            if actor_login and not obj.actor_login:
+                obj.actor_login = actor_login
+                update_fields.append("actor_login")
+            if before_sha and not obj.before_sha:
+                obj.before_sha = before_sha
+                update_fields.append("before_sha")
+            if after_sha and not obj.after_sha:
+                obj.after_sha = after_sha
+                update_fields.append("after_sha")
+            if update_fields:
+                obj.save(update_fields=update_fields)
+                updated += 1
 
     if reset_commits_backfill:
         pr.commits_backfill_done = False
@@ -114,4 +135,4 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
     if earliest_new_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_new_ts)
 
-    return TimelineSyncResult(created=created, updated=0, deleted=0)
+    return TimelineSyncResult(created=created, updated=updated, deleted=0)

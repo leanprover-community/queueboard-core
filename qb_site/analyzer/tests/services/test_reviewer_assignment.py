@@ -14,6 +14,7 @@ from analyzer.services.reviewer_assignment import (
     suggest_reviewer_for_pr,
 )
 from core.models import Repository, ReviewerPreference, User
+from analyzer.models import ReviewerOptOut
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.models import LabelDef, PRLabel, PullRequest
 from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
@@ -417,6 +418,132 @@ class ReviewerAssignmentBuilderTests(TestCase):
         payload = builder.build(self.repo, queue_snapshot=queue_snapshot)
 
         self.assertEqual(payload["automatic_assignments"].get(11), "bob")
+
+    def test_ignores_older_assignment_events_after_unassign(self):
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        now = datetime.now(timezone.utc)
+        unassign_bundle = self._bundle(
+            12,
+            author_login="carol",
+            updated_at=now,
+            timeline_nodes=[
+                {
+                    "__typename": "UnassignedEvent",
+                    "id": "U12",
+                    "createdAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "actor": {"login": "bob"},
+                    "assignee": {"login": "bob"},
+                }
+            ],
+            assignees=[],
+        )
+        older_assign_bundle = self._bundle(
+            12,
+            author_login="carol",
+            updated_at=now + timedelta(minutes=5),
+            timeline_nodes=[
+                {
+                    "__typename": "AssignedEvent",
+                    "id": "A12",
+                    "createdAt": (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "actor": {"login": "bot"},
+                    "assignee": {"login": "bob"},
+                }
+            ],
+            assignees=[],
+        )
+
+        service = PRSyncService()
+        service.sync_pull_request_bundle(self.repo, unassign_bundle)
+        service.sync_pull_request_bundle(self.repo, older_assign_bundle)
+
+        pr = PullRequest.objects.get(repository=self.repo, number=12)
+        pr.gh_updated_at = now - timedelta(days=5)
+        pr.save(update_fields=["gh_updated_at"])
+
+        opt_out = ReviewerOptOut.objects.get(repository=self.repo, pr_number=12, reviewer_login="bob")
+        self.assertTrue(opt_out.active)
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+        self.assertEqual(payload["automatic_assignments"].get(12), "alice")
+
+    def test_newer_assignment_event_overrides_opt_out(self):
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        now = datetime.now(timezone.utc)
+        unassign_bundle = self._bundle(
+            13,
+            author_login="carol",
+            updated_at=now,
+            timeline_nodes=[
+                {
+                    "__typename": "UnassignedEvent",
+                    "id": "U13",
+                    "createdAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "actor": {"login": "bob"},
+                    "assignee": {"login": "bob"},
+                }
+            ],
+            assignees=[],
+        )
+        assign_bundle = self._bundle(
+            13,
+            author_login="carol",
+            updated_at=now + timedelta(minutes=5),
+            timeline_nodes=[
+                {
+                    "__typename": "AssignedEvent",
+                    "id": "A13",
+                    "createdAt": (now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "actor": {"login": "bot"},
+                    "assignee": {"login": "bob"},
+                }
+            ],
+            assignees=[],
+        )
+
+        service = PRSyncService()
+        service.sync_pull_request_bundle(self.repo, unassign_bundle)
+        service.sync_pull_request_bundle(self.repo, assign_bundle)
+
+        pr = PullRequest.objects.get(repository=self.repo, number=13)
+        pr.gh_updated_at = now - timedelta(days=5)
+        pr.save(update_fields=["gh_updated_at"])
+
+        opt_out = ReviewerOptOut.objects.get(repository=self.repo, pr_number=13, reviewer_login="bob")
+        self.assertFalse(opt_out.active)
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+        self.assertEqual(payload["automatic_assignments"].get(13), "bob")
 
 
 class AreaStatsBuilderTests(TestCase):

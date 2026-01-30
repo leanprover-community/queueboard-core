@@ -72,6 +72,9 @@ class PullRequest(TimestampedModel):
     reviews_incomplete = models.BooleanField(default=False)
     comments_incomplete = models.BooleanField(default=False)
 
+    # Latest processed assignment/unassignment event timestamp (monotonic).
+    last_assignment_event_at = models.DateTimeField(null=True, blank=True)
+
     # Timeline backfill state (optional V1.1 feature)
     # - timeline_backfill_cursor: oldest cursor reached so far when paging backward
     #   using last/before. Seeded from the bundle's pageInfo.startCursor.

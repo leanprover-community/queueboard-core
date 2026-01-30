@@ -46,6 +46,7 @@ class PRSyncService:
     def _apply_assignment_opt_outs(self, pr_obj: PullRequest, events: list[dict]) -> None:
         if not events:
             return
+        last_seen = pr_obj.last_assignment_event_at
         updates: list[tuple[datetime, str, str]] = []
         for ev in events:
             if not isinstance(ev, dict):
@@ -59,12 +60,15 @@ class PRSyncService:
             occurred_at = self._parse_iso(ev.get("createdAt"))
             if occurred_at is None:
                 continue
+            if last_seen is not None and occurred_at <= last_seen:
+                continue
             updates.append((occurred_at, typename, assignee))
 
         if not updates:
             return
 
         updates.sort(key=lambda row: row[0])
+        max_seen = last_seen
         for occurred_at, typename, assignee in updates:
             login = self._normalize_login(assignee)
             if not login:
@@ -87,6 +91,11 @@ class PRSyncService:
                     reviewer_login=login,
                     active=True,
                 ).update(active=False, cleared_at=occurred_at)
+            if max_seen is None or occurred_at > max_seen:
+                max_seen = occurred_at
+        if max_seen is not None and max_seen != last_seen:
+            pr_obj.last_assignment_event_at = max_seen
+            pr_obj.save(update_fields=["last_assignment_event_at", "updated_at"])
 
     @transaction.atomic
     def sync_pull_request_bundle(self, repo: Repository, pr_bundle: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, int]:
