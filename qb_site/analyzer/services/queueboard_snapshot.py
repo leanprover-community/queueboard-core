@@ -88,19 +88,26 @@ def _head_sha_for_pr(
     return _latest_ci_head_sha(check_runs, status_contexts)
 
 
-def _context_name_matches(name: str, required_prefix: str) -> bool:
-    return name.lower().startswith(required_prefix.lower())
+def _normalize_context_fragment(name: str) -> str:
+    return name.strip().lower()
+
+
+def _context_name_matches(name: str, required_fragment: str) -> bool:
+    required = _normalize_context_fragment(required_fragment)
+    if not required:
+        return False
+    return required in name.lower()
 
 
 def _matching_check_runs(
     check_runs: Sequence[dict],
     *,
-    required_prefix: str,
+    required_fragment: str,
     head_sha: str | None,
 ) -> list[dict]:
     matches: list[dict] = []
     for cr in check_runs:
-        if not _context_name_matches(cr.get("name") or "", required_prefix):
+        if not _context_name_matches(cr.get("name") or "", required_fragment):
             continue
         if head_sha and cr.get("head_sha") != head_sha:
             continue
@@ -111,12 +118,12 @@ def _matching_check_runs(
 def _matching_status_contexts(
     status_contexts: Sequence[dict],
     *,
-    required_prefix: str,
+    required_fragment: str,
     head_sha: str | None,
 ) -> list[dict]:
     matches: list[dict] = []
     for sc in status_contexts:
-        if not _context_name_matches(sc.get("name") or "", required_prefix):
+        if not _context_name_matches(sc.get("name") or "", required_fragment):
             continue
         if head_sha and sc.get("head_sha") != head_sha:
             continue
@@ -203,8 +210,8 @@ def _required_contexts_status(
     any_missing = False
 
     for ctx_name in required_contexts:
-        cr_matches = _matching_check_runs(check_runs, required_prefix=ctx_name, head_sha=head_sha)
-        sc_matches = _matching_status_contexts(status_contexts, required_prefix=ctx_name, head_sha=head_sha)
+        cr_matches = _matching_check_runs(check_runs, required_fragment=ctx_name, head_sha=head_sha)
+        sc_matches = _matching_status_contexts(status_contexts, required_fragment=ctx_name, head_sha=head_sha)
         status = _context_status_from_matches(cr_matches, sc_matches)
         if status == CIStatus.Pass:
             continue
@@ -239,7 +246,9 @@ def _ci_status_for_pr(
     if not rule_set or not rule_set.require_ci_success:
         return (CIStatus.Pass, True)
 
-    required = [ctx for ctx in (rule_set.required_ci_contexts or []) if isinstance(ctx, str) and ctx.strip()]
+    required = [
+        _normalize_context_fragment(ctx) for ctx in (rule_set.required_ci_contexts or []) if isinstance(ctx, str) and ctx.strip()
+    ]
     if not required:
         return (CIStatus.Pass, True)
 

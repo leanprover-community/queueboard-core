@@ -96,7 +96,7 @@ This decision has two parts:
 
 ### Read strategy (dual-read with fallback)
 - Update Analyzer CI helpers to read SHA-keyed tables by default:
-  - `analyzer.services.queue_windows._latest_ci_statuses_for_prefix`
+  - `analyzer.services.queue_windows._latest_ci_statuses_for_fragment`
   - `analyzer.services.queueboard_snapshot._ci_status_for_pr`
 - If SHA-keyed rows are missing, optionally fall back to PR-keyed rows for a transitional period.
 - Ensure all required contexts are evaluated against the head SHA for that time window (PRRevision + head SHA).

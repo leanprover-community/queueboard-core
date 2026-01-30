@@ -45,7 +45,8 @@ class QueueRuleSet(TimestampedModel):
     required_label_names = models.JSONField(default=list, blank=True)
     forbidden_label_names = models.JSONField(default=list, blank=True)
     # Optional: specific CI contexts (job names) that must succeed for this rule set.
-    # These should match the names persisted in CheckRun.name / StatusContext.name.
+    # These are interpreted as case-insensitive substrings of CheckRun.name /
+    # StatusContext.name.
     required_ci_contexts = models.JSONField(default=list, blank=True)
 
     class Meta:

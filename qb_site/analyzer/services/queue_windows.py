@@ -55,23 +55,26 @@ def _merge_latest_ci_status(
         latest[key] = (ts, ok)
 
 
-def _latest_ci_statuses_for_prefix(
+def _latest_ci_statuses_for_fragment(
     pr: PullRequest,
     *,
-    required_prefix: str,
+    required_fragment: str,
     at: datetime,
     head_sha: str | None,
 ) -> dict[str, bool]:
+    required_fragment = (required_fragment or "").strip().lower()
+    if not required_fragment:
+        return {}
     latest: dict[str, tuple[datetime, bool]] = {}
 
-    cr_qs = CheckRun.objects.filter(pull_request=pr, name__istartswith=required_prefix, gh_completed_at__lte=at)
+    cr_qs = CheckRun.objects.filter(pull_request=pr, name__icontains=required_fragment, gh_completed_at__lte=at)
     if head_sha:
         cr_qs = cr_qs.filter(head_sha=head_sha)
     for cr in cr_qs:
         ts = cr.gh_completed_at or cr.gh_started_at
         _merge_latest_ci_status(latest, name=cr.name, ts=ts, ok=_check_run_ok(cr))
 
-    sc_qs = StatusContext.objects.filter(pull_request=pr, name__istartswith=required_prefix, gh_created_at__lte=at)
+    sc_qs = StatusContext.objects.filter(pull_request=pr, name__icontains=required_fragment, gh_created_at__lte=at)
     if head_sha:
         sc_qs = sc_qs.filter(head_sha=head_sha)
     for sc in sc_qs:
@@ -211,9 +214,9 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
     - If no PRRevision rows exist, we fall back to per-PR snapshots (no head filter),
       matching the initial non-revision behavior.
     - For each required context name, we look for the latest snapshot on this PR
-      at or before ``at`` (CheckRun or StatusContext, case-insensitive exact match
-      on name, and matching head SHA when available) and require it to be in a
-      successful state.
+      at or before ``at`` (CheckRun or StatusContext, case-insensitive substring
+      match on name, and matching head SHA when available) and require it to be in
+      a successful state.
     - Missing or non-successful snapshots for any required context cause CI to be
       treated as not ok.
 
@@ -239,7 +242,7 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
     ok = True
     for ctx_name in required:
         ctx_norm = _normalize_label(ctx_name)
-        latest_statuses = _latest_ci_statuses_for_prefix(pr, required_prefix=ctx_norm, at=at, head_sha=head_sha)
+        latest_statuses = _latest_ci_statuses_for_fragment(pr, required_fragment=ctx_norm, at=at, head_sha=head_sha)
         if not latest_statuses:
             ok = False
             break
@@ -336,7 +339,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             # CheckRun completions
             for ts in CheckRun.objects.filter(
                 pull_request=pr,
-                name__istartswith=ctx_norm,
+                name__icontains=ctx_norm,
                 gh_completed_at__isnull=False,
                 gh_completed_at__gte=t0,
                 gh_completed_at__lte=as_of,
@@ -345,7 +348,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             # StatusContext creation
             for ts in StatusContext.objects.filter(
                 pull_request=pr,
-                name__istartswith=ctx_norm,
+                name__icontains=ctx_norm,
                 gh_created_at__gte=t0,
                 gh_created_at__lte=as_of,
             ).values_list("gh_created_at", flat=True):

@@ -132,3 +132,30 @@ class TestQueueWindowsCI(TestCase):
         )
         later = _dt(2024, 9, 8)
         self.assertTrue(is_on_queue_at(pr, at=later))
+
+    def test_required_contexts_match_substrings(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            required_label_names=[],
+            forbidden_label_names=[],
+            required_ci_contexts=["linux"],
+        )
+        pr = self._mk_pr(3)
+        at = _dt(2024, 9, 6)
+
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC6",
+            rest_id=None,
+            head_sha="h1",
+            name="lint / linux",
+            state="SUCCESS",
+            target_url=None,
+            description=None,
+            gh_created_at=_dt(2024, 9, 5),
+        )
+        self.assertTrue(is_on_queue_at(pr, at=at))
