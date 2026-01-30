@@ -904,6 +904,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     shas_enqueued = 0
     prs_missing_head_ci = 0
     shas_missing_head_ci = 0
+    shas_skipped_backoff = 0
+    prs_skipped_backoff = 0
     per_pr: list[dict[str, Any]] = []
     considered_numbers: list[int] = []
     skipped_stale = 0
@@ -965,11 +967,17 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
                 break
             continue
         shas = shas[:max_shas_int]
+        pre_gate_count = len(shas)
         shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="refresh_pending_ci")]
 
         # Enqueue CI refresh for these SHAs.
         if not shas:
+            if pre_gate_count:
+                prs_skipped_backoff += 1
+                shas_skipped_backoff += pre_gate_count
             continue
+        if pre_gate_count > len(shas):
+            shas_skipped_backoff += pre_gate_count - len(shas)
         actionable_found += 1
         pages_per_sha = int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
         async_res = sync_ci_for_shas_task.delay(
@@ -1005,6 +1013,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         "shas_enqueued": shas_enqueued,
         "prs_missing_head_ci": prs_missing_head_ci,
         "shas_missing_head_ci": shas_missing_head_ci,
+        "prs_skipped_backoff": prs_skipped_backoff,
+        "shas_skipped_backoff": shas_skipped_backoff,
         "backlog_prs": max(0, total_pending_prs - len(considered_numbers)),
         "backlog_prs_total": total_pending_prs,
         "backlog_prs_actionable_scanned": actionable_found,

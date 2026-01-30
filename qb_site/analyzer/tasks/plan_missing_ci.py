@@ -34,6 +34,7 @@ def plan_missing_ci_backfill_task(
     total_prs_skipped_no_revisions = 0
     total_prs_skipped_already_checked = 0
     total_prs_skipped_limit = 0
+    total_prs_skipped_backoff = 0
     processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
     now_ts = timezone.now()
@@ -64,6 +65,7 @@ def plan_missing_ci_backfill_task(
         repo_prs_skipped_no_revisions: list[int] = []
         repo_prs_skipped_already_checked: list[int] = []
         repo_prs_skipped_limit: list[int] = []
+        repo_prs_skipped_backoff: list[int] = []
         repo_limit_hit = False
         for pr in pr_qs:
             if repo_prs >= int(max_prs_per_repo):
@@ -86,7 +88,7 @@ def plan_missing_ci_backfill_task(
 
             shas = next_revision_backfill_shas(pr, limit=int(shas_per_pr))
             if shas:
-                enqueue_ci_by_shas(
+                task_id = enqueue_ci_by_shas(
                     pr=pr,
                     shas=shas,
                     pages_per_sha=int(pages_per_sha)
@@ -94,7 +96,10 @@ def plan_missing_ci_backfill_task(
                     else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
                     require_pr_association=bool(require_pr_association),
                 )
-                repo_enqueued += 1
+                if task_id:
+                    repo_enqueued += 1
+                else:
+                    repo_prs_skipped_backoff.append(int(pr.number))
             # Mark that we have checked this revision_version (even if nothing was enqueued).
             state.ci_checked_revision_version = state.revision_version
             state.ci_checked_at = now_ts
@@ -109,6 +114,7 @@ def plan_missing_ci_backfill_task(
         total_prs_skipped_no_revisions += len(repo_prs_skipped_no_revisions)
         total_prs_skipped_already_checked += len(repo_prs_skipped_already_checked)
         total_prs_skipped_limit += len(repo_prs_skipped_limit)
+        total_prs_skipped_backoff += len(repo_prs_skipped_backoff)
         per_repo.append(
             {
                 "repo": f"{repo.owner}/{repo.name}",
@@ -118,6 +124,7 @@ def plan_missing_ci_backfill_task(
                 "prs_skipped_no_revisions": repo_prs_skipped_no_revisions,
                 "prs_skipped_already_checked": repo_prs_skipped_already_checked,
                 "prs_skipped_limit": repo_prs_skipped_limit,
+                "prs_skipped_backoff": repo_prs_skipped_backoff,
                 "limit_hit": repo_limit_hit,
             }
         )
@@ -131,6 +138,7 @@ def plan_missing_ci_backfill_task(
         "prs_skipped_no_revisions": total_prs_skipped_no_revisions,
         "prs_skipped_already_checked": total_prs_skipped_already_checked,
         "prs_skipped_limit": total_prs_skipped_limit,
+        "prs_skipped_backoff": total_prs_skipped_backoff,
         "per_repo": per_repo,
         "only_complete_backfill": bool(only_complete_backfill),
     }

@@ -80,9 +80,13 @@ def harvest_commit_history_task(
             if missing_ci or pending_status_only or pending_check_run:
                 missing.append(sha)
     ci_task_id = None
+    shas_skipped_backoff = 0
     if missing:
+        pre_gate_count = len(missing)
         gated = [sha for sha in missing if should_enqueue_ci_sha(pr=pr, sha=sha, reason="commit_history")]
         missing = gated
+        if pre_gate_count > len(missing):
+            shas_skipped_backoff += pre_gate_count - len(missing)
     if missing:
         ci_res = sync_ci_for_shas_task.delay(
             repo_id=pr.repository_id,
@@ -104,6 +108,7 @@ def harvest_commit_history_task(
         "attempts": state.attempts,
         "ci_task_id": ci_task_id,
         "ci_missing": missing,
+        "ci_shas_skipped_backoff": shas_skipped_backoff,
         "rate_events": rate_events,
         "rate_limit": client.get_last_rate_limit() or {},
     }
