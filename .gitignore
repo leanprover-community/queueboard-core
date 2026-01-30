@@ -7,3 +7,4 @@ test/**/api
 test/**/pre-api-artifact
 celerybeat-schedule*
 /artifacts/
+docs/graphql/github-schema.json

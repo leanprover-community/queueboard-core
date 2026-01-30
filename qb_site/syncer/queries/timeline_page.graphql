@@ -27,15 +27,57 @@ query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int
         pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
         nodes {
           __typename
-          ... on LabeledEvent { id createdAt actor { login } label { name } }
-          ... on UnlabeledEvent { id createdAt actor { login } label { name } }
-          ... on AssignedEvent { id createdAt actor { login } assignee { login } }
-          ... on UnassignedEvent { id createdAt actor { login } assignee { login } }
-          ... on ReadyForReviewEvent { id createdAt actor { login } }
-          ... on ConvertToDraftEvent { id createdAt actor { login } }
-          ... on ReopenedEvent { id createdAt actor { login } }
-          ... on ClosedEvent { id createdAt actor { login } }
-          ... on HeadRefForcePushedEvent { id createdAt actor { login } beforeCommit { oid } afterCommit { oid } }
+          ... on LabeledEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            label { name }
+          }
+          ... on UnlabeledEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            label { name }
+          }
+          ... on AssignedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            assignee { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on UnassignedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            assignee { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on ReadyForReviewEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on ConvertToDraftEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on ReopenedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on ClosedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on HeadRefForcePushedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            beforeCommit { oid }
+            afterCommit { oid }
+          }
         }
       }
     }
