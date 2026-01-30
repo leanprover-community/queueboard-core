@@ -18,6 +18,7 @@ from analyzer.models import (
     QueueSnapshot,
     ReviewerAssignmentSnapshot,
     AreaStatsSnapshot,
+    ReviewerOptOut,
 )
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 from core.models import Repository
@@ -60,7 +61,7 @@ class PRRevisionAdmin(ReadOnlyAdmin):
     pr_link.admin_order_field = "pull_request"  # type: ignore[attr-defined]
 
     list_display = ("pr_link", "short_sha", "from_ts", "to_ts", "seq")
-    list_filter = ("to_ts",)
+    list_filter = ("to_ts", "pull_request__repository")
     search_fields = ("pull_request__number", "head_sha")
     date_hierarchy = "from_ts"
     raw_id_fields = ("pull_request",)
@@ -102,7 +103,7 @@ class PRRevisionBuildStateAdmin(ReadOnlyAdmin):
         "last_built_at",
         "updated_at",
     )
-    list_filter = ("builder_version", "revision_version")
+    list_filter = ("builder_version", "revision_version", "pull_request__repository")
     search_fields = ("pull_request__number",)
     raw_id_fields = ("pull_request", "tail_revision")
     readonly_fields = (
@@ -171,7 +172,7 @@ class QueueRuleSetAdmin(admin.ModelAdmin):
 @admin.register(PRQueueWindow)
 class PRQueueWindowAdmin(ReadOnlyAdmin):
     list_display = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
-    list_filter = ("rule_set",)
+    list_filter = ("rule_set", "pull_request__repository")
     search_fields = (
         "pull_request__number",
         "rule_set__version",
@@ -193,7 +194,7 @@ class PRDependencyAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
-    list_filter = ("depends_on_repository",)
+    list_filter = ("depends_on_repository", "pull_request__repository")
     search_fields = (
         "pull_request__number",
         "pull_request__repository__owner",
@@ -223,7 +224,7 @@ class PRDependencyAdmin(ReadOnlyAdmin):
 @admin.register(PRDependencyState)
 class PRDependencyStateAdmin(ReadOnlyAdmin):
     list_display = ("pull_request", "last_checked_at", "last_body_hash", "builder_version", "created_at", "updated_at")
-    list_filter = ("builder_version",)
+    list_filter = ("builder_version", "pull_request__repository")
     search_fields = ("pull_request__number", "pull_request__repository__owner", "pull_request__repository__name")
     raw_id_fields = ("pull_request",)
     readonly_fields = (
@@ -239,7 +240,7 @@ class PRDependencyStateAdmin(ReadOnlyAdmin):
 @admin.register(QueueSnapshot)
 class QueueSnapshotAdmin(ReadOnlyAdmin):
     list_display = ("repository", "cache_key", "generated_at", "pr_count", "queue_count")
-    list_filter = ("cache_key",)
+    list_filter = ("cache_key", "repository")
     search_fields = ("repository__owner", "repository__name", "cache_key")
     readonly_fields = (
         "repository",
@@ -281,7 +282,7 @@ class QueueSnapshotAdmin(ReadOnlyAdmin):
 @admin.register(ReviewerAssignmentSnapshot)
 class ReviewerAssignmentSnapshotAdmin(ReadOnlyAdmin):
     list_display = ("repository", "cache_key", "generated_at", "assignment_count")
-    list_filter = ("cache_key",)
+    list_filter = ("cache_key", "repository")
     search_fields = ("repository__owner", "repository__name", "cache_key")
     readonly_fields = (
         "repository",
@@ -329,7 +330,7 @@ class ReviewerAssignmentSnapshotAdmin(ReadOnlyAdmin):
 @admin.register(AreaStatsSnapshot)
 class AreaStatsSnapshotAdmin(ReadOnlyAdmin):
     list_display = ("repository", "cache_key", "generated_at", "area_count")
-    list_filter = ("cache_key",)
+    list_filter = ("cache_key", "repository")
     search_fields = ("repository__owner", "repository__name", "cache_key")
     readonly_fields = (
         "repository",
@@ -372,6 +373,25 @@ class AreaStatsSnapshotAdmin(ReadOnlyAdmin):
         build_area_stats.delay(repository_id=repo.id, cache_key=cache_key)
         self.message_user(request, f"Enqueued area stats build for {repo} (cache_key={cache_key})")
         return HttpResponseRedirect(reverse("admin:analyzer_areastatssnapshot_changelist"))
+
+
+@admin.register(ReviewerOptOut)
+class ReviewerOptOutAdmin(ReadOnlyAdmin):
+    list_display = ("repository", "pr_number", "reviewer_login", "active", "opted_out_at", "cleared_at")
+    list_filter = ("repository", "active", "opted_out_at")
+    search_fields = ("repository__owner", "repository__name", "reviewer_login", "pr_number")
+    date_hierarchy = "opted_out_at"
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "pr_number",
+        "reviewer_login",
+        "active",
+        "opted_out_at",
+        "cleared_at",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(AnalyzerConvergenceSnapshot)

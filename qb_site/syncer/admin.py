@@ -911,6 +911,7 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
     date_hierarchy = "window_start"
     ordering = ("-window_start",)
     search_fields = ("window_start",)
+    list_filter = ("window_seconds",)
     readonly_fields = [
         f.name
         for f in SyncerMetricsSnapshot._meta.fields  # type: ignore[attr-defined]
@@ -943,6 +944,7 @@ class RepoBackfillCursorAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
+    list_filter = ("repository", "completed", "last_run_at")
     search_fields = ("repository__owner", "repository__name")
     raw_id_fields = ("repository",)
     readonly_fields = (
@@ -1024,6 +1026,7 @@ class CommitHistoryHarvestAdmin(ReadOnlyAdmin):
         "attempts",
         "updated_at",
     )
+    list_filter = ("pull_request__repository", "has_more")
     search_fields = ("pull_request__number", "start_sha")
     raw_id_fields = ("pull_request",)
     readonly_fields = (
@@ -1056,6 +1059,7 @@ class CIShaFetchStateAdmin(ReadOnlyAdmin):
         "attempts",
         "updated_at",
     )
+    list_filter = ("repository", "last_result")
     search_fields = ("repository__owner", "repository__name", "sha")
     raw_id_fields = ("repository",)
     readonly_fields = (
