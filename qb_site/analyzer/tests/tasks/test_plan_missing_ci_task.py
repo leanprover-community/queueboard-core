@@ -8,7 +8,7 @@ from django.utils import timezone
 from analyzer.models import PRRevision, PRRevisionBuildState
 from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 from core.models import Repository
-from syncer.models import CheckRun, PullRequest
+from syncer.models import CIShaFetchState, CheckRun, PullRequest
 
 
 class TestPlanMissingCITask(TestCase):
@@ -95,3 +95,23 @@ class TestPlanMissingCITask(TestCase):
         self.assertIsNotNone(state.ci_checked_at)
         self.assertEqual(res["prs_checked"], 1)
         self.assertEqual(res["ci_tasks"], 0)
+
+    def test_skips_when_backoff_blocks_enqueue(self) -> None:
+        pr = self._mk_pr_with_revision(4, "sha-blocked")
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha-blocked",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
+
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.ci_checked_revision_version, state.revision_version)
+        self.assertIsNotNone(state.ci_checked_at)
+        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["ci_tasks"], 0)
+        self.assertEqual(res["prs_skipped_backoff"], 1)

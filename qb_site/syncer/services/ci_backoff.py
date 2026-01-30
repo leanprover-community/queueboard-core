@@ -19,7 +19,7 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
     if state is None:
         return True
     last = state.last_result or ""
-    if last == "not_found":
+    if last in {"not_found", "filtered"}:
         return False
     if last == "skipped_association":
         return True

@@ -4,7 +4,7 @@ from django.test import TestCase
 from django.utils import timezone
 from unittest.mock import patch
 
-from syncer.models import PullRequest, CommitHistoryHarvest
+from syncer.models import CIShaFetchState, PullRequest, CommitHistoryHarvest
 from core.models import Repository
 from syncer.tasks.commit_history_tasks import harvest_commit_history_sweep, harvest_commit_history_task
 from syncer.models import CheckRun, StatusContext
@@ -157,3 +157,29 @@ class TestCommitHistoryTasks(TestCase):
                 )
         mock_ci.assert_called_once()
         self.assertEqual(set(res["ci_missing"]), {"sha_pending", "sha_queued"})
+
+    def test_harvest_task_skips_backoff_shas(self) -> None:
+        state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha4")
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha_blocked",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+        with patch(
+            "syncer.tasks.commit_history_tasks.harvest_commit_history_with_cursor",
+            return_value=(["sha_blocked"], state),
+        ):
+            with patch("syncer.tasks.commit_history_tasks.sync_ci_for_shas_task.delay") as mock_ci:
+                res = harvest_commit_history_task(
+                    pr_id=self.pr.id,
+                    start_sha="sha4",
+                    max_pages=1,
+                    page_size=1,
+                    since_iso=None,
+                )
+        mock_ci.assert_not_called()
+        self.assertEqual(res["ci_missing"], [])
+        self.assertEqual(res["ci_shas_skipped_backoff"], 1)

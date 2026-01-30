@@ -8,7 +8,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import PullRequest, CheckRun, StatusContext
+from syncer.models import CIShaFetchState, PullRequest, CheckRun, StatusContext
 from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task, sync_ci_for_shas_task
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.factories import make_repo, make_pr
@@ -105,6 +105,44 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(items[0]["number"], 1)
         self.assertEqual(items[0]["shas"], ["sha_missing"])
         mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_skips_when_head_sha_backoff_not_found(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = "sha_missing"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha_missing",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="not_found",
+            attempts=1,
+        )
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+        self.assertEqual(res.get("prs_skipped_backoff"), 1)
+        self.assertEqual(res.get("shas_skipped_backoff"), 1)
+        mock_sync_ci_for_shas.delay.assert_not_called()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_skips_when_head_sha_backoff_filtered(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = "sha_filtered"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha_filtered",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="filtered",
+            attempts=2,
+        )
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+        self.assertEqual(res.get("prs_skipped_backoff"), 1)
+        self.assertEqual(res.get("shas_skipped_backoff"), 1)
+        mock_sync_ci_for_shas.delay.assert_not_called()
 
     def test_skips_when_head_sha_has_contexts(self) -> None:
         # Completed CI exists for head SHA; no pending -> no enqueue.

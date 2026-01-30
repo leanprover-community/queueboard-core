@@ -26,7 +26,7 @@ This decision has two parts:
   - `sha` (char(64), indexed)
   - `last_attempted_at` (DateTime)
   - `last_success_at` (DateTime, nullable)
-  - `last_result` (enum/string: `ok`, `empty`, `not_found`, `error`, `skipped_association`)
+  - `last_result` (enum/string: `ok`, `empty`, `not_found`, `error`, `skipped_association`, `filtered`)
   - `attempts` (int)
 - Unique constraint on `(repository, sha)`.
 - Backoff windows are derived from settings rather than stored in the row.
@@ -39,7 +39,7 @@ This decision has two parts:
 - Default cooldowns (configurable settings):
   - `SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS` (default 300)
   - `SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS` (default 300)
-- `not_found` is treated as an infinite cooldown (no retries).
+- `not_found` and `filtered` are treated as infinite cooldowns (no retries).
 
 ### Write policy
 - Update ledger in the CI-by-SHA ingest path:
@@ -50,6 +50,7 @@ This decision has two parts:
     - `empty`: commit exists but `statusCheckRollup` is null or contexts list empty
     - `not_found`: commit object missing in all candidate repos
     - `skipped_association`: association guard failed (when enabled)
+    - `filtered`: contexts returned but all filtered out by allowlists
     - `error`: request failed (exceptions)
 
 ### Integration points
