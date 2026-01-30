@@ -108,6 +108,8 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
         itemTypes: [
           LABELED_EVENT
           UNLABELED_EVENT
+          ASSIGNED_EVENT
+          UNASSIGNED_EVENT
           READY_FOR_REVIEW_EVENT
           CONVERT_TO_DRAFT_EVENT
           REOPENED_EVENT
@@ -118,13 +120,15 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
         pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
         nodes {
           __typename
-          ... on LabeledEvent { id createdAt label { name } }
-          ... on UnlabeledEvent { id createdAt label { name } }
-          ... on ReadyForReviewEvent { id createdAt }
-          ... on ConvertToDraftEvent { id createdAt }
-          ... on ReopenedEvent { id createdAt }
-          ... on ClosedEvent { id createdAt }
-          ... on HeadRefForcePushedEvent { id createdAt beforeCommit { oid } afterCommit { oid } }
+          ... on LabeledEvent { id createdAt actor { login } label { name } }
+          ... on UnlabeledEvent { id createdAt actor { login } label { name } }
+          ... on AssignedEvent { id createdAt actor { login } assignee { login } }
+          ... on UnassignedEvent { id createdAt actor { login } assignee { login } }
+          ... on ReadyForReviewEvent { id createdAt actor { login } }
+          ... on ConvertToDraftEvent { id createdAt actor { login } }
+          ... on ReopenedEvent { id createdAt actor { login } }
+          ... on ClosedEvent { id createdAt actor { login } }
+          ... on HeadRefForcePushedEvent { id createdAt actor { login } beforeCommit { oid } afterCommit { oid } }
         }
       }
 

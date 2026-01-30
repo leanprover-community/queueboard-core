@@ -14,6 +14,7 @@ from analyzer.services.reviewer_assignment import (
     suggest_reviewer_for_pr,
 )
 from core.models import Repository, ReviewerPreference, User
+from syncer.services.pr_sync_service import PRSyncService
 from syncer.models import LabelDef, PRLabel, PullRequest
 from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
 from syncer.models.pull_request import PullRequestState
@@ -125,6 +126,22 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(analysis["num_reviewers_on_rotation"], 2)
         self.assertFalse(analysis["at_max_capacity"])
 
+    def test_opt_out_excludes_from_available_pool(self):
+        stats = collect_assignment_statistics(self.snapshot)
+
+        result = suggest_reviewer_for_pr(
+            pr_number=4,
+            pr_entry=self.snapshot["prs"][4],
+            reviewers=self.reviewers,
+            assignment_stats=stats.assignments,
+            rng=random.Random(0),
+            excluded_logins={"bob"},
+        )
+
+        self.assertEqual(result.all_potential_reviewers, ["bob", "alice"])
+        self.assertEqual(result.all_available_reviewers, [])
+        self.assertIsNone(result.suggested)
+
 
 class ReviewerAssignmentBuilderTests(TestCase):
     def setUp(self):
@@ -181,6 +198,77 @@ class ReviewerAssignmentBuilderTests(TestCase):
         )
         return pr
 
+    def _bundle(
+        self,
+        number: int,
+        *,
+        author_login: str,
+        updated_at: datetime,
+        timeline_nodes: list[dict],
+        assignees: list[str] | None = None,
+    ) -> dict:
+        assignees = assignees or []
+        iso = updated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return {
+            "number": number,
+            "state": "OPEN",
+            "isDraft": False,
+            "title": f"PR {number}",
+            "body": "description",
+            "createdAt": iso,
+            "updatedAt": iso,
+            "closedAt": None,
+            "mergedAt": None,
+            "baseRefName": "master",
+            "headRefName": f"feature/{number}",
+            "headRefOid": "a" * 40,
+            "headRepositoryOwner": {"login": self.repo.owner},
+            "headRepository": {"name": self.repo.name},
+            "additions": 1,
+            "deletions": 1,
+            "changedFiles": 1,
+            "author": {"login": author_login},
+            "labels": {"nodes": [{"name": "t-analysis", "color": "123456"}]},
+            "timelineItems": {"nodes": timeline_nodes},
+            "commits": {
+                "nodes": [
+                    {
+                        "commit": {
+                            "committedDate": iso,
+                            "oid": "a" * 40,
+                            "statusCheckRollup": {
+                                "state": "SUCCESS",
+                                "contexts": {
+                                    "nodes": [
+                                        {
+                                            "__typename": "CheckRun",
+                                            "id": f"cr-{number}",
+                                            "name": "lint",
+                                            "status": "COMPLETED",
+                                            "conclusion": "SUCCESS",
+                                            "startedAt": iso,
+                                            "completedAt": iso,
+                                            "detailsUrl": "https://example.com",
+                                            "externalId": "ext-1",
+                                        }
+                                    ]
+                                },
+                            },
+                        }
+                    }
+                ]
+            },
+            "files": {"pageInfo": {"hasNextPage": False}, "nodes": [{"path": "src/file.py"}]},
+            "assignees": {
+                "totalCount": len(assignees),
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"login": login} for login in assignees],
+            },
+            "reviews": {"totalCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            "comments": {"totalCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            "reviewThreads": {"totalCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []},
+        }
+
     def test_build_and_store_links_queue_snapshot(self):
         pr = self._make_pr(10, labels=("t-analysis",))
         # Make the PR stale and unassigned
@@ -215,6 +303,120 @@ class ReviewerAssignmentBuilderTests(TestCase):
             obj.payload["meta"]["queue_snapshot_cache_key"],
             queue_snapshot.cache_key,
         )
+
+    def test_unassignment_event_excludes_reviewer_from_auto_assignments(self):
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        now = datetime.now(timezone.utc)
+        timeline_nodes = [
+            {
+                "__typename": "AssignedEvent",
+                "id": "A1",
+                "createdAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "actor": {"login": "bot"},
+                "assignee": {"login": "bob"},
+            },
+            {
+                "__typename": "UnassignedEvent",
+                "id": "U1",
+                "createdAt": (now + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "actor": {"login": "bob"},
+                "assignee": {"login": "bob"},
+            },
+        ]
+        bundle = self._bundle(
+            10,
+            author_login="carol",
+            updated_at=now,
+            timeline_nodes=timeline_nodes,
+            assignees=[],
+        )
+        PRSyncService().sync_pull_request_bundle(self.repo, bundle)
+
+        pr = PullRequest.objects.get(repository=self.repo, number=10)
+        pr.gh_updated_at = now - timedelta(days=5)
+        pr.save(update_fields=["gh_updated_at"])
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        builder = ReviewerAssignmentBuilder(rng=random.Random(0))
+        payload = builder.build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertEqual(payload["automatic_assignments"].get(10), "alice")
+
+    def test_assigned_event_clears_opt_out_for_auto_assignments(self):
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=0,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        now = datetime.now(timezone.utc)
+        unassign_bundle = self._bundle(
+            11,
+            author_login="carol",
+            updated_at=now,
+            timeline_nodes=[
+                {
+                    "__typename": "UnassignedEvent",
+                    "id": "U2",
+                    "createdAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "actor": {"login": "bob"},
+                    "assignee": {"login": "bob"},
+                }
+            ],
+            assignees=[],
+        )
+        assign_bundle = self._bundle(
+            11,
+            author_login="carol",
+            updated_at=now + timedelta(minutes=2),
+            timeline_nodes=[
+                {
+                    "__typename": "AssignedEvent",
+                    "id": "A2",
+                    "createdAt": (now + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "actor": {"login": "bot"},
+                    "assignee": {"login": "bob"},
+                }
+            ],
+            assignees=[],
+        )
+
+        service = PRSyncService()
+        service.sync_pull_request_bundle(self.repo, unassign_bundle)
+        service.sync_pull_request_bundle(self.repo, assign_bundle)
+
+        pr = PullRequest.objects.get(repository=self.repo, number=11)
+        pr.gh_updated_at = now - timedelta(days=5)
+        pr.save(update_fields=["gh_updated_at"])
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        builder = ReviewerAssignmentBuilder(rng=random.Random(0))
+        payload = builder.build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertEqual(payload["automatic_assignments"].get(11), "bob")
 
 
 class AreaStatsBuilderTests(TestCase):

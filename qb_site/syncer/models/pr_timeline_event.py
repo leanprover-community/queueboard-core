@@ -10,6 +10,8 @@ from .pull_request import PullRequest
 class PRTimelineEventType(models.TextChoices):
     LABELED = "LABELED", "labeled"
     UNLABELED = "UNLABELED", "unlabeled"
+    ASSIGNED = "ASSIGNED", "assigned"
+    UNASSIGNED = "UNASSIGNED", "unassigned"
     READY_FOR_REVIEW = "READY_FOR_REVIEW", "ready_for_review"
     CONVERT_TO_DRAFT = "CONVERT_TO_DRAFT", "convert_to_draft"
     REOPENED = "REOPENED", "reopened"
@@ -39,6 +41,10 @@ class PRTimelineEvent(TimestampedModel):
     occurred_at = models.DateTimeField()
     # Present only for LABELED/UNLABELED events; stored as-is from GitHub (display casing).
     label_name = models.CharField(max_length=100, null=True, blank=True)
+    # Present only for ASSIGNED/UNASSIGNED events (assignee login, display casing).
+    assignee_login = models.CharField(max_length=255, null=True, blank=True)
+    # Present for ASSIGNED/UNASSIGNED events when available.
+    actor_login = models.CharField(max_length=255, null=True, blank=True)
     # Present only for HEAD_FORCE_PUSHED events; Git commit SHAs (40 chars)
     before_sha = models.CharField(max_length=40, null=True, blank=True)
     after_sha = models.CharField(max_length=40, null=True, blank=True)

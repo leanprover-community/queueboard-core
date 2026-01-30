@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Callable, Optional
-from datetime import timedelta, timezone as pytimezone
+from datetime import datetime, timedelta, timezone as pytimezone
 
 from dateutil import parser as dtparser
 from django.db import transaction
@@ -13,6 +13,7 @@ from syncer.services.github_client import GitHubClient
 from syncer.services.sub.pull_request_sync import upsert_pull_request
 from syncer.services.sub.labels_sync import sync_label_catalog, sync_pr_labels
 from syncer.services.sub.timeline_sync import sync_timeline_events
+from analyzer.models import ReviewerOptOut
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.services.sub.core_entities_sync import upsert_repo_metadata
 from syncer.models.pull_request import PullRequest
@@ -25,6 +26,67 @@ class PRSyncService:
       - sync_pull_request_bundle: ingest from an already-fetched GraphQL bundle (easy to test)
       - sync_pull_request: fetch bundle via GitHub client and ingest
     """
+
+    @staticmethod
+    def _normalize_login(login: str | None) -> str:
+        return (login or "").strip().lower()
+
+    @staticmethod
+    def _parse_iso(val: str | None):
+        if not val:
+            return None
+        try:
+            dt = dtparser.isoparse(val)
+        except Exception:
+            return None
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt)
+        return dt
+
+    def _apply_assignment_opt_outs(self, pr_obj: PullRequest, events: list[dict]) -> None:
+        if not events:
+            return
+        updates: list[tuple[datetime, str, str]] = []
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            typename = ev.get("__typename")
+            if typename not in ("AssignedEvent", "UnassignedEvent"):
+                continue
+            assignee = (ev.get("assignee") or {}).get("login")
+            if not assignee:
+                continue
+            occurred_at = self._parse_iso(ev.get("createdAt"))
+            if occurred_at is None:
+                continue
+            updates.append((occurred_at, typename, assignee))
+
+        if not updates:
+            return
+
+        updates.sort(key=lambda row: row[0])
+        for occurred_at, typename, assignee in updates:
+            login = self._normalize_login(assignee)
+            if not login:
+                continue
+            if typename == "UnassignedEvent":
+                ReviewerOptOut.objects.update_or_create(
+                    repository=pr_obj.repository,
+                    pr_number=pr_obj.number,
+                    reviewer_login=login,
+                    defaults={
+                        "active": True,
+                        "opted_out_at": occurred_at,
+                        "cleared_at": None,
+                    },
+                )
+            else:
+                ReviewerOptOut.objects.filter(
+                    repository=pr_obj.repository,
+                    pr_number=pr_obj.number,
+                    reviewer_login=login,
+                    active=True,
+                ).update(active=False, cleared_at=occurred_at)
 
     @transaction.atomic
     def sync_pull_request_bundle(self, repo: Repository, pr_bundle: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, int]:
@@ -41,6 +103,7 @@ class PRSyncService:
         # Timeline events
         tl_nodes = (pr_bundle.get("timelineItems") or {}).get("nodes") or []
         tl_res = sync_timeline_events(pr_obj, tl_nodes)
+        self._apply_assignment_opt_outs(pr_obj, tl_nodes)
 
         # CI snapshots per commit
         checkruns_upserted = 0
@@ -49,23 +112,12 @@ class PRSyncService:
         head_commit_at = None
         head_oid = pr_bundle.get("headRefOid") or ""
 
-        def _parse_dt(val: str | None):
-            if not val:
-                return None
-            try:
-                dt = dtparser.isoparse(val)
-            except Exception:
-                return None
-            if timezone.is_naive(dt):
-                dt = timezone.make_aware(dt)
-            return dt
-
         for cnode in (pr_bundle.get("commits") or {}).get("nodes") or []:
             commit = (cnode or {}).get("commit") or {}
             sha = commit.get("oid") or ""
             contexts = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
             rollup_state = (commit.get("statusCheckRollup") or {}).get("state")
-            committed_at = _parse_dt(commit.get("committedDate"))
+            committed_at = self._parse_iso(commit.get("committedDate"))
             if head_oid and sha == head_oid:
                 if committed_at is not None:
                     head_commit_at = committed_at
@@ -114,6 +166,16 @@ class PRSyncService:
         extras["assignees_incomplete"] = bool(
             assignees_has_more or (isinstance(assignees_total, int) and assignees_total > len(assignees))
         )
+        old_assignees = {self._normalize_login(a) for a in (pr_obj.assignees or []) if a}
+        new_assignees = {self._normalize_login(a) for a in assignees if a}
+        added_assignees = new_assignees - old_assignees
+        if added_assignees:
+            ReviewerOptOut.objects.filter(
+                repository=repo,
+                pr_number=pr_obj.number,
+                reviewer_login__in=sorted(added_assignees),
+                active=True,
+            ).update(active=False, cleared_at=now_ts)
 
         reviews_conn = pr_bundle.get("reviews") or {}
         review_nodes = [n for n in (reviews_conn.get("nodes") or []) if isinstance(n, dict)]
@@ -320,6 +382,7 @@ class PRSyncService:
                     titems = tpr.get("timelineItems") or {}
                     nodes = titems.get("nodes") or []
                     tl_res = sync_timeline_events(pr_obj, nodes)
+                    self._apply_assignment_opt_outs(pr_obj, nodes)
                     result["events_created"] += tl_res.created
                     if rate_log is not None:
                         rl = client.get_last_rate_limit()

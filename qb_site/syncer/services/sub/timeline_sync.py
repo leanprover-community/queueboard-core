@@ -49,6 +49,8 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
     type_map = {
         "LabeledEvent": PRTimelineEventType.LABELED,
         "UnlabeledEvent": PRTimelineEventType.UNLABELED,
+        "AssignedEvent": PRTimelineEventType.ASSIGNED,
+        "UnassignedEvent": PRTimelineEventType.UNASSIGNED,
         "ReadyForReviewEvent": PRTimelineEventType.READY_FOR_REVIEW,
         "ConvertToDraftEvent": PRTimelineEventType.CONVERT_TO_DRAFT,
         "ReopenedEvent": PRTimelineEventType.REOPENED,
@@ -67,6 +69,12 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         if typename in ("LabeledEvent", "UnlabeledEvent"):
             label = ev.get("label") or {}
             label_name = label.get("name")
+        assignee_login = None
+        if typename in ("AssignedEvent", "UnassignedEvent"):
+            assignee = ev.get("assignee") or {}
+            assignee_login = assignee.get("login")
+        actor = ev.get("actor") or {}
+        actor_login = actor.get("login")
         before_sha = None
         after_sha = None
         if typename == "HeadRefForcePushedEvent":
@@ -84,6 +92,8 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
                 "type": ev_type,
                 "occurred_at": occurred_at,
                 "label_name": label_name,
+                "assignee_login": assignee_login,
+                "actor_login": actor_login,
                 "before_sha": before_sha,
                 "after_sha": after_sha,
             },

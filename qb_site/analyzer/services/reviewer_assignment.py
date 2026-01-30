@@ -9,7 +9,7 @@ from typing import Dict, Iterable, Sequence
 
 from django.utils.dateparse import parse_datetime
 
-from analyzer.models import AreaStatsSnapshot, QueueRuleSet, QueueSnapshot, ReviewerAssignmentSnapshot
+from analyzer.models import AreaStatsSnapshot, QueueRuleSet, QueueSnapshot, ReviewerAssignmentSnapshot, ReviewerOptOut
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository, ReviewerPreference
 from queueboard.classify_pr_state import PRStatus
@@ -25,6 +25,20 @@ def _isoformat(dt: datetime) -> str:
 
 def _normalize_login(login: str | None) -> str:
     return (login or "").strip().lower()
+
+
+def _opt_outs_for_prs(repository: Repository, pr_numbers: Sequence[int]) -> dict[int, set[str]]:
+    if not pr_numbers:
+        return {}
+    opt_outs: dict[int, set[str]] = {}
+    rows = ReviewerOptOut.objects.filter(
+        repository=repository,
+        pr_number__in=pr_numbers,
+        active=True,
+    ).values_list("pr_number", "reviewer_login")
+    for pr_number, reviewer_login in rows:
+        opt_outs.setdefault(int(pr_number), set()).add(_normalize_login(reviewer_login))
+    return opt_outs
 
 
 def _is_topic_label(name: str | None) -> bool:
@@ -215,6 +229,7 @@ def suggest_reviewer_for_pr(
     reviewers: Sequence[ReviewerProfile],
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     rng: random.Random | None = None,
+    excluded_logins: set[str] | None = None,
 ) -> ReviewerSuggestionResult:
     labels = _topic_labels(pr_entry)
     labels_lower = [lab.lower() for lab in labels]
@@ -222,6 +237,7 @@ def suggest_reviewer_for_pr(
     author_norm = _normalize_login(author)
 
     matching: list[tuple[ReviewerProfile, list[str]]] = []
+    excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
     if labels_lower:
         for reviewer in reviewers:
             if author_norm in {reviewer.github_login.lower(), *reviewer.conflict_of_interest_lower}:
@@ -257,6 +273,8 @@ def suggest_reviewer_for_pr(
     available: list[str] = []
     available_weights: list[float] = []
     for reviewer, _ in proposed_sorted:
+        if _normalize_login(reviewer.github_login) in excluded_lower:
+            continue
         current_weight = _current_weight(reviewer.github_login, assignment_stats)
         remaining = reviewer.maximum_capacity - current_weight
         if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break:
@@ -287,6 +305,7 @@ def suggest_reviewers_many(
     prs_to_assign: Iterable[int],
     all_prs: Dict[int | str, dict],
     rng: random.Random | None = None,
+    excluded_by_pr: dict[int, set[str]] | None = None,
 ) -> dict[int, str]:
     """Suggest reviewers for many PRs, updating in-memory load after each pick."""
     stats_copy: Dict[str, tuple[list[int], float, int]] = {
@@ -298,12 +317,16 @@ def suggest_reviewers_many(
         pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number))
         if not pr_entry:
             continue
+        excluded_logins = None
+        if excluded_by_pr:
+            excluded_logins = excluded_by_pr.get(pr_number)
         result = suggest_reviewer_for_pr(
             pr_number=pr_number,
             pr_entry=pr_entry,
             reviewers=reviewers,
             assignment_stats=stats_copy,
             rng=rng,
+            excluded_logins=excluded_logins,
         )
         if result.suggested is None:
             continue
@@ -429,6 +452,7 @@ class ReviewerAssignmentBuilder:
             prs_to_assign=stale_unassigned,
             all_prs=payload.get("prs", {}),
             rng=self.rng,
+            excluded_by_pr=_opt_outs_for_prs(repository, stale_unassigned),
         )
 
         rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")
