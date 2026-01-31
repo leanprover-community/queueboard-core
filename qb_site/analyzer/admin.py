@@ -21,6 +21,7 @@ from analyzer.models import (
     ReviewerOptOut,
 )
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
+from analyzer.services.reviewer_opt_out_backfill import backfill_reviewer_opt_outs
 from core.models import Repository
 
 
@@ -377,6 +378,7 @@ class AreaStatsSnapshotAdmin(ReadOnlyAdmin):
 
 @admin.register(ReviewerOptOut)
 class ReviewerOptOutAdmin(ReadOnlyAdmin):
+    change_list_template = "admin/analyzer/revieweroptout/change_list.html"
     list_display = ("repository", "pr_number", "reviewer_login", "active", "opted_out_at", "cleared_at")
     list_filter = ("repository", "active", "opted_out_at")
     search_fields = ("repository__owner", "repository__name", "reviewer_login", "pr_number")
@@ -392,6 +394,18 @@ class ReviewerOptOutAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
+
+    def changelist_view(self, request, extra_context=None):  # type: ignore[override]
+        if request.method == "POST" and request.POST.get("action") == "backfill_opt_outs":
+            result = backfill_reviewer_opt_outs(
+                only_open=True,
+                require_complete=True,
+                cutoff_days=None,
+                dry_run=False,
+            )
+            self.message_user(request, result.summary())
+            return HttpResponseRedirect(request.path)
+        return super().changelist_view(request, extra_context=extra_context)
 
 
 @admin.register(AnalyzerConvergenceSnapshot)
