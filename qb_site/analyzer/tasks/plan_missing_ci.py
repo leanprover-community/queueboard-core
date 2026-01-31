@@ -122,6 +122,8 @@ def plan_missing_ci_backfill_task(
                 skip_shas=terminal_shas,
                 candidates_override=prioritized,
             )
+            if not shas and error_shas:
+                shas = [sha for sha in candidate_shas if sha in error_shas][: int(shas_per_pr)]
             actionable_shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.plan_missing_ci")]
             backoff_shas = [sha for sha in shas if sha not in actionable_shas]
             if shas:
@@ -204,6 +206,8 @@ def plan_missing_ci_backfill_task(
                 skip_shas=terminal_shas,
                 candidates_override=prioritized,
             )
+            if not shas and error_shas:
+                shas = [sha for sha in candidate_shas if sha in error_shas][: int(shas_per_pr)]
             actionable_shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.plan_missing_ci")]
             backoff_shas = [sha for sha in shas if sha not in actionable_shas]
             if shas:
