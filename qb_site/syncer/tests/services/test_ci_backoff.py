@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from syncer.services.ci_backoff import record_ci_sha_fetch
 from syncer.tests.factories import make_pr, make_repo
+from syncer.services.ci_backoff import should_enqueue_ci_sha
+from syncer.models import CIShaFetchState
 
 
 class TestCIShaBackoff(TestCase):
@@ -23,3 +25,21 @@ class TestCIShaBackoff(TestCase):
         self.assertEqual(state.last_result, "ok")
         self.assertEqual(state.last_success_at, t0)
         self.assertEqual(state.last_attempted_at, t1)
+
+    @override_settings(SYNCER_CI_SHA_HARD_CAP_DAYS=400, SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS=300)
+    def test_error_ignores_hard_cap(self) -> None:
+        repo = make_repo()
+        pr = make_pr(repo, 2)
+        pr.gh_updated_at = timezone.now() - timedelta(days=401)
+        pr.save(update_fields=["gh_updated_at", "updated_at"])
+        state = CIShaFetchState.objects.create(
+            repository=repo,
+            sha="deadbeef",
+            last_attempted_at=timezone.now() - timedelta(minutes=10),
+            last_success_at=None,
+            last_result="error",
+            attempts=1,
+        )
+        CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(days=500))
+
+        self.assertTrue(should_enqueue_ci_sha(pr=pr, sha="deadbeef"))

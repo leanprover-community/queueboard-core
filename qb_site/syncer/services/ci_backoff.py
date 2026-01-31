@@ -52,8 +52,6 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
         cooldown = int(getattr(settings, "SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS", 300))
         return age.total_seconds() >= cooldown
     if last == "error":
-        if _is_ci_sha_settled(pr=pr, state=state, now=now):
-            return False
         cooldown = int(getattr(settings, "SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS", 300))
         return age.total_seconds() >= cooldown
     return True
