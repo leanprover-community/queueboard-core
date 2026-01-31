@@ -169,7 +169,7 @@ class TestCommitHistoryTasks(TestCase):
             last_attempted_at=timezone.now(),
             last_success_at=None,
             last_result="not_found",
-            attempts=1,
+            attempts=2,
         )
         CIShaFetchState.objects.filter(pk=blocked.pk).update(created_at=timezone.now() - timedelta(seconds=120))
         with patch(

@@ -41,6 +41,9 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
         return True
     last = state.last_result or ""
     now = timezone.now()
+    min_attempts_terminal = int(getattr(settings, "SYNCER_CI_SHA_MIN_ATTEMPTS_TERMINAL", 1))
+    if last in {"empty", "filtered", "not_found"} and int(state.attempts or 0) < min_attempts_terminal:
+        return True
     if last in {"not_found", "filtered"}:
         return not _is_ci_sha_settled(pr=pr, state=state, now=now)
     if last == "skipped_association":

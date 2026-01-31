@@ -43,3 +43,26 @@ class TestCIShaBackoff(TestCase):
         CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(days=500))
 
         self.assertTrue(should_enqueue_ci_sha(pr=pr, sha="deadbeef"))
+
+    @override_settings(SYNCER_CI_SHA_MIN_ATTEMPTS_TERMINAL=2, SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=1)
+    def test_terminal_requires_min_attempts(self) -> None:
+        repo = make_repo()
+        pr = make_pr(repo, 3)
+        state = CIShaFetchState.objects.create(
+            repository=repo,
+            sha="sha-terminal",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="filtered",
+            attempts=1,
+        )
+        # Even if the settle window has passed, attempt count should allow a retry.
+        CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(seconds=10))
+        self.assertTrue(should_enqueue_ci_sha(pr=pr, sha="sha-terminal"))
+
+        # Second attempt should allow terminal behavior.
+        state.refresh_from_db()
+        state.attempts = 2
+        state.last_attempted_at = timezone.now() - timedelta(seconds=10)
+        state.save(update_fields=["attempts", "last_attempted_at", "updated_at"])
+        self.assertFalse(should_enqueue_ci_sha(pr=pr, sha="sha-terminal"))

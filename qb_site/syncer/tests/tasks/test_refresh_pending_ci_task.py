@@ -117,7 +117,7 @@ class TestRefreshPendingCITask(TestCase):
             last_attempted_at=timezone.now(),
             last_success_at=None,
             last_result="not_found",
-            attempts=1,
+            attempts=2,
         )
         CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(seconds=120))
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)

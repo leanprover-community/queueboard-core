@@ -43,6 +43,8 @@ This decision has two parts:
 - Settle window / hard cap (configurable settings):
   - `SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS` (default 1800)
   - `SYNCER_CI_SHA_HARD_CAP_DAYS` (default 400)
+- Minimum attempts before terminal (configurable setting):
+  - `SYNCER_CI_SHA_MIN_ATTEMPTS_TERMINAL` (default 2)
 - The settle window is keyed off the first ledger observation (`created_at`), so downtime does not accidentally skip work.
 - The hard cap is keyed off the PR's `gh_updated_at` to avoid re-fetching very old SHAs indefinitely.
 
