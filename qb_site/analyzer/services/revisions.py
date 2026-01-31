@@ -326,10 +326,12 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         return RebuildResult(created=0, deleted=0, strategy="skipped")
 
     needs_full = False
+    builder_version_changed = state.builder_version != PR_REVISION_BUILDER_VERSION
+    dirty_was_set = state.dirty_from_ts is not None
     strategy = "full"
-    if state.builder_version != PR_REVISION_BUILDER_VERSION:
+    if builder_version_changed:
         needs_full = True
-    if state.dirty_from_ts is not None:
+    if dirty_was_set:
         needs_full = True
 
     has_existing = PRRevision.objects.filter(pull_request=pr).exists()
@@ -385,6 +387,7 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     if strategy == "noop":
         return RebuildResult(created=0, deleted=0, strategy="noop")
 
+    windows_changed = False
     for seq, (from_ts, head_sha, to_ts) in enumerate(expected, start=seq_offset):
         obj, was_created = PRRevision.objects.get_or_create(
             pull_request=pr,
@@ -393,6 +396,7 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         )
         if was_created:
             created += 1
+            windows_changed = True
         else:
             changed = False
             if obj.head_sha != head_sha:
@@ -406,6 +410,7 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
                 changed = True
             if changed:
                 obj.save(update_fields=["head_sha", "to_ts", "seq"])
+                windows_changed = True
 
     expected_starts = [ft for (ft, _, _) in expected]
     qs = PRRevision.objects.filter(pull_request=pr)
@@ -414,6 +419,8 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     if expected_starts:
         qs = qs.exclude(from_ts__in=expected_starts)
     deleted, _ = qs.delete()
+    if deleted:
+        windows_changed = True
 
     tail = PRRevision.objects.filter(pull_request=pr).order_by("-from_ts", "-seq", "-id").first()
     tail_from_ts = tail.from_ts if tail else None
@@ -426,27 +433,32 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     state.tail_revision = tail
     state.tail_from_ts = tail_from_ts
     state.last_built_at = now_ts
-    state.revision_version = (state.revision_version or 0) + 1
-    state.ci_checked_revision_version = None
-    state.ci_checked_at = None
-    state.windows_built_revision_version = None
-    state.windows_built_at = None
-    state.save(
-        update_fields=[
-            "builder_version",
-            "built_through_ts",
-            "dirty_from_ts",
-            "tail_revision",
-            "tail_from_ts",
-            "last_built_at",
+    update_fields = [
+        "builder_version",
+        "built_through_ts",
+        "dirty_from_ts",
+        "tail_revision",
+        "tail_from_ts",
+        "last_built_at",
+        "updated_at",
+    ]
+    force_rebuild = not has_existing and strategy == "full"
+    if windows_changed or builder_version_changed or dirty_was_set or force_rebuild:
+        state.revision_version = (state.revision_version or 0) + 1
+        state.ci_checked_revision_version = None
+        state.ci_checked_at = None
+        state.windows_built_revision_version = None
+        state.windows_built_at = None
+        update_fields += [
             "revision_version",
             "ci_checked_revision_version",
             "ci_checked_at",
             "windows_built_revision_version",
             "windows_built_at",
-            "updated_at",
-        ],
-    )
+        ]
+    else:
+        strategy = "noop"
+    state.save(update_fields=update_fields)
 
     return RebuildResult(created=created, deleted=deleted, strategy=strategy)
 
