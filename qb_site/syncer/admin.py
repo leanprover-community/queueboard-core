@@ -1057,6 +1057,7 @@ class CIShaFetchStateAdmin(ReadOnlyAdmin):
         "last_attempted_at",
         "last_success_at",
         "attempts",
+        "created_at",
         "updated_at",
     )
     list_filter = ("repository", "last_result")
