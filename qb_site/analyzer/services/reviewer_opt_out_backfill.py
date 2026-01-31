@@ -110,7 +110,7 @@ def backfill_reviewer_opt_outs(
                         pr_number=pr.number,
                         reviewer_login=login,
                         active=False,
-                        opted_out_at=None,
+                        opted_out_at=occurred_at,
                         cleared_at=occurred_at,
                     )
                     was_created = True
