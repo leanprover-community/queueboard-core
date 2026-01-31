@@ -10,6 +10,7 @@ from analyzer.services.revisions import next_revision_backfill_shas, revision_ca
 from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from core.models import Repository
 from syncer.models import CIShaFetchState, PullRequest
+from syncer.services.ci_backoff import should_enqueue_ci_sha
 
 
 @shared_task(name="analyzer.plan_missing_ci")
@@ -37,6 +38,7 @@ def plan_missing_ci_backfill_task(
     total_prs_skipped_backoff = 0
     processed_pr_numbers: list[int] = []
     per_repo: list[dict] = []
+    debug_prs: list[dict] = []
     now_ts = timezone.now()
     for repo in repos:
         has_revisions = PRRevision.objects.filter(pull_request=OuterRef("pk"))
@@ -75,6 +77,7 @@ def plan_missing_ci_backfill_task(
         repo_prs = 0
         repo_prs_skipped_limit: list[int] = []
         repo_prs_skipped_backoff: list[int] = []
+        repo_debug_prs: list[dict] = []
         repo_prs_skipped_limit_count = 0
         repo_prs_skipped_backoff_count = 0
         repo_limit_hit = False
@@ -119,6 +122,8 @@ def plan_missing_ci_backfill_task(
                 skip_shas=terminal_shas,
                 candidates_override=prioritized,
             )
+            actionable_shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.plan_missing_ci")]
+            backoff_shas = [sha for sha in shas if sha not in actionable_shas]
             if shas:
                 task_id = enqueue_ci_by_shas(
                     pr=pr,
@@ -143,6 +148,17 @@ def plan_missing_ci_backfill_task(
             repo_prs += 1
             total_prs_considered += 1
             processed_pr_numbers.append(int(pr.number))
+            repo_debug_prs.append(
+                {
+                    "number": int(pr.number),
+                    "candidate_shas": list(candidate_shas),
+                    "terminal_shas": list(terminal_shas),
+                    "error_shas": list(error_shas),
+                    "planned_shas": list(shas),
+                    "actionable_shas": actionable_shas,
+                    "backoff_shas": backoff_shas,
+                }
+            )
 
         if repo_prs < int(max_prs_per_repo):
             pr_qs = pr_qs_all.exclude(id__in=seen_pr_ids).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
@@ -188,6 +204,8 @@ def plan_missing_ci_backfill_task(
                 skip_shas=terminal_shas,
                 candidates_override=prioritized,
             )
+            actionable_shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.plan_missing_ci")]
+            backoff_shas = [sha for sha in shas if sha not in actionable_shas]
             if shas:
                 task_id = enqueue_ci_by_shas(
                     pr=pr,
@@ -212,6 +230,17 @@ def plan_missing_ci_backfill_task(
             repo_prs += 1
             total_prs_considered += 1
             processed_pr_numbers.append(int(pr.number))
+            repo_debug_prs.append(
+                {
+                    "number": int(pr.number),
+                    "candidate_shas": list(candidate_shas),
+                    "terminal_shas": list(terminal_shas),
+                    "error_shas": list(error_shas),
+                    "planned_shas": list(shas),
+                    "actionable_shas": actionable_shas,
+                    "backoff_shas": backoff_shas,
+                }
+            )
 
         total_enqueued += repo_enqueued
         total_prs_skipped_limit += repo_prs_skipped_limit_count
@@ -226,6 +255,7 @@ def plan_missing_ci_backfill_task(
                 "limit_hit": repo_limit_hit,
             }
         )
+        debug_prs.extend(repo_debug_prs)
 
     return {
         "repos": len(repos),
@@ -235,5 +265,6 @@ def plan_missing_ci_backfill_task(
         "prs_skipped_limit": total_prs_skipped_limit,
         "prs_skipped_backoff": total_prs_skipped_backoff,
         "per_repo": per_repo,
+        "debug_prs": debug_prs,
         "only_complete_backfill": bool(only_complete_backfill),
     }
