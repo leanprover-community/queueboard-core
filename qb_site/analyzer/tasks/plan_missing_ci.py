@@ -66,7 +66,11 @@ def plan_missing_ci_backfill_task(
             revision_build_state__ci_checked_revision_version=F("revision_build_state__revision_version")
         )
 
-        pr_qs = pr_qs_base.exclude(already_checked_filter).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
+        pr_qs_all = pr_qs_base.exclude(already_checked_filter)
+        error_shas = CIShaFetchState.objects.filter(repository=repo, last_result="error").values("sha")
+        error_prs = pr_qs_all.annotate(
+            has_error_shas=Exists(PRRevision.objects.filter(pull_request=OuterRef("pk"), head_sha__in=error_shas))
+        ).filter(has_error_shas=True)
         repo_enqueued = 0
         repo_prs = 0
         repo_prs_skipped_limit: list[int] = []
@@ -74,6 +78,76 @@ def plan_missing_ci_backfill_task(
         repo_prs_skipped_limit_count = 0
         repo_prs_skipped_backoff_count = 0
         repo_limit_hit = False
+        seen_pr_ids: set[int] = set()
+        for pr in error_prs.order_by("-gh_updated_at", "-id").iterator(chunk_size=100):
+            if repo_prs >= int(max_prs_per_repo):
+                repo_limit_hit = True
+                repo_prs_skipped_limit_count += 1
+                if len(repo_prs_skipped_limit) < max_pr_list:
+                    repo_prs_skipped_limit.append(int(pr.number))
+                break
+            seen_pr_ids.add(int(pr.id))
+            state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+            candidate_shas = revision_candidate_shas(pr)
+            terminal_shas: set[str] = set()
+            error_shas: set[str] = set()
+            if candidate_shas:
+                terminal_results = {"ok", "empty", "filtered", "not_found"}
+                terminal_shas = set(
+                    CIShaFetchState.objects.filter(
+                        repository=repo,
+                        sha__in=candidate_shas,
+                        last_result__in=terminal_results,
+                    ).values_list("sha", flat=True)
+                )
+                error_shas = set(
+                    CIShaFetchState.objects.filter(
+                        repository=repo,
+                        sha__in=candidate_shas,
+                        last_result="error",
+                    ).values_list("sha", flat=True)
+                )
+            if error_shas:
+                prioritized = [sha for sha in candidate_shas if sha in error_shas] + [
+                    sha for sha in candidate_shas if sha not in error_shas
+                ]
+            else:
+                prioritized = None
+            shas = next_revision_backfill_shas(
+                pr,
+                limit=int(shas_per_pr),
+                skip_shas=terminal_shas,
+                candidates_override=prioritized,
+            )
+            if shas:
+                task_id = enqueue_ci_by_shas(
+                    pr=pr,
+                    shas=shas,
+                    pages_per_sha=int(pages_per_sha)
+                    if pages_per_sha is not None
+                    else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
+                    require_pr_association=bool(require_pr_association),
+                )
+                if task_id:
+                    repo_enqueued += 1
+                else:
+                    repo_prs_skipped_backoff_count += 1
+                    if len(repo_prs_skipped_backoff) < max_pr_list:
+                        repo_prs_skipped_backoff.append(int(pr.number))
+            # Mark the revision version as checked only when there are no actionable SHAs.
+            if not shas:
+                state.ci_checked_revision_version = state.revision_version
+            state.ci_checked_at = now_ts
+            state.save(update_fields=["ci_checked_revision_version", "ci_checked_at", "updated_at"])
+
+            repo_prs += 1
+            total_prs_considered += 1
+            processed_pr_numbers.append(int(pr.number))
+
+        if repo_prs < int(max_prs_per_repo):
+            pr_qs = pr_qs_all.exclude(id__in=seen_pr_ids).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
+        else:
+            pr_qs = []
         for pr in pr_qs:
             if repo_prs >= int(max_prs_per_repo):
                 repo_limit_hit = True
