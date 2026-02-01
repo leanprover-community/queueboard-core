@@ -298,6 +298,165 @@ def suggest_reviewer_for_pr(
     )
 
 
+def _pr_trace_base(pr_entry: dict, *, excluded_logins: set[str]) -> dict:
+    return {
+        "labels": _topic_labels(pr_entry),
+        "author": pr_entry.get("author") or "",
+        "opt_outs": sorted(login for login in excluded_logins if login),
+    }
+
+
+def suggest_reviewer_for_pr_with_trace(
+    *,
+    pr_entry: dict,
+    reviewers: Sequence[ReviewerProfile],
+    assignment_stats: Dict[str, tuple[list[int], float, int]],
+    rng: random.Random | None = None,
+    excluded_logins: set[str] | None = None,
+) -> tuple[ReviewerSuggestionResult, dict]:
+    labels = _topic_labels(pr_entry)
+    labels_lower = [lab.lower() for lab in labels]
+    author = pr_entry.get("author") or ""
+    author_norm = _normalize_login(author)
+
+    excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
+    trace: dict = _pr_trace_base(pr_entry, excluded_logins=excluded_lower)
+    filtered: dict[str, list[str]] = {
+        "conflict_of_interest": [],
+        "opt_out": [],
+        "temporary_break": [],
+        "auto_assign_disabled": [],
+        "at_capacity": [],
+    }
+
+    matching: list[tuple[ReviewerProfile, list[str]]] = []
+    if labels_lower:
+        for reviewer in reviewers:
+            reviewer_login = reviewer.github_login
+            if author_norm in {reviewer_login.lower(), *reviewer.conflict_of_interest_lower}:
+                filtered["conflict_of_interest"].append(reviewer_login)
+                continue
+            match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
+            if match:
+                matching.append((reviewer, match))
+    else:
+        for reviewer in reviewers:
+            reviewer_login = reviewer.github_login
+            if author_norm in {reviewer_login.lower(), *reviewer.conflict_of_interest_lower}:
+                filtered["conflict_of_interest"].append(reviewer_login)
+                continue
+            matching.append((reviewer, []))
+
+    if not matching:
+        trace["candidate_counts"] = {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0}
+        trace["filtered"] = {k: sorted(set(v)) for k, v in filtered.items() if v}
+        result = ReviewerSuggestionResult(
+            suggested=None, all_potential_reviewers=[], all_available_reviewers=[], reason="no-match"
+        )
+        trace.update({"available": [], "picked": None, "reason": result.reason})
+        return result, trace
+
+    if not labels_lower:
+        proposed = matching
+    else:
+        max_score = max(len(m) for _, m in matching)
+        if max_score > 1:
+            proposed = [(rev, m) for rev, m in matching if len(m) == max_score]
+        else:
+            proposed = [(rev, m) for rev, m in matching if m]
+        if not proposed:
+            trace["candidate_counts"] = {
+                "matching_label": len(matching),
+                "after_exclusions": 0,
+                "available_capacity": 0,
+            }
+            trace["filtered"] = {k: sorted(set(v)) for k, v in filtered.items() if v}
+            result = ReviewerSuggestionResult(
+                suggested=None,
+                all_potential_reviewers=[],
+                all_available_reviewers=[],
+                reason="no-matching-labels",
+            )
+            trace.update({"available": [], "picked": None, "reason": result.reason})
+            return result, trace
+
+    proposed_sorted = sorted(proposed, key=lambda item: _current_weight(item[0].github_login, assignment_stats))
+    all_potential = [rev.github_login for rev, _ in proposed_sorted]
+
+    available: list[str] = []
+    weights: dict[str, dict[str, float]] = {}
+    for reviewer, _ in proposed_sorted:
+        reviewer_login = reviewer.github_login
+        if _normalize_login(reviewer_login) in excluded_lower:
+            filtered["opt_out"].append(reviewer_login)
+            continue
+
+        current_weight = _current_weight(reviewer_login, assignment_stats)
+        remaining = reviewer.maximum_capacity - current_weight
+
+        if remaining <= 0:
+            filtered["at_capacity"].append(reviewer_login)
+        if not reviewer.auto_assign:
+            filtered["auto_assign_disabled"].append(reviewer_login)
+        if reviewer.temporary_break:
+            filtered["temporary_break"].append(reviewer_login)
+
+        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break:
+            available.append(reviewer_login)
+            weights[reviewer_login] = {
+                "current_weight": float(current_weight),
+                "remaining_capacity": float(remaining),
+            }
+
+    if not available:
+        result = ReviewerSuggestionResult(
+            suggested=None, all_potential_reviewers=all_potential, all_available_reviewers=[], reason="no-capacity"
+        )
+        trace.update(
+            {
+                "candidate_counts": {
+                    "matching_label": len(matching) if labels_lower else 0,
+                    "after_exclusions": len(all_potential),
+                    "available_capacity": 0,
+                },
+                "potential": all_potential,
+                "available": [],
+                "weights": weights,
+                "filtered": {k: sorted(set(v)) for k, v in filtered.items() if v},
+                "picked": None,
+                "reason": result.reason,
+            }
+        )
+        return result, trace
+
+    picker = rng if rng is not None else random
+    choose = getattr(picker, "choices", random.choices)
+    suggested = choose(available, weights=[weights[login]["remaining_capacity"] for login in available], k=1)[0]
+
+    result = ReviewerSuggestionResult(
+        suggested=suggested,
+        all_potential_reviewers=all_potential,
+        all_available_reviewers=available,
+        reason=None,
+    )
+    trace.update(
+        {
+            "candidate_counts": {
+                "matching_label": len(matching) if labels_lower else 0,
+                "after_exclusions": len(all_potential),
+                "available_capacity": len(available),
+            },
+            "potential": all_potential,
+            "available": available,
+            "weights": weights,
+            "filtered": {k: sorted(set(v)) for k, v in filtered.items() if v},
+            "picked": suggested,
+            "reason": None,
+        }
+    )
+    return result, trace
+
+
 def suggest_reviewers_many(
     *,
     reviewers: Sequence[ReviewerProfile],
@@ -337,6 +496,105 @@ def suggest_reviewers_many(
         stats_copy[result.suggested] = (open_list, weight + 1, total + 1)
 
     return suggestions
+
+
+def suggest_reviewers_many_with_trace(
+    *,
+    reviewers: Sequence[ReviewerProfile],
+    assignments: Dict[str, tuple[list[int], float, int]],
+    prs_to_assign: Iterable[int],
+    all_prs: Dict[int | str, dict],
+    rng: random.Random | None = None,
+    excluded_by_pr: dict[int, set[str]] | None = None,
+) -> tuple[dict[int, str], dict[str, dict]]:
+    """Suggest reviewers for many PRs, capturing per-PR trace and updating in-memory load after each pick."""
+    stats_copy: Dict[str, tuple[list[int], float, int]] = {
+        login: (list(open_list), float(weight), int(total)) for login, (open_list, weight, total) in assignments.items()
+    }
+    suggestions: dict[int, str] = {}
+    per_pr: dict[str, dict] = {}
+
+    for pr_number in prs_to_assign:
+        pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number))
+        if not pr_entry:
+            per_pr[str(pr_number)] = {
+                "labels": [],
+                "author": "",
+                "opt_outs": [],
+                "candidate_counts": {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0},
+                "available": [],
+                "picked": None,
+                "reason": "missing-pr",
+            }
+            continue
+        excluded_logins = excluded_by_pr.get(pr_number) if excluded_by_pr else None
+        result, trace = suggest_reviewer_for_pr_with_trace(
+            pr_entry=pr_entry,
+            reviewers=reviewers,
+            assignment_stats=stats_copy,
+            rng=rng,
+            excluded_logins=excluded_logins,
+        )
+        per_pr[str(pr_number)] = trace
+        if result.suggested is None:
+            continue
+        suggestions[pr_number] = result.suggested
+        open_list, weight, total = stats_copy.get(result.suggested, ([], 0.0, 0))
+        open_list = list(open_list)
+        open_list.append(pr_number)
+        stats_copy[result.suggested] = (open_list, weight + 1, total + 1)
+
+    return suggestions, per_pr
+
+
+def build_reviewer_assignment_trace(
+    repository: Repository,
+    *,
+    queue_snapshot: QueueSnapshot,
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+) -> dict:
+    current_time = now or datetime.now(timezone.utc)
+    payload = queue_snapshot.payload
+    reviewers = build_reviewer_catalog(repository, now=current_time)
+    assignment_stats = collect_assignment_statistics(payload)
+
+    dashboards = payload.get("lists", {}).get("dashboards", {})
+    stale_unassigned = dashboards.get("QueueStaleUnassigned", [])
+
+    excluded_by_pr = _opt_outs_for_prs(repository, stale_unassigned)
+    suggestions, per_pr = suggest_reviewers_many_with_trace(
+        reviewers=reviewers,
+        assignments=assignment_stats.assignments,
+        prs_to_assign=stale_unassigned,
+        all_prs=payload.get("prs", {}),
+        rng=rng,
+        excluded_by_pr=excluded_by_pr,
+    )
+
+    reason_counts: dict[str, int] = {}
+    for trace in per_pr.values():
+        reason = trace.get("reason")
+        if reason:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    meta = {
+        "schema_version": "v1-trace-draft",
+        "generated_at": _isoformat(current_time),
+        "repository": f"{repository.owner}/{repository.name}",
+        "rule_set_id": payload.get("meta", {}).get("rule_set_id", "default"),
+        "queue_snapshot_generated_at": payload.get("meta", {}).get("generated_at"),
+        "queue_snapshot_cache_key": queue_snapshot.cache_key,
+        "stale_unassigned_prs": len(stale_unassigned),
+    }
+    summary = {
+        "attempted": len(stale_unassigned),
+        "assigned": len(suggestions),
+        "unassigned": len(stale_unassigned) - len(suggestions),
+        "reason_counts": reason_counts,
+    }
+
+    return {"meta": meta, "summary": summary, "per_pr": per_pr}
 
 
 def compute_area_stats(

@@ -7,7 +7,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from analyzer.models import QueueRuleSet
-from analyzer.services.reviewer_assignment import AreaStatsBuilder, ReviewerAssignmentBuilder
+from analyzer.services.reviewer_assignment import AreaStatsBuilder, ReviewerAssignmentBuilder, build_reviewer_assignment_trace
 from core.models import Repository
 
 
@@ -17,7 +17,7 @@ def build_reviewer_assignment(
     cache_key: str | None = None,
     expires_in_seconds: int | None = None,
     rule_set_id: int | None = None,
-) -> int:
+) -> dict:
     """Build and store reviewer assignment snapshot for a repository."""
     repo = Repository.objects.get(id=repository_id)
     rule_set = None
@@ -27,14 +27,22 @@ def build_reviewer_assignment(
     expires_at = None
     if expires_in_seconds is not None and int(expires_in_seconds) > 0:
         expires_at = timezone.now() + timedelta(seconds=int(expires_in_seconds))
+    now_ts = timezone.now()
     effective_cache_key = cache_key or (str(rule_set.id) if rule_set else "default")
     snapshot = builder.build_and_store(
         repo,
         cache_key=effective_cache_key,
         expires_at=expires_at,
+        now=now_ts,
         rule_set=rule_set,
     )
-    return snapshot.id
+    trace = build_reviewer_assignment_trace(
+        repo,
+        queue_snapshot=snapshot.queue_snapshot,
+        now=now_ts,
+        rng=builder.rng,
+    )
+    return {"snapshot_id": snapshot.id, "assignment_count": snapshot.assignment_count, "trace": trace}
 
 
 @shared_task(name="analyzer.refresh_reviewer_assignments")
