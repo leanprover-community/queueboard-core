@@ -684,8 +684,11 @@ def compute_dashboards_bad_labels_title(
 ) -> Tuple[List[BasicPRInformation], List[BasicPRInformation], List[BasicPRInformation]]:
     # Filter out all PRs which have a WIP label.
     nonwip_prs = prs_without_label(prs, "WIP")
+    # keep in sync with list at <https://leanprover-community.github.io/contribute/commit.html>
     with_bad_title = [
-        pr for pr in nonwip_prs if not pr.title.startswith(("feat", "chore", "perf", "refactor", "style", "fix", "doc"))
+        pr
+        for pr in nonwip_prs
+        if not pr.title.startswith(("feat", "fix", "doc", "style", "refactor", "test", "chore", "perf", "ci"))
     ]
 
     # Whether a PR has a "topic" label.

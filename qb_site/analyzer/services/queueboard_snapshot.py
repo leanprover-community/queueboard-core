@@ -477,8 +477,9 @@ class QueueboardSnapshotBuilder:
                     if (pr.title or "").startswith("feat") and not topic_label:
                         unlabelled.append(pr.number)
                     lowered_title = (pr.title or "").lower()
+                    # keep in sync with list at <https://leanprover-community.github.io/contribute/commit.html>
                     if lowered_title and not lowered_title.startswith(
-                        ("feat", "chore", "perf", "refactor", "style", "fix", "doc")
+                        ("feat", "fix", "doc", "style", "refactor", "test", "chore", "perf", "ci")
                     ):
                         bad_title.append(pr.number)
                     if _has_contradictory_labels(label_names_lc):
