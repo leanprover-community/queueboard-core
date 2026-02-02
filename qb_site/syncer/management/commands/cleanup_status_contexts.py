@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Iterable
 
 from django.core.management.base import BaseCommand
-from django.db import connection
 
 from syncer.models import PullRequest, StatusContext
 
@@ -48,19 +47,9 @@ class Command(BaseCommand):
 
     def _latest_snapshot_ids_for_pr(self, pr_id: int) -> list[int]:
         qs = StatusContext.objects.filter(pull_request_id=pr_id, github_node_id__isnull=False)
-        if connection.vendor == "postgresql":
-            return list(
-                qs.order_by("head_sha", "name", "-gh_created_at", "-id").distinct("head_sha", "name").values_list("id", flat=True)
-            )
-        latest_ids: list[int] = []
-        last_key: tuple[str, str] | None = None
-        for row in qs.values("id", "head_sha", "name", "gh_created_at").order_by("head_sha", "name", "-gh_created_at", "-id"):
-            key = (row.get("head_sha") or "", (row.get("name") or "").lower())
-            if key == last_key:
-                continue
-            latest_ids.append(int(row["id"]))
-            last_key = key
-        return latest_ids
+        return list(
+            qs.order_by("head_sha", "name", "-gh_created_at", "-id").distinct("head_sha", "name").values_list("id", flat=True)
+        )
 
     def _iter_prs(
         self,

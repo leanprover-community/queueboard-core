@@ -15,13 +15,7 @@ DEBUG = False
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-ci")
 ALLOWED_HOSTS = ["*"]
 
-# Lightweight SQLite DB for tests
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "ci.sqlite3",
-    }
-}
+# Use the default database configuration (PostgreSQL via env) for CI.
 
 # Ensure CI filtering is disabled unless a test overrides it explicitly
 SYNCER_CI_FILTER_MODE = "all"

@@ -8,7 +8,8 @@ import json
 from typing import Dict, Iterable, List, Sequence
 
 from dateutil import relativedelta
-from django.db.models import Q, QuerySet
+from django.db.models import F, Q, QuerySet, Window
+from django.db.models.functions import RowNumber
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
 from analyzer.services.queue_rules import QueueRules, rules_for_rule_set
@@ -621,37 +622,55 @@ class QueueboardSnapshotBuilder:
     def _queue_window_latest_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, dict]:
         if rule_set is None:
             return {}
-        qs = PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
-        qs = qs.filter(rule_set=rule_set)
+        qs = (
+            PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
+            .filter(rule_set=rule_set)
+            .order_by("pull_request_id", "-from_ts", "-id")
+            .distinct("pull_request_id")
+            .values(
+                "pull_request_id",
+                "from_ts",
+                "to_ts",
+                "duration_seconds_closed",
+                "cumulative_seconds_closed",
+                "window_count",
+                "first_on_queue_ts",
+            )
+        )
         acc: Dict[int, dict] = {}
-        last_pr_id = None
-        for win in qs.order_by("pull_request_id", "-from_ts", "-id").iterator():
-            if win.pull_request_id == last_pr_id:
-                continue
-            last_pr_id = win.pull_request_id
-            acc[win.pull_request_id] = {
-                "from_ts": win.from_ts,
-                "to_ts": win.to_ts,
-                "duration_seconds_closed": win.duration_seconds_closed,
-                "cumulative_seconds_closed": win.cumulative_seconds_closed,
-                "window_count": win.window_count,
-                "first_on_queue_ts": win.first_on_queue_ts,
+        for win in qs.iterator():
+            pr_id = int(win["pull_request_id"])
+            acc[pr_id] = {
+                "from_ts": win["from_ts"],
+                "to_ts": win["to_ts"],
+                "duration_seconds_closed": win["duration_seconds_closed"],
+                "cumulative_seconds_closed": win["cumulative_seconds_closed"],
+                "window_count": win["window_count"],
+                "first_on_queue_ts": win["first_on_queue_ts"],
             }
         return acc
 
     def _queue_window_tails_for_repo(self, repository: Repository, rule_set: QueueRuleSet | None) -> Dict[int, list[dict]]:
         if rule_set is None:
             return {}
-        qs = PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
-        qs = qs.filter(rule_set=rule_set)
+        qs = (
+            PRQueueWindow.objects.filter(pull_request__repository=repository, pull_request__state=PullRequestState.OPEN)
+            .filter(rule_set=rule_set)
+            .annotate(
+                row_number=Window(
+                    expression=RowNumber(),
+                    partition_by=[F("pull_request_id")],
+                    order_by=[F("from_ts").desc(), F("id").desc()],
+                )
+            )
+            .filter(row_number__lte=5)
+            .order_by("pull_request_id", "-from_ts", "-id")
+            .values("pull_request_id", "from_ts", "to_ts")
+        )
         acc: Dict[int, list[dict]] = defaultdict(list)
-        counts: Dict[int, int] = defaultdict(int)
-        for win in qs.order_by("pull_request_id", "-from_ts", "-id").iterator():
-            pr_id = win.pull_request_id
-            if counts[pr_id] >= 5:
-                continue
-            acc[pr_id].append({"from": _isoformat(win.from_ts), "to": _isoformat(win.to_ts)})
-            counts[pr_id] += 1
+        for win in qs.iterator():
+            pr_id = int(win["pull_request_id"])
+            acc[pr_id].append({"from": _isoformat(win["from_ts"]), "to": _isoformat(win["to_ts"])})
         for pr_id, windows in acc.items():
             acc[pr_id] = list(reversed(windows))
         return acc
@@ -823,24 +842,18 @@ class QueueboardSnapshotBuilder:
         return check_map, status_map
 
     def _revision_heads_for_repo(self, repository: Repository, *, pr_ids: set[int] | None = None) -> Dict[int, str]:
-        acc: Dict[int, str] = {}
         qs = PRRevision.objects.filter(
             pull_request__repository=repository,
             pull_request__state=PullRequestState.OPEN,
-        ).order_by(
-            "pull_request_id",
-            "-from_ts",
-            "-seq",
-            "-id",
-        )
+        ).exclude(head_sha__isnull=True).exclude(head_sha="")
         if pr_ids:
             qs = qs.filter(pull_request_id__in=pr_ids)
-        for rev in qs.iterator():
-            if rev.pull_request_id in acc:
-                continue
-            if rev.head_sha:
-                acc[rev.pull_request_id] = rev.head_sha
-        return acc
+        qs = (
+            qs.order_by("pull_request_id", "-from_ts", "-seq", "-id")
+            .distinct("pull_request_id")
+            .values_list("pull_request_id", "head_sha")
+        )
+        return {pr_id: (head_sha or "").strip() for pr_id, head_sha in qs.iterator()}
 
     def _required_contexts(self, rule_set: QueueRuleSet | None) -> list[str]:
         if not rule_set or not rule_set.require_ci_success:

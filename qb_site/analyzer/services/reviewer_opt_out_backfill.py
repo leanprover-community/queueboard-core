@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
+from django.db.models import Max
+from django.db.models.functions import Lower, Trim
 from django.utils import timezone
 
 from analyzer.models import ReviewerOptOut
@@ -63,21 +65,25 @@ def backfill_reviewer_opt_outs(
         cutoff = timezone.now() - timezone.timedelta(days=int(cutoff_days))
         events_qs = events_qs.filter(occurred_at__gte=cutoff)
 
-    events_qs = events_qs.order_by("pull_request_id", "assignee_login", "occurred_at", "id")
+    total_events = events_qs.count()
+    events_qs = events_qs.annotate(normalized_login=Lower(Trim("assignee_login"))).exclude(normalized_login="")
+
+    latest_events = (
+        events_qs.order_by("pull_request_id", "normalized_login", "-occurred_at", "-id")
+        .distinct("pull_request_id", "normalized_login")
+        .values("pull_request_id", "normalized_login", "occurred_at", "type")
+    )
+    max_seen_by_pr = {
+        row["pull_request_id"]: row["max_seen"]
+        for row in events_qs.values("pull_request_id").annotate(max_seen=Max("occurred_at"))
+    }
 
     latest: dict[tuple[int, str], tuple[timezone.datetime, str]] = {}
-    max_seen_by_pr: dict[int, timezone.datetime | None] = defaultdict(lambda: None)
-    total_events = 0
-    for ev in events_qs.iterator():
-        total_events += 1
-        login = _normalize_login(ev.assignee_login)
+    for ev in latest_events.iterator():
+        login = ev["normalized_login"] or ""
         if not login:
             continue
-        key = (ev.pull_request_id, login)
-        latest[key] = (ev.occurred_at, ev.type)
-        current_max = max_seen_by_pr[ev.pull_request_id]
-        if current_max is None or ev.occurred_at > current_max:
-            max_seen_by_pr[ev.pull_request_id] = ev.occurred_at
+        latest[(int(ev["pull_request_id"]), login)] = (ev["occurred_at"], ev["type"])
 
     created = 0
     updated = 0

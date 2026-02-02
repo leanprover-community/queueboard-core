@@ -35,7 +35,7 @@ class TestCollectConvergenceTask(TestCase):
             deletions=0,
             changed_files_count=0,
         )
-        PullRequest.objects.create(
+        pr2 = PullRequest.objects.create(
             repository=self.repo,
             number=2,
             timeline_backfill_done=True,
@@ -76,7 +76,7 @@ class TestCollectConvergenceTask(TestCase):
             deletions=0,
             changed_files_count=0,
         )
-        CommitHistoryHarvest.objects.create(pull_request_id=2, start_sha="a" * 40, has_more=True)
+        CommitHistoryHarvest.objects.create(pull_request=pr2, start_sha="a" * 40, has_more=True)
         RepoBackfillCursor.objects.create(repository=self.repo, completed=False)
 
         res = collect_syncer_convergence_task.apply().get()
