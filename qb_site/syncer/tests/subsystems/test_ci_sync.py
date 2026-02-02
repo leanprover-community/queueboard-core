@@ -123,3 +123,35 @@ class TestCISync(TestCase):
         sync_status_contexts(self.pr, ctxs, head_sha)
         state = PRRevisionBuildState.objects.get(pull_request=self.pr)
         self.assertEqual(state.dirty_from_ts, earlier)
+
+    def test_prunes_older_snapshot_status_contexts(self) -> None:
+        head_sha = "abc1234"
+        ctxs_old = [
+            {
+                "id": "SC_OLD",
+                "context": "bors",
+                "state": "PENDING",
+                "targetUrl": None,
+                "description": "",
+                "createdAt": "2025-10-20T00:00:00Z",
+            }
+        ]
+        ctxs_new = [
+            {
+                "id": "SC_NEW",
+                "context": "bors",
+                "state": "SUCCESS",
+                "targetUrl": None,
+                "description": "",
+                "createdAt": "2025-10-20T01:00:00Z",
+            }
+        ]
+        sync_status_contexts(self.pr, ctxs_old, head_sha)
+        self.assertEqual(
+            StatusContext.objects.filter(pull_request=self.pr, head_sha=head_sha, name="bors").count(),
+            1,
+        )
+        sync_status_contexts(self.pr, ctxs_new, head_sha)
+        rows = StatusContext.objects.filter(pull_request=self.pr, head_sha=head_sha, name="bors")
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().github_node_id, "SC_NEW")
