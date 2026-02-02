@@ -18,6 +18,7 @@ from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import should_enqueue_ci_sha, record_ci_sha_fetch
+from syncer.services.status_contexts import latest_status_contexts_for_pr
 from syncer.models import CheckRun, StatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -935,9 +936,11 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
                 eligible_cr_shas.add(cr.head_sha)
 
         # Pending StatusContexts with acceptable "pending duration".
-        sc_qs = StatusContext.objects.filter(pull_request=pr, state="PENDING")
+        sc_qs = latest_status_contexts_for_pr(pr)
         eligible_sc_shas: set[str] = set()
         for sc in sc_qs:
+            if sc.state != "PENDING":
+                continue
             origin_sc = sc.gh_created_at or sc.created_at
             if origin_sc is None:
                 origin_sc = now

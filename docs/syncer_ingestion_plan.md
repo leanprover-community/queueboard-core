@@ -102,6 +102,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - Tasks & CLI:
   - `syncer/tasks/sync_tasks.py`: `sync_repo_task`, `sync_pr_task`
     - `refresh_pending_ci_for_repo_task(repo_id, max_prs, max_shas_per_pr, max_pending_hours)` to re-poll CI for SHAs whose CheckRuns/StatusContexts remain pending.
+      - Pending detection uses the latest StatusContext per `(head_sha, name)` to avoid stale pending rows.
     - `refresh_pending_ci_for_active_repos_task(max_prs_per_repo, max_shas_per_pr, max_pending_hours)` to enqueue pending-CI refresh for all active repositories (used by Celery beat).
   - `syncer/tasks/backfill_tasks.py`:
     - `backfill_repo_history_task(repo_id, page_size, max_pages, states)` for createdAt-based history backfill.

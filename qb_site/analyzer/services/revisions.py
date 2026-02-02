@@ -9,6 +9,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType, StatusContext
+from syncer.services.status_contexts import latest_status_contexts_for_pr
 from syncer.models.check_run import CheckRunStatus
 from syncer.models.status_context import StatusContextState
 from analyzer.models import PRRevision, PRRevisionBuildState
@@ -513,7 +514,7 @@ def next_revision_backfill_shas(
     skip = skip_shas or set()
 
     # Snapshot CI presence up-front to avoid repeated queries per candidate.
-    status_ctx_rows = StatusContext.objects.filter(pull_request=pr).values_list("head_sha", "state")
+    status_ctx_rows = latest_status_contexts_for_pr(pr).values_list("head_sha", "state")
     sc_any: set[str] = set()
     sc_pending: set[str] = set()
     sc_completed: set[str] = set()
