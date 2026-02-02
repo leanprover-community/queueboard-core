@@ -9,6 +9,7 @@ from syncer.services.github_client import GitHubClient
 from syncer.services.commit_history import harvest_commit_history_with_cursor
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task
 from syncer.services.ci_backoff import should_enqueue_ci_sha
+from syncer.services.status_contexts import latest_status_contexts_for_pr
 
 
 @shared_task(name="syncer.harvest_commit_history")
@@ -48,7 +49,7 @@ def harvest_commit_history_task(
     missing: list[str] = []
     if shas:
         # Cache CI rows for harvested SHAs to avoid per-sha queries and to detect pending rows.
-        sc_rows = StatusContext.objects.filter(pull_request=pr, head_sha__in=shas).values_list("head_sha", "state")
+        sc_rows = latest_status_contexts_for_pr(pr, head_shas=shas).values_list("head_sha", "state")
         sc_any: set[str] = set()
         sc_pending: set[str] = set()
         sc_completed: set[str] = set()

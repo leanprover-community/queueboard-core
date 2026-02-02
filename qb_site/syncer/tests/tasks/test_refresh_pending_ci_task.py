@@ -199,6 +199,14 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(res.get("prs_enqueued"), 0)
         self.assertEqual(res.get("shas_enqueued"), 0)
 
+    def test_ignores_stale_pending_status_context_when_newer_success_exists(self) -> None:
+        # Older pending status should not trigger refresh if a newer success exists for same name+SHA.
+        self._make_status(state="PENDING", head_sha=self.pr.head_sha, created_delta_hours=5)
+        self._make_status(state="SUCCESS", head_sha=self.pr.head_sha, created_delta_hours=1)
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_skips_missing_head_ci_when_unavailable(self, mock_sync_ci_for_shas) -> None:
         # Missing head contexts should be ignored when head_ci_state is UNAVAILABLE.

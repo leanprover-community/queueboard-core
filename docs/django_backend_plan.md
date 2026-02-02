@@ -178,6 +178,8 @@ Reviewer preferences import (management command)
   - `target_url` (url, nullable), `description` (text, nullable)
   - Timestamp: `gh_created_at` (datetime)
   - Ingestion: `last_synced_at` (nullable, updated on every CI ingest/refresh so we know when we last heard about this context from GitHub)
+- Notes:
+  - StatusContext rows may be append-only when sourced from REST history; callers that need current status should use the latest row per `(head_sha, name)` to avoid stale pending entries.
 - Indexes:
   - `(pull_request, gh_created_at)` for chronological scans
 
