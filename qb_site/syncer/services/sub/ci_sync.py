@@ -145,6 +145,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         log.debug("CI sync: using StatusContext allowlist for %s (patterns=%s)", pr.repository, allow)
     now = timezone.now()
     earliest_ts = None
+    latest_by_name: dict[str, timezone.datetime] = {}
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -178,8 +179,23 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         ts = values["gh_created_at"]
         if ts is not None and (earliest_ts is None or ts < earliest_ts):
             earliest_ts = ts
+        name_key = (values["name"] or "").strip().lower()
+        if name_key and ts is not None:
+            current_latest = latest_by_name.get(name_key)
+            if current_latest is None or ts > current_latest:
+                latest_by_name[name_key] = ts
 
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
+
+    # Prune older snapshot rows for the same (head_sha, name). Keep REST history intact.
+    for name_key, latest_ts in latest_by_name.items():
+        StatusContext.objects.filter(
+            pull_request=pr,
+            head_sha=head_sha,
+            name__iexact=name_key,
+            github_node_id__isnull=False,
+            gh_created_at__lt=latest_ts,
+        ).delete()
 
     return CISyncResult(created=created, updated=updated, deleted=0)
