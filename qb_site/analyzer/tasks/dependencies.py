@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from celery import shared_task
 from django.db import models
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from analyzer.models import PRDependencyState
@@ -75,6 +76,7 @@ def rebuild_dependencies_sweep_task(
                 "body",
                 "state",
                 "gh_updated_at",
+                "last_synced_at",
                 "repository",
                 "repository__owner",
                 "repository__name",
@@ -145,9 +147,10 @@ def rebuild_dependencies_sweep_task(
             )
         )
         # Stale dependency state for open PRs (needs refresh)
+        staleness_ts = Coalesce(models.F("last_synced_at"), models.F("gh_updated_at"))
         stale_filter = (
             models.Q(dependency_state__last_checked_at__isnull=True)
-            | models.Q(dependency_state__last_checked_at__lt=models.F("gh_updated_at"))
+            | models.Q(dependency_state__last_checked_at__lt=staleness_ts)
             | models.Q(dependency_state__builder_version__lt=builder_version)
             | models.Q(dependency_state__builder_version__gt=builder_version)
         )

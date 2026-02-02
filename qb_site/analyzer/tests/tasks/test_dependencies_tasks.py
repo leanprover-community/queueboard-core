@@ -261,3 +261,29 @@ class DependencyTaskTests(TestCase):
         self.assertIn(pr_newer.id, enqueued_ids)
         self.assertNotIn(pr_equal.id, enqueued_ids)
         self.assertEqual(res["categories"]["open_stale"]["queued"], 1)
+
+    @patch("analyzer.tasks.dependencies.rebuild_pr_dependencies_task")
+    def test_stale_uses_last_synced_at_when_present(self, mock_task) -> None:
+        now = timezone.now()
+        pr_sync_equal = self._mk_pr(29)
+        pr_sync_equal.gh_updated_at = now - timezone.timedelta(days=20)
+        pr_sync_equal.last_synced_at = now - timezone.timedelta(days=5)
+        pr_sync_equal.save(update_fields=["gh_updated_at", "last_synced_at"])
+        PRDependencyState.objects.create(
+            pull_request=pr_sync_equal, builder_version=1, last_checked_at=pr_sync_equal.last_synced_at
+        )
+
+        pr_sync_newer = self._mk_pr(30)
+        pr_sync_newer.gh_updated_at = now - timezone.timedelta(days=20)
+        pr_sync_newer.last_synced_at = now - timezone.timedelta(days=3)
+        pr_sync_newer.save(update_fields=["gh_updated_at", "last_synced_at"])
+        PRDependencyState.objects.create(
+            pull_request=pr_sync_newer, builder_version=1, last_checked_at=now - timezone.timedelta(days=10)
+        )
+
+        res = rebuild_dependencies_sweep_task(max_prs_per_repo=2, only_open=True, builder_version=1, fanout=True)
+
+        enqueued_ids = [call.args[0] for call in mock_task.delay.call_args_list]
+        self.assertIn(pr_sync_newer.id, enqueued_ids)
+        self.assertNotIn(pr_sync_equal.id, enqueued_ids)
+        self.assertEqual(res["categories"]["open_stale"]["queued"], 1)
