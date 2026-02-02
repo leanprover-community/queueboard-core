@@ -93,7 +93,7 @@ class TestPlanMissingCITask(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         self.assertEqual(state.ci_checked_revision_version, state.revision_version)
         self.assertIsNotNone(state.ci_checked_at)
-        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["prs_checked"], 0)
         self.assertEqual(res["ci_tasks"], 0)
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
@@ -131,7 +131,7 @@ class TestPlanMissingCITask(TestCase):
         CIShaFetchState.objects.create(
             repository=self.repo,
             sha="sha-old-error",
-            last_attempted_at=timezone.now(),
+            last_attempted_at=timezone.now() - timezone.timedelta(minutes=10),
             last_success_at=None,
             last_result="error",
             attempts=1,
@@ -189,7 +189,7 @@ class TestPlanMissingCITask(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         self.assertIsNone(state.ci_checked_revision_version)
         self.assertIsNotNone(state.ci_checked_at)
-        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["prs_checked"], 0)
         self.assertEqual(res["ci_tasks"], 0)
         self.assertEqual(res["prs_skipped_backoff"], 1)
 
@@ -211,7 +211,7 @@ class TestPlanMissingCITask(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         self.assertEqual(state.ci_checked_revision_version, state.revision_version)
         self.assertIsNotNone(state.ci_checked_at)
-        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["prs_checked"], 0)
         self.assertEqual(res["ci_tasks"], 0)
         self.assertEqual(res["prs_skipped_backoff"], 0)
 
@@ -327,3 +327,27 @@ class TestPlanMissingCITask(TestCase):
         plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 5, "pages_per_sha": 1}).get()
         state.refresh_from_db()
         self.assertEqual(state.ci_checked_revision_version, state.revision_version)
+
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_skips_no_actionable_shas_in_repo_limit(self, mock_enqueue) -> None:
+        pr_done = self._mk_pr_with_revision(13, "sha-ci")
+        CheckRun.objects.create(
+            pull_request=pr_done,
+            github_node_id="CR_done",
+            head_sha="sha-ci",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=pr_done.gh_created_at + timezone.timedelta(hours=1),
+            gh_completed_at=pr_done.gh_created_at + timezone.timedelta(hours=2),
+        )
+        pr_missing = self._mk_pr_with_revision(14, "sha-miss")
+        pr_missing.gh_updated_at = pr_done.gh_updated_at - timezone.timedelta(days=1)
+        pr_missing.save(update_fields=["gh_updated_at", "updated_at"])
+
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 1, "shas_per_pr": 1, "pages_per_sha": 1}).get()
+
+        mock_enqueue.assert_called_once()
+        self.assertEqual(res["prs_checked_numbers"], [pr_missing.number])

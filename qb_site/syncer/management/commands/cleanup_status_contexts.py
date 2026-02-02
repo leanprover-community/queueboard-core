@@ -50,15 +50,11 @@ class Command(BaseCommand):
         qs = StatusContext.objects.filter(pull_request_id=pr_id, github_node_id__isnull=False)
         if connection.vendor == "postgresql":
             return list(
-                qs.order_by("head_sha", "name", "-gh_created_at", "-id")
-                .distinct("head_sha", "name")
-                .values_list("id", flat=True)
+                qs.order_by("head_sha", "name", "-gh_created_at", "-id").distinct("head_sha", "name").values_list("id", flat=True)
             )
         latest_ids: list[int] = []
         last_key: tuple[str, str] | None = None
-        for row in qs.values("id", "head_sha", "name", "gh_created_at").order_by(
-            "head_sha", "name", "-gh_created_at", "-id"
-        ):
+        for row in qs.values("id", "head_sha", "name", "gh_created_at").order_by("head_sha", "name", "-gh_created_at", "-id"):
             key = (row.get("head_sha") or "", (row.get("name") or "").lower())
             if key == last_key:
                 continue

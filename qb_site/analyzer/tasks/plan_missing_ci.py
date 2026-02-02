@@ -147,30 +147,31 @@ def plan_missing_ci_backfill_task(
             state.ci_checked_at = now_ts
             state.save(update_fields=["ci_checked_revision_version", "ci_checked_at", "updated_at"])
 
-            repo_prs += 1
-            total_prs_considered += 1
-            processed_pr_numbers.append(int(pr.number))
-            repo_debug_prs.append(
-                {
-                    "number": int(pr.number),
-                    "revision_version": int(state.revision_version or 0),
-                    "ci_checked_revision_version": int(state.ci_checked_revision_version or 0)
-                    if state.ci_checked_revision_version is not None
-                    else None,
-                    "ci_checked_at": state.ci_checked_at.isoformat() if state.ci_checked_at else None,
-                    "windows_built_revision_version": int(state.windows_built_revision_version or 0)
-                    if state.windows_built_revision_version is not None
-                    else None,
-                    "windows_built_at": state.windows_built_at.isoformat() if state.windows_built_at else None,
-                    "state_updated_at": state.updated_at.isoformat() if state.updated_at else None,
-                    "candidate_count": len(candidate_shas),
-                    "terminal_shas": list(terminal_shas),
-                    "error_shas": list(error_shas),
-                    "planned_shas": list(shas),
-                    "actionable_shas": actionable_shas,
-                    "backoff_shas": backoff_shas,
-                }
-            )
+            if actionable_shas:
+                repo_prs += 1
+                total_prs_considered += 1
+                processed_pr_numbers.append(int(pr.number))
+                repo_debug_prs.append(
+                    {
+                        "number": int(pr.number),
+                        "revision_version": int(state.revision_version or 0),
+                        "ci_checked_revision_version": int(state.ci_checked_revision_version or 0)
+                        if state.ci_checked_revision_version is not None
+                        else None,
+                        "ci_checked_at": state.ci_checked_at.isoformat() if state.ci_checked_at else None,
+                        "windows_built_revision_version": int(state.windows_built_revision_version or 0)
+                        if state.windows_built_revision_version is not None
+                        else None,
+                        "windows_built_at": state.windows_built_at.isoformat() if state.windows_built_at else None,
+                        "state_updated_at": state.updated_at.isoformat() if state.updated_at else None,
+                        "candidate_count": len(candidate_shas),
+                        "terminal_shas": list(terminal_shas),
+                        "error_shas": list(error_shas),
+                        "planned_shas": list(shas),
+                        "actionable_shas": actionable_shas,
+                        "backoff_shas": backoff_shas,
+                    }
+                )
 
         if repo_prs < int(max_prs_per_repo):
             pr_qs = pr_qs_all.exclude(id__in=seen_pr_ids).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
@@ -241,30 +242,31 @@ def plan_missing_ci_backfill_task(
             state.ci_checked_at = now_ts
             state.save(update_fields=["ci_checked_revision_version", "ci_checked_at", "updated_at"])
 
-            repo_prs += 1
-            total_prs_considered += 1
-            processed_pr_numbers.append(int(pr.number))
-            repo_debug_prs.append(
-                {
-                    "number": int(pr.number),
-                    "revision_version": int(state.revision_version or 0),
-                    "ci_checked_revision_version": int(state.ci_checked_revision_version or 0)
-                    if state.ci_checked_revision_version is not None
-                    else None,
-                    "ci_checked_at": state.ci_checked_at.isoformat() if state.ci_checked_at else None,
-                    "windows_built_revision_version": int(state.windows_built_revision_version or 0)
-                    if state.windows_built_revision_version is not None
-                    else None,
-                    "windows_built_at": state.windows_built_at.isoformat() if state.windows_built_at else None,
-                    "state_updated_at": state.updated_at.isoformat() if state.updated_at else None,
-                    "candidate_count": len(candidate_shas),
-                    "terminal_shas": list(terminal_shas),
-                    "error_shas": list(error_shas),
-                    "planned_shas": list(shas),
-                    "actionable_shas": actionable_shas,
-                    "backoff_shas": backoff_shas,
-                }
-            )
+            if actionable_shas:
+                repo_prs += 1
+                total_prs_considered += 1
+                processed_pr_numbers.append(int(pr.number))
+                repo_debug_prs.append(
+                    {
+                        "number": int(pr.number),
+                        "revision_version": int(state.revision_version or 0),
+                        "ci_checked_revision_version": int(state.ci_checked_revision_version or 0)
+                        if state.ci_checked_revision_version is not None
+                        else None,
+                        "ci_checked_at": state.ci_checked_at.isoformat() if state.ci_checked_at else None,
+                        "windows_built_revision_version": int(state.windows_built_revision_version or 0)
+                        if state.windows_built_revision_version is not None
+                        else None,
+                        "windows_built_at": state.windows_built_at.isoformat() if state.windows_built_at else None,
+                        "state_updated_at": state.updated_at.isoformat() if state.updated_at else None,
+                        "candidate_count": len(candidate_shas),
+                        "terminal_shas": list(terminal_shas),
+                        "error_shas": list(error_shas),
+                        "planned_shas": list(shas),
+                        "actionable_shas": actionable_shas,
+                        "backoff_shas": backoff_shas,
+                    }
+                )
 
         total_enqueued += repo_enqueued
         total_prs_skipped_limit += repo_prs_skipped_limit_count
