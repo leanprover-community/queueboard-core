@@ -9,6 +9,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType, StatusContext
+from syncer.services.check_runs import latest_check_runs_for_pr
 from syncer.services.status_contexts import latest_status_contexts_for_pr
 from syncer.models.check_run import CheckRunStatus
 from syncer.models.status_context import StatusContextState
@@ -527,7 +528,7 @@ def next_revision_backfill_shas(
         else:
             sc_completed.add(head_sha)
 
-    check_run_rows = CheckRun.objects.filter(pull_request=pr).values_list("head_sha", "status")
+    check_run_rows = latest_check_runs_for_pr(pr).values_list("head_sha", "status")
     cr_any: set[str] = set()
     cr_pending: set[str] = set()
     for head_sha, status in check_run_rows:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from celery import shared_task
 
-from syncer.models import PullRequest, CheckRun, StatusContext
+from syncer.models import PullRequest
 from syncer.models.check_run import CheckRunStatus
 from syncer.models.status_context import StatusContextState
 from syncer.services.github_client import GitHubClient
@@ -10,6 +10,7 @@ from syncer.services.commit_history import harvest_commit_history_with_cursor
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task
 from syncer.services.ci_backoff import should_enqueue_ci_sha
 from syncer.services.status_contexts import latest_status_contexts_for_pr
+from syncer.services.check_runs import latest_check_runs_for_pr
 
 
 @shared_task(name="syncer.harvest_commit_history")
@@ -62,7 +63,7 @@ def harvest_commit_history_task(
             else:
                 sc_completed.add(head_sha)
 
-        cr_rows = CheckRun.objects.filter(pull_request=pr, head_sha__in=shas).values_list("head_sha", "status")
+        cr_rows = latest_check_runs_for_pr(pr, head_shas=shas).values_list("head_sha", "status")
         cr_any: set[str] = set()
         cr_pending: set[str] = set()
         for head_sha, status in cr_rows:

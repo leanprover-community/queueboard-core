@@ -842,10 +842,14 @@ class QueueboardSnapshotBuilder:
         return check_map, status_map
 
     def _revision_heads_for_repo(self, repository: Repository, *, pr_ids: set[int] | None = None) -> Dict[int, str]:
-        qs = PRRevision.objects.filter(
-            pull_request__repository=repository,
-            pull_request__state=PullRequestState.OPEN,
-        ).exclude(head_sha__isnull=True).exclude(head_sha="")
+        qs = (
+            PRRevision.objects.filter(
+                pull_request__repository=repository,
+                pull_request__state=PullRequestState.OPEN,
+            )
+            .exclude(head_sha__isnull=True)
+            .exclude(head_sha="")
+        )
         if pr_ids:
             qs = qs.filter(pull_request_id__in=pr_ids)
         qs = (

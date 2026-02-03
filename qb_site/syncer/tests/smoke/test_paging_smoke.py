@@ -112,11 +112,13 @@ class TestPagingSmoke(TestCase):
         if not pr_node_full:
             self.skipTest("bundle fixture missing pullRequest node")
 
-        # Count contexts across bundle + page
+        # Count contexts across bundle + page using the same pruning semantics as sync.
         def count_ctx(nodes: list[dict]) -> tuple[int, int]:
-            cr = sc = 0
+            cr_latest: dict[tuple[str, str], str] = {}
+            sc_latest: dict[tuple[str, str], str] = {}
             for n in nodes:
                 commit = (n or {}).get("commit") or {}
+                head_sha = commit.get("oid") or ""
                 ctx_nodes = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
                 for c in ctx_nodes:
                     if not isinstance(c, dict):
@@ -125,10 +127,24 @@ class TestPagingSmoke(TestCase):
                     if t == "CheckRun":
                         if (c.get("conclusion") or "").upper() == "SKIPPED":
                             continue
-                        cr += 1
+                        name = (c.get("name") or "").lower()
+                        ts = c.get("completedAt") or c.get("startedAt") or ""
+                        if not head_sha or not name or not ts:
+                            continue
+                        key = (head_sha, name)
+                        current = cr_latest.get(key)
+                        if current is None or ts > current:
+                            cr_latest[key] = ts
                     elif t == "StatusContext":
-                        sc += 1
-            return cr, sc
+                        name = (c.get("context") or "").lower()
+                        ts = c.get("createdAt") or ""
+                        if not head_sha or not name or not ts:
+                            continue
+                        key = (head_sha, name)
+                        current = sc_latest.get(key)
+                        if current is None or ts > current:
+                            sc_latest[key] = ts
+            return len(cr_latest), len(sc_latest)
 
         b_nodes = (pr_node_full.get("commits") or {}).get("nodes") or []
         p_nodes = (

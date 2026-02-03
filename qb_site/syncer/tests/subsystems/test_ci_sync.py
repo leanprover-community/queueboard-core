@@ -155,3 +155,39 @@ class TestCISync(TestCase):
         rows = StatusContext.objects.filter(pull_request=self.pr, head_sha=head_sha, name="bors")
         self.assertEqual(rows.count(), 1)
         self.assertEqual(rows.first().github_node_id, "SC_NEW")
+
+    def test_prunes_older_snapshot_check_runs(self) -> None:
+        head_sha = "abc1234"
+        ctxs_old = [
+            {
+                "id": "CR_OLD",
+                "name": "build",
+                "status": "IN_PROGRESS",
+                "conclusion": None,
+                "startedAt": "2025-10-20T00:00:00Z",
+                "completedAt": None,
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        ctxs_new = [
+            {
+                "id": "CR_NEW",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": "2025-10-20T00:10:00Z",
+                "completedAt": "2025-10-20T00:20:00Z",
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs_old, head_sha)
+        self.assertEqual(
+            CheckRun.objects.filter(pull_request=self.pr, head_sha=head_sha, name="build").count(),
+            1,
+        )
+        sync_check_runs(self.pr, ctxs_new, head_sha)
+        rows = CheckRun.objects.filter(pull_request=self.pr, head_sha=head_sha, name="build")
+        self.assertEqual(rows.count(), 1)
+        self.assertEqual(rows.first().github_node_id, "CR_NEW")

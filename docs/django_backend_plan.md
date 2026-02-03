@@ -164,7 +164,7 @@ Reviewer preferences import (management command)
   - `status` (QUEUED/IN_PROGRESS/COMPLETED), `conclusion` (SUCCESS/FAILURE/CANCELLED/NEUTRAL/SKIPPED/TIMED_OUT/ACTION_REQUIRED, nullable)
   - `details_url` (url, nullable), `external_id` (str, nullable)
   - Timestamps: `gh_started_at` (nullable), `gh_completed_at` (nullable)
-    - Note: GitHub GraphQL CheckRun does not expose `updatedAt`; we omit `gh_updated_at` and rely on `gh_completed_at` for ordering.
+    - Note: GitHub GraphQL CheckRun does not expose `updatedAt`; we omit `gh_updated_at` and rely on `gh_completed_at`/`gh_started_at` for ordering. Callers that need current status should use the latest row per `(head_sha, name)` to avoid stale pending entries.
   - Ingestion: `last_synced_at` (nullable, updated on every CI ingest/refresh so we know when we last heard about this run from GitHub)
 - Indexes:
   - `(pull_request, gh_completed_at)` for chronological scans

@@ -19,6 +19,7 @@ from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import should_enqueue_ci_sha, record_ci_sha_fetch
 from syncer.services.status_contexts import latest_status_contexts_for_pr
+from syncer.services.check_runs import latest_check_runs_for_pr
 from syncer.models import CheckRun, StatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -923,10 +924,12 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         )
 
         # Pending CheckRuns with acceptable "pending duration".
-        cr_qs = CheckRun.objects.filter(pull_request=pr).exclude(status="COMPLETED")
+        cr_qs = latest_check_runs_for_pr(pr)
         eligible_cr_shas: set[str] = set()
         has_recent_pending = False
         for cr in cr_qs:
+            if cr.status == "COMPLETED":
+                continue
             origin = cr.gh_started_at or cr.gh_completed_at or cr.created_at
             if origin is None:
                 origin = now

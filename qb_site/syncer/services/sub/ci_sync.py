@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List
 from dateutil import parser as dtparser
 from django.utils import timezone
 from django.conf import settings
+from django.db.models.functions import Coalesce
 
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.check_run import CheckRun
@@ -79,6 +80,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         log.debug("CI sync: using CheckRun allowlist for %s (patterns=%s)", pr.repository, allow)
     now = timezone.now()
     earliest_ts = None
+    latest_by_name: dict[str, timezone.datetime] = {}
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -122,9 +124,29 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
                 continue
             if earliest_ts is None or ts < earliest_ts:
                 earliest_ts = ts
+        ts = values["gh_completed_at"] or values["gh_started_at"]
+        name_key = (values["name"] or "").strip().lower()
+        if name_key and ts is not None:
+            current_latest = latest_by_name.get(name_key)
+            if current_latest is None or ts > current_latest:
+                latest_by_name[name_key] = ts
 
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
+
+    # Prune older snapshot rows for the same (head_sha, name). Keep REST history intact.
+    for name_key, latest_ts in latest_by_name.items():
+        (
+            CheckRun.objects.filter(
+                pull_request=pr,
+                head_sha=head_sha,
+                name__iexact=name_key,
+                github_node_id__isnull=False,
+            )
+            .annotate(ts=Coalesce("gh_completed_at", "gh_started_at"))
+            .filter(ts__lt=latest_ts)
+            .delete()
+        )
 
     return CISyncResult(created=created, updated=updated, deleted=0)
 
