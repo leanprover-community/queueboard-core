@@ -170,7 +170,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
         self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "pass")
 
-    def test_required_context_prefix_match_passes(self):
+    def test_required_context_contains_match_passes(self):
         pr = self._make_pr(66, author=self.user, labels=("t-analysis",))
         rule_set = QueueRuleSet.objects.create(
             repository=self.repo,
@@ -178,7 +178,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
             require_ci_success=True,
             required_ci_contexts=["lint"],
         )
-        self._add_ci(pr, conclusion=CheckRunConclusion.SUCCESS, name="lint / linux")
+        self._add_ci(pr, conclusion=CheckRunConclusion.SUCCESS, name="ci / lint / linux")
 
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
         self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "pass")

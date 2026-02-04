@@ -783,7 +783,7 @@ class QueueboardSnapshotBuilder:
 
         name_filter = Q()
         for ctx in required_contexts:
-            name_filter |= Q(name__istartswith=ctx)
+            name_filter |= Q(name__icontains=ctx)
 
         checks_head_qs = base_checks_qs.none()
         if head_shas:
