@@ -178,10 +178,18 @@ def _compute_commenter_data(pr_data: dict) -> Tuple[bool, List[str]]:
     users = set()
     comments = inner["comments"]["nodes"]
     for comment in comments:
-        users.add(comment["author"]["login"])
+        author = comment.get("author")
+        if author:
+            login = author.get("login")
+            if login:
+                users.add(login)
     reviews = inner["reviews"]["nodes"]
     for review in reviews:
-        users.add(review["author"]["login"])
+        author = review.get("author")
+        if author:
+            login = author.get("login")
+            if login:
+                users.add(login)
     is_incomplete = len(comments) == 100 or len(reviews) == 100
     return (is_incomplete, sorted(list(users)))
 
@@ -249,7 +257,8 @@ def get_aggregate_data(pr_data: dict, only_basic_info: bool) -> dict:
     state = inner["state"].lower()
     last_updated = inner["updatedAt"]
     # We assume the author URL is determined by the github handle: in practice, it is.
-    author = inner["author"]["login"]
+    # Guard against deleted/ghost users where GitHub returns null.
+    author = (inner.get("author") or {}).get("login") or ""
     title = inner["title"]
     description = inner["body"]
     additions = inner["additions"]
@@ -272,7 +281,9 @@ def get_aggregate_data(pr_data: dict, only_basic_info: bool) -> dict:
     approvals = []
     for r in inner["reviews"]["nodes"]:
         if r["state"] == "APPROVED":
-            approvals.append(r["author"]["login"])
+            reviewer_login = (r.get("author") or {}).get("login")
+            if reviewer_login:
+                approvals.append(reviewer_login)
     number_comments = len(inner["comments"]["nodes"])
     (is_incomplete, commenters) = _compute_commenter_data(pr_data)
     # NB. When adding future fields, pay attention to whether the 'basic' info files
@@ -539,4 +550,5 @@ def main() -> None:
         print(json.dumps(infty_cosmos_data, indent=4), file=f)
 
 
-main()
+if __name__ == "__main__":
+    main()

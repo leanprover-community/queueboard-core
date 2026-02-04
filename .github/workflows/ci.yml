@@ -40,6 +40,10 @@ jobs:
         run: |
           uv run python -m queueboard.test_snapshot
 
+      - name: Test process helpers
+        run: |
+          uv run python -m queueboard.test_process
+
       - name: Run dashboard_data in test/newtest
         working-directory: test/newtest
         run: |
