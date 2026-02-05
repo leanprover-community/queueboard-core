@@ -134,6 +134,9 @@ LOGGING = {
 }
 
 ZULIP_WEBHOOK_TOKEN = os.getenv("ZULIP_WEBHOOK_TOKEN")
+ZULIP_BASE_URL = os.getenv("ZULIP_BASE_URL", "")
+ZULIP_BOT_EMAIL = os.getenv("ZULIP_BOT_EMAIL", "")
+ZULIP_BOT_API_KEY = os.getenv("ZULIP_BOT_API_KEY", "")
 
 
 # Celery configuration
