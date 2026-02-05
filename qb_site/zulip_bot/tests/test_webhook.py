@@ -23,6 +23,27 @@ class TestZulipWebhook(TestCase):
         result = self._post_payload({"token": "wrong"})
         self.assertEqual(result["status"], 403)
 
+    def test_no_policy_defaults_to_denied(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "help",
+                "id": 9,
+                "stream_id": 5,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertIsNone(result["json"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["stream:5"]},
+            "echo": {"allowed_contexts": ["stream:5"]},
+        }
+    )
     def test_help_command_lists_commands(self) -> None:
         payload = {
             "token": "test-token",
@@ -44,6 +65,12 @@ class TestZulipWebhook(TestCase):
             },
         )
 
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["stream:5"]},
+            "echo": {"allowed_contexts": ["stream:5"]},
+        }
+    )
     def test_echo_command_repeats_text(self) -> None:
         payload = {
             "token": "test-token",
@@ -60,6 +87,12 @@ class TestZulipWebhook(TestCase):
         self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hello world")
 
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["stream:5"]},
+            "echo": {"allowed_contexts": ["stream:5"]},
+        }
+    )
     def test_unknown_command_returns_help(self) -> None:
         payload = {
             "token": "test-token",
@@ -76,6 +109,26 @@ class TestZulipWebhook(TestCase):
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn("Unknown command", result["json"]["content"])
         self.assertIn("Available commands:", result["json"]["content"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["stream:5"]},
+        }
+    )
+    def test_missing_policy_entry_denies_command(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "echo hi",
+                "id": 12,
+                "stream_id": 5,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertIsNone(result["json"])
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
