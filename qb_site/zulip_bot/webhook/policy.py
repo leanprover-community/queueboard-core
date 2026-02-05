@@ -75,10 +75,8 @@ def _is_command_allowed(
 ) -> bool:
     rule = policy.get(command_name)
     if rule is None:
-        if policy:
-            logger.info("zulip_command_ignored", extra={"reason": "no_policy_entry", "command": command_name})
-            return False
-        return True
+        logger.info("zulip_command_ignored", extra={"reason": "no_policy_entry", "command": command_name})
+        return False
 
     if not checker.is_member_any(user_id=context.sender_id, group_ids=rule.allowed_groups):
         logger.info("zulip_command_ignored", extra={"reason": "not_in_allowed_group", "command": command_name})

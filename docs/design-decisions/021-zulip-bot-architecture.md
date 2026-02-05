@@ -17,7 +17,9 @@
   - `ZULIP_BASE_URL`
   - `ZULIP_BOT_EMAIL`
   - `ZULIP_BOT_API_KEY`
-- Configure per-command access policy in Django settings via `ZULIP_COMMAND_POLICY` using stream IDs and user-group IDs.
+- Configure per-command access policy via:
+  - Django settings `ZULIP_COMMAND_POLICY`, or
+  - env var `ZULIP_COMMAND_POLICY` (JSON object).
 
 ## Policy Format
 - `ZULIP_COMMAND_POLICY` is a dictionary keyed by command name.
@@ -46,8 +48,9 @@ ZULIP_COMMAND_POLICY = {
 ```
 
 ## Enforcement Rules
-- If `ZULIP_COMMAND_POLICY` is empty, commands are allowed by default.
-- If `ZULIP_COMMAND_POLICY` is non-empty, commands not listed in the policy are ignored.
+- Commands are denied by default unless they have a matching policy entry.
+- If `ZULIP_COMMAND_POLICY` is empty or unset, all commands are ignored.
+- If a command is missing from `ZULIP_COMMAND_POLICY`, that command is ignored.
 - Commands outside policy are silently ignored (`HTTP 200` with empty response body).
 - Unknown commands:
   - Return private filtered help if user/context is allowed for at least one command.
@@ -68,6 +71,11 @@ ZULIP_COMMAND_POLICY = {
   - `ZULIP_BOT_EMAIL`
   - `ZULIP_BOT_API_KEY`
 - Set `ZULIP_COMMAND_POLICY` in Django settings (`qb_site/qb_site/settings/local.py` or an environment-specific settings module).
+- For env-only deployments, set `ZULIP_COMMAND_POLICY` to a compact JSON object.
+- Local helper tool for building/validating policy JSON:
+  - `uv run python qb_site/manage.py zulip_policy init .zulip-policy.local.json`
+  - `uv run python qb_site/manage.py zulip_policy validate .zulip-policy.local.json`
+  - `uv run python qb_site/manage.py zulip_policy to-env .zulip-policy.local.json --export`
 - Commands that may surface private details should use `ResponseMode.PRIVATE`.
 - When adding new commands, update help text by registering the command description.
 - For each new command, add a policy entry when `ZULIP_COMMAND_POLICY` is enabled; otherwise that command is ignored.

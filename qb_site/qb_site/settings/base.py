@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -138,6 +139,12 @@ ZULIP_BASE_URL = os.getenv("ZULIP_BASE_URL", "")
 ZULIP_BOT_EMAIL = os.getenv("ZULIP_BOT_EMAIL", "")
 ZULIP_BOT_API_KEY = os.getenv("ZULIP_BOT_API_KEY", "")
 ZULIP_COMMAND_POLICY: dict[str, dict[str, list[int] | list[str]]] = {}
+_ZULIP_COMMAND_POLICY_ENV = os.getenv("ZULIP_COMMAND_POLICY", "").strip()
+if _ZULIP_COMMAND_POLICY_ENV:
+    parsed_policy = json.loads(_ZULIP_COMMAND_POLICY_ENV)
+    if not isinstance(parsed_policy, dict):
+        raise RuntimeError("ZULIP_COMMAND_POLICY env var must be a JSON object")
+    ZULIP_COMMAND_POLICY = parsed_policy
 
 
 # Celery configuration
