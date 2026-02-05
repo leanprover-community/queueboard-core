@@ -20,6 +20,7 @@ class CommandContext:
     stream_id: int | None
     topic: str | None
     is_private: bool
+    allowed_command_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

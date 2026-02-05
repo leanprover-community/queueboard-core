@@ -14,7 +14,10 @@ class TestZulipWebhook(TestCase):
             data=json.dumps(payload),
             content_type="application/json",
         )
-        return {"status": response.status_code, "json": response.json()}
+        data: dict | None = None
+        if response.content:
+            data = response.json()
+        return {"status": response.status_code, "json": data}
 
     def test_rejects_invalid_token(self) -> None:
         result = self._post_payload({"token": "wrong"})
@@ -33,9 +36,13 @@ class TestZulipWebhook(TestCase):
         }
         result = self._post_payload(payload)
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
-        self.assertIn("help", result["json"]["content"])
-        self.assertIn("echo", result["json"]["content"])
+        self.assertEqual(
+            result["json"],
+            {
+                "content": "Available commands:\n- echo: Repeat the provided text.\n- help: List supported commands.",
+                "type": "private",
+            },
+        )
 
     def test_echo_command_repeats_text(self) -> None:
         payload = {
@@ -53,7 +60,7 @@ class TestZulipWebhook(TestCase):
         self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hello world")
 
-    def test_unknown_command_defaults_to_private(self) -> None:
+    def test_unknown_command_returns_help(self) -> None:
         payload = {
             "token": "test-token",
             "message": {
@@ -68,3 +75,80 @@ class TestZulipWebhook(TestCase):
         self.assertEqual(result["status"], 200)
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn("Unknown command", result["json"]["content"])
+        self.assertIn("Available commands:", result["json"]["content"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["dm"]},
+            "echo": {"allowed_contexts": ["dm"]},
+        }
+    )
+    def test_disallowed_context_is_ignored(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "echo hi",
+                "id": 13,
+                "stream_id": 8,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertIsNone(result["json"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["dm"]},
+            "echo": {"allowed_contexts": ["dm"]},
+        }
+    )
+    def test_unknown_command_ignored_when_no_commands_allowed(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "unknown",
+                "id": 14,
+                "stream_id": 8,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertIsNone(result["json"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_contexts": ["dm"]},
+            "echo": {"allowed_contexts": ["dm", "stream:5"]},
+        }
+    )
+    def test_help_lists_only_allowed_commands(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "help",
+                "id": 15,
+                "stream_id": 5,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertIn("- echo:", result["json"]["content"])
+        self.assertNotIn("- help:", result["json"]["content"])
+
+    def test_invalid_json_payload_returns_400(self) -> None:
+        response = self.client.post(
+            reverse("zulip-webhook"),
+            data="{",
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertEqual(payload["error"], "Invalid payload")
+        self.assertIn("invalid_json", payload["errors"][0])
