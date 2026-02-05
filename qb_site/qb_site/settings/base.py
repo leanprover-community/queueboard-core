@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "syncer",
     "analyzer",
     "api",
+    "zulip_bot",
 ]
 
 MIDDLEWARE = [
@@ -131,6 +132,8 @@ LOGGING = {
         "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
     },
 }
+
+ZULIP_WEBHOOK_TOKEN = os.getenv("ZULIP_WEBHOOK_TOKEN")
 
 
 # Celery configuration
