@@ -114,13 +114,18 @@ class Command(BaseCommand):
 
             if not isinstance(allowed_groups, list):
                 raise CommandError(f"rule for '{command}'.allowed_groups must be a list")
-            if not all(isinstance(item, int) and item > 0 for item in allowed_groups):
-                raise CommandError(f"rule for '{command}'.allowed_groups must contain positive integers")
+            if not all(
+                (isinstance(item, int) and item > 0) or (isinstance(item, str) and item.lower() in {"*", "all"})
+                for item in allowed_groups
+            ):
+                raise CommandError(f"rule for '{command}'.allowed_groups must contain positive integers or '*'/'all'")
 
             if not isinstance(allowed_contexts, list):
                 raise CommandError(f"rule for '{command}'.allowed_contexts must be a list")
             if not all(isinstance(item, str) and item for item in allowed_contexts):
-                raise CommandError(f"rule for '{command}'.allowed_contexts must contain non-empty strings")
+                raise CommandError(
+                    f"rule for '{command}'.allowed_contexts must contain non-empty strings (use '*' or 'all' for unrestricted)"
+                )
 
             normalized[command] = {
                 "allowed_groups": allowed_groups,

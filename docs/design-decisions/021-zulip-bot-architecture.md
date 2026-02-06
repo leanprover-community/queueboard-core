@@ -26,12 +26,15 @@
 - Each command rule currently supports:
   - `allowed_groups`: list of Zulip user-group IDs.
   - `allowed_contexts`: list of context selectors.
+- Empty or omitted `allowed_groups` means no allowed groups (deny).
+- Empty or omitted `allowed_contexts` means no allowed contexts (deny).
+- Use `"*"` or `"all"` in either list to mean unrestricted.
 - Supported context selectors:
   - `dm`
   - `stream:<stream_id>`
   - `stream:*`
   - `*`
-  - `any`
+  - `all`
 
 Example:
 ```python

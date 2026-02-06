@@ -73,6 +73,25 @@ class TestZulipPolicyCommand(SimpleTestCase):
             with self.assertRaisesMessage(CommandError, "unknown command in policy"):
                 call_command("zulip_policy", "validate", str(path))
 
+    def test_validate_accepts_all_markers(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "policy.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "help": {
+                            "allowed_groups": ["all"],
+                            "allowed_contexts": ["all"],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+
+            call_command("zulip_policy", "validate", str(path), stdout=out)
+            self.assertIn("Valid policy", out.getvalue())
+
     def test_to_env_export_prints_assignment(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "policy.json"

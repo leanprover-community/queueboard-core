@@ -132,6 +132,68 @@ class TestZulipWebhook(TestCase):
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_contexts": []},
+        }
+    )
+    def test_empty_allowed_contexts_means_denied(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "echo hi",
+                "id": 16,
+                "stream_id": 8,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertIsNone(result["json"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_contexts": ["all"]},
+        }
+    )
+    def test_allowed_contexts_all_means_unrestricted(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "echo hi",
+                "id": 17,
+                "stream_id": 8,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertEqual(result["json"]["content"], "hi")
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_groups": ["all"], "allowed_contexts": ["all"]},
+        }
+    )
+    def test_allowed_groups_all_means_unrestricted(self) -> None:
+        payload = {
+            "token": "test-token",
+            "message": {
+                "content": "echo hi",
+                "id": 18,
+                "stream_id": 8,
+                "type": "stream",
+                "subject": "topic",
+            },
+        }
+        result = self._post_payload(payload)
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertEqual(result["json"]["content"], "hi")
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
             "help": {"allowed_contexts": ["dm"]},
             "echo": {"allowed_contexts": ["dm"]},
         }
