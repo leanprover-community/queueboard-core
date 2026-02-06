@@ -7,7 +7,7 @@ from typing import Any
 
 from django.http import HttpRequest
 
-MENTION_PREFIX_RE = re.compile(r"^@\*\*.+?\*\*(?:[:,]\s*|\s+)")
+MENTION_PREFIX_RE = re.compile(r"^@\*\*.+?\*\*(?:[:,]\s*|\s+|$)")
 
 
 @dataclass(frozen=True)
