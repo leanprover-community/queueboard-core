@@ -14,8 +14,10 @@ class GroupMembershipChecker:
         self._client_unavailable = False
 
     def is_member_any(self, *, user_id: int | None, group_ids: frozenset[int] | None) -> bool:
-        if not group_ids:
+        if group_ids is None:
             return True
+        if not group_ids:
+            return False
         if user_id is None:
             return False
 
