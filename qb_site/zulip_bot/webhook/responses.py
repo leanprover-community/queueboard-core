@@ -7,7 +7,7 @@ from zulip_bot.webhook.payload import ParsedPayload
 
 
 def unknown_command_help_response(name: str, context: CommandContext) -> CommandResult:
-    lines = [f"Unknown command: {name}", "", "Available commands:"]
+    lines = [f"Unknown command: {name}", "", "Commands available to you in this channel:"]
     commands = [command for command in list_commands() if command.name in context.allowed_command_names]
     for command in commands:
         lines.append(f"- {command.name}: {command.description}")

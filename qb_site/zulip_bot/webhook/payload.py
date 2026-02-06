@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from django.http import HttpRequest
+
+MENTION_PREFIX_RE = re.compile(r"^@\*\*.+?\*\*(?:[:,]\s*|\s+)")
 
 
 @dataclass(frozen=True)
@@ -69,14 +72,28 @@ def validate_payload(payload: dict[str, Any]) -> tuple[str, ...]:
     else:
         if not isinstance(message.get("content"), str):
             errors.append("missing_or_invalid_field:message.content")
+        if not isinstance(message.get("id"), int):
+            errors.append("missing_or_invalid_field:message.id")
+        if not isinstance(message.get("sender_id"), int):
+            errors.append("missing_or_invalid_field:message.sender_id")
+        if not isinstance(message.get("sender_email"), str):
+            errors.append("missing_or_invalid_field:message.sender_email")
+        if not isinstance(message.get("sender_full_name"), str):
+            errors.append("missing_or_invalid_field:message.sender_full_name")
         message_type = message.get("type")
         if message_type not in {"private", "stream"}:
             errors.append("missing_or_invalid_field:message.type")
+        if message_type == "stream" and not isinstance(message.get("stream_id"), int):
+            errors.append("missing_or_invalid_field:message.stream_id")
     return tuple(errors)
 
 
 def parse_command(message_content: str) -> ParsedCommand | None:
     content = message_content.strip()
+    if not content:
+        return None
+
+    content = _strip_leading_mentions(content)
     if not content:
         return None
 
@@ -87,3 +104,11 @@ def parse_command(message_content: str) -> ParsedCommand | None:
     name = parts[0].lower()
     args = parts[1] if len(parts) > 1 else ""
     return ParsedCommand(name=name, args=args)
+
+
+def _strip_leading_mentions(content: str) -> str:
+    while True:
+        match = MENTION_PREFIX_RE.match(content)
+        if not match:
+            return content
+        content = content[match.end() :].lstrip()

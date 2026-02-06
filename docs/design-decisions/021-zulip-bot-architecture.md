@@ -54,12 +54,21 @@ ZULIP_COMMAND_POLICY = {
 - Commands are denied by default unless they have a matching policy entry.
 - If `ZULIP_COMMAND_POLICY` is empty or unset, all commands are ignored.
 - If a command is missing from `ZULIP_COMMAND_POLICY`, that command is ignored.
+- Webhook payloads are validated against expected Zulip message fields, including:
+  - `message.id`
+  - `message.type`
+  - `message.content`
+  - `message.sender_id`
+  - `message.sender_email`
+  - `message.sender_full_name`
+  - and `message.stream_id` for stream messages.
 - Commands outside policy are silently ignored (`HTTP 200` with empty response body).
 - Unknown commands:
   - Return private filtered help if user/context is allowed for at least one command.
   - Are ignored if user/context is not allowed for any command.
 - `help` output is filtered to only commands allowed for the triggering user/context.
 - Invalid payloads return `HTTP 400` and include parse/validation errors plus received payload data.
+- Sender bot detection is based on Zulip API user lookup by `message.sender_id` (cached per webhook request).
 
 ## Consequences
 - Zulip-specific parsing and auth are isolated, so future Slack/Discord integrations can be added independently.

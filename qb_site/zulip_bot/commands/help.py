@@ -12,7 +12,7 @@ def help_command(context: CommandContext, args: str) -> CommandResult:
     commands = list_commands()
     if context.allowed_command_names:
         commands = [command for command in commands if command.name in context.allowed_command_names]
-    lines = ["Available commands:"]
+    lines = ["Commands available to you in this channel:"]
     for command in commands:
         lines.append(f"- {command.name}: {command.description}")
     if len(lines) == 1:
