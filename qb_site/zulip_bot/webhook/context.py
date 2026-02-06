@@ -8,9 +8,9 @@ from zulip_bot.commands import CommandContext
 def build_context(payload: dict[str, Any]) -> CommandContext:
     message = payload.get("message") or {}
     return CommandContext(
-        sender_id=payload.get("sender_id"),
-        sender_email=payload.get("sender_email"),
-        sender_full_name=payload.get("sender_full_name"),
+        sender_id=message.get("sender_id"),
+        sender_email=message.get("sender_email"),
+        sender_full_name=message.get("sender_full_name"),
         message_content=message.get("content", ""),
         message_id=message.get("id"),
         stream_id=message.get("stream_id"),

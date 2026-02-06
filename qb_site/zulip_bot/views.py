@@ -20,6 +20,7 @@ from zulip_bot.webhook.responses import (
     unknown_command_help_response,
     zulip_response,
 )
+from zulip_bot.webhook.sender import SenderClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,11 @@ def webhook(request: HttpRequest) -> HttpResponse:
     expected_token = getattr(settings, "ZULIP_WEBHOOK_TOKEN", None)
     if not expected_token or token != expected_token:
         return JsonResponse({"error": "Forbidden"}, status=403)
+
+    sender_classifier = SenderClassifier()
+    if sender_classifier.is_bot_sender(parsed_payload.payload):
+        logger.info("zulip_command_ignored", extra={"reason": "bot_sender"})
+        return ignored_response()
 
     context = build_context(parsed_payload.payload)
     checker = GroupMembershipChecker()

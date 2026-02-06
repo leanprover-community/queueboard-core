@@ -51,13 +51,13 @@ PY
 fi
 
 if [ "${SKIP_COMPOSE_BUILD:-0}" != "1" ]; then
-  echo "[0/8] Building compose images (web/migrate/worker/beat) to pick up dependency changes"
+  echo "[0/9] Building compose images (web/migrate/worker/beat) to pick up dependency changes"
   docker compose build web migrate worker beat
 else
-  echo "[0/8] Skipping compose build (SKIP_COMPOSE_BUILD=1)"
+  echo "[0/9] Skipping compose build (SKIP_COMPOSE_BUILD=1)"
 fi
 
-echo "[1/8] Validate GitHub GraphQL queries (host)"
+echo "[1/9] Validate GitHub GraphQL queries (host)"
 if [ "${SKIP_GRAPHQL_VALIDATE:-0}" = "1" ]; then
   echo "Skipping GraphQL validation (SKIP_GRAPHQL_VALIDATE=1)"
 else
@@ -68,7 +68,7 @@ else
   fi
 fi
 
-echo "[2/8] Starting web (waits on db:healthy via depends_on)"
+echo "[2/9] Starting web (waits on db:healthy via depends_on)"
 if ! docker compose up -d web; then
   echo "Compose failed to start services. Dumping service status and migrate logs..." >&2
   docker compose ps || true
@@ -76,26 +76,30 @@ if ! docker compose up -d web; then
   exit 1
 fi
 
-echo "[3/8] Django system checks (compose)"
+echo "[3/9] Django system checks (compose)"
 docker compose exec -T web python qb_site/manage.py check
 
-echo "[4/8] Dry-run makemigrations (compose)"
+echo "[4/9] Dry-run makemigrations (compose)"
 docker compose exec -T web python qb_site/manage.py makemigrations --dry-run --check
 
-echo "[5/8] Run core tests (compose)"
+echo "[5/9] Run core tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test core # --verbosity 2
 
-echo "[6/8] Run syncer tests (compose)"
+echo "[6/9] Run syncer tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer # --verbosity 2
 
-echo "[7/8] Run analyzer tests (compose)"
+echo "[7/9] Run analyzer tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test analyzer # --verbosity 2
 
-echo "[8/8] Run api tests (compose)"
+echo "[8/9] Run api tests (compose)"
 # Use higher verbosity to list skipped tests with reasons.
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test api # --verbosity 2
+
+echo "[9/9] Run zulip_bot tests (compose)"
+# Use higher verbosity to list skipped tests with reasons.
+docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test zulip_bot # --verbosity 2
 
 echo "Compose checks completed."
