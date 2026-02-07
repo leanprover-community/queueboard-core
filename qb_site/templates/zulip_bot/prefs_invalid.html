@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard reviewer preferences</title>
+</head>
+<body>
+  <h1>Preferences link unavailable</h1>
+  {% if reason == "expired" %}
+    <p>This link has expired. Send <code>prefs</code> to the bot again for a fresh link.</p>
+  {% else %}
+    <p>This link is invalid. Send <code>prefs</code> to the bot for a fresh link.</p>
+  {% endif %}
+</body>
+</html>

@@ -9,6 +9,7 @@ from django.core.management.base import BaseCommand, CommandError
 from zulip_bot.commands import list_commands
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
+from zulip_bot.commands import prefs as _prefs  # noqa: F401
 
 
 class Command(BaseCommand):

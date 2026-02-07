@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard reviewer preferences</title>
+</head>
+<body>
+  <h1>Reviewer preferences (dummy form)</h1>
+  <p>This is a placeholder page for the upcoming reviewer preferences editor.</p>
+  <p>User id: {{ claims.user_id }} | Zulip id: {{ claims.zulip_user_id }} | Preference rows: {{ claims.preference_ids|length }}</p>
+  <p>This link is valid for about {{ ttl_minutes }} minutes.</p>
+  {% if submitted %}
+    <p>Your dummy form was submitted successfully.</p>
+  {% endif %}
+  <form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Submit</button>
+  </form>
+</body>
+</html>
