@@ -3,19 +3,27 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
+from datetime import datetime, timezone as dt_timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django import forms
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.db.models import Case, IntegerField, When
+from django.forms import modelformset_factory
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.urls import reverse
 from django.template.response import TemplateResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from core.models import ReviewerPreference, User
 from zulip_bot.commands import CommandResult, ResponseMode, get_command
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
+from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
+from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 from zulip_bot.webhook.context import build_context
 from zulip_bot.webhook.membership import GroupMembershipChecker
 from zulip_bot.webhook.payload import parse_command, parse_payload, validate_payload
@@ -29,14 +37,12 @@ from zulip_bot.webhook.responses import (
 from zulip_bot.webhook.sender import SenderClassifier
 
 logger = logging.getLogger(__name__)
-
-
-class DummyPrefsForm(forms.Form):
-    notes = forms.CharField(
-        required=False,
-        label="Dummy notes",
-        widget=forms.Textarea(attrs={"rows": 4, "cols": 60}),
-    )
+ReviewerPreferenceFormSet = modelformset_factory(
+    ReviewerPreference,
+    form=ReviewerPreferenceForm,
+    extra=0,
+    can_delete=False,
+)
 
 
 @csrf_exempt
@@ -102,24 +108,64 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
     except PrefsTokenInvalid:
         return _prefs_invalid_response(request, reason="invalid")
 
-    if request.method == "POST":
-        form = DummyPrefsForm(request.POST)
-        submitted = False
-        if form.is_valid():
-            submitted = True
-            form = DummyPrefsForm()
-    else:
-        form = DummyPrefsForm()
-        submitted = False
+    prefs = _load_authorized_preferences(claims.user_id, claims.zulip_user_id, claims.preference_ids)
+    if not prefs:
+        return _prefs_invalid_response(request, reason="invalid")
+
+    user = prefs[0].user
+    user_timezone_name = _resolve_user_timezone_name(user=user, zulip_user_id=claims.zulip_user_id)
+    user_timezone = ZoneInfo(user_timezone_name)
+    pref_ids = [pref.pk for pref in prefs]
+    ordering = Case(
+        *[When(pk=pref_id, then=pos) for pos, pref_id in enumerate(pref_ids)],
+        output_field=IntegerField(),
+    )
+    queryset = (
+        ReviewerPreference.objects.filter(
+            pk__in=pref_ids,
+            user_id=claims.user_id,
+        )
+        .select_related("repository", "user")
+        .order_by(ordering)
+    )
+
+    submitted = request.method == "GET" and request.GET.get("saved") == "1"
+    saved_at: datetime | None = None
+    with timezone.override(user_timezone):
+        if request.method == "POST":
+            formset = ReviewerPreferenceFormSet(
+                request.POST,
+                queryset=queryset,
+                form_kwargs={"user_timezone": user_timezone},
+            )
+            if formset.is_valid():
+                formset.save()
+                url = reverse("zulip-prefs-form", kwargs={"token": token})
+                return HttpResponseRedirect(f"{url}?saved=1")
+        else:
+            formset = ReviewerPreferenceFormSet(
+                queryset=queryset,
+                form_kwargs={"user_timezone": user_timezone},
+            )
+        if submitted:
+            saved_at = timezone.localtime(timezone.now(), user_timezone)
+
+    expires_at_unix = claims.exp
+    if expires_at_unix is None:
+        return _prefs_invalid_response(request, reason="invalid")
+    expires_at_utc = datetime.fromtimestamp(expires_at_unix, tz=dt_timezone.utc)
 
     response = TemplateResponse(
         request,
         "zulip_bot/prefs_form.html",
         {
-            "form": form,
+            "formset": formset,
             "submitted": submitted,
-            "claims": claims,
-            "ttl_minutes": int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800) / 60),
+            "saved_at": saved_at,
+            "user": user,
+            "expires_at_unix": expires_at_unix,
+            "expires_at_iso": expires_at_utc.isoformat(),
+            "user_timezone_name": user_timezone_name,
         },
         status=200,
     )
@@ -136,6 +182,59 @@ def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpRespons
     )
     response["Cache-Control"] = "no-store"
     return response
+
+
+def _load_authorized_preferences(user_id: int, zulip_user_id: int, preference_ids: tuple[int, ...]) -> list[ReviewerPreference]:
+    pref_ids = tuple(dict.fromkeys(preference_ids))
+    if not pref_ids:
+        return []
+    prefs = list(ReviewerPreference.objects.filter(id__in=pref_ids).select_related("repository", "user"))
+    if len(prefs) != len(pref_ids):
+        return []
+    by_id = {pref.id: pref for pref in prefs}
+    ordered = [by_id[pref_id] for pref_id in pref_ids]
+    if any(pref.user_id != user_id for pref in ordered):
+        return []
+    if any(pref.user.zulip_user_id not in (None, zulip_user_id) for pref in ordered):
+        return []
+    return ordered
+
+
+def _resolve_user_timezone_name(*, user: User, zulip_user_id: int) -> str:
+    zulip_tz_name = _fetch_zulip_user_timezone_name(zulip_user_id)
+    if zulip_tz_name:
+        return zulip_tz_name
+    if user.timezone and _is_valid_timezone_name(user.timezone):
+        return user.timezone
+    return timezone.get_default_timezone_name()
+
+
+def _fetch_zulip_user_timezone_name(zulip_user_id: int) -> str | None:
+    base_url = getattr(settings, "ZULIP_BASE_URL", "").strip()
+    bot_email = getattr(settings, "ZULIP_BOT_EMAIL", "").strip()
+    bot_api_key = getattr(settings, "ZULIP_BOT_API_KEY", "").strip()
+    if not base_url or not bot_email or not bot_api_key:
+        return None
+    try:
+        payload = ZulipClient().get_user_by_id(zulip_user_id)
+    except ZulipApiError:
+        logger.exception("zulip_timezone_lookup_failed", extra={"zulip_user_id": zulip_user_id})
+        return None
+    user = payload.get("user")
+    if not isinstance(user, dict):
+        return None
+    timezone_name = user.get("timezone")
+    if isinstance(timezone_name, str) and _is_valid_timezone_name(timezone_name):
+        return timezone_name
+    return None
+
+
+def _is_valid_timezone_name(value: str) -> bool:
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        return False
+    return True
 
 
 def _unexpected_error_response(exc: Exception) -> CommandResult:

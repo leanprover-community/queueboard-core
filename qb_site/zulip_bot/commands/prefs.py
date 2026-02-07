@@ -49,9 +49,6 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
     expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
     expires_unix = int(expires_at.timestamp())
     return CommandResult(
-        content=(
-            f"Use this private link to [open your reviewer preferences form]({link}). "
-            f"It expires at <time:{expires_unix}>."
-        ),
+        content=(f"Use this private link to [open your reviewer preferences form]({link}). It expires at <time:{expires_unix}>."),
         response_mode=ResponseMode.PRIVATE,
     )
