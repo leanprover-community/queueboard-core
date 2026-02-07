@@ -38,11 +38,15 @@ class GroupMembershipChecker:
             return False
 
         try:
-            payload = client.is_user_group_member(user_group_id=group_id, user_id=user_id)
-            is_member = payload.get("is_user_in_group")
-            if isinstance(is_member, bool):
-                self._cache[key] = is_member
-                return is_member
+            try:
+                payload = client.is_user_group_member(user_group_id=group_id, user_id=user_id)
+                is_member = payload.get("is_user_in_group")
+                if isinstance(is_member, bool):
+                    self._cache[key] = is_member
+                    return is_member
+            except ZulipApiError as exc:
+                if not _is_bot_restricted_group_membership_error(exc):
+                    raise
 
             fallback_payload = client.get_user_group_members(user_group_id=group_id)
             members = fallback_payload.get("members", [])
@@ -66,3 +70,13 @@ class GroupMembershipChecker:
             logger.exception("zulip_client_not_configured")
             self._client_unavailable = True
             return None
+
+
+def _is_bot_restricted_group_membership_error(exc: ZulipApiError) -> bool:
+    payload = exc.payload or {}
+    if not isinstance(payload, dict):
+        return False
+    msg = payload.get("msg")
+    if not isinstance(msg, str):
+        return False
+    return "does not accept bot requests" in msg.lower()
