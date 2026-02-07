@@ -8,10 +8,13 @@ from zulip_bot.tests.webhook_test_utils import WebhookTestMixin
 
 @override_settings(ZULIP_WEBHOOK_TOKEN="test-token")
 class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
+    def assert_ignored(self, result: dict) -> None:
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"], {"response_not_required": True})
+
     def test_no_policy_defaults_to_denied(self) -> None:
         result = self._post_payload(self._payload(content="help", id=9, stream_id=5))
-        self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assert_ignored(result)
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
@@ -45,8 +48,7 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     )
     def test_missing_policy_entry_denies_command(self) -> None:
         result = self._post_payload(self._payload(content="echo hi", id=12, stream_id=5))
-        self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assert_ignored(result)
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
@@ -55,8 +57,7 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     )
     def test_empty_allowed_contexts_means_denied(self) -> None:
         result = self._post_payload(self._payload(content="echo hi", id=16, stream_id=8))
-        self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assert_ignored(result)
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
@@ -88,8 +89,7 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     )
     def test_disallowed_context_is_ignored(self) -> None:
         result = self._post_payload(self._payload(content="echo hi", id=13, stream_id=8))
-        self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assert_ignored(result)
 
     @override_settings(
         ZULIP_COMMAND_POLICY={

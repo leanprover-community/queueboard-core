@@ -18,7 +18,6 @@ from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
 from zulip_bot.webhook.context import build_context
 from zulip_bot.webhook.membership import GroupMembershipChecker
-from zulip_bot.webhook.membership import GroupMembershipCheckError
 from zulip_bot.webhook.payload import parse_command, parse_payload, validate_payload
 from zulip_bot.webhook.policy import allowed_command_names
 from zulip_bot.webhook.responses import (
@@ -67,8 +66,6 @@ def webhook(request: HttpRequest) -> HttpResponse:
         context = build_context(parsed_payload.payload)
         checker = GroupMembershipChecker()
         allowed_names = allowed_command_names(context, checker)
-    except GroupMembershipCheckError:
-        return ignored_response()
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("zulip_webhook_unexpected_error")
         return zulip_response(_unexpected_error_response(exc), ResponseMode.PRIVATE)

@@ -73,7 +73,7 @@ class ZulipClient:
 
     def is_user_group_member(self, *, user_group_id: int, user_id: int, direct_member_only: bool = False) -> dict[str, Any]:
         params = {"direct_member_only": direct_member_only}
-        return self._request("GET", f"/user_groups/{user_group_id}/members/{user_id}", params=params, auth_mode="user_preferred")
+        return self._request("GET", f"/user_groups/{user_group_id}/members/{user_id}", params=params, auth_mode="user_required")
 
     def get_user_group_members(self, *, user_group_id: int) -> dict[str, Any]:
         return self._request("GET", f"/user_groups/{user_group_id}/members")
@@ -117,10 +117,13 @@ class ZulipClient:
     def _resolve_auth(self, auth_mode: str) -> tuple[str, str]:
         if auth_mode == "bot":
             return (self.email, self.api_key)
-        if auth_mode == "user_preferred":
-            if self.user_api_key:
-                return (self.user_email or self.email, self.user_api_key)
-            return (self.email, self.api_key)
+        if auth_mode == "user_required":
+            if self.user_email and self.user_api_key:
+                return (self.user_email, self.user_api_key)
+            raise ZulipApiError(
+                "Zulip user credentials are required for this endpoint",
+                payload={"auth_mode": auth_mode},
+            )
         raise ZulipApiError("Unknown Zulip auth mode", payload={"auth_mode": auth_mode})
 
     def _safe_json(self, response: requests.Response) -> dict[str, Any]:
