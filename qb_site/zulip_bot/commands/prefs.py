@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
+from django.conf import settings
+from django.utils import timezone
+
 from core.models import ReviewerPreference, User
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
 from zulip_bot.services.prefs_links import PrefsLinkClaims, build_prefs_link
@@ -40,7 +45,13 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
             preference_ids=preference_ids,
         )
     )
+    ttl_seconds = int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
+    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+    expires_unix = int(expires_at.timestamp())
     return CommandResult(
-        content=(f"Use this private link to open your reviewer preferences form (expires in about 30 minutes): {link}"),
+        content=(
+            f"Use this private link to [open your reviewer preferences form]({link}). "
+            f"It expires at <time:{expires_unix}>."
+        ),
         response_mode=ResponseMode.PRIVATE,
     )
