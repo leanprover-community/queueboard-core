@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from django.test import TestCase, override_settings
 
 from core.models import Repository, ReviewerPreference, User
@@ -28,8 +30,9 @@ class TestPrefsCommand(TestCase):
         ReviewerPreference.objects.create(user=user, repository=repo)
 
         result = prefs_command(self._context(sender_id=101), "")
-        self.assertIn("expires in about 30 minutes", result.content)
+        self.assertIn("[open your reviewer preferences form](", result.content)
         self.assertIn("https://queueboard.example/api/zulip/prefs/", result.content)
+        self.assertRegex(result.content, re.compile(r"<time:\d+>"))
 
     def test_prefs_command_handles_missing_user_link(self) -> None:
         result = prefs_command(self._context(sender_id=101), "")
