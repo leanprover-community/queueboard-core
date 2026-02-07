@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class GroupMembershipCheckError(RuntimeError):
+    message: str
+    payload: dict[str, Any] | None = None
+
+    def __str__(self) -> str:
+        if not self.payload:
+            return self.message
+        return f"{self.message} (payload={self.payload})"
 
 
 class GroupMembershipChecker:
@@ -21,9 +34,24 @@ class GroupMembershipChecker:
         if user_id is None:
             return False
 
+        errors: list[dict[str, Any]] = []
         for group_id in group_ids:
-            if self._is_member(user_id=user_id, group_id=group_id):
-                return True
+            try:
+                if self._is_member(user_id=user_id, group_id=group_id):
+                    return True
+            except GroupMembershipCheckError as exc:
+                errors.append(exc.payload or {"group_id": group_id, "error": str(exc)})
+
+        if errors:
+            raise GroupMembershipCheckError(
+                "Zulip group membership check failed",
+                payload={
+                    "user_id": user_id,
+                    "group_ids": sorted(group_ids),
+                    "errors": errors,
+                },
+            )
+
         return False
 
     def _is_member(self, *, user_id: int, group_id: int) -> bool:
@@ -38,25 +66,31 @@ class GroupMembershipChecker:
             return False
 
         try:
-            try:
-                payload = client.is_user_group_member(user_group_id=group_id, user_id=user_id)
-                is_member = payload.get("is_user_in_group")
-                if isinstance(is_member, bool):
-                    self._cache[key] = is_member
-                    return is_member
-            except ZulipApiError as exc:
-                if not _is_bot_restricted_group_membership_error(exc):
-                    raise
-
-            fallback_payload = client.get_user_group_members(user_group_id=group_id)
-            members = fallback_payload.get("members", [])
-            result = user_id in members
-            self._cache[key] = result
-            return result
-        except ZulipApiError:
+            payload = client.is_user_group_member(user_group_id=group_id, user_id=user_id)
+        except ZulipApiError as exc:
             logger.exception("zulip_group_membership_check_failed", extra={"user_id": user_id, "group_id": group_id})
-            self._cache[key] = False
-            return False
+            raise GroupMembershipCheckError(
+                "Zulip group membership check failed",
+                payload={
+                    "user_id": user_id,
+                    "group_id": group_id,
+                    "zulip_error": exc.payload or {"message": str(exc)},
+                },
+            ) from exc
+
+        is_member = payload.get("is_user_in_group")
+        if isinstance(is_member, bool):
+            self._cache[key] = is_member
+            return is_member
+
+        raise GroupMembershipCheckError(
+            "Zulip group membership payload was missing 'is_user_in_group'",
+            payload={
+                "user_id": user_id,
+                "group_id": group_id,
+                "zulip_response": payload,
+            },
+        )
 
     def _get_client(self) -> ZulipClient | None:
         if self._client is not None:
@@ -70,13 +104,3 @@ class GroupMembershipChecker:
             logger.exception("zulip_client_not_configured")
             self._client_unavailable = True
             return None
-
-
-def _is_bot_restricted_group_membership_error(exc: ZulipApiError) -> bool:
-    payload = exc.payload or {}
-    if not isinstance(payload, dict):
-        return False
-    msg = payload.get("msg")
-    if not isinstance(msg, str):
-        return False
-    return "does not accept bot requests" in msg.lower()
