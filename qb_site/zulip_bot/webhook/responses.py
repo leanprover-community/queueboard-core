@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.http import HttpResponse, JsonResponse
+from django.http import JsonResponse
 
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, list_commands
 from zulip_bot.webhook.payload import ParsedPayload
@@ -26,8 +26,8 @@ def invalid_payload_response(errors: tuple[str, ...], parsed: ParsedPayload) -> 
     )
 
 
-def ignored_response() -> HttpResponse:
-    return HttpResponse(status=200)
+def ignored_response() -> JsonResponse:
+    return JsonResponse({"response_not_required": True})
 
 
 def zulip_response(result: CommandResult, override_mode: ResponseMode | None = None) -> JsonResponse:

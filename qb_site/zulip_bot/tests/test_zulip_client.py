@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, override_settings
 
-from zulip_bot.services.zulip_client import ZulipClient
+from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 
 @override_settings(
@@ -29,9 +29,11 @@ class TestZulipClient(SimpleTestCase):
         self.assertEqual(mock_request.call_args.kwargs["auth"], ("human@example.com", "human-key"))
 
     @override_settings(ZULIP_USER_EMAIL="", ZULIP_USER_API_KEY="")
-    def test_group_membership_falls_back_to_bot_credentials_when_user_credentials_missing(self) -> None:
+    def test_group_membership_requires_user_credentials_when_missing(self) -> None:
         with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
             client = ZulipClient()
-            client.is_user_group_member(user_group_id=123, user_id=456)
+            with self.assertRaises(ZulipApiError) as ctx:
+                client.is_user_group_member(user_group_id=123, user_id=456)
 
-        self.assertEqual(mock_request.call_args.kwargs["auth"], ("bot@example.com", "bot-key"))
+        self.assertIn("user credentials are required", str(ctx.exception).lower())
+        mock_request.assert_not_called()

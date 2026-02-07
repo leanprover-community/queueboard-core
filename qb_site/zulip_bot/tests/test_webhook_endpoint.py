@@ -12,6 +12,10 @@ from zulip_bot.tests.webhook_test_utils import WebhookTestMixin
 
 @override_settings(ZULIP_WEBHOOK_TOKEN="test-token")
 class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
+    def assert_ignored(self, result: dict) -> None:
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"], {"response_not_required": True})
+
     def test_method_not_allowed(self) -> None:
         response = self.client.get(reverse("zulip-webhook"))
         self.assertEqual(response.status_code, 405)
@@ -41,8 +45,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     )
     def test_unknown_command_ignored_when_no_commands_allowed(self) -> None:
         result = self._post_payload(self._payload(content="unknown", id=14, stream_id=8))
-        self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assert_ignored(result)
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
@@ -52,8 +55,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     def test_bot_sender_is_ignored(self) -> None:
         self.mock_is_bot_sender.return_value = True
         result = self._post_payload(self._payload(content="echo hello world", id=20, stream_id=5, sender_id=42))
-        self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assert_ignored(result)
 
     def test_invalid_json_payload_returns_400(self) -> None:
         response = self.client.post(
@@ -71,18 +73,24 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             "help": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
         }
     )
-    def test_membership_failure_returns_private_detailed_error(self) -> None:
-        with patch(
-            "zulip_bot.views.allowed_command_names",
-            side_effect=GroupMembershipCheckError(
-                "Zulip group membership check failed",
-                payload={"group_id": 1234, "zulip_error": {"msg": "This endpoint does not accept bot requests."}},
+    def test_membership_failure_returns_private_structured_error(self) -> None:
+        with (
+            patch(
+                "zulip_bot.views.allowed_command_names",
+                side_effect=GroupMembershipCheckError(
+                    "Zulip group membership check failed",
+                    payload={"group_id": 1234, "zulip_error": {"msg": "This endpoint does not accept bot requests."}},
+                ),
             ),
+            patch("zulip_bot.views.logger.exception"),
         ):
             result = self._post_payload(self._payload(content="help", id=99, message_type="private"))
 
         self.assertEqual(result["status"], 200)
-        self.assertIsNone(result["json"])
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertIn("An unexpected error occurred", result["json"]["content"])
+        self.assertIn('"error_type": "GroupMembershipCheckError"', result["json"]["content"])
+        self.assertIn("does not accept bot requests", result["json"]["content"])
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
