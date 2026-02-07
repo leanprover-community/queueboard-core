@@ -27,6 +27,14 @@ class TestZulipClient(SimpleTestCase):
             client.is_user_group_member(user_group_id=123, user_id=456)
 
         self.assertEqual(mock_request.call_args.kwargs["auth"], ("human@example.com", "human-key"))
+        self.assertEqual(mock_request.call_args.kwargs["params"], {"direct_member_only": "false"})
+
+    def test_get_user_groups_encodes_include_deactivated_as_json_bool(self) -> None:
+        with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
+            client = ZulipClient()
+            client.get_user_groups(include_deactivated=True)
+
+        self.assertEqual(mock_request.call_args.kwargs["params"], {"include_deactivated_groups": "true"})
 
     @override_settings(ZULIP_USER_EMAIL="", ZULIP_USER_API_KEY="")
     def test_group_membership_requires_user_credentials_when_missing(self) -> None:
