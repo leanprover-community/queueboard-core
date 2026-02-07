@@ -28,11 +28,15 @@ class ZulipClient:
         base_url: str | None = None,
         email: str | None = None,
         api_key: str | None = None,
+        user_email: str | None = None,
+        user_api_key: str | None = None,
         timeout: int = 15,
     ) -> None:
         self.base_url = (base_url or getattr(settings, "ZULIP_BASE_URL", None) or "").rstrip("/")
         self.email = email or getattr(settings, "ZULIP_BOT_EMAIL", None)
         self.api_key = api_key or getattr(settings, "ZULIP_BOT_API_KEY", None)
+        self.user_email = user_email or getattr(settings, "ZULIP_USER_EMAIL", None)
+        self.user_api_key = user_api_key or getattr(settings, "ZULIP_USER_API_KEY", None)
         self.timeout = timeout
         if not self.base_url:
             raise ZulipApiError("Zulip base URL is not configured")
@@ -69,7 +73,7 @@ class ZulipClient:
 
     def is_user_group_member(self, *, user_group_id: int, user_id: int, direct_member_only: bool = False) -> dict[str, Any]:
         params = {"direct_member_only": direct_member_only}
-        return self._request("GET", f"/user_groups/{user_group_id}/members/{user_id}", params=params)
+        return self._request("GET", f"/user_groups/{user_group_id}/members/{user_id}", params=params, auth_mode="user_preferred")
 
     def get_user_group_members(self, *, user_group_id: int) -> dict[str, Any]:
         return self._request("GET", f"/user_groups/{user_group_id}/members")
@@ -85,9 +89,10 @@ class ZulipClient:
         *,
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        auth_mode: str = "bot",
     ) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1{path}"
-        auth = (self.email, self.api_key)
+        auth = self._resolve_auth(auth_mode)
         headers = {"User-Agent": "queueboard-zulip-bot"}
         response = requests.request(
             method,
@@ -108,6 +113,15 @@ class ZulipClient:
         if payload.get("result") != "success":
             raise ZulipApiError("Zulip API returned error", payload=payload)
         return payload
+
+    def _resolve_auth(self, auth_mode: str) -> tuple[str, str]:
+        if auth_mode == "bot":
+            return (self.email, self.api_key)
+        if auth_mode == "user_preferred":
+            if self.user_api_key:
+                return (self.user_email or self.email, self.user_api_key)
+            return (self.email, self.api_key)
+        raise ZulipApiError("Unknown Zulip auth mode", payload={"auth_mode": auth_mode})
 
     def _safe_json(self, response: requests.Response) -> dict[str, Any]:
         try:
