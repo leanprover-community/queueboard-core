@@ -6,4 +6,5 @@ from zulip_bot import views
 
 urlpatterns = [
     path("webhook/", views.webhook, name="zulip-webhook"),
+    path("prefs/<str:token>/", views.prefs_form, name="zulip-prefs-form"),
 ]

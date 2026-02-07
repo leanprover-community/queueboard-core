@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.test import TestCase, override_settings
 
+from core.models import Repository, ReviewerPreference, User
 from zulip_bot.tests.webhook_test_utils import WebhookTestMixin
 
 
@@ -102,3 +103,19 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
         self.assertEqual(result["json"]["type"], "private")
         self.assertNotIn("- echo:", result["json"]["content"])
         self.assertIn("- help:", result["json"]["content"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "prefs": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
+        },
+        ZULIP_PREFS_URL_BASE="https://queueboard.example",
+    )
+    def test_prefs_command_via_webhook(self) -> None:
+        user = User.objects.create(github_login="reviewer", zulip_user_id=101)
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        ReviewerPreference.objects.create(user=user, repository=repo)
+
+        result = self._post_payload(self._payload(content="prefs", id=19, message_type="private", sender_id=101))
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertIn("https://queueboard.example/api/zulip/prefs/", result["json"]["content"])

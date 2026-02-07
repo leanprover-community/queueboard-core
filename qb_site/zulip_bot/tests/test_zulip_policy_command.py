@@ -21,6 +21,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertIn("help", payload)
             self.assertIn("echo", payload)
+            self.assertIn("prefs", payload)
             self.assertEqual(payload["help"]["allowed_contexts"], ["dm"])
             self.assertEqual(payload["help"]["allowed_groups"], [1234])
 
@@ -54,6 +55,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
             self.assertIn("Valid policy", output)
             self.assertIn("Missing entries", output)
             self.assertIn("echo", output)
+            self.assertIn("prefs", output)
 
     def test_validate_rejects_unknown_command(self) -> None:
         with TemporaryDirectory() as temp_dir:

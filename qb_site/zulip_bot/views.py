@@ -3,13 +3,17 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 
+from django import forms
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.template.response import TemplateResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from zulip_bot.commands import get_command
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
+from zulip_bot.commands import prefs as _prefs  # noqa: F401
+from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
 from zulip_bot.webhook.context import build_context
 from zulip_bot.webhook.membership import GroupMembershipChecker
 from zulip_bot.webhook.payload import parse_command, parse_payload, validate_payload
@@ -23,6 +27,14 @@ from zulip_bot.webhook.responses import (
 from zulip_bot.webhook.sender import SenderClassifier
 
 logger = logging.getLogger(__name__)
+
+
+class DummyPrefsForm(forms.Form):
+    notes = forms.CharField(
+        required=False,
+        label="Dummy notes",
+        widget=forms.Textarea(attrs={"rows": 4, "cols": 60}),
+    )
 
 
 @csrf_exempt
@@ -69,3 +81,47 @@ def webhook(request: HttpRequest) -> HttpResponse:
 
     result = command.handler(context, parsed_command.args)
     return zulip_response(result, command.response_mode)
+
+
+def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
+    try:
+        claims = validate_prefs_token(token)
+    except PrefsTokenExpired:
+        return _prefs_invalid_response(request, reason="expired")
+    except PrefsTokenInvalid:
+        return _prefs_invalid_response(request, reason="invalid")
+
+    if request.method == "POST":
+        form = DummyPrefsForm(request.POST)
+        submitted = False
+        if form.is_valid():
+            submitted = True
+            form = DummyPrefsForm()
+    else:
+        form = DummyPrefsForm()
+        submitted = False
+
+    response = TemplateResponse(
+        request,
+        "zulip_bot/prefs_form.html",
+        {
+            "form": form,
+            "submitted": submitted,
+            "claims": claims,
+            "ttl_minutes": int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800) / 60),
+        },
+        status=200,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
+    response = TemplateResponse(
+        request,
+        "zulip_bot/prefs_invalid.html",
+        {"reason": reason},
+        status=403,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
