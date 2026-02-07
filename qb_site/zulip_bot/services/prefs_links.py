@@ -17,6 +17,8 @@ class PrefsLinkClaims:
     user_id: int
     zulip_user_id: int
     preference_ids: tuple[int, ...]
+    iat: int | None = None
+    exp: int | None = None
 
 
 class PrefsTokenError(Exception):
@@ -83,10 +85,15 @@ def _parse_claims(payload: Any) -> PrefsLinkClaims:
         raise PrefsTokenInvalid("invalid exp")
     if int(time.time()) > exp:
         raise PrefsTokenExpired("token expired")
+    iat = payload.get("iat")
+    if iat is not None and not isinstance(iat, int):
+        raise PrefsTokenInvalid("invalid iat")
     return PrefsLinkClaims(
         user_id=user_id,
         zulip_user_id=zulip_user_id,
         preference_ids=tuple(preference_ids),
+        iat=iat,
+        exp=exp,
     )
 
 

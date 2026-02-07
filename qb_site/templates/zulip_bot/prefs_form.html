@@ -1,22 +1,290 @@
+{% load static %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Queueboard reviewer preferences</title>
+  <style>
+    :root {
+      --bg: #f7f9fc;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #475569;
+      --border: #dbe3ef;
+      --ok-bg: #ecfdf3;
+      --ok-fg: #166534;
+      --error-bg: #fff1f2;
+      --error-fg: #9f1239;
+      --accent: #0f766e;
+      --accent-strong: #115e59;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #edf4ff 0%, var(--bg) 45%, #f8fafc 100%);
+      color: var(--ink);
+      font-family: "Work Sans", "Segoe UI", sans-serif;
+      line-height: 1.45;
+    }
+    .page {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px 16px 40px;
+    }
+    .hero {
+      background: linear-gradient(135deg, #0f766e, #0e7490);
+      color: #f8fafc;
+      border-radius: 14px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+    .hero h1 {
+      margin: 0 0 6px;
+      font-size: 1.35rem;
+      letter-spacing: 0.01em;
+    }
+    .meta {
+      color: #d8f3f2;
+      font-size: 0.95rem;
+      margin: 0;
+    }
+    .status {
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      font-size: 0.95rem;
+    }
+    .status-ok { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid #a7f3d0; }
+    .status-error { background: var(--error-bg); color: var(--error-fg); border: 1px solid #fecdd3; }
+    .countdown {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 11px 12px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .countdown strong { color: var(--ink); }
+    .form-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+    }
+    .form-card h2 {
+      margin: 0 0 8px;
+      font-size: 1.05rem;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 14px;
+    }
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .field-wide { grid-column: 1 / -1; }
+    label {
+      font-weight: 600;
+      font-size: 0.92rem;
+    }
+    input, textarea, button {
+      font: inherit;
+    }
+    input[type="text"], input[type="number"], input[type="datetime-local"], textarea {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fff;
+      color: #0f172a;
+    }
+    input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+    }
+    .checkbox {
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+    }
+    .help {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .errors {
+      color: var(--error-fg);
+      font-size: 0.85rem;
+      margin: 0;
+      padding-left: 16px;
+    }
+    .away-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .btn-row {
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 0;
+      border-radius: 9px;
+      padding: 10px 16px;
+      cursor: pointer;
+      background: var(--accent);
+      color: #f8fafc;
+      font-weight: 600;
+    }
+    button:hover { background: var(--accent-strong); }
+    button:disabled {
+      cursor: not-allowed;
+      background: #94a3b8;
+    }
+    .btn-secondary {
+      background: #e2e8f0;
+      color: #0f172a;
+      padding: 8px 10px;
+      font-size: 0.85rem;
+    }
+    .btn-secondary:hover { background: #cbd5e1; }
+    @media (max-width: 760px) {
+      .page { padding: 14px 10px 30px; }
+      .hero { border-radius: 10px; padding: 14px; }
+      .field-grid { grid-template-columns: 1fr; }
+      .away-row { grid-template-columns: 1fr; }
+      .btn-secondary { width: 100%; }
+      button[type="submit"] { width: 100%; }
+    }
+  </style>
 </head>
 <body>
-  <h1>Reviewer preferences (dummy form)</h1>
-  <p>This is a placeholder page for the upcoming reviewer preferences editor.</p>
-  <p>User id: {{ claims.user_id }} | Zulip id: {{ claims.zulip_user_id }} | Preference rows: {{ claims.preference_ids|length }}</p>
-  <p>This link is valid for about {{ ttl_minutes }} minutes.</p>
-  {% if submitted %}
-    <p>Your dummy form was submitted successfully.</p>
-  {% endif %}
-  <form method="post">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Submit</button>
-  </form>
+  <main
+    class="page"
+    id="prefs-root"
+    data-exp-unix="{{ expires_at_unix }}"
+    data-exp-iso="{{ expires_at_iso }}"
+    data-timezone="{{ user_timezone_name }}"
+  >
+    <section class="hero">
+      <h1>Reviewer Preferences</h1>
+      <p class="meta">
+        {{ user.github_login|default:"Unknown reviewer" }}{% if user.zulip_full_name %} ({{ user.zulip_full_name }}){% endif %}
+      </p>
+      <p class="meta">This private link can be used repeatedly until it expires.</p>
+    </section>
+
+    {% if submitted %}
+      <div class="status status-ok" role="status">
+        Preferences saved{% if saved_at %} at {{ saved_at|date:"Y-m-d H:i" }} ({{ user_timezone_name }}){% endif %}.
+      </div>
+    {% endif %}
+
+    {% if formset.non_form_errors %}
+      <div class="status status-error" role="alert">
+        {{ formset.non_form_errors|join:", " }}
+      </div>
+    {% endif %}
+
+    <section class="countdown" aria-live="polite">
+      <strong id="countdown-label">Expires in:</strong>
+      <span id="countdown-text">calculating...</span>
+      <span>Timezone: <strong>{{ user_timezone_name }}</strong></span>
+      <span>Expires at: <time id="expires-at" datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time></span>
+    </section>
+
+    <form method="post" id="prefs-form">
+      {% csrf_token %}
+      {{ formset.management_form }}
+
+      {% for form in formset %}
+        <section class="form-card">
+          {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
+          <h2>{{ form.instance.repository.owner }}/{{ form.instance.repository.name }}</h2>
+
+          {% if form.non_field_errors %}
+            <ul class="errors">
+              {% for error in form.non_field_errors %}
+                <li>{{ error }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+
+          <div class="field-grid">
+            <div class="field">
+              <label for="{{ form.maximum_capacity.id_for_label }}">{{ form.maximum_capacity.label }}</label>
+              {{ form.maximum_capacity }}
+              {% if form.maximum_capacity.help_text %}<span class="help">{{ form.maximum_capacity.help_text }}</span>{% endif %}
+              {% if form.maximum_capacity.errors %}<ul class="errors">{% for error in form.maximum_capacity.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field checkbox">
+              {{ form.auto_assign }}
+              <label for="{{ form.auto_assign.id_for_label }}">{{ form.auto_assign.label }}</label>
+              {% if form.auto_assign.errors %}<ul class="errors">{% for error in form.auto_assign.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.away_until.id_for_label }}">{{ form.away_until.label }}</label>
+              <div class="away-row">
+                {{ form.away_until }}
+                <button
+                  type="button"
+                  class="btn-secondary js-clear-away"
+                  data-target="{{ form.away_until.id_for_label }}"
+                >
+                  Clear away time
+                </button>
+              </div>
+              {% if form.away_until.help_text %}<span class="help">{{ form.away_until.help_text }}</span>{% endif %}
+              {% if form.away_until.errors %}<ul class="errors">{% for error in form.away_until.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.preferred_labels.id_for_label }}">{{ form.preferred_labels.label }}</label>
+              {{ form.preferred_labels }}
+              {% if form.preferred_labels.help_text %}<span class="help">{{ form.preferred_labels.help_text }}</span>{% endif %}
+              {% if form.preferred_labels.errors %}<ul class="errors">{% for error in form.preferred_labels.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.conflict_of_interest.id_for_label }}">{{ form.conflict_of_interest.label }}</label>
+              {{ form.conflict_of_interest }}
+              {% if form.conflict_of_interest.help_text %}<span class="help">{{ form.conflict_of_interest.help_text }}</span>{% endif %}
+              {% if form.conflict_of_interest.errors %}<ul class="errors">{% for error in form.conflict_of_interest.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.free_form.id_for_label }}">{{ form.free_form.label }}</label>
+              {{ form.free_form }}
+              {% if form.free_form.errors %}<ul class="errors">{% for error in form.free_form.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+          </div>
+        </section>
+      {% endfor %}
+
+      <div class="btn-row">
+        <button type="submit" id="submit-button">Save Preferences</button>
+        <span class="help" id="submit-hint">You can submit repeatedly until expiration.</span>
+      </div>
+    </form>
+  </main>
+  <script type="module" src="{% static 'zulip_bot/prefs_form.js' %}"></script>
 </body>
 </html>
