@@ -62,7 +62,9 @@ if __name__ == "__main__":
     if out.stderr:
         print("standard error is: \n" + out.stderr)
     if out.returncode != 0:
-        print(f"error: curl failed to download the assignment file at {url}Please make sure curl is installed and on your PATH.")
+        print(
+            f"error: curl failed to download the assignment file at {url}\nPlease make sure curl is installed and on your PATH."
+        )
         sys.exit(1)
 
     with open("assignments.json", "r") as fi:
