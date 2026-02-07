@@ -63,12 +63,20 @@ ZULIP_COMMAND_POLICY = {
   - `message.sender_full_name`
   - and `message.stream_id` for stream messages.
 - Commands outside policy are silently ignored (`HTTP 200` with empty response body).
+- Commands outside policy are silently ignored via Zulip no-op response JSON (`{"response_not_required": true}`).
 - Unknown commands:
   - Return private filtered help if user/context is allowed for at least one command.
   - Are ignored if user/context is not allowed for any command.
 - `help` output is filtered to only commands allowed for the triggering user/context.
 - Invalid payloads return `HTTP 400` and include parse/validation errors plus received payload data.
 - Sender bot detection is based on Zulip API user lookup by `message.sender_id` (cached per webhook request).
+- Zulip API response parsing is strict and schema-driven:
+  - Parse only documented fields from Zulip API docs for each endpoint we consume.
+  - Do not accept undocumented fallback fields in production parser logic.
+  - Represent parsed endpoint payloads with typed contracts (for example, `TypedDict`) and
+    add tests for both accepted documented shapes and rejected undocumented shapes.
+  - For query params where Zulip expects JSON booleans, send lowercase JSON boolean tokens
+    (`true`/`false`) rather than Python bool stringification.
 
 ## Consequences
 - Zulip-specific parsing and auth are isolated, so future Slack/Discord integrations can be added independently.
@@ -82,6 +90,8 @@ ZULIP_COMMAND_POLICY = {
   - `ZULIP_BASE_URL`
   - `ZULIP_BOT_EMAIL`
   - `ZULIP_BOT_API_KEY`
+  - `ZULIP_USER_EMAIL`
+  - `ZULIP_USER_API_KEY`
 - Set `ZULIP_COMMAND_POLICY` in Django settings (`qb_site/qb_site/settings/local.py` or an environment-specific settings module).
 - For env-only deployments, set `ZULIP_COMMAND_POLICY` to a compact JSON object.
 - Local helper tool for building/validating policy JSON:

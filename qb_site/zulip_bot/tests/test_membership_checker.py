@@ -9,6 +9,34 @@ from zulip_bot.webhook.membership import GroupMembershipCheckError, GroupMembers
 
 
 class TestGroupMembershipChecker(SimpleTestCase):
+    def test_accepts_is_user_group_member_field(self) -> None:
+        checker = GroupMembershipChecker()
+
+        with patch("zulip_bot.webhook.membership.ZulipClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.is_user_group_member.return_value = {
+                "result": "success",
+                "msg": "",
+                "is_user_group_member": True,
+            }
+
+            allowed = checker.is_member_any(user_id=123, group_ids=frozenset({507749}))
+
+        self.assertTrue(allowed)
+
+    def test_rejects_undocumented_membership_field_name(self) -> None:
+        checker = GroupMembershipChecker()
+
+        with patch("zulip_bot.webhook.membership.ZulipClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.is_user_group_member.return_value = {
+                "result": "success",
+                "msg": "",
+                "is_user_in_group": True,
+            }
+            with self.assertRaises(GroupMembershipCheckError):
+                checker.is_member_any(user_id=123, group_ids=frozenset({507749}))
+
     def test_bot_restricted_endpoint_raises_group_check_error(self) -> None:
         checker = GroupMembershipChecker()
 
