@@ -68,11 +68,13 @@ class ZulipClient:
 
     def get_user_groups(self, *, include_deactivated: bool = False) -> dict[str, Any]:
         """Fetch all user groups (bots/guests are not allowed by Zulip)."""
-        params = {"include_deactivated_groups": include_deactivated}
+        params = {"include_deactivated_groups": json.dumps(include_deactivated)}
         return self._request("GET", "/user_groups", params=params)
 
     def is_user_group_member(self, *, user_group_id: int, user_id: int, direct_member_only: bool = False) -> dict[str, Any]:
-        params = {"direct_member_only": direct_member_only}
+        # Zulip expects JSON-encoded booleans in query params ("true"/"false"),
+        # not Python bool stringification ("True"/"False").
+        params = {"direct_member_only": json.dumps(direct_member_only)}
         return self._request("GET", f"/user_groups/{user_group_id}/members/{user_id}", params=params, auth_mode="user_required")
 
     def get_user_group_members(self, *, user_group_id: int) -> dict[str, Any]:
