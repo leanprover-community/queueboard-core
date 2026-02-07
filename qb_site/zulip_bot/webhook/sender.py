@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TypedDict
 
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 logger = logging.getLogger(__name__)
+
+
+class ZulipUser(TypedDict):
+    is_bot: bool
+
+
+class ZulipGetUserResponse(TypedDict):
+    result: str
+    msg: str
+    user: ZulipUser
 
 
 class SenderClassifier:
@@ -64,17 +74,21 @@ class SenderClassifier:
         return None
 
     def _response_is_bot(self, response: dict[str, Any]) -> bool:
-        root_is_bot = response.get("is_bot")
-        if isinstance(root_is_bot, bool):
-            return root_is_bot
+        parsed = _parse_get_user_response(response)
+        if parsed is None:
+            return False
+        return parsed["user"]["is_bot"]
 
-        user = response.get("user")
-        if isinstance(user, dict):
-            user_is_bot = user.get("is_bot")
-            if isinstance(user_is_bot, bool):
-                return user_is_bot
-            user_type = user.get("user_type")
-            if isinstance(user_type, str):
-                return user_type.lower() == "bot"
 
-        return False
+def _parse_get_user_response(payload: dict[str, Any]) -> ZulipGetUserResponse | None:
+    user = payload.get("user")
+    if not isinstance(user, dict):
+        return None
+    is_bot = user.get("is_bot")
+    if not isinstance(is_bot, bool):
+        return None
+    return {
+        "result": str(payload.get("result", "")),
+        "msg": str(payload.get("msg", "")),
+        "user": {"is_bot": is_bot},
+    }

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -18,6 +18,12 @@ class GroupMembershipCheckError(RuntimeError):
         if not self.payload:
             return self.message
         return f"{self.message} (payload={self.payload})"
+
+
+class ZulipGroupMembershipResponse(TypedDict):
+    result: str
+    msg: str
+    is_user_group_member: bool
 
 
 class GroupMembershipChecker:
@@ -78,13 +84,13 @@ class GroupMembershipChecker:
                 },
             ) from exc
 
-        is_member = payload.get("is_user_in_group")
-        if isinstance(is_member, bool):
+        is_member = _parse_is_user_group_member(payload)
+        if is_member is not None:
             self._cache[key] = is_member
             return is_member
 
         raise GroupMembershipCheckError(
-            "Zulip group membership payload was missing 'is_user_in_group'",
+            "Zulip group membership payload was missing 'is_user_group_member'",
             payload={
                 "user_id": user_id,
                 "group_id": group_id,
@@ -104,3 +110,16 @@ class GroupMembershipChecker:
             logger.exception("zulip_client_not_configured")
             self._client_unavailable = True
             return None
+
+
+def _parse_is_user_group_member(payload: dict[str, Any]) -> bool | None:
+    parsed: ZulipGroupMembershipResponse | None = None
+    if isinstance(payload.get("is_user_group_member"), bool):
+        parsed = {
+            "result": str(payload.get("result", "")),
+            "msg": str(payload.get("msg", "")),
+            "is_user_group_member": payload["is_user_group_member"],
+        }
+    if parsed is None:
+        return None
+    return parsed["is_user_group_member"]

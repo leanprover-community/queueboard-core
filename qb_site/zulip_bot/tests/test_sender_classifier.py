@@ -52,3 +52,17 @@ class TestSenderClassifier(SimpleTestCase):
             self.assertFalse(classifier.is_bot_sender(self._payload(88)))
             self.assertFalse(classifier.is_bot_sender(self._payload(88)))
             mock_client.get_user_by_id.assert_called_once_with(88)
+
+    def test_ignores_undocumented_root_is_bot_shape(self) -> None:
+        classifier = SenderClassifier()
+        with patch("zulip_bot.webhook.sender.ZulipClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.get_user_by_id.return_value = {"is_bot": True}
+            self.assertFalse(classifier.is_bot_sender(self._payload(91)))
+
+    def test_ignores_undocumented_user_type_shape(self) -> None:
+        classifier = SenderClassifier()
+        with patch("zulip_bot.webhook.sender.ZulipClient") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.get_user_by_id.return_value = {"user": {"user_type": "bot"}}
+            self.assertFalse(classifier.is_bot_sender(self._payload(92)))
