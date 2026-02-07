@@ -24,6 +24,11 @@ class Command(BaseCommand):
         validate_parser = subparsers.add_parser("validate", help="Validate a policy JSON file.")
         validate_parser.add_argument("file", help="Policy JSON file path")
 
+        sync_parser = subparsers.add_parser(
+            "sync", help="Append skeleton entries for newly registered commands in an existing policy file."
+        )
+        sync_parser.add_argument("file", help="Policy JSON file path")
+
         env_parser = subparsers.add_parser("to-env", help="Print compact JSON for ZULIP_COMMAND_POLICY.")
         env_parser.add_argument("file", help="Policy JSON file path")
         env_parser.add_argument(
@@ -41,6 +46,9 @@ class Command(BaseCommand):
             return None
         if action == "validate":
             self._cmd_validate(path)
+            return None
+        if action == "sync":
+            self._cmd_sync(path)
             return None
         if action == "to-env":
             self._cmd_to_env(path, export=bool(options.get("export")))
@@ -73,6 +81,18 @@ class Command(BaseCommand):
             return
         self.stdout.write(compact)
 
+    def _cmd_sync(self, path: Path) -> None:
+        policy = self._read_policy(path)
+        missing = [command.name for command in list_commands() if command.name not in policy]
+        if not missing:
+            self.stdout.write(self.style.SUCCESS(f"Policy already up to date: {path}"))
+            return
+
+        for command_name in missing:
+            policy[command_name] = self._skeleton_rule()
+        path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+        self.stdout.write(self.style.SUCCESS(f"Updated policy with {len(missing)} new command entries: {', '.join(missing)}"))
+
     def _read_policy(self, path: Path) -> dict[str, dict[str, list[Any]]]:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -85,11 +105,14 @@ class Command(BaseCommand):
     def _template_policy(self) -> dict[str, dict[str, list[Any]]]:
         template: dict[str, dict[str, list[Any]]] = {}
         for command in list_commands():
-            template[command.name] = {
-                "allowed_groups": [1234],
-                "allowed_contexts": ["dm"],
-            }
+            template[command.name] = self._skeleton_rule()
         return template
+
+    def _skeleton_rule(self) -> dict[str, list[Any]]:
+        return {
+            "allowed_groups": [1234],
+            "allowed_contexts": ["dm"],
+        }
 
     def _validate_policy(self, policy: Any) -> dict[str, dict[str, list[Any]]]:
         if not isinstance(policy, dict):

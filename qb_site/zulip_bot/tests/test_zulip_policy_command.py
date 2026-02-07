@@ -94,6 +94,50 @@ class TestZulipPolicyCommand(SimpleTestCase):
             call_command("zulip_policy", "validate", str(path), stdout=out)
             self.assertIn("Valid policy", out.getvalue())
 
+    def test_sync_adds_missing_registered_commands(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "policy.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "help": {
+                            "allowed_groups": [1234],
+                            "allowed_contexts": ["dm"],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+
+            call_command("zulip_policy", "sync", str(path), stdout=out)
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn("help", payload)
+            self.assertIn("echo", payload)
+            self.assertIn("prefs", payload)
+            self.assertEqual(payload["help"]["allowed_groups"], [1234])
+            self.assertIn("new command entries", out.getvalue())
+
+    def test_sync_noops_when_policy_is_up_to_date(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "policy.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "help": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
+                        "echo": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
+                        "prefs": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+
+            call_command("zulip_policy", "sync", str(path), stdout=out)
+
+            self.assertIn("already up to date", out.getvalue())
+
     def test_to_env_export_prints_assignment(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "policy.json"
