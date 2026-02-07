@@ -87,6 +87,7 @@ ZULIP_COMMAND_POLICY = {
 - Local helper tool for building/validating policy JSON:
   - `uv run python qb_site/manage.py zulip_policy init .zulip-policy.local.json`
   - `uv run python qb_site/manage.py zulip_policy validate .zulip-policy.local.json`
+  - `uv run python qb_site/manage.py zulip_policy sync .zulip-policy.local.json`
   - `uv run python qb_site/manage.py zulip_policy to-env .zulip-policy.local.json --export`
 - Commands that may surface private details should use `ResponseMode.PRIVATE`.
 - When adding new commands, update help text by registering the command description.
