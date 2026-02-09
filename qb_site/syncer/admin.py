@@ -509,7 +509,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
     def enqueue_ci_sha_view(self, request, object_id, *args, **kwargs):  # type: no cover - simple action
         from django.conf import settings
         from syncer.tasks.sync_tasks import sync_ci_for_shas_task
-        from syncer.services.ci_backoff import should_enqueue_ci_sha
+        from syncer.services.ci_backoff import filter_ci_shas_for_enqueue, reset_ci_sha_fetch_state
 
         pr = self.get_object(request, object_id)
         if pr is None:
@@ -519,12 +519,15 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 {**self.admin_site.each_context(request), "title": "PR not found", "enqueued": [], "dry_run": False},
             )
 
+        submission_result = None
         if request.method == "POST":
             raw = request.POST.get("shas", "")
             pages = request.POST.get("pages")
             dry_run = bool(request.POST.get("dry_run"))
             # Checkbox is omitted when unchecked; treat absence as False.
             require_assoc = bool(request.POST.get("require_assoc"))
+            override_backoff = bool(request.POST.get("override_backoff"))
+            reset_fetch_state = bool(request.POST.get("reset_fetch_state"))
             # Parse SHAs (split by comma/whitespace) and dedupe order-preserving
             toks = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
             seen = set()
@@ -533,7 +536,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 if t not in seen:
                     seen.add(t)
                     shas.append(t)
-            shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="admin.enqueue_ci_sha")]
+            input_count = len(shas)
+            deleted = 0
+            if reset_fetch_state and shas:
+                deleted = reset_ci_sha_fetch_state(pr=pr, shas=shas)
+                self.message_user(request, f"Reset CI SHA fetch state rows: {deleted}")
+            shas, blocked = filter_ci_shas_for_enqueue(
+                pr=pr,
+                shas=shas,
+                override_backoff=override_backoff,
+                reason="admin.enqueue_ci_sha",
+            )
             max_pages = int(pages) if pages and pages.isdigit() else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
             if shas:
                 async_result = sync_ci_for_shas_task.delay(
@@ -548,18 +561,30 @@ class PullRequestAdmin(ReadOnlyAdmin):
                     request,
                     f"Enqueued CI-by-SHA for PR #{pr.number} (n={len(shas)} SHAs): task_id={async_result.id}",
                 )
-                return TemplateResponse(
+                submission_result = {
+                    "status": "enqueued",
+                    "task_id": async_result.id,
+                    "input_count": input_count,
+                    "enqueued_count": len(shas),
+                    "blocked_count": len(blocked),
+                    "reset_count": int(deleted),
+                    "dry_run": bool(dry_run),
+                }
+            if blocked:
+                self.message_user(
                     request,
-                    "admin/syncer/pullrequest/enqueue_sync.html",
-                    {
-                        **self.admin_site.each_context(request),
-                        "title": "Enqueued CI-by-SHA",
-                        "enqueued": [(pr, async_result.id)],
-                        "dry_run": dry_run,
-                        "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
-                        "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
-                    },
+                    f"Skipped {len(blocked)} SHA(s) by CI backoff policy. Enable 'Override backoff' to force enqueue.",
                 )
+            if submission_result is None:
+                submission_result = {
+                    "status": "not_enqueued",
+                    "task_id": None,
+                    "input_count": input_count,
+                    "enqueued_count": 0,
+                    "blocked_count": len(blocked),
+                    "reset_count": int(deleted),
+                    "dry_run": bool(dry_run),
+                }
 
         # GET or invalid post → render form
         context = {
@@ -568,6 +593,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
             "pr": pr,
             "default_pages": int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
             "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+            "submission_result": submission_result,
+            "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
         }
         return TemplateResponse(request, "admin/syncer/pullrequest/enqueue_ci_sha.html", context)
 

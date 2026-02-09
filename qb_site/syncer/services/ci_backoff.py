@@ -60,6 +60,48 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
     return True
 
 
+def filter_ci_shas_for_enqueue(
+    *,
+    pr: PullRequest,
+    shas: list[str],
+    override_backoff: bool = False,
+    reason: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """Partition SHAs into enqueueable and blocked lists.
+
+    When ``override_backoff`` is enabled, all non-empty SHAs are treated as enqueueable.
+    """
+    allowed: list[str] = []
+    blocked: list[str] = []
+    seen: set[str] = set()
+    for raw in shas:
+        sha = (raw or "").strip()
+        if not sha or sha in seen:
+            continue
+        seen.add(sha)
+        if override_backoff or should_enqueue_ci_sha(pr=pr, sha=sha, reason=reason):
+            allowed.append(sha)
+        else:
+            blocked.append(sha)
+    return allowed, blocked
+
+
+def reset_ci_sha_fetch_state(*, pr: PullRequest, shas: list[str]) -> int:
+    """Delete CI-by-SHA backoff state rows for the provided SHAs."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in shas:
+        sha = (raw or "").strip()
+        if not sha or sha in seen:
+            continue
+        seen.add(sha)
+        normalized.append(sha)
+    if not normalized:
+        return 0
+    deleted, _ = CIShaFetchState.objects.filter(repository=pr.repository, sha__in=normalized).delete()
+    return int(deleted)
+
+
 def record_ci_sha_fetch(
     *,
     pr: PullRequest,
