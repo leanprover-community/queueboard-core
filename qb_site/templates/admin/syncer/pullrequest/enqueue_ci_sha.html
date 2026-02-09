@@ -7,6 +7,47 @@
 <p>
   {% trans "Enter one or more commit SHAs (separated by spaces or commas)." %}
 </p>
+{% if submission_result %}
+<div class="messagelist">
+  {% if submission_result.status == "enqueued" %}
+  <div class="success">
+    {% trans "CI-by-SHA task enqueued." %}
+  </div>
+  {% else %}
+  <div class="warning">
+    {% trans "No CI-by-SHA task was enqueued." %}
+  </div>
+  {% endif %}
+</div>
+<table class="listing" style="margin-bottom: 1em;">
+  <thead>
+    <tr>
+      <th>{% trans "Task ID" %}</th>
+      <th>{% trans "Input SHAs" %}</th>
+      <th>{% trans "Enqueued SHAs" %}</th>
+      <th>{% trans "Blocked by backoff" %}</th>
+      <th>{% trans "Reset rows" %}</th>
+      <th>{% trans "Dry run" %}</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        {% if submission_result.task_id %}
+        <code>{{ submission_result.task_id }}</code>
+        {% else %}
+        -
+        {% endif %}
+      </td>
+      <td>{{ submission_result.input_count }}</td>
+      <td>{{ submission_result.enqueued_count }}</td>
+      <td>{{ submission_result.blocked_count }}</td>
+      <td>{{ submission_result.reset_count }}</td>
+      <td>{{ submission_result.dry_run|yesno:"yes,no" }}</td>
+    </tr>
+  </tbody>
+</table>
+{% endif %}
 <form method="post">
   {% csrf_token %}
   <fieldset class="module aligned">
@@ -26,9 +67,18 @@
         <label for="id_require_assoc">{% trans "Require PR association" %}</label>
         <input id="id_require_assoc" type="checkbox" name="require_assoc" checked />
       </div>
+      <div class="form-row">
+        <label for="id_override_backoff">{% trans "Override backoff" %}</label>
+        <input id="id_override_backoff" type="checkbox" name="override_backoff" />
+      </div>
+      <div class="form-row">
+        <label for="id_reset_fetch_state">{% trans "Reset CI SHA fetch state" %}</label>
+        <input id="id_reset_fetch_state" type="checkbox" name="reset_fetch_state" />
+      </div>
     </fieldset>
   <div class="submit-row">
     <input type="submit" class="default" value="{% trans " Enqueue" %}" />
+    <a class="button" href="{{ pr_detail_url }}">{% trans "PR details" %}</a>
     <a class="button" href="{{ changelist_url }}">{% trans "Cancel" %}</a>
   </div>
 </form>
