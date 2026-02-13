@@ -601,7 +601,7 @@ def gather_pr_statistics(
         PRStatus.HelpWanted: f"are labelled help-wanted or please-adopt ({link_to(Dashboard.NeedsHelp, 'roughly these', 'help_out.html', is_triage_board)})",
         PRStatus.AwaitingAuthor: "are awaiting the PR author's action",
         PRStatus.AwaitingDecision: f"are awaiting the outcome of a zulip discussion ({link_to(Dashboard.NeedsDecision)})",
-        PRStatus.NotFromFork: f"are opened from mathlib's main branch and need migration to a fork ({link_to(Dashboard.FromFork)})",
+        PRStatus.NotFromFork: f"are opened from mathlib's main branch and need migration to a fork ({link_to(Dashboard.NotFromFork)})",
         PRStatus.Blocked: "are blocked on another PR",
         PRStatus.Delegated: f"are delegated (stale ones are {link_to(Dashboard.StaleDelegated, 'here', 'help_out.html', is_triage_board)})",
         PRStatus.AwaitingBors: f"have been sent to bors (stale ones are {link_to(Dashboard.StaleReadyToMerge, 'here', 'maintainers_quick.html', is_triage_board)})",
