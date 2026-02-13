@@ -75,3 +75,16 @@ span.label {
 .btn-group button:hover {
   background-color: #3e8e41;
 }
+
+.qb-export-btn {
+  margin-left: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #888;
+  border-radius: 4px;
+  background: #f7f7f7;
+  cursor: pointer;
+}
+
+.qb-export-btn:hover {
+  background: #ececec;
+}

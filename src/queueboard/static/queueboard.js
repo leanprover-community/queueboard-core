@@ -179,6 +179,91 @@ if (STANDARD) {
   }
 }
 const DEFAULT_LENGTH = 10;
+
+function sanitizeCellText(cellHtml) {
+  if (cellHtml === null || cellHtml === undefined) {
+    return "";
+  }
+  if (typeof cellHtml !== "string") {
+    return String(cellHtml);
+  }
+  const container = document.createElement("div");
+  container.innerHTML = cellHtml;
+  container.querySelectorAll('[style*="display:none"], [style*="display: none"], [hidden]').forEach((el) => el.remove());
+  return container.textContent.replace(/\s+/g, " ").trim();
+}
+
+function makeExportFilename(tableId) {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const page = (window.location.pathname.split("/").pop() || "dashboard").replace(/\.html$/, "");
+  return `${page}-${tableId || "table"}-${ts}.json`;
+}
+
+function triggerJsonDownload(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+function exportTableToJson(table, tableElement) {
+  const tableId = (tableElement && tableElement.id) ? tableElement.id : "table";
+  const showApproval = tableId == "t-queue-stale-unassigned" || tableId == "t-queue-stale-assigned" || tableId == "t-approved";
+  const visibleColumnIndexes = table.columns(':visible').indexes().toArray();
+  const columns = visibleColumnIndexes.map((idx) => sanitizeCellText(table.column(idx).header().innerHTML));
+  const rowIndexes = table.rows({ search: "applied", order: "applied" }).indexes().toArray();
+  const rows = rowIndexes.map((rowIdx) => {
+    const out = {};
+    for (let i = 0; i < visibleColumnIndexes.length; i++) {
+      const columnIdx = visibleColumnIndexes[i];
+      const key = columns[i] || `col_${i}`;
+      const value = table.cell(rowIdx, columnIdx).render('display');
+      out[key] = sanitizeCellText(value);
+    }
+    return out;
+  });
+  const order = table.order().map(([idx, dir]) => {
+    if (STANDARD) {
+      return { idx, alias: getAlias(idx, showApproval), dir };
+    }
+    return { idx, alias: getAlias(idx), dir };
+  });
+  const payload = {
+    metadata: {
+      page_url: window.location.href,
+      table_id: tableId,
+      exported_at: new Date().toISOString(),
+      search: table.search(),
+      order,
+      visible_columns: columns,
+      row_count: rows.length,
+    },
+    rows,
+  };
+  triggerJsonDownload(payload, makeExportFilename(tableId));
+}
+
+function addExportButton(table, tableElement) {
+  const container = table.table().container();
+  const searchContainer = container.querySelector(".dt-search, .dataTables_filter");
+  if (!searchContainer || searchContainer.querySelector(".qb-export-btn")) {
+    return;
+  }
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "qb-export-btn";
+  button.textContent = "Download JSON";
+  button.addEventListener("click", () => exportTableToJson(table, tableElement));
+  searchContainer.appendChild(button);
+}
+
 function debounce(callback, delay = 500) {
   let timeout; // This variable is part of the closure
   return function(...args) { // The debounced function
@@ -254,6 +339,7 @@ $(document).ready(function () {
   const tables = [];
   $('table').each(function () {
     let table;
+    const tableElement = this;
     if (STANDARD) {
       const tableId = $(this).attr('id');
       let tableOptions = { ...options }
@@ -270,6 +356,9 @@ $(document).ready(function () {
     // an object that tracks the number of times to disable the event handlers below during updates from popstate events
     const ignoreNext = { search: 0, length: 0, order: 0 };
     tables.push({table, ignoreNext});
+    if (table) {
+      addExportButton(table, tableElement);
+    }
 
     // event handlers to update params when table settings are changed
     $(this).on('search.dt', function (e, settings) {

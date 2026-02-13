@@ -54,6 +54,82 @@
         </tbody>
     </table>
     <script>
+        function sanitizeCellText(cellHtml) {
+            if (cellHtml === null || cellHtml === undefined) {
+                return '';
+            }
+            if (typeof cellHtml !== 'string') {
+                return String(cellHtml);
+            }
+            const container = document.createElement('div');
+            container.innerHTML = cellHtml;
+            container.querySelectorAll('[style*="display:none"], [style*="display: none"], [hidden]').forEach((el) => el.remove());
+            return container.textContent.replace(/\s+/g, ' ').trim();
+        }
+
+        function makeExportFilename(tableId) {
+            const now = new Date();
+            const pad = (n) => String(n).padStart(2, '0');
+            const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+            const page = (window.location.pathname.split('/').pop() || 'dashboard').replace(/\.html$/, '');
+            return `${page}-${tableId || 'table'}-${ts}.json`;
+        }
+
+        function triggerJsonDownload(data, filename) {
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = filename;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
+        }
+
+        function exportTableToJson(table, tableId) {
+            const visibleColumnIndexes = table.columns(':visible').indexes().toArray();
+            const columns = visibleColumnIndexes.map((idx) => sanitizeCellText(table.column(idx).header().innerHTML));
+            const rowIndexes = table.rows({ search: 'applied', order: 'applied' }).indexes().toArray();
+            const rows = rowIndexes.map((rowIdx) => {
+                const out = {};
+                for (let i = 0; i < visibleColumnIndexes.length; i++) {
+                    const columnIdx = visibleColumnIndexes[i];
+                    const key = columns[i] || `col_${i}`;
+                    const value = table.cell(rowIdx, columnIdx).render('display');
+                    out[key] = sanitizeCellText(value);
+                }
+                return out;
+            });
+            const payload = {
+                metadata: {
+                    page_url: window.location.href,
+                    table_id: tableId,
+                    exported_at: new Date().toISOString(),
+                    search: table.search(),
+                    order: table.order().map(([idx, dir]) => ({ idx, dir })),
+                    visible_columns: columns,
+                    row_count: rows.length,
+                },
+                rows,
+            };
+            triggerJsonDownload(payload, makeExportFilename(tableId));
+        }
+
+        function addExportButton(table, tableId) {
+            const container = table.table().container();
+            const searchContainer = container.querySelector('.dt-search, .dataTables_filter');
+            if (!searchContainer || searchContainer.querySelector('.qb-export-btn')) {
+                return;
+            }
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'qb-export-btn';
+            button.textContent = 'Download JSON';
+            button.addEventListener('click', () => exportTableToJson(table, tableId));
+            searchContainer.appendChild(button);
+        }
+
         $(document).ready(function () {
             // Fetch the JSON data
             fetch('area_stats.json')
@@ -130,6 +206,7 @@
                             }
                         }
                     });
+                    addExportButton(table, 'areaTable');
 
                     // Hide/show rows where on_queue === 0, default hidden
                     function applyZeroFilter() {
