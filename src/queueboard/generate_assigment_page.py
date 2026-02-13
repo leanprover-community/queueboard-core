@@ -58,9 +58,8 @@ def compute_pr_list_from_aggregate_data_only(
     base_branch: dict[int, str] = dict()
     for pr in nondraft_PRs:
         base_branch[pr.number] = aggregate_data[pr.number].base_branch
-    # TODO: re-instate with reverted meaning
-    # prs_from_fork = [pr for pr in nondraft_PRs if aggregate_data[pr.number].head_repo != "leanprover-community"]
-    return determine_pr_dashboards(all_open_prs, nondraft_PRs, base_branch, CI_status, aggregate_data, True)
+    prs_not_from_fork = [pr for pr in nondraft_PRs if aggregate_data[pr.number].head_repo == "leanprover-community"]
+    return determine_pr_dashboards(all_open_prs, nondraft_PRs, base_branch, prs_not_from_fork, CI_status, aggregate_data, True)
 
 
 # Copy-pasted from STANDARD_ALIAS_MAPPING, but the indices are different.

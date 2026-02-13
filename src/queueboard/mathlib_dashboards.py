@@ -50,8 +50,8 @@ class Dashboard(StrEnum):
     # Non-draft PRs into some branch other than mathlib's master branch
     OtherBase = "OtherBase"
     # TODO: in August, invert and re-instate this dashboard (i.e., showing all non-draft PRs opened from the mathlib repo itself)
-    # # Non-draft PRs opened from a fork
-    # FromFork = auto()
+    # Non-draft PRs opened from a branch to the mathlib repository itself (i.e., not from a fork)
+    NotFromFork = "NotFromFork"
     # "Ready" PRs whose title does not start with an abbreviation like 'feat' or 'style'
     BadTitle = "BadTitle"
     # "Ready" PRs without the CI or a t-something label.
@@ -85,8 +85,7 @@ def short_description(kind: Dashboard) -> str:
         Dashboard.StaleNewContributor: "stale PRs by new contributors",
         Dashboard.NeedsHelp: "PRs which are looking for a help",
         Dashboard.OtherBase: "ready PRs into a non-master branch",
-        # TODO: in August, re-instate reverted
-        # Dashboard.FromFork: "ready PRs opened from a fork of mathlib",
+        Dashboard.NotFromFork: "ready PRs opened from a main branch of mathlib",
         Dashboard.Unlabelled: "ready PRs without a 'CI' or 't-something' label",
         Dashboard.BadTitle: "ready PRs whose title does not start with an abbreviation like 'feat', 'style' or 'perf'",
         Dashboard.ContradictoryLabels: "PRs with contradictory labels",
@@ -117,8 +116,7 @@ def long_description(kind: Dashboard) -> str:
         Dashboard.AllMaintainerMerge: "all PRs labelled maintainer merge but not 'ready-to-merge'",
         Dashboard.NeedsHelp: "all PRs which are labelled 'please-adopt' or 'help-wanted'",
         Dashboard.OtherBase: "all non-draft PRs, not labelled WIP, into some branch other than mathlib's master branch",
-        # TODO: in August, re-instate reverted
-        # Dashboard.FromFork: "all non-draft PRs, not labelled WIP, opened from a fork of mathlib",
+        Dashboard.NotFromFork: "all non-draft PRs, not labelled WIP, opened from a main branch of mathlib (and not a fork) --- these should be migrated",
         Dashboard.StaleNewContributor: f"all PR labelled 'new-contributor' {notupdated} 7 days",
         Dashboard.Unlabelled: "all PRs without draft status or 'WIP' label without a 'CI' or 't-something' label",
         Dashboard.BadTitle: "all PRs without draft status or 'WIP' label whose title does not start with an abbreviation like 'feat', 'style' or 'perf'",
@@ -165,8 +163,7 @@ def getIdTitle(kind: Dashboard) -> Tuple[str, str]:
         Dashboard.InessentialCIFails: ("inessential-CI-fails", "PRs with just failing CI, but only often-spurious jobs"),
         Dashboard.NeedsHelp: ("needs-owner", "PRs looking for help"),
         Dashboard.OtherBase: ("other-base", "PRs not into the master branch"),
-        # TODO: in August, re-instate reverted
-        # Dashboard.FromFork: ("from-fork", "PRs from a fork of mathlib"),
+        Dashboard.NotFromFork: ("unmigrated", "PRs from a main branch of mathlib"),
         Dashboard.Unlabelled: ("unlabelled", "PRs without an area label"),
         Dashboard.BadTitle: ("bad-title", "PRs with non-conforming titles"),
         Dashboard.ContradictoryLabels: (

@@ -562,8 +562,7 @@ def gather_pr_statistics(
         PRStatus.HelpWanted,
         PRStatus.NotReady,
         PRStatus.AwaitingDecision,
-        # TODO: in August, re-instate reverted
-        # PRStatus.FromFork,
+        PRStatus.NotFromFork,
         PRStatus.Contradictory,
         PRStatus.Delegated,
         PRStatus.AwaitingBors,
@@ -590,6 +589,8 @@ def gather_pr_statistics(
     number_all = len(all_ready_prs) + len(all_draft_prs)
 
     def number_percent(n: int, total: int, color: str = "") -> str:
+        if total == 0:
+            return f"{n} (<span>n/a</span>)"
         if color:
             return f'{n} (<span style="color: {color};">{n / total:.1%}</span>)'
         else:
@@ -602,8 +603,7 @@ def gather_pr_statistics(
         PRStatus.HelpWanted: f"are labelled help-wanted or please-adopt ({link_to(Dashboard.NeedsHelp, 'roughly these', 'help_out.html', is_triage_board)})",
         PRStatus.AwaitingAuthor: "are awaiting the PR author's action",
         PRStatus.AwaitingDecision: f"are awaiting the outcome of a zulip discussion ({link_to(Dashboard.NeedsDecision)})",
-        # TODO: in August, re-instate reverted
-        # PRStatus.FromFork: f"are opened from a fork of mathlib ({link_to(Dashboard.FromFork)})",
+        PRStatus.NotFromFork: f"are opened from mathlib's main branch and need migration to a fork ({link_to(Dashboard.NotFromFork)})",
         PRStatus.Blocked: "are blocked on another PR",
         PRStatus.Delegated: f"are delegated (stale ones are {link_to(Dashboard.StaleDelegated, 'here', 'help_out.html', is_triage_board)})",
         PRStatus.AwaitingBors: f"have been sent to bors (stale ones are {link_to(Dashboard.StaleReadyToMerge, 'here', 'maintainers_quick.html', is_triage_board)})",
@@ -620,7 +620,7 @@ def gather_pr_statistics(
         PRStatus.HelpWanted: "#cc317c",
         PRStatus.AwaitingAuthor: "#f6ae9a",
         PRStatus.AwaitingDecision: "#086ad4",
-        # PRStatus.FromFork: "#FF8000",
+        PRStatus.NotFromFork: "#FF8000",
         PRStatus.Blocked: "#8A6A1C",
         PRStatus.Delegated: "#689dea",
         PRStatus.AwaitingBors: "#098306",
@@ -707,7 +707,7 @@ def determine_pr_dashboards(
     all_open_prs: List[BasicPRInformation],
     nondraft_PRs: List[BasicPRInformation],
     base_branch: dict[int, str],
-    # TODO(August/September): re-instate this table, with inverted meaning prs_from_fork: List[BasicPRInformation],
+    prs_not_from_fork: List[BasicPRInformation],
     CI_status: dict[int, CIStatus],
     aggregate_info: dict[int, AggregatePRInfo],
     use_aggregate_queue: bool,
@@ -720,8 +720,7 @@ def determine_pr_dashboards(
     all_ready_prs = prs_without_label(nondraft_PRs, "WIP")
     prs_to_list[Dashboard.TechDebt] = prs_with_any_label(all_ready_prs, ["tech debt", "longest-pole"])
     prs_to_list[Dashboard.OtherBase] = [pr for pr in nondraft_PRs if base_branch[pr.number] != "master"]
-    # TODO: in August, re-instate reverted
-    # prs_to_list[Dashboard.FromFork] = prs_from_fork
+    prs_to_list[Dashboard.NotFromFork] = prs_not_from_fork
 
     prs_to_list[Dashboard.NeedsHelp] = prs_with_any_label(nondraft_PRs, ["help-wanted", "please_adopt"])
     prs_to_list[Dashboard.NeedsDecision] = prs_with_label(nondraft_PRs, "awaiting-zulip")

@@ -18,7 +18,7 @@ from syncer.models import PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
 from syncer.models.status_context import StatusContext, StatusContextState
-from queueboard.classify_pr_state import determine_PR_status, label_categorisation_rules, LabelKind, PRState, PRStatus
+from queueboard.classify_pr_state import determine_PR_status, label_categorisation_rules, PRState
 from queueboard.ci_status import CIStatus
 from queueboard.util import format_delta
 
@@ -398,6 +398,7 @@ class QueueboardSnapshotBuilder:
         tech_debt: List[int] = []
         needs_help: List[int] = []
         other_base: List[int] = []
+        not_from_fork: List[int] = []
         all_ready_to_merge: List[int] = []
         stale_ready_to_merge: List[int] = []
         stale_delegated: List[int] = []
@@ -525,6 +526,8 @@ class QueueboardSnapshotBuilder:
                 needs_help.append(pr.number)
             if pr.base_ref_name != repository.default_branch and not pr.is_draft:
                 other_base.append(pr.number)
+            if pr.head_repo_owner_login.lower() == repository.owner.lower() and not pr.is_draft:
+                not_from_fork.append(pr.number)
             if any(lbl in label_names_lc for lbl in ("ready-to-merge", "auto-merge-after-ci")) and not pr.is_draft:
                 all_ready_to_merge.append(pr.number)
                 if pr.gh_updated_at < stale_ready_threshold:
@@ -555,6 +558,7 @@ class QueueboardSnapshotBuilder:
             "TechDebt": tech_debt,
             "NeedsHelp": needs_help,
             "OtherBase": other_base,
+            "NotFromFork": not_from_fork,
             "AllReadyToMerge": all_ready_to_merge,
             "StaleReadyToMerge": stale_ready_to_merge,
             "StaleDelegated": stale_delegated,

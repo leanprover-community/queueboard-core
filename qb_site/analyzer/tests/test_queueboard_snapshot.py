@@ -29,6 +29,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         labels: tuple[str, ...] = (),
         author: User | None = None,
         body: str = "description",
+        head_repo_owner_login: str = "fork-user",
     ) -> PullRequest:
         pr = PullRequest.objects.create(
             repository=self.repo,
@@ -42,7 +43,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
             merged_at=None,
             base_ref_name=base,
             head_ref_name=f"feature/{number}",
-            head_repo_owner_login=self.repo.owner,
+            head_repo_owner_login=head_repo_owner_login,
             head_repo_name=self.repo.name,
             title=f"PR {number}",
             body=body,
@@ -81,8 +82,8 @@ class QueueboardSnapshotBuilderTests(TestCase):
 
     def test_builds_snapshot_with_queue_filters(self):
         pr1 = self._make_pr(1, author=self.user, labels=("t-analysis",))
-        pr2 = self._make_pr(2, labels=("awaiting-zulip",))
-        pr3 = self._make_pr(3, is_draft=True)
+        self._make_pr(2, labels=("awaiting-zulip",))
+        self._make_pr(3, is_draft=True)
         rule_set = QueueRuleSet.objects.create(
             repository=self.repo,
             version=1,
@@ -116,7 +117,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(prs[1]["direct_dependencies"], [42])
         self.assertEqual(prs[1]["labels"][0]["name"], "t-analysis")
         self.assertEqual(prs[1]["labels"][0]["url"], "https://github.com/leanprover-community/mathlib4/labels/t-analysis")
-        self.assertEqual(prs[1]["head_repo"], "leanprover-community")
+        self.assertEqual(prs[1]["head_repo"], "fork-user")
         self.assertEqual(prs[1]["data_status"]["comments"], "valid")
 
         self.assertEqual(set(snapshot["lists"]["nondraft_prs"]), {1, 2})
@@ -315,6 +316,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
             "TechDebt",
             "NeedsHelp",
             "OtherBase",
+            "NotFromFork",
             "AllReadyToMerge",
             "StaleReadyToMerge",
             "StaleDelegated",
@@ -333,6 +335,16 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertIn(pr_ready_to_merge.number, dashboards["AllReadyToMerge"])
         self.assertIn(pr_awaiting_zulip.number, dashboards["NeedsDecision"])
         self.assertIn(pr_help.number, dashboards["NeedsHelp"])
+
+    def test_not_from_fork_dashboard(self):
+        pr_nonfork = self._make_pr(70, head_repo_owner_login=self.repo.owner)
+        pr_fork = self._make_pr(71, head_repo_owner_login="external-contributor")
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=5).build(self.repo)
+        dashboards = snapshot["lists"]["dashboards"]
+
+        self.assertIn(pr_nonfork.number, dashboards["NotFromFork"])
+        self.assertNotIn(pr_fork.number, dashboards["NotFromFork"])
 
     def test_ci_status_uses_head_rollup_for_untracked_failure(self):
         pr = self._make_pr(50, author=self.user, labels=("t-analysis",))
@@ -399,7 +411,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(prs[53]["ci_status"], "pass")
 
     def test_ci_status_missing_required_context(self):
-        pr = self._make_pr(54, author=self.user, labels=("t-analysis",))
+        self._make_pr(54, author=self.user, labels=("t-analysis",))
         QueueRuleSet.objects.create(
             repository=self.repo,
             version=1,
