@@ -174,14 +174,15 @@ def main() -> None:
         base_branch[pr.number] = aggregate_info[pr.number].base_branch
     dump_to_json_file(base_branch, path.join("api", "base_branch.json"))
 
-    # TODO(August/September): re-instate this check and invert it
-    # prs_from_fork = [pr for pr in nondraft_PRs if aggregate_info[pr.number].head_repo != "leanprover-community"]
+    prs_not_from_fork = [pr for pr in nondraft_PRs if aggregate_info[pr.number].head_repo == "leanprover-community"]
     all_pr_status = compute_pr_statusses(aggregate_info, input_data.all_open_prs)
     dump_to_json_file(all_pr_status, path.join("api", "all_pr_status.json"))
 
     # TODO: try to enable |use_aggregate_queue| 'queue_prs' again, once all the root causes
     # for PRs getting 'dropped' by 'gather_stats.sh' are found and fixed.
-    prs_to_list = determine_pr_dashboards(input_data.all_open_prs, nondraft_PRs, base_branch, CI_status, aggregate_info, True)
+    prs_to_list = determine_pr_dashboards(
+        input_data.all_open_prs, nondraft_PRs, base_branch, prs_not_from_fork, CI_status, aggregate_info, True
+    )
     dump_to_json_file(prs_to_list, path.join("api", "prs_to_list.json"))
 
     # As a final feature, we propose a reviewer for 50 (randomly drawn) stale unassigned pull requests,
