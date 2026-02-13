@@ -178,8 +178,6 @@ def main() -> None:
     all_pr_status = compute_pr_statusses(aggregate_info, input_data.all_open_prs)
     dump_to_json_file(all_pr_status, path.join("api", "all_pr_status.json"))
 
-    # TODO: try to enable |use_aggregate_queue| 'queue_prs' again, once all the root causes
-    # for PRs getting 'dropped' by 'gather_stats.sh' are found and fixed.
     prs_to_list = determine_pr_dashboards(
         input_data.all_open_prs, nondraft_PRs, base_branch, prs_not_from_fork, CI_status, aggregate_info, True
     )
