@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -40,6 +41,7 @@ INSTALLED_APPS = [
     "syncer",
     "analyzer",
     "api",
+    "zulip_bot",
 ]
 
 MIDDLEWARE = [
@@ -131,6 +133,24 @@ LOGGING = {
         "level": os.getenv("DJANGO_LOG_LEVEL", "INFO"),
     },
 }
+
+ZULIP_WEBHOOK_TOKEN = os.getenv("ZULIP_WEBHOOK_TOKEN")
+ZULIP_BASE_URL = os.getenv("ZULIP_BASE_URL", "")
+ZULIP_BOT_EMAIL = os.getenv("ZULIP_BOT_EMAIL", "")
+ZULIP_BOT_API_KEY = os.getenv("ZULIP_BOT_API_KEY", "")
+ZULIP_USER_EMAIL = os.getenv("ZULIP_USER_EMAIL", "")
+ZULIP_USER_API_KEY = os.getenv("ZULIP_USER_API_KEY", "")
+ZULIP_PREFS_URL_BASE = os.getenv("ZULIP_PREFS_URL_BASE", "")
+ZULIP_PREFS_TOKEN_SECRET = os.getenv("ZULIP_PREFS_TOKEN_SECRET", "")
+ZULIP_PREFS_TOKEN_SALT = os.getenv("ZULIP_PREFS_TOKEN_SALT", "zulip_bot.prefs")
+ZULIP_PREFS_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
+ZULIP_COMMAND_POLICY: dict[str, dict[str, list[int] | list[str]]] = {}
+_ZULIP_COMMAND_POLICY_ENV = os.getenv("ZULIP_COMMAND_POLICY", "").strip()
+if _ZULIP_COMMAND_POLICY_ENV:
+    parsed_policy = json.loads(_ZULIP_COMMAND_POLICY_ENV)
+    if not isinstance(parsed_policy, dict):
+        raise RuntimeError("ZULIP_COMMAND_POLICY env var must be a JSON object")
+    ZULIP_COMMAND_POLICY = parsed_policy
 
 
 # Celery configuration

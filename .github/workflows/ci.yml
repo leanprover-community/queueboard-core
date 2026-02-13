@@ -24,6 +24,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: "Setup Node"
+        uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+        with:
+          node-version: "23"
+
       - name: "Setup uv"
         uses: astral-sh/setup-uv@803947b9bd8e9f986429fa0c5a41c367cd732b41 # v7.2.1
 
@@ -31,6 +36,12 @@ jobs:
         run: |
           uv venv
           uv pip install -e .
+
+      - name: Run Zulip prefs frontend tests
+        working-directory: qb_site/zulip_bot/frontend
+        run: |
+          npm ci
+          npm test
 
       - name: Check reviewer-topics.json
         run: |

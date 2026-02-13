@@ -8,3 +8,6 @@ test/**/pre-api-artifact
 celerybeat-schedule*
 /artifacts/
 docs/graphql/github-schema.json
+zuliprc
+.zulip-policy.local.json
+node_modules/

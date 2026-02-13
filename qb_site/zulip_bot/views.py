@@ -1,0 +1,263 @@
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import replace
+from datetime import datetime, timezone as dt_timezone
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from django.conf import settings
+from django.db.models import Case, IntegerField, When
+from django.forms import modelformset_factory
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.urls import reverse
+from django.template.response import TemplateResponse
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+
+from core.models import ReviewerPreference, User
+from zulip_bot.commands import CommandResult, ResponseMode, get_command
+from zulip_bot.commands import echo as _echo  # noqa: F401
+from zulip_bot.commands import help as _help  # noqa: F401
+from zulip_bot.forms import ReviewerPreferenceForm
+from zulip_bot.commands import prefs as _prefs  # noqa: F401
+from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
+from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
+from zulip_bot.webhook.context import build_context
+from zulip_bot.webhook.membership import GroupMembershipChecker
+from zulip_bot.webhook.payload import parse_command, parse_payload, validate_payload
+from zulip_bot.webhook.policy import allowed_command_names
+from zulip_bot.webhook.responses import (
+    ignored_response,
+    invalid_payload_response,
+    unknown_command_help_response,
+    zulip_response,
+)
+from zulip_bot.webhook.sender import SenderClassifier
+
+logger = logging.getLogger(__name__)
+ReviewerPreferenceFormSet = modelformset_factory(
+    ReviewerPreference,
+    form=ReviewerPreferenceForm,
+    extra=0,
+    can_delete=False,
+)
+
+
+@csrf_exempt
+def webhook(request: HttpRequest) -> HttpResponse:
+    try:
+        if request.method != "POST":
+            return JsonResponse({"error": "Method not allowed"}, status=405)
+
+        parsed_payload = parse_payload(request)
+        if parsed_payload.payload is None:
+            return invalid_payload_response(parsed_payload.errors, parsed_payload)
+
+        payload_errors = validate_payload(parsed_payload.payload)
+        if payload_errors:
+            return invalid_payload_response(payload_errors, parsed_payload)
+
+        token = parsed_payload.payload.get("token")
+        expected_token = getattr(settings, "ZULIP_WEBHOOK_TOKEN", None)
+        if not expected_token or token != expected_token:
+            return JsonResponse({"error": "Forbidden"}, status=403)
+
+        sender_classifier = SenderClassifier()
+        if sender_classifier.is_bot_sender(parsed_payload.payload):
+            logger.info("zulip_command_ignored", extra={"reason": "bot_sender"})
+            return ignored_response()
+
+        context = build_context(parsed_payload.payload)
+        checker = GroupMembershipChecker()
+        allowed_names = allowed_command_names(context, checker)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("zulip_webhook_unexpected_error")
+        return zulip_response(_unexpected_error_response(exc), ResponseMode.PRIVATE)
+
+    try:
+        context = replace(context, allowed_command_names=allowed_names)
+
+        parsed_command = parse_command(context.message_content)
+        if parsed_command is None:
+            return ignored_response()
+
+        command = get_command(parsed_command.name)
+        if command is None:
+            if not allowed_names:
+                return ignored_response()
+            return zulip_response(unknown_command_help_response(parsed_command.name, context))
+
+        if command.name not in allowed_names:
+            logger.info("zulip_command_ignored", extra={"reason": "command_disallowed", "command": command.name})
+            return ignored_response()
+
+        result = command.handler(context, parsed_command.args)
+        return zulip_response(result, command.response_mode)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.exception("zulip_command_unexpected_error")
+        return zulip_response(_unexpected_error_response(exc), ResponseMode.PRIVATE)
+
+
+def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
+    try:
+        claims = validate_prefs_token(token)
+    except PrefsTokenExpired:
+        return _prefs_invalid_response(request, reason="expired")
+    except PrefsTokenInvalid:
+        return _prefs_invalid_response(request, reason="invalid")
+
+    prefs = _load_authorized_preferences(claims.user_id, claims.zulip_user_id, claims.preference_ids)
+    if not prefs:
+        return _prefs_invalid_response(request, reason="invalid")
+
+    user = prefs[0].user
+    user_timezone_name = _resolve_user_timezone_name(user=user, zulip_user_id=claims.zulip_user_id)
+    user_timezone = ZoneInfo(user_timezone_name)
+    pref_ids = [pref.pk for pref in prefs]
+    ordering = Case(
+        *[When(pk=pref_id, then=pos) for pos, pref_id in enumerate(pref_ids)],
+        output_field=IntegerField(),
+    )
+    queryset = (
+        ReviewerPreference.objects.filter(
+            pk__in=pref_ids,
+            user_id=claims.user_id,
+        )
+        .select_related("repository", "user")
+        .order_by(ordering)
+    )
+
+    submitted = request.method == "GET" and request.GET.get("saved") == "1"
+    saved_at: datetime | None = None
+    with timezone.override(user_timezone):
+        if request.method == "POST":
+            formset = ReviewerPreferenceFormSet(
+                request.POST,
+                queryset=queryset,
+                form_kwargs={"user_timezone": user_timezone},
+            )
+            if formset.is_valid():
+                formset.save()
+                url = reverse("zulip-prefs-form", kwargs={"token": token})
+                return HttpResponseRedirect(f"{url}?saved=1")
+        else:
+            formset = ReviewerPreferenceFormSet(
+                queryset=queryset,
+                form_kwargs={"user_timezone": user_timezone},
+            )
+        if submitted:
+            saved_at = timezone.localtime(timezone.now(), user_timezone)
+
+    expires_at_unix = claims.exp
+    if expires_at_unix is None:
+        return _prefs_invalid_response(request, reason="invalid")
+    expires_at_utc = datetime.fromtimestamp(expires_at_unix, tz=dt_timezone.utc)
+
+    response = TemplateResponse(
+        request,
+        "zulip_bot/prefs_form.html",
+        {
+            "formset": formset,
+            "submitted": submitted,
+            "saved_at": saved_at,
+            "user": user,
+            "expires_at_unix": expires_at_unix,
+            "expires_at_iso": expires_at_utc.isoformat(),
+            "user_timezone_name": user_timezone_name,
+        },
+        status=200,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
+    response = TemplateResponse(
+        request,
+        "zulip_bot/prefs_invalid.html",
+        {"reason": reason},
+        status=403,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _load_authorized_preferences(user_id: int, zulip_user_id: int, preference_ids: tuple[int, ...]) -> list[ReviewerPreference]:
+    pref_ids = tuple(dict.fromkeys(preference_ids))
+    if not pref_ids:
+        return []
+    prefs = list(ReviewerPreference.objects.filter(id__in=pref_ids).select_related("repository", "user"))
+    if len(prefs) != len(pref_ids):
+        return []
+    by_id = {pref.id: pref for pref in prefs}
+    ordered = [by_id[pref_id] for pref_id in pref_ids]
+    if any(pref.user_id != user_id for pref in ordered):
+        return []
+    if any(pref.user.zulip_user_id not in (None, zulip_user_id) for pref in ordered):
+        return []
+    return ordered
+
+
+def _resolve_user_timezone_name(*, user: User, zulip_user_id: int) -> str:
+    zulip_tz_name = _fetch_zulip_user_timezone_name(zulip_user_id)
+    if zulip_tz_name:
+        return zulip_tz_name
+    if user.timezone and _is_valid_timezone_name(user.timezone):
+        return user.timezone
+    return timezone.get_default_timezone_name()
+
+
+def _fetch_zulip_user_timezone_name(zulip_user_id: int) -> str | None:
+    base_url = getattr(settings, "ZULIP_BASE_URL", "").strip()
+    bot_email = getattr(settings, "ZULIP_BOT_EMAIL", "").strip()
+    bot_api_key = getattr(settings, "ZULIP_BOT_API_KEY", "").strip()
+    if not base_url or not bot_email or not bot_api_key:
+        return None
+    try:
+        payload = ZulipClient().get_user_by_id(zulip_user_id)
+    except ZulipApiError:
+        logger.exception("zulip_timezone_lookup_failed", extra={"zulip_user_id": zulip_user_id})
+        return None
+    user = payload.get("user")
+    if not isinstance(user, dict):
+        return None
+    timezone_name = user.get("timezone")
+    if isinstance(timezone_name, str) and _is_valid_timezone_name(timezone_name):
+        return timezone_name
+    return None
+
+
+def _is_valid_timezone_name(value: str) -> bool:
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        return False
+    return True
+
+
+def _unexpected_error_response(exc: Exception) -> CommandResult:
+    payload = {
+        "error": "zulip_unexpected_error",
+        "message": str(exc),
+        "error_type": type(exc).__name__,
+        "details": _error_details(exc),
+    }
+    details_json = json.dumps(payload, indent=2, sort_keys=True)
+    content = (
+        "An unexpected error occurred while processing this command.\n\n"
+        "````spoiler detailed error info\n"
+        "```json\n"
+        f"{details_json}\n"
+        "```\n"
+        "````"
+    )
+    return CommandResult(content=content, response_mode=ResponseMode.PRIVATE)
+
+
+def _error_details(exc: Exception) -> Any:
+    payload = getattr(exc, "payload", None)
+    if isinstance(payload, dict):
+        return payload
+    return None
