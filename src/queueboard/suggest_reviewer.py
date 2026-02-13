@@ -10,7 +10,7 @@ import json
 import sys
 from typing import List, NamedTuple, Tuple
 from queueboard.classify_pr_state import PRState, PRStatus, LabelKind, determine_PR_status, label_categorisation_rules
-from queueboard.compute_dashboard_prs import Label, LastStatusChange, DataStatus
+from queueboard.compute_dashboard_prs import LastStatusChange, DataStatus
 
 from datetime import datetime
 from os import path
@@ -126,7 +126,7 @@ def _compute_weight(pr: int, data: AggregatePRInfo) -> float:
                     return 1 / (delta.days + 1)
         case PRStatus.Delegated | PRStatus.AwaitingBors:
             return 0
-        case PRStatus.Closed | PRStatus.Contradictory | PRStatus.NotReady:  # | PRStatus.FromFork:
+        case PRStatus.Closed | PRStatus.Contradictory | PRStatus.NotReady | PRStatus.NotFromFork:
             return 0
         case PRStatus.HelpWanted:
             return 0  # arguably also fine

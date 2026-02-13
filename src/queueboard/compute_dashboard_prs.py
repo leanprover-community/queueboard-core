@@ -589,6 +589,8 @@ def gather_pr_statistics(
     number_all = len(all_ready_prs) + len(all_draft_prs)
 
     def number_percent(n: int, total: int, color: str = "") -> str:
+        if total == 0:
+            return f"{n} (<span>n/a</span>)"
         if color:
             return f'{n} (<span style="color: {color};">{n / total:.1%}</span>)'
         else:

@@ -686,6 +686,7 @@ def write_on_the_queue_page(
             PRStatus.HelpWanted: ("is", "looking for help"),
             PRStatus.Blocked: ("is", "blocked on another PR"),
             PRStatus.NotReady: ("is", "labelled WIP or marked draft"),
+            PRStatus.NotFromFork: ("is", "opened from a main branch of mathlib (not a fork)"),
             PRStatus.Contradictory: ("has", "contradictory labels"),
             PRStatus.Closed: ("is", "closed (so shouldn't appear in this list)"),
             # TODO: in August, re-instate reverted
@@ -719,7 +720,11 @@ def write_on_the_queue_page(
             status = curr2
         else:
             if pr_data.last_status_change.current_status not in [PRStatus.NotReady, PRStatus.Closed]:
-                if (
+                # Expected during fork-migration rollout: current status may now be NotFromFork
+                # while historical queue/timeline status reflects prior label-based states.
+                if current_status == PRStatus.NotFromFork or pr_data.last_status_change.current_status == PRStatus.NotFromFork:
+                    pass
+                elif (
                     pr_data.last_status_change.current_status != current_status
                     and pr_data.last_status_change.status == DataStatus.Valid
                 ):
