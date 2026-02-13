@@ -73,10 +73,14 @@ class TestPrefsForm(TestCase):
     def test_get_with_valid_token_renders_real_form(self) -> None:
         token = self._token()
         response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": token}))
+        body = response.content.decode("utf-8")
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reviewer Preferences")
         self.assertContains(response, "Save Preferences")
+        self.assertContains(response, "Turn this off to opt out of automatic reviewer assignment for this repository.")
+        self.assertContains(response, "A free form description of your reviewing interests.")
+        self.assertLess(body.index("Free form"), body.index("Conflict of interest"))
         self.assertEqual(response["Cache-Control"], "no-store")
 
     def test_post_valid_updates_preferences_and_redirects(self) -> None:
