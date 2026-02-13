@@ -78,7 +78,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
     conflict_of_interest = DelimitedListField(
         required=False,
         widget=forms.Textarea(attrs={"rows": 3}),
-        help_text="GitHub handles to avoid assigning together (comma or newline separated).",
+        help_text="GitHub handles of users whose PRs should not be assigned to you (comma or newline separated).",
     )
 
     class Meta:
@@ -94,6 +94,8 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self._user_timezone = user_timezone or timezone.get_current_timezone()
         tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
+        self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
+        self.fields["free_form"].help_text = "A free form description of your reviewing interests."
 
     def clean_away_until(self) -> object:
         value = self.cleaned_data.get("away_until")

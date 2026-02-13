@@ -237,6 +237,7 @@
             <div class="field checkbox">
               {{ form.auto_assign }}
               <label for="{{ form.auto_assign.id_for_label }}">{{ form.auto_assign.label }}</label>
+              {% if form.auto_assign.help_text %}<span class="help">{{ form.auto_assign.help_text }}</span>{% endif %}
               {% if form.auto_assign.errors %}<ul class="errors">{% for error in form.auto_assign.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
             </div>
 
@@ -264,16 +265,17 @@
             </div>
 
             <div class="field field-wide">
+              <label for="{{ form.free_form.id_for_label }}">{{ form.free_form.label }}</label>
+              {{ form.free_form }}
+              {% if form.free_form.help_text %}<span class="help">{{ form.free_form.help_text }}</span>{% endif %}
+              {% if form.free_form.errors %}<ul class="errors">{% for error in form.free_form.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
               <label for="{{ form.conflict_of_interest.id_for_label }}">{{ form.conflict_of_interest.label }}</label>
               {{ form.conflict_of_interest }}
               {% if form.conflict_of_interest.help_text %}<span class="help">{{ form.conflict_of_interest.help_text }}</span>{% endif %}
               {% if form.conflict_of_interest.errors %}<ul class="errors">{% for error in form.conflict_of_interest.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
-            </div>
-
-            <div class="field field-wide">
-              <label for="{{ form.free_form.id_for_label }}">{{ form.free_form.label }}</label>
-              {{ form.free_form }}
-              {% if form.free_form.errors %}<ul class="errors">{% for error in form.free_form.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
             </div>
           </div>
         </section>
