@@ -1,0 +1,71 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<h1>{% trans "Import reviewer_zulip_ids.json" %}</h1>
+
+<p>
+  <strong>{% trans "Field mapping" %}:</strong>
+  <ul>
+    <li>{% trans "github_login maps to User.github_login (case-insensitive lookup)." %}</li>
+    <li>{% trans "zulip_full_name maps to User.zulip_full_name." %}</li>
+    <li>{% trans "zulip_user_id maps to User.zulip_user_id and must be unique." %}</li>
+  </ul>
+</p>
+
+{% if result_summary %}
+<p><strong>{% trans "Summary" %}:</strong> {{ result_summary }}</p>
+{% endif %}
+
+{% if form.non_field_errors %}
+<ul class="errorlist">
+  {% for error in form.non_field_errors %}
+  <li>{{ error }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<form method="post" enctype="multipart/form-data" novalidate>
+  {% csrf_token %}
+  <table>
+    {% for field in form %}
+    <tr>
+      <th>{{ field.label_tag }}</th>
+      <td>
+        {{ field }}
+        {% if field.help_text %}
+        <br />
+        <small>{{ field.help_text }}</small>
+        {% endif %}
+        {% for error in field.errors %}
+        <p class="error">{{ error }}</p>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p><input type="submit" class="default" value="{% trans 'Import' %}" /></p>
+</form>
+
+{% if skipped_missing %}
+<h2>{% trans "Missing github_login entries" %}</h2>
+<ul>
+  {% for login in skipped_missing %}
+  <li>{{ login }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if conflicts %}
+<h2>{% trans "Skipped conflicts" %}</h2>
+<ul>
+  {% for line in conflicts %}
+  <li>{{ line }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<p><a href="{{ changelist_url }}">{% trans "Return to users" %}</a></p>
+{% endblock %}

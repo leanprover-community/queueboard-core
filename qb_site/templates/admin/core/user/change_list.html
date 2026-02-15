@@ -1,0 +1,16 @@
+{% extends "admin/change_list.html" %}
+{% load i18n %}
+
+{% block object-tools %}
+{{ block.super }}
+{% url 'admin:core_user_import_zulip_users' as fallback_import_url %}
+<div class="object-tools">
+  <ul class="object-tools">
+    <li>
+      <a href="{{ import_zulip_users_url|default:fallback_import_url }}" class="button">
+        {% trans "Import reviewer_zulip_ids.json" %}
+      </a>
+    </li>
+  </ul>
+</div>
+{% endblock %}

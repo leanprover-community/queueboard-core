@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 from django.contrib import admin
+from django.contrib import messages
 from django.urls import path, reverse
 from django.template.response import TemplateResponse
 from django import forms
 from django.utils.html import format_html
 from django.http import HttpResponseRedirect, HttpResponse
 from django.conf import settings
+from django.db import transaction
 from urllib.parse import quote_plus
 from collections import OrderedDict
 import json
 import ast
 
-from .models import Repository, ReviewerPreference, User, TaskResultLink
+from .models import Repository, ReviewerPreference, User
 from core.services.reviewer_topics_importer import (
     DEFAULT_REPO,
     ReviewerTopicsExportError,
@@ -85,6 +87,26 @@ class ReviewerTopicsExportForm(forms.Form):
 
     def clean_repo(self) -> str:
         return (self.cleaned_data["repo"] or "").strip()
+
+
+class UserZulipImportForm(forms.Form):
+    file = forms.FileField(
+        label="reviewer_zulip_ids.json",
+        help_text="Upload a JSON array with github_login, zulip_full_name, and zulip_user_id.",
+        widget=forms.ClearableFileInput(attrs={"accept": "application/json"}),
+    )
+    create_missing_users = forms.BooleanField(
+        label="Create missing users",
+        required=False,
+        initial=False,
+        help_text="Create a User row when github_login does not already exist.",
+    )
+    dry_run = forms.BooleanField(
+        label="Dry-run",
+        required=False,
+        initial=False,
+        help_text="Preview changes without writing to the database.",
+    )
 
 
 @admin.register(Repository)
@@ -506,6 +528,7 @@ class RepositoryAdmin(admin.ModelAdmin):
 
 @admin.register(User)
 class UserAdmin(admin.ModelAdmin):
+    change_list_template = "admin/core/user/change_list.html"
     list_display = (
         "github_login",
         "name",
@@ -519,6 +542,165 @@ class UserAdmin(admin.ModelAdmin):
     search_fields = ("github_login", "github_node_id", "zulip_full_name")
     list_filter = ("is_active",)
     readonly_fields = ("created_at", "updated_at")
+
+    def get_urls(self):  # type: ignore[override]
+        urls = super().get_urls()
+        custom = [
+            path(
+                "import-zulip-users/",
+                self.admin_site.admin_view(self.import_zulip_users_view),
+                name="core_user_import_zulip_users",
+            ),
+        ]
+        return custom + urls
+
+    def changelist_view(self, request, extra_context=None):  # type: ignore[override]
+        extra = extra_context or {}
+        extra["import_zulip_users_url"] = reverse("admin:core_user_import_zulip_users")
+        return super().changelist_view(request, extra_context=extra)
+
+    def import_zulip_users_view(self, request, *args, **kwargs):  # type: ignore[override]
+        result_summary: str | None = None
+        conflicts: list[str] = []
+        skipped_missing: list[str] = []
+
+        if request.method == "POST":
+            form = UserZulipImportForm(request.POST, request.FILES)
+            if form.is_valid():
+                uploaded_file = form.cleaned_data["file"]
+                create_missing_users = bool(form.cleaned_data["create_missing_users"])
+                dry_run = bool(form.cleaned_data["dry_run"])
+                try:
+                    payload = json.load(uploaded_file)
+                except json.JSONDecodeError as exc:
+                    form.add_error("file", f"Invalid JSON: {exc.msg}")
+                else:
+                    if not isinstance(payload, list):
+                        form.add_error("file", "Expected a JSON array of user entries.")
+                    else:
+                        parse_errors: list[str] = []
+                        seen_logins: set[str] = set()
+                        rows: list[tuple[str, str, int]] = []
+                        for idx, entry in enumerate(payload, start=1):
+                            if not isinstance(entry, dict):
+                                parse_errors.append(f"Row {idx}: expected an object.")
+                                continue
+                            raw_login = entry.get("github_login")
+                            raw_full_name = entry.get("zulip_full_name")
+                            raw_user_id = entry.get("zulip_user_id")
+                            if not isinstance(raw_login, str) or not raw_login.strip():
+                                parse_errors.append(f"Row {idx}: github_login must be a non-empty string.")
+                                continue
+                            if not isinstance(raw_full_name, str) or not raw_full_name.strip():
+                                parse_errors.append(f"Row {idx}: zulip_full_name must be a non-empty string.")
+                                continue
+                            if not isinstance(raw_user_id, int) or raw_user_id <= 0:
+                                parse_errors.append(f"Row {idx}: zulip_user_id must be a positive integer.")
+                                continue
+
+                            login = raw_login.strip()
+                            normalized = login.lower()
+                            if normalized in seen_logins:
+                                parse_errors.append(f"Row {idx}: duplicate github_login '{login}' in upload.")
+                                continue
+                            seen_logins.add(normalized)
+                            rows.append((login, raw_full_name.strip(), raw_user_id))
+
+                        if parse_errors:
+                            form.add_error(None, "Upload has invalid rows.")
+                            for err in parse_errors:
+                                form.add_error(None, err)
+                        else:
+                            created_users = 0
+                            updated_users = 0
+                            unchanged_users = 0
+                            with transaction.atomic():
+                                for github_login, zulip_full_name, zulip_user_id in rows:
+                                    user = (
+                                        User.objects.filter(github_login__iexact=github_login)
+                                        .only("id", "github_login", "zulip_full_name", "zulip_user_id")
+                                        .first()
+                                    )
+
+                                    if user is None:
+                                        if not create_missing_users:
+                                            skipped_missing.append(github_login)
+                                            continue
+                                        user = User(github_login=github_login)
+                                        created_users += 1
+
+                                    login_changed = False
+                                    if user.github_login != github_login:
+                                        user.github_login = github_login
+                                        login_changed = True
+
+                                    conflict_user = (
+                                        User.objects.filter(zulip_user_id=zulip_user_id)
+                                        .exclude(pk=user.pk)
+                                        .only("github_login")
+                                        .first()
+                                    )
+                                    if conflict_user is not None:
+                                        conflict_login = conflict_user.github_login or f"user#{conflict_user.pk}"
+                                        conflicts.append(
+                                            f"{github_login}: zulip_user_id {zulip_user_id} already belongs to {conflict_login}."
+                                        )
+                                        continue
+
+                                    changed = login_changed
+                                    if user.zulip_full_name != zulip_full_name:
+                                        user.zulip_full_name = zulip_full_name
+                                        changed = True
+                                    if user.zulip_user_id != zulip_user_id:
+                                        user.zulip_user_id = zulip_user_id
+                                        changed = True
+
+                                    if user.pk is None:
+                                        if dry_run:
+                                            continue
+                                        user.save()
+                                    elif changed:
+                                        updated_users += 1
+                                        if dry_run:
+                                            continue
+                                        user.save(update_fields=["github_login", "zulip_full_name", "zulip_user_id"])
+                                    else:
+                                        unchanged_users += 1
+
+                                if dry_run:
+                                    transaction.set_rollback(True)
+
+                            prefix = "Dry-run summary" if dry_run else "Import summary"
+                            result_summary = (
+                                f"{prefix}: rows={len(rows)}, created={created_users}, updated={updated_users}, "
+                                f"unchanged={unchanged_users}, missing={len(skipped_missing)}, conflicts={len(conflicts)}."
+                            )
+                            self.message_user(request, result_summary)
+                            if conflicts:
+                                self.message_user(
+                                    request,
+                                    f"Skipped {len(conflicts)} row(s) due to Zulip user ID conflicts.",
+                                    level=messages.WARNING,
+                                )
+                            if skipped_missing:
+                                self.message_user(
+                                    request,
+                                    f"Skipped {len(skipped_missing)} row(s) because github_login was not found.",
+                                    level=messages.WARNING,
+                                )
+        else:
+            form = UserZulipImportForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Import reviewer_zulip_ids.json",
+            "form": form,
+            "result_summary": result_summary,
+            "conflicts": conflicts,
+            "skipped_missing": skipped_missing,
+            "changelist_url": reverse("admin:core_user_changelist"),
+        }
+        return TemplateResponse(request, "admin/core/user/import_zulip_users.html", context)
 
 
 @admin.register(ReviewerPreference)
