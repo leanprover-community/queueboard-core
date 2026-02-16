@@ -5,9 +5,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from django.conf import settings
 from django.http import HttpRequest
 
-MENTION_PREFIX_RE = re.compile(r"^@\*\*.+?\*\*(?:[:,]\s*|\s+|$)")
+MENTION_PREFIX_RE = re.compile(r"^@\*\*(?P<name>.+?)\*\*(?:[:,]\s*|\s+|$)")
 
 
 @dataclass(frozen=True)
@@ -93,8 +94,8 @@ def parse_command(message_content: str) -> ParsedCommand | None:
     if not content:
         return None
 
-    content = _strip_leading_mentions(content)
-    if not content:
+    mention_match = MENTION_PREFIX_RE.match(content)
+    if mention_match and mention_match.end() == len(content):
         return None
 
     if content.startswith("/"):
@@ -106,9 +107,74 @@ def parse_command(message_content: str) -> ParsedCommand | None:
     return ParsedCommand(name=name, args=args)
 
 
-def _strip_leading_mentions(content: str) -> str:
-    while True:
-        match = MENTION_PREFIX_RE.match(content)
-        if not match:
-            return content
-        content = content[match.end() :].lstrip()
+def has_leading_bot_mention(message_content: str, payload: dict[str, Any]) -> bool:
+    content = message_content.lstrip()
+    match = MENTION_PREFIX_RE.match(content)
+    if not match:
+        return False
+
+    mentioned_name = _normalize_mention_target(match.group("name"))
+    if not mentioned_name:
+        return False
+
+    bot_identifiers = _bot_mention_identifiers(payload)
+    if not bot_identifiers:
+        return False
+
+    return mentioned_name in bot_identifiers
+
+
+def strip_leading_bot_mention(message_content: str, payload: dict[str, Any]) -> str:
+    content = message_content.lstrip()
+    match = MENTION_PREFIX_RE.match(content)
+    if not match:
+        return content
+
+    mentioned_name = _normalize_mention_target(match.group("name"))
+    if not mentioned_name:
+        return content
+
+    bot_identifiers = _bot_mention_identifiers(payload)
+    if mentioned_name not in bot_identifiers:
+        return content
+
+    return content[match.end() :].lstrip()
+
+
+def _bot_mention_identifiers(payload: dict[str, Any]) -> set[str]:
+    identifiers: set[str] = set()
+
+    bot_full_name = payload.get("bot_full_name")
+    if isinstance(bot_full_name, str):
+        normalized = _normalize_mention_target(bot_full_name)
+        if normalized:
+            identifiers.add(normalized)
+
+    bot_email = payload.get("bot_email")
+    if isinstance(bot_email, str):
+        local_part = _email_local_part(bot_email)
+        if local_part:
+            identifiers.add(local_part)
+
+    configured_email = str(getattr(settings, "ZULIP_BOT_EMAIL", "")).strip()
+    local_part = _email_local_part(configured_email)
+    if local_part:
+        identifiers.add(local_part)
+
+    return identifiers
+
+
+def _email_local_part(value: str) -> str:
+    email = value.strip()
+    if not email:
+        return ""
+    return email.split("@", 1)[0].strip().lower()
+
+
+def _normalize_mention_target(value: str) -> str:
+    raw_target = value.strip()
+    if not raw_target:
+        return ""
+    target_without_id = raw_target.split("|", 1)[0]
+    normalized = re.sub(r"\s+", " ", target_without_id.strip()).lower()
+    return normalized

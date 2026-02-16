@@ -26,7 +26,13 @@ from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid,
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 from zulip_bot.webhook.context import build_context
 from zulip_bot.webhook.membership import GroupMembershipChecker
-from zulip_bot.webhook.payload import parse_command, parse_payload, validate_payload
+from zulip_bot.webhook.payload import (
+    has_leading_bot_mention,
+    parse_command,
+    parse_payload,
+    strip_leading_bot_mention,
+    validate_payload,
+)
 from zulip_bot.webhook.policy import allowed_command_names
 from zulip_bot.webhook.responses import (
     ignored_response,
@@ -70,6 +76,10 @@ def webhook(request: HttpRequest) -> HttpResponse:
             return ignored_response()
 
         context = build_context(parsed_payload.payload)
+        if not context.is_private and not has_leading_bot_mention(context.message_content, parsed_payload.payload):
+            logger.info("zulip_command_ignored", extra={"reason": "missing_leading_bot_mention"})
+            return ignored_response()
+
         checker = GroupMembershipChecker()
         allowed_names = allowed_command_names(context, checker)
     except Exception as exc:  # pragma: no cover - defensive guard
@@ -79,7 +89,11 @@ def webhook(request: HttpRequest) -> HttpResponse:
     try:
         context = replace(context, allowed_command_names=allowed_names)
 
-        parsed_command = parse_command(context.message_content)
+        command_content = context.message_content
+        if not context.is_private:
+            command_content = strip_leading_bot_mention(command_content, parsed_payload.payload)
+
+        parsed_command = parse_command(command_content)
         if parsed_command is None:
             return ignored_response()
 

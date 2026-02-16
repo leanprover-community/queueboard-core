@@ -10,7 +10,10 @@ from zulip_bot.webhook.membership import GroupMembershipCheckError
 from zulip_bot.tests.webhook_test_utils import WebhookTestMixin
 
 
-@override_settings(ZULIP_WEBHOOK_TOKEN="test-token")
+@override_settings(
+    ZULIP_WEBHOOK_TOKEN="test-token",
+    ZULIP_BOT_EMAIL="qb-bot@example.com",
+)
 class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     def assert_ignored(self, result: dict) -> None:
         self.assertEqual(result["status"], 200)
@@ -31,7 +34,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         }
     )
     def test_unknown_command_returns_help(self) -> None:
-        result = self._post_payload(self._payload(content="unknown", id=12, stream_id=5))
+        result = self._post_payload(self._payload(content="@**qb-bot** unknown", id=12, stream_id=5))
         self.assertEqual(result["status"], 200)
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn("Unknown command", result["json"]["content"])
@@ -44,7 +47,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         }
     )
     def test_unknown_command_ignored_when_no_commands_allowed(self) -> None:
-        result = self._post_payload(self._payload(content="unknown", id=14, stream_id=8))
+        result = self._post_payload(self._payload(content="@**qb-bot** unknown", id=14, stream_id=8))
         self.assert_ignored(result)
 
     @override_settings(
@@ -54,7 +57,16 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     )
     def test_bot_sender_is_ignored(self) -> None:
         self.mock_is_bot_sender.return_value = True
-        result = self._post_payload(self._payload(content="echo hello world", id=20, stream_id=5, sender_id=42))
+        result = self._post_payload(self._payload(content="@**qb-bot** echo hello world", id=20, stream_id=5, sender_id=42))
+        self.assert_ignored(result)
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "help": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
+        }
+    )
+    def test_stream_message_with_nonleading_mention_is_ignored(self) -> None:
+        result = self._post_payload(self._payload(content="Announcing @**qb-bot**: help", id=21, stream_id=5))
         self.assert_ignored(result)
 
     def test_invalid_json_payload_returns_400(self) -> None:
