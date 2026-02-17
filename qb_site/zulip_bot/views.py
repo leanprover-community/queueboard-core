@@ -22,7 +22,20 @@ from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
+from zulip_bot.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
+from zulip_bot.services.registration_links import (
+    RegistrationTokenExpired,
+    RegistrationTokenInvalid,
+    validate_registration_token,
+)
+from zulip_bot.services.registration_oauth_state import (
+    RegistrationOAuthStateExpired,
+    RegistrationOAuthStateInvalid,
+    RegistrationOAuthStateClaims,
+    issue_registration_oauth_state,
+    validate_registration_oauth_state,
+)
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 from zulip_bot.webhook.context import build_context
 from zulip_bot.webhook.membership import GroupMembershipChecker
@@ -187,6 +200,108 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
     return response
 
 
+def register_start(request: HttpRequest, token: str) -> HttpResponse:
+    try:
+        claims = validate_registration_token(token)
+    except RegistrationTokenExpired:
+        return _register_invalid_response(request, reason="expired")
+    except RegistrationTokenInvalid:
+        return _register_invalid_response(request, reason="invalid")
+
+    expires_at_unix = claims.exp
+    if expires_at_unix is None:
+        return _register_invalid_response(request, reason="invalid")
+    expires_at_utc = datetime.fromtimestamp(expires_at_unix, tz=dt_timezone.utc)
+    response = TemplateResponse(
+        request,
+        "zulip_bot/register_start.html",
+        {
+            "token": token,
+            "claims": claims,
+            "expires_at_unix": expires_at_unix,
+            "expires_at_iso": expires_at_utc.isoformat(),
+            "oauth_enabled": _github_oauth_is_configured(),
+        },
+        status=200,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def register_github_start(request: HttpRequest, token: str) -> HttpResponse:
+    try:
+        claims = validate_registration_token(token)
+    except RegistrationTokenExpired:
+        return _register_invalid_response(request, reason="expired")
+    except RegistrationTokenInvalid:
+        return _register_invalid_response(request, reason="invalid")
+
+    if not _github_oauth_is_configured():
+        return _register_invalid_response(request, reason="oauth_unavailable")
+
+    state = issue_registration_oauth_state(
+        claims=RegistrationOAuthStateClaims(
+            registration_token=token,
+            registration_nonce=claims.nonce or "",
+        )
+    )
+    redirect_uri = _github_oauth_redirect_uri(request)
+    if not redirect_uri:
+        return _register_invalid_response(request, reason="oauth_unavailable")
+    try:
+        auth_url = GitHubOAuthClient().build_authorize_url(state=state, redirect_uri=redirect_uri)
+    except GitHubOAuthError:
+        logger.exception("github_oauth_start_failed")
+        return _register_invalid_response(request, reason="oauth_unavailable")
+    return HttpResponseRedirect(auth_url)
+
+
+def register_github_callback(request: HttpRequest) -> HttpResponse:
+    state = (request.GET.get("state") or "").strip()
+    code = (request.GET.get("code") or "").strip()
+    if not state or not code:
+        return _register_invalid_response(request, reason="oauth_invalid")
+    try:
+        state_claims = validate_registration_oauth_state(state)
+    except RegistrationOAuthStateExpired:
+        return _register_invalid_response(request, reason="expired")
+    except RegistrationOAuthStateInvalid:
+        return _register_invalid_response(request, reason="oauth_invalid")
+
+    try:
+        registration_claims = validate_registration_token(state_claims.registration_token)
+    except RegistrationTokenExpired:
+        return _register_invalid_response(request, reason="expired")
+    except RegistrationTokenInvalid:
+        return _register_invalid_response(request, reason="invalid")
+
+    if registration_claims.nonce != state_claims.registration_nonce:
+        return _register_invalid_response(request, reason="oauth_invalid")
+
+    redirect_uri = _github_oauth_redirect_uri(request)
+    if not redirect_uri:
+        return _register_invalid_response(request, reason="oauth_unavailable")
+    try:
+        oauth_client = GitHubOAuthClient()
+        access_token = oauth_client.exchange_code_for_access_token(code=code, redirect_uri=redirect_uri)
+        identity = oauth_client.fetch_user_identity(access_token=access_token)
+    except GitHubOAuthError:
+        logger.exception("github_oauth_callback_failed")
+        return _register_invalid_response(request, reason="oauth_failed")
+
+    response = TemplateResponse(
+        request,
+        "zulip_bot/register_callback.html",
+        {
+            "registration_claims": registration_claims,
+            "identity": identity,
+        },
+        status=200,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
     response = TemplateResponse(
         request,
@@ -196,6 +311,30 @@ def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpRespons
     )
     response["Cache-Control"] = "no-store"
     return response
+
+
+def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
+    response = TemplateResponse(
+        request,
+        "zulip_bot/register_invalid.html",
+        {"reason": reason},
+        status=403,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _github_oauth_is_configured() -> bool:
+    client_id = getattr(settings, "GITHUB_OAUTH_CLIENT_ID", "").strip()
+    client_secret = getattr(settings, "GITHUB_OAUTH_CLIENT_SECRET", "").strip()
+    return bool(client_id and client_secret)
+
+
+def _github_oauth_redirect_uri(request: HttpRequest) -> str:
+    configured = getattr(settings, "GITHUB_OAUTH_REDIRECT_URI", "").strip()
+    if configured:
+        return configured
+    return request.build_absolute_uri(reverse("zulip-register-github-callback"))
 
 
 def _load_authorized_preferences(user_id: int, zulip_user_id: int, preference_ids: tuple[int, ...]) -> list[ReviewerPreference]:

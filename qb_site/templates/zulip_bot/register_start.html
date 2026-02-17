@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard registration</title>
+</head>
+<body>
+  <h1>Queueboard registration</h1>
+  <p>
+    Confirm your Queueboard identity by continuing with GitHub.
+    This link expires at <time datetime="{{ expires_at_iso }}"><span id="expires-at" data-expires-at="{{ expires_at_unix }}"></span></time>.
+  </p>
+  {% if oauth_enabled %}
+    <p>
+      <a href="{% url 'zulip-register-github-start' token=token %}">Continue with GitHub</a>
+    </p>
+  {% else %}
+    <p>GitHub OAuth is not configured yet. Please contact a Queueboard administrator.</p>
+  {% endif %}
+</body>
+</html>

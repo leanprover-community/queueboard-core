@@ -6,5 +6,8 @@ from zulip_bot import views
 
 urlpatterns = [
     path("webhook/", views.webhook, name="zulip-webhook"),
+    path("register/<str:token>/", views.register_start, name="zulip-register-start"),
+    path("register/<str:token>/github/", views.register_github_start, name="zulip-register-github-start"),
+    path("register/github/callback/", views.register_github_callback, name="zulip-register-github-callback"),
     path("prefs/<str:token>/", views.prefs_form, name="zulip-prefs-form"),
 ]

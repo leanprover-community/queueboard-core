@@ -8,6 +8,7 @@ from django.utils import timezone
 from core.models import ReviewerPreference, User
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
 from zulip_bot.services.prefs_links import PrefsLinkClaims, build_prefs_link
+from zulip_bot.services.registration_links import RegistrationLinkClaims, build_registration_link
 
 
 @register_command(
@@ -26,8 +27,18 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
 
     user = User.objects.filter(zulip_user_id=context.sender_id).only("id", "zulip_user_id").first()
     if user is None:
+        register_link = build_registration_link(
+            claims=RegistrationLinkClaims(
+                zulip_user_id=context.sender_id,
+                sender_email=context.sender_email,
+                sender_full_name=context.sender_full_name,
+            )
+        )
         return CommandResult(
-            content="No reviewer profile is linked to your Zulip account yet.",
+            content=(
+                "No reviewer profile is linked to your Zulip account yet. "
+                f"Use this private link to [start registration]({register_link})."
+            ),
             response_mode=ResponseMode.PRIVATE,
         )
 
