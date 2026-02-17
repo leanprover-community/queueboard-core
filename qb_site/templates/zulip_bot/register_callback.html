@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard registration</title>
+</head>
+<body>
+  <h1>GitHub verification complete</h1>
+  <p>Verified GitHub account: <strong>{{ identity.github_login }}</strong>.</p>
+  <p>GitHub node id: <code>{{ identity.github_node_id }}</code></p>
+  <p>Zulip user id: <code>{{ registration_claims.zulip_user_id }}</code></p>
+  <p>Account linking and preference bootstrap are the next implementation steps.</p>
+</body>
+</html>

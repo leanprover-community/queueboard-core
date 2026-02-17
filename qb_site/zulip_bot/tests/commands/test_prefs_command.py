@@ -37,6 +37,8 @@ class TestPrefsCommand(TestCase):
     def test_prefs_command_handles_missing_user_link(self) -> None:
         result = prefs_command(self._context(sender_id=101), "")
         self.assertIn("No reviewer profile is linked", result.content)
+        self.assertIn("[start registration](", result.content)
+        self.assertIn("https://queueboard.example/api/zulip/register/", result.content)
 
     def test_prefs_command_handles_missing_preferences(self) -> None:
         User.objects.create(github_login="reviewer", zulip_user_id=101)

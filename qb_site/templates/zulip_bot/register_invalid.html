@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard registration</title>
+</head>
+<body>
+  <h1>Registration link unavailable</h1>
+  {% if reason == "expired" %}
+    <p>This link has expired. Send <code>prefs</code> to the bot again for a fresh registration link.</p>
+  {% elif reason == "oauth_unavailable" %}
+    <p>GitHub OAuth is not configured yet. Please contact a Queueboard administrator.</p>
+  {% elif reason == "oauth_invalid" %}
+    <p>The GitHub OAuth response was invalid. Send <code>prefs</code> to the bot and try again.</p>
+  {% elif reason == "oauth_failed" %}
+    <p>GitHub OAuth verification failed. Send <code>prefs</code> to the bot and try again.</p>
+  {% else %}
+    <p>This link is invalid. Send <code>prefs</code> to the bot for a fresh registration link.</p>
+  {% endif %}
+</body>
+</html>
