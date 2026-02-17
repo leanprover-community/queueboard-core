@@ -71,7 +71,10 @@ If your team shares a deployed app, prefer separate local vs production OAuth ap
 
 ## 4) Quick Verification Checklist
 
-1. Ensure `prefs` from Zulip returns a registration link for an unlinked user.
+0. Add a command policy entry for live testing, for example:
+   - `register_test`: allow your admin/test Zulip group in `dm`.
+1. Send `register_test` to the bot in a DM.
+   - Bot should return a fresh registration link regardless of whether a Queueboard user row already exists.
 2. Open registration link:
    - Page should show `Continue with GitHub` when OAuth is configured.
 3. Click `Continue with GitHub`:
@@ -82,6 +85,17 @@ If your team shares a deployed app, prefer separate local vs production OAuth ap
    - verified GitHub login
    - GitHub node id
    - Zulip user id from registration claims
+
+Example policy snippet:
+
+```json
+{
+  "register_test": {
+    "allowed_groups": [1234],
+    "allowed_contexts": ["dm"]
+  }
+}
+```
 
 ## 5) Common Failure Modes
 

@@ -56,6 +56,10 @@
     - `test_registration_start`
     - `test_registration_oauth_state`
     - `test_github_oauth`
+- Completed in this increment (third chunk):
+  - Added `register_test` Zulip command that returns a private registration link for live OAuth verification.
+  - Added command tests:
+    - `test_register_test_command`
 - Not yet implemented in this increment:
   - Account-link/create transaction logic.
   - Preference bootstrap after successful link.
