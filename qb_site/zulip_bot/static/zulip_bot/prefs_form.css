@@ -83,6 +83,27 @@ input[type="checkbox"] {
   min-height: 42px;
 }
 
+.topic-label-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.topic-label-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 42px;
+  background: #fff;
+}
+
+.warning {
+  color: #92400e;
+}
+
 .help {
   margin-top: 0;
   font-size: 0.85rem;
@@ -170,6 +191,15 @@ button:disabled {
 
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .topic-label-selector {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .topic-label-option {
+    min-height: 44px;
   }
 
   .away-row {

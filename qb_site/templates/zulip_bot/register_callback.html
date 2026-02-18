@@ -11,7 +11,7 @@
 <body>
   <main class="page">
     <section class="hero">
-      <h1>GitHub Verification Complete</h1>
+      <h1>GitHub verification complete</h1>
       <p class="meta">Your Zulip identity is now connected to GitHub for Queueboard.</p>
     </section>
 
@@ -29,6 +29,7 @@
           created <code>{{ bootstrap_result.created_count }}</code>,
           existing <code>{{ bootstrap_result.existing_count }}</code>.
         </li>
+        <li>created preferences: <code>{{ bootstrap_result.created_count }}</code></li>
       </ul>
 
       {% if prefs_link %}

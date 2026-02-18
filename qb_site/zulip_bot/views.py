@@ -17,6 +17,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from core.models import ReviewerPreference, User
+from syncer.models import LabelDef
 from zulip_bot.commands import CommandResult, ResponseMode, get_command
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
@@ -164,6 +165,11 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
         .select_related("repository", "user")
         .order_by(ordering)
     )
+    repo_ids = sorted({pref.repository_id for pref in prefs})
+    label_catalog_by_repo: dict[int, list[str]] = {}
+    label_rows = LabelDef.objects.filter(repository_id__in=repo_ids).values_list("repository_id", "name")
+    for repository_id, label_name in label_rows:
+        label_catalog_by_repo.setdefault(int(repository_id), []).append(str(label_name))
 
     submitted = request.method == "GET" and request.GET.get("saved") == "1"
     saved_at: datetime | None = None
@@ -172,7 +178,7 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
             formset = ReviewerPreferenceFormSet(
                 request.POST,
                 queryset=queryset,
-                form_kwargs={"user_timezone": user_timezone},
+                form_kwargs={"user_timezone": user_timezone, "label_catalog_by_repo": label_catalog_by_repo},
             )
             if formset.is_valid():
                 formset.save()
@@ -181,7 +187,7 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
         else:
             formset = ReviewerPreferenceFormSet(
                 queryset=queryset,
-                form_kwargs={"user_timezone": user_timezone},
+                form_kwargs={"user_timezone": user_timezone, "label_catalog_by_repo": label_catalog_by_repo},
             )
         if submitted:
             saved_at = timezone.localtime(timezone.now(), user_timezone)
