@@ -1,22 +1,35 @@
+{% load static %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Queueboard registration</title>
+  <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
 </head>
 <body>
-  <h1>Queueboard registration</h1>
-  <p>
-    Confirm your Queueboard identity by continuing with GitHub.
-    This link expires at <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time>.
-  </p>
-  {% if oauth_enabled %}
-    <p>
-      <a href="{% url 'zulip-register-github-start' token=token %}">Continue with GitHub</a>
-    </p>
-  {% else %}
-    <p>GitHub OAuth is not configured yet. Please contact a Queueboard administrator.</p>
-  {% endif %}
+  <main class="page">
+    <section class="hero">
+      <h1>Queueboard Registration</h1>
+      <p class="meta">Connect your Zulip account to GitHub so Queueboard can safely identify you.</p>
+    </section>
+
+    <section class="card">
+      <p class="expires">
+        This link expires at <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time>.
+      </p>
+
+      {% if oauth_enabled %}
+        <div class="callout">
+          Next step: click the button below to verify with GitHub.
+        </div>
+        <a class="cta" href="{% url 'zulip-register-github-start' token=token %}">Continue with GitHub</a>
+        <p class="help">After verification, we will send you a direct link to finalize your reviewer preferences.</p>
+      {% else %}
+        <div class="callout">GitHub OAuth is not configured yet. Please contact a Queueboard administrator.</div>
+      {% endif %}
+    </section>
+  </main>
 </body>
 </html>

@@ -60,8 +60,8 @@ class TestRegistrationCallbackLinking(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Link outcome")
-        self.assertContains(response, "Preference bootstrap complete")
-        self.assertContains(response, "Edit preferences")
+        self.assertContains(response, "finalize your reviewer preferences")
+        self.assertContains(response, "Edit Preferences Now")
         self.assertContains(response, "/api/zulip/prefs/")
         self.assertContains(response, "Sent a confirmation DM")
         user = User.objects.get(github_node_id="U_node_1")
@@ -71,7 +71,7 @@ class TestRegistrationCallbackLinking(TestCase):
         dm_kwargs = mock_zulip_client_cls.return_value.send_direct_message.call_args.kwargs
         self.assertEqual(dm_kwargs["to"], [101])
         self.assertIn("Successfully linked your Zulip account with GitHub user `reviewer`", dm_kwargs["content"])
-        self.assertIn("[open your reviewer preferences form](", dm_kwargs["content"])
+        self.assertIn("[finalize your reviewer preferences](", dm_kwargs["content"])
         self.assertIn("<time:", dm_kwargs["content"])
 
     def test_callback_returns_conflict_page_for_existing_other_zulip_link(self) -> None:

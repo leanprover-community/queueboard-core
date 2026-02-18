@@ -1,0 +1,130 @@
+:root {
+  --bg: #f7f9fc;
+  --card: #ffffff;
+  --ink: #0f172a;
+  --muted: #475569;
+  --border: #dbe3ef;
+  --ok-bg: #ecfdf3;
+  --ok-fg: #166534;
+  --ok-border: #a7f3d0;
+  --error-bg: #fff1f2;
+  --error-fg: #9f1239;
+  --error-border: #fecdd3;
+  --warn-bg: #fff7ed;
+  --warn-fg: #9a3412;
+  --warn-border: #fed7aa;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top, #edf4ff 0%, var(--bg) 45%, #f8fafc 100%);
+  color: var(--ink);
+  font-family: "Work Sans", "Segoe UI", sans-serif;
+  line-height: 1.45;
+}
+
+.page {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 40px;
+}
+
+.hero {
+  background: linear-gradient(135deg, #0f766e, #0e7490);
+  color: #f8fafc;
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+.hero h1 {
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+  letter-spacing: 0.01em;
+}
+
+.meta {
+  color: #d8f3f2;
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.status {
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-size: 0.95rem;
+}
+
+.status-ok {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+  border: 1px solid var(--ok-border);
+}
+
+.status-error {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  border: 1px solid var(--error-border);
+}
+
+.status-warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border: 1px solid var(--warn-border);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+}
+
+.cta {
+  display: inline-block;
+  border-radius: 10px;
+  padding: 10px 16px;
+  text-decoration: none;
+  background: var(--accent);
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.cta:hover {
+  background: var(--accent-strong);
+}
+
+.help {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.9em;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding: 14px 10px 30px;
+  }
+
+  .hero {
+    border-radius: 10px;
+    padding: 14px;
+  }
+
+  .cta {
+    width: 100%;
+    text-align: center;
+  }
+}
