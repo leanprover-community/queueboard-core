@@ -29,6 +29,7 @@ class TestRegistrationStart(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Queueboard registration")
         self.assertContains(response, "Continue with GitHub")
+        self.assertContains(response, "This link expires at")
         self.assertEqual(response["Cache-Control"], "no-store")
 
     def test_invalid_token_returns_forbidden(self) -> None:

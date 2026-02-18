@@ -34,10 +34,14 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
                 sender_full_name=context.sender_full_name,
             )
         )
+        ttl_seconds = int(getattr(settings, "ZULIP_REGISTRATION_TOKEN_TTL_SECONDS", 1800))
+        expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+        expires_unix = int(expires_at.timestamp())
         return CommandResult(
             content=(
                 "No reviewer profile is linked to your Zulip account yet. "
-                f"Use this private link to [start registration]({register_link})."
+                f"Use this private link to [start registration]({register_link}). "
+                f"It expires at <time:{expires_unix}>."
             ),
             response_mode=ResponseMode.PRIVATE,
         )
