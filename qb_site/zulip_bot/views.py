@@ -30,6 +30,7 @@ from zulip_bot.services.registration_links import (
     RegistrationTokenInvalid,
     validate_registration_token,
 )
+from zulip_bot.services.registration_linking import RegistrationLinkConflict, link_or_create_user_from_registration
 from zulip_bot.services.registration_oauth_state import (
     RegistrationOAuthStateExpired,
     RegistrationOAuthStateInvalid,
@@ -289,6 +290,15 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
     except GitHubOAuthError:
         logger.exception("github_oauth_callback_failed")
         return _register_invalid_response(request, reason="oauth_failed")
+    try:
+        link_result = link_or_create_user_from_registration(
+            zulip_user_id=registration_claims.zulip_user_id,
+            zulip_full_name=registration_claims.sender_full_name,
+            identity=identity,
+        )
+    except RegistrationLinkConflict:
+        logger.info("registration_link_conflict", extra={"reason": "link_conflict"})
+        return _register_invalid_response(request, reason="link_conflict")
 
     response = TemplateResponse(
         request,
@@ -296,6 +306,7 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
         {
             "registration_claims": registration_claims,
             "identity": identity,
+            "link_result": link_result,
         },
         status=200,
     )

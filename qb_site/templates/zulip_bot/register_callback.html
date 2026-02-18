@@ -10,6 +10,8 @@
   <p>Verified GitHub account: <strong>{{ identity.github_login }}</strong>.</p>
   <p>GitHub node id: <code>{{ identity.github_node_id }}</code></p>
   <p>Zulip user id: <code>{{ registration_claims.zulip_user_id }}</code></p>
-  <p>Account linking and preference bootstrap are the next implementation steps.</p>
+  <p>Link outcome: <strong>{{ link_result.outcome }}</strong></p>
+  <p>Queueboard user id: <code>{{ link_result.user.id }}</code></p>
+  <p>Preference bootstrap is the next implementation step.</p>
 </body>
 </html>
