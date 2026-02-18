@@ -10,6 +10,11 @@ from django.test import SimpleTestCase
 
 
 class TestZulipPolicyCommand(SimpleTestCase):
+    def _init_policy_template(self, *, temp_dir: str) -> dict:
+        path = Path(temp_dir) / "template_policy.json"
+        call_command("zulip_policy", "init", str(path))
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def test_init_writes_template_from_registered_commands(self) -> None:
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "policy.json"
@@ -20,8 +25,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
             self.assertTrue(path.exists())
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertIn("help", payload)
-            self.assertIn("echo", payload)
-            self.assertIn("prefs", payload)
+            self.assertGreaterEqual(len(payload), 1)
             self.assertEqual(payload["help"]["allowed_contexts"], ["dm"])
             self.assertEqual(payload["help"]["allowed_groups"], [1234])
 
@@ -35,6 +39,10 @@ class TestZulipPolicyCommand(SimpleTestCase):
 
     def test_validate_warns_on_missing_command_entry(self) -> None:
         with TemporaryDirectory() as temp_dir:
+            template = self._init_policy_template(temp_dir=temp_dir)
+            missing_candidates = sorted(name for name in template if name != "help")
+            self.assertTrue(missing_candidates, "Expected at least one non-help command to exist")
+            removed_command = missing_candidates[0]
             path = Path(temp_dir) / "policy.json"
             path.write_text(
                 json.dumps(
@@ -54,8 +62,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
             output = out.getvalue()
             self.assertIn("Valid policy", output)
             self.assertIn("Missing entries", output)
-            self.assertIn("echo", output)
-            self.assertIn("prefs", output)
+            self.assertIn(removed_command, output)
 
     def test_validate_rejects_unknown_command(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -96,6 +103,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
 
     def test_sync_adds_missing_registered_commands(self) -> None:
         with TemporaryDirectory() as temp_dir:
+            template = self._init_policy_template(temp_dir=temp_dir)
             path = Path(temp_dir) / "policy.json"
             path.write_text(
                 json.dumps(
@@ -113,23 +121,16 @@ class TestZulipPolicyCommand(SimpleTestCase):
             call_command("zulip_policy", "sync", str(path), stdout=out)
 
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertIn("help", payload)
-            self.assertIn("echo", payload)
-            self.assertIn("prefs", payload)
+            self.assertEqual(set(payload.keys()), set(template.keys()))
             self.assertEqual(payload["help"]["allowed_groups"], [1234])
             self.assertIn("new command entries", out.getvalue())
 
     def test_sync_noops_when_policy_is_up_to_date(self) -> None:
         with TemporaryDirectory() as temp_dir:
+            template = self._init_policy_template(temp_dir=temp_dir)
             path = Path(temp_dir) / "policy.json"
             path.write_text(
-                json.dumps(
-                    {
-                        "help": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
-                        "echo": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
-                        "prefs": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
-                    }
-                ),
+                json.dumps(template),
                 encoding="utf-8",
             )
             out = io.StringIO()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from django.test import SimpleTestCase, override_settings
 
 from zulip_bot.commands import CommandContext
@@ -25,6 +27,7 @@ class TestRegisterTestCommand(SimpleTestCase):
         result = register_test_command(self._context(sender_id=101), "")
         self.assertIn("[test registration via GitHub OAuth](", result.content)
         self.assertIn("https://queueboard.example/api/zulip/register/", result.content)
+        self.assertRegex(result.content, re.compile(r"<time:\d+>"))
 
     def test_register_test_handles_missing_sender_identity(self) -> None:
         result = register_test_command(self._context(sender_id=None), "")

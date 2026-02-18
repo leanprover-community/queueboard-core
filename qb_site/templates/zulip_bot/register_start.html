@@ -9,7 +9,7 @@
   <h1>Queueboard registration</h1>
   <p>
     Confirm your Queueboard identity by continuing with GitHub.
-    This link expires at <time datetime="{{ expires_at_iso }}"><span id="expires-at" data-expires-at="{{ expires_at_unix }}"></span></time>.
+    This link expires at <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time>.
   </p>
   {% if oauth_enabled %}
     <p>
