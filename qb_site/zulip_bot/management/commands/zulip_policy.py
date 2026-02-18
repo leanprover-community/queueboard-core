@@ -94,7 +94,7 @@ class Command(BaseCommand):
         path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
         self.stdout.write(self.style.SUCCESS(f"Updated policy with {len(missing)} new command entries: {', '.join(missing)}"))
 
-    def _read_policy(self, path: Path) -> dict[str, dict[str, list[Any]]]:
+    def _read_policy(self, path: Path) -> dict[str, dict[str, list[int | str]]]:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -103,24 +103,25 @@ class Command(BaseCommand):
             raise CommandError(f"invalid JSON at line {exc.lineno} column {exc.colno}: {exc.msg}") from exc
         return self._validate_policy(raw)
 
-    def _template_policy(self) -> dict[str, dict[str, list[Any]]]:
-        template: dict[str, dict[str, list[Any]]] = {}
+    def _template_policy(self) -> dict[str, dict[str, list[int | str]]]:
+        template: dict[str, dict[str, list[int | str]]] = {}
         for command in list_commands():
             template[command.name] = self._skeleton_rule()
         return template
 
-    def _skeleton_rule(self) -> dict[str, list[Any]]:
+    def _skeleton_rule(self) -> dict[str, list[int | str]]:
         return {
             "allowed_groups": [1234],
+            "allowed_user_ids": [],
             "allowed_contexts": ["dm"],
         }
 
-    def _validate_policy(self, policy: Any) -> dict[str, dict[str, list[Any]]]:
+    def _validate_policy(self, policy: Any) -> dict[str, dict[str, list[int | str]]]:
         if not isinstance(policy, dict):
             raise CommandError("policy must be a JSON object keyed by command name")
 
         known_commands = {command.name for command in list_commands()}
-        normalized: dict[str, dict[str, list[Any]]] = {}
+        normalized: dict[str, dict[str, list[int | str]]] = {}
 
         for command, rule in policy.items():
             if not isinstance(command, str) or not command.strip():
@@ -130,11 +131,12 @@ class Command(BaseCommand):
             if not isinstance(rule, dict):
                 raise CommandError(f"rule for '{command}' must be an object")
 
-            unknown = sorted(set(rule.keys()) - {"allowed_groups", "allowed_contexts"})
+            unknown = sorted(set(rule.keys()) - {"allowed_groups", "allowed_user_ids", "allowed_contexts"})
             if unknown:
                 raise CommandError(f"rule for '{command}' has unknown keys: {', '.join(unknown)}")
 
             allowed_groups = rule.get("allowed_groups", [])
+            allowed_user_ids = rule.get("allowed_user_ids", [])
             allowed_contexts = rule.get("allowed_contexts", [])
 
             if not isinstance(allowed_groups, list):
@@ -145,6 +147,14 @@ class Command(BaseCommand):
             ):
                 raise CommandError(f"rule for '{command}'.allowed_groups must contain positive integers or '*'/'all'")
 
+            if not isinstance(allowed_user_ids, list):
+                raise CommandError(f"rule for '{command}'.allowed_user_ids must be a list")
+            if not all(
+                (isinstance(item, int) and item > 0) or (isinstance(item, str) and item.lower() in {"*", "all"})
+                for item in allowed_user_ids
+            ):
+                raise CommandError(f"rule for '{command}'.allowed_user_ids must contain positive integers or '*'/'all'")
+
             if not isinstance(allowed_contexts, list):
                 raise CommandError(f"rule for '{command}'.allowed_contexts must be a list")
             if not all(isinstance(item, str) and item for item in allowed_contexts):
@@ -154,6 +164,7 @@ class Command(BaseCommand):
 
             normalized[command] = {
                 "allowed_groups": allowed_groups,
+                "allowed_user_ids": allowed_user_ids,
                 "allowed_contexts": allowed_contexts,
             }
 
