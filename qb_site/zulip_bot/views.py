@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,7 +25,13 @@ from zulip_bot.commands import register_test as _register_test  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from zulip_bot.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
-from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
+from zulip_bot.services.prefs_links import (
+    PrefsLinkClaims,
+    PrefsTokenExpired,
+    PrefsTokenInvalid,
+    build_prefs_link,
+    validate_prefs_token,
+)
 from zulip_bot.services.registration_links import (
     RegistrationTokenExpired,
     RegistrationTokenInvalid,
@@ -301,6 +307,16 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
         logger.info("registration_link_conflict", extra={"reason": "link_conflict"})
         return _register_invalid_response(request, reason="link_conflict")
     bootstrap_result = ensure_default_preferences_for_user(user=link_result.user)
+    prefs_link, prefs_expires_unix, prefs_expires_iso = _build_prefs_link_for_user(
+        user=link_result.user,
+        zulip_user_id=registration_claims.zulip_user_id,
+    )
+    dm_sent = _send_registration_success_dm(
+        zulip_user_id=registration_claims.zulip_user_id,
+        github_login=identity.github_login,
+        prefs_link=prefs_link,
+        prefs_expires_unix=prefs_expires_unix,
+    )
 
     response = TemplateResponse(
         request,
@@ -310,6 +326,10 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
             "identity": identity,
             "link_result": link_result,
             "bootstrap_result": bootstrap_result,
+            "prefs_link": prefs_link,
+            "prefs_expires_unix": prefs_expires_unix,
+            "prefs_expires_iso": prefs_expires_iso,
+            "dm_sent": dm_sent,
         },
         status=200,
     )
@@ -337,6 +357,49 @@ def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResp
     )
     response["Cache-Control"] = "no-store"
     return response
+
+
+def _build_prefs_link_for_user(*, user: User, zulip_user_id: int) -> tuple[str | None, int | None, str | None]:
+    preference_ids = tuple(ReviewerPreference.objects.filter(user_id=user.id).values_list("id", flat=True).order_by("id"))
+    if not preference_ids:
+        return (None, None, None)
+    prefs_link = build_prefs_link(
+        claims=PrefsLinkClaims(
+            user_id=user.id,
+            zulip_user_id=zulip_user_id,
+            preference_ids=preference_ids,
+        )
+    )
+    ttl_seconds = int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
+    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+    expires_unix = int(expires_at.timestamp())
+    return (prefs_link, expires_unix, datetime.fromtimestamp(expires_unix, tz=dt_timezone.utc).isoformat())
+
+
+def _send_registration_success_dm(
+    *,
+    zulip_user_id: int,
+    github_login: str,
+    prefs_link: str | None,
+    prefs_expires_unix: int | None,
+) -> bool:
+    if prefs_link and prefs_expires_unix:
+        content = (
+            f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
+            f"Use this private link to [open your reviewer preferences form]({prefs_link}). "
+            f"It expires at <time:{prefs_expires_unix}>."
+        )
+    else:
+        content = (
+            f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
+            "You do not currently have any reviewer preferences to edit."
+        )
+    try:
+        ZulipClient().send_direct_message(to=[zulip_user_id], content=content)
+    except ZulipApiError:
+        logger.exception("registration_success_dm_failed", extra={"zulip_user_id": zulip_user_id})
+        return False
+    return True
 
 
 def _github_oauth_is_configured() -> bool:

@@ -18,5 +18,19 @@
     created preferences: <code>{{ bootstrap_result.created_count }}</code>,
     existing preferences: <code>{{ bootstrap_result.existing_count }}</code>.
   </p>
+  {% if prefs_link %}
+    <p>
+      Open your reviewer preferences form:
+      <a href="{{ prefs_link }}">Edit preferences</a>
+      (expires at <time datetime="{{ prefs_expires_iso }}">{{ prefs_expires_iso }}</time>).
+    </p>
+  {% else %}
+    <p>No preferences are available to edit yet.</p>
+  {% endif %}
+  {% if dm_sent %}
+    <p>Sent a confirmation DM in Zulip with the same preferences link.</p>
+  {% else %}
+    <p>Could not send confirmation DM in Zulip; please use the link on this page.</p>
+  {% endif %}
 </body>
 </html>

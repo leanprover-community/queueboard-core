@@ -120,6 +120,7 @@ class TestRegistrationStart(TestCase):
                     github_avatar_url="https://example.com/avatar.png",
                 ),
             ),
+            patch("zulip_bot.views.ZulipClient"),
         ):
             response = self.client.get(
                 reverse("zulip-register-github-callback"),
