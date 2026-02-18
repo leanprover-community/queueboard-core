@@ -36,6 +36,55 @@ class TestZulipClient(SimpleTestCase):
 
         self.assertEqual(mock_request.call_args.kwargs["params"], {"include_deactivated_groups": "true"})
 
+    def test_send_direct_message_json_encodes_recipients(self) -> None:
+        with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
+            client = ZulipClient()
+            client.send_direct_message(to=[101], content="hello")
+
+        self.assertEqual(
+            mock_request.call_args.kwargs["data"],
+            {
+                "type": "direct",
+                "to": "[101]",
+                "content": "hello",
+            },
+        )
+
+    def test_send_stream_message_uses_stream_payload_shape(self) -> None:
+        with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
+            client = ZulipClient()
+            client.send_stream_message(stream=5, topic="topic", content="hello stream")
+
+        self.assertEqual(
+            mock_request.call_args.kwargs["data"],
+            {
+                "type": "stream",
+                "to": 5,
+                "topic": "topic",
+                "content": "hello stream",
+            },
+        )
+
+    def test_update_user_group_members_json_encodes_lists(self) -> None:
+        with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
+            client = ZulipClient()
+            client.update_user_group_members(user_group_id=123, add=[1, 2], delete=[3])
+
+        self.assertEqual(
+            mock_request.call_args.kwargs["data"],
+            {
+                "add": "[1, 2]",
+                "delete": "[3]",
+            },
+        )
+
+    def test_get_user_group_members_encodes_direct_member_only_as_json_bool(self) -> None:
+        with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
+            client = ZulipClient()
+            client.get_user_group_members(user_group_id=123, direct_member_only=True)
+
+        self.assertEqual(mock_request.call_args.kwargs["params"], {"direct_member_only": "true"})
+
     @override_settings(ZULIP_USER_EMAIL="", ZULIP_USER_API_KEY="")
     def test_group_membership_requires_user_credentials_when_missing(self) -> None:
         with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:

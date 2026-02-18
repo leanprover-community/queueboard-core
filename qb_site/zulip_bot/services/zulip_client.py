@@ -53,9 +53,10 @@ class ZulipClient:
         return self._request("POST", "/messages", data=data)
 
     def send_direct_message(self, *, to: Iterable[str | int], content: str) -> dict[str, Any]:
+        # Zulip expects "to" as a JSON-encoded array in form payloads.
         data = {
             "type": "direct",
-            "to": list(to),
+            "to": json.dumps(list(to)),
             "content": content,
         }
         return self._request("POST", "/messages", data=data)
@@ -77,11 +78,13 @@ class ZulipClient:
         params = {"direct_member_only": json.dumps(direct_member_only)}
         return self._request("GET", f"/user_groups/{user_group_id}/members/{user_id}", params=params, auth_mode="user_required")
 
-    def get_user_group_members(self, *, user_group_id: int) -> dict[str, Any]:
-        return self._request("GET", f"/user_groups/{user_group_id}/members")
+    def get_user_group_members(self, *, user_group_id: int, direct_member_only: bool = False) -> dict[str, Any]:
+        params = {"direct_member_only": json.dumps(direct_member_only)}
+        return self._request("GET", f"/user_groups/{user_group_id}/members", params=params)
 
     def update_user_group_members(self, *, user_group_id: int, add: list[int], delete: list[int]) -> dict[str, Any]:
-        data = {"add": add, "delete": delete}
+        # Zulip expects array parameters as JSON-encoded strings in form payloads.
+        data = {"add": json.dumps(add), "delete": json.dumps(delete)}
         return self._request("POST", f"/user_groups/{user_group_id}/members", data=data)
 
     def _request(
