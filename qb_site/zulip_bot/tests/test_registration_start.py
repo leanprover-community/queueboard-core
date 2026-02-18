@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
-from django.test import SimpleTestCase, override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from zulip_bot.services.github_oauth import GitHubUserIdentity
@@ -11,7 +11,7 @@ from zulip_bot.services.registration_oauth_state import validate_registration_oa
 from zulip_bot.services.registration_links import RegistrationLinkClaims, issue_registration_token
 
 
-class TestRegistrationStart(SimpleTestCase):
+class TestRegistrationStart(TestCase):
     def _token(self) -> str:
         return issue_registration_token(
             claims=RegistrationLinkClaims(

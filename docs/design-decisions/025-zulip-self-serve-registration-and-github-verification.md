@@ -60,8 +60,16 @@
   - Added `register_test` Zulip command that returns a private registration link for live OAuth verification.
   - Added command tests:
     - `test_register_test_command`
+- Completed in this increment (fourth chunk):
+  - Added DB linking service:
+    - `qb_site/zulip_bot/services/registration_linking.py`
+  - GitHub OAuth callback now performs link/create in `core.User` with conflict handling.
+  - Callback success page now reports link outcome and Queueboard user id.
+  - Added link conflict UI handling in registration invalid page.
+  - Added tests:
+    - `test_registration_linking`
+    - `test_registration_callback_linking`
 - Not yet implemented in this increment:
-  - Account-link/create transaction logic.
   - Preference bootstrap after successful link.
 
 ## Detailed Flow
@@ -138,12 +146,15 @@
 - Current registration entrypoint is intentionally a placeholder page:
   - It validates token integrity/expiry and provides OAuth entry when configured.
 - Callback page is intentionally a placeholder:
-  - OAuth identity proof is completed and displayed.
-  - DB linking and preference bootstrap are still pending in the next chunk.
+  - OAuth identity proof and DB linking are completed and displayed.
+  - Preference bootstrap is still pending.
 - OAuth callback protection:
   - Callback `state` is encrypted/signed and short-lived.
   - `state` includes both the registration token and registration nonce.
   - Callback re-validates registration token and enforces nonce equality to prevent token/state mix-and-match.
+- Link conflict policy implemented:
+  - If GitHub account is already linked to a different Zulip id, callback returns a conflict page (no reassignment).
+  - If a GitHub login matches an existing row bound to a different `github_node_id`, callback returns conflict.
 - The registration token includes sender metadata (`sender_email`, `sender_full_name`) as convenience context only; identity authority remains Zulip sender id + future GitHub OAuth proof.
 
 ## Data and Model Notes
