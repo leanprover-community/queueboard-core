@@ -9,6 +9,7 @@ from core.models import Repository, ReviewerPreference, User
 from zulip_bot.services.github_oauth import GitHubUserIdentity
 from zulip_bot.services.registration_links import RegistrationLinkClaims, issue_registration_token
 from zulip_bot.services.registration_oauth_state import RegistrationOAuthStateClaims, issue_registration_oauth_state
+from zulip_bot.services.zulip_client import ZulipApiError
 
 
 @override_settings(
@@ -50,6 +51,7 @@ class TestRegistrationCallbackLinking(TestCase):
         with (
             patch("zulip_bot.views.GitHubOAuthClient.exchange_code_for_access_token", return_value="access-token"),
             patch("zulip_bot.views.GitHubOAuthClient.fetch_user_identity", return_value=self._identity()),
+            patch("zulip_bot.views.ZulipClient") as mock_zulip_client_cls,
         ):
             response = self.client.get(
                 reverse("zulip-register-github-callback"),
@@ -59,9 +61,18 @@ class TestRegistrationCallbackLinking(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Link outcome")
         self.assertContains(response, "Preference bootstrap complete")
+        self.assertContains(response, "Edit preferences")
+        self.assertContains(response, "/api/zulip/prefs/")
+        self.assertContains(response, "Sent a confirmation DM")
         user = User.objects.get(github_node_id="U_node_1")
         self.assertEqual(user.zulip_user_id, 101)
         self.assertEqual(ReviewerPreference.objects.filter(user=user).count(), 1)
+        mock_zulip_client_cls.return_value.send_direct_message.assert_called_once()
+        dm_kwargs = mock_zulip_client_cls.return_value.send_direct_message.call_args.kwargs
+        self.assertEqual(dm_kwargs["to"], [101])
+        self.assertIn("Successfully linked your Zulip account with GitHub user `reviewer`", dm_kwargs["content"])
+        self.assertIn("[open your reviewer preferences form](", dm_kwargs["content"])
+        self.assertIn("<time:", dm_kwargs["content"])
 
     def test_callback_returns_conflict_page_for_existing_other_zulip_link(self) -> None:
         User.objects.create(github_node_id="U_node_1", github_login="reviewer", zulip_user_id=202)
@@ -86,6 +97,7 @@ class TestRegistrationCallbackLinking(TestCase):
         with (
             patch("zulip_bot.views.GitHubOAuthClient.exchange_code_for_access_token", return_value="access-token"),
             patch("zulip_bot.views.GitHubOAuthClient.fetch_user_identity", return_value=self._identity()),
+            patch("zulip_bot.views.ZulipClient"),
         ):
             response = self.client.get(
                 reverse("zulip-register-github-callback"),
@@ -95,3 +107,21 @@ class TestRegistrationCallbackLinking(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "created preferences: <code>0</code>")
         self.assertEqual(ReviewerPreference.objects.filter(user=user, repository=repo).count(), 1)
+
+    def test_callback_succeeds_when_confirmation_dm_fails(self) -> None:
+        Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master", is_active=True)
+        _token, state = self._token_and_state(zulip_user_id=101)
+        with (
+            patch("zulip_bot.views.GitHubOAuthClient.exchange_code_for_access_token", return_value="access-token"),
+            patch("zulip_bot.views.GitHubOAuthClient.fetch_user_identity", return_value=self._identity()),
+            patch("zulip_bot.views.ZulipClient", side_effect=ZulipApiError("not configured")),
+            patch("zulip_bot.views.logger.exception") as mock_logger_exception,
+        ):
+            response = self.client.get(
+                reverse("zulip-register-github-callback"),
+                data={"state": state, "code": "oauth-code"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Could not send confirmation DM in Zulip")
+        mock_logger_exception.assert_called()

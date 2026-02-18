@@ -77,6 +77,13 @@
   - Added tests:
     - `test_registration_bootstrap`
     - extended `test_registration_callback_linking` to assert bootstrap creation and idempotency.
+- Completed in this increment (sixth chunk):
+  - Callback success page now includes a direct preferences edit link with expiration timestamp.
+  - Callback now sends a private Zulip confirmation DM containing:
+    - linked GitHub login confirmation
+    - preferences edit link
+    - link expiration timestamp in Zulip `<time:...>` format
+  - DM delivery is best-effort; callback success is preserved if DM send fails.
 - Not yet implemented in this increment:
   - Optional repo picker for explicit preference opt-in (future refinement).
 
@@ -166,6 +173,9 @@
 - Bootstrap policy implemented:
   - For a successfully linked user, create default preferences for all active repositories (`Repository.is_active=True`).
   - Bootstrap is idempotent; existing preference rows are not duplicated.
+- Post-link UX policy implemented:
+  - Always provide a preferences link immediately after successful linking (when preferences exist).
+  - Also push the same link via Zulip DM for continuity back in chat.
 - The registration token includes sender metadata (`sender_email`, `sender_full_name`) as convenience context only; identity authority remains Zulip sender id + future GitHub OAuth proof.
 
 ## Data and Model Notes
