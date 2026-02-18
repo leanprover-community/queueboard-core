@@ -22,71 +22,6 @@
 - Keep the onboarding flow in `qb_site/zulip_bot/` to preserve architectural boundaries.
 - Roll out in phases so we can ship unblock-first behavior while minimizing migration risk.
 
-## Implementation Status (Updated February 17, 2026)
-- Completed in this increment:
-  - Added registration token service: `qb_site/zulip_bot/services/registration_links.py`.
-  - Added registration token settings in `qb_site/qb_site/settings/base.py`:
-    - `ZULIP_REGISTRATION_TOKEN_SALT`
-    - `ZULIP_REGISTRATION_TOKEN_TTL_SECONDS`
-  - Updated `prefs` missing-user branch to issue a private registration link instead of a dead-end-only message.
-  - Added registration start endpoint and routing:
-    - `/api/zulip/register/<token>/`
-    - `zulip_bot.views.register_start`
-  - Added registration start/invalid templates:
-    - `qb_site/templates/zulip_bot/register_start.html`
-    - `qb_site/templates/zulip_bot/register_invalid.html`
-  - Added tests for:
-    - command behavior (`test_prefs_command`)
-    - token issue/validation and expiry (`test_registration_links`)
-    - register start page validity/expiry behavior (`test_registration_start`)
-- Completed in this increment (second chunk):
-  - Added GitHub OAuth start and callback endpoints:
-    - `/api/zulip/register/<token>/github/`
-    - `/api/zulip/register/github/callback/`
-  - Added OAuth state token service:
-    - `qb_site/zulip_bot/services/registration_oauth_state.py`
-  - Added GitHub OAuth client:
-    - `qb_site/zulip_bot/services/github_oauth.py`
-  - Updated registration start page to show active "Continue with GitHub" link when OAuth is configured.
-  - Added callback success placeholder page:
-    - `qb_site/templates/zulip_bot/register_callback.html`
-  - Expanded invalid-reason messaging in:
-    - `qb_site/templates/zulip_bot/register_invalid.html`
-  - Added tests for OAuth start/callback and state handling:
-    - `test_registration_start`
-    - `test_registration_oauth_state`
-    - `test_github_oauth`
-- Completed in this increment (third chunk):
-  - Added `register_test` Zulip command that returns a private registration link for live OAuth verification.
-  - Added command tests:
-    - `test_register_test_command`
-- Completed in this increment (fourth chunk):
-  - Added DB linking service:
-    - `qb_site/zulip_bot/services/registration_linking.py`
-  - GitHub OAuth callback now performs link/create in `core.User` with conflict handling.
-  - Callback success page now reports link outcome and Queueboard user id.
-  - Added link conflict UI handling in registration invalid page.
-  - Added tests:
-    - `test_registration_linking`
-    - `test_registration_callback_linking`
-- Completed in this increment (fifth chunk):
-  - Added preference bootstrap service:
-    - `qb_site/zulip_bot/services/registration_bootstrap.py`
-  - OAuth callback now auto-creates default `ReviewerPreference` rows for active repositories when missing.
-  - Callback page now shows bootstrap summary counts.
-  - Added tests:
-    - `test_registration_bootstrap`
-    - extended `test_registration_callback_linking` to assert bootstrap creation and idempotency.
-- Completed in this increment (sixth chunk):
-  - Callback success page now includes a direct preferences edit link with expiration timestamp.
-  - Callback now sends a private Zulip confirmation DM containing:
-    - linked GitHub login confirmation
-    - preferences edit link
-    - link expiration timestamp in Zulip `<time:...>` format
-  - DM delivery is best-effort; callback success is preserved if DM send fails.
-- Not yet implemented in this increment:
-  - Optional repo picker for explicit preference opt-in (future refinement).
-
 ## Detailed Flow
 
 ### 1) Trigger
@@ -94,7 +29,9 @@
 - Command policy/group checks remain unchanged.
 - `prefs` handler branches:
   - Existing linked user path: unchanged.
-  - Missing linked user path: issue a short-lived registration link instead of dead-end message.
+  - Missing linked user path: issue a short-lived registration link (with explicit expiration time) instead of dead-end message.
+- Optional operator/debug path:
+  - `register_test` command issues a fresh registration link in DM regardless of whether a user is already linked.
 
 ### 2) Registration link and pre-auth state
 - Add signed/encrypted registration token (similar to prefs token style) that includes:
@@ -102,7 +39,7 @@
   - `zulip_sender_email` (optional metadata only)
   - `zulip_sender_full_name` (optional metadata only)
   - `iat`, `exp`
-  - random nonce/jti for replay protection (stateful or stateless with bounded replay controls)
+  - random nonce for replay/mix-and-match protection
 - Registration link lands on Queueboard registration start page (`/api/zulip/register/<token>/`).
 - Start page only offers "Continue with GitHub" and explanatory text; no free-form GitHub identity input.
 
@@ -114,6 +51,7 @@
   - registration token still valid,
   - OAuth `state` matches expected value,
   - GitHub response contains stable id/node id and login.
+- If validation fails, show registration invalid page with reason-specific messaging (`expired`, `oauth_invalid`, `oauth_failed`, etc.).
 
 ### 4) Account link/creation logic
 - Inside transaction:
@@ -129,11 +67,14 @@
 
 ### 5) Post-link onboarding to preferences
 - After successful link:
-  - If preferences already exist, direct user to existing prefs form link.
-  - If no preferences exist, present onboarding step:
-    - Option A (first implementation): auto-create default `ReviewerPreference` rows for active repositories.
-    - Option B (next iteration): repo picker with explicit opt-in.
-- Final step is existing preferences editor flow (tokenized link/form).
+  - Bootstrap default `ReviewerPreference` rows for all active repositories (`Repository.is_active=True`) if missing.
+  - Bootstrap is idempotent and does not duplicate existing preference rows.
+  - Build the standard expiring prefs-form link (`/api/zulip/prefs/<token>/`) and show it on callback success page.
+  - Send a Zulip DM confirmation including:
+    - linked GitHub login
+    - same prefs-form link
+    - expiration timestamp in Zulip `<time:...>` format
+  - If DM delivery fails, callback page still succeeds and includes a fallback message.
 
 ## Security and Trust Model
 - Identity proof:
@@ -160,9 +101,6 @@
   - This keeps secrets simpler while still providing token namespace separation through salt values.
 - Current registration entrypoint is intentionally a placeholder page:
   - It validates token integrity/expiry and provides OAuth entry when configured.
-- Callback page is intentionally a placeholder:
-  - OAuth identity proof and DB linking are completed and displayed.
-  - Preference bootstrap is still pending.
 - OAuth callback protection:
   - Callback `state` is encrypted/signed and short-lived.
   - `state` includes both the registration token and registration nonce.
@@ -176,6 +114,9 @@
 - Post-link UX policy implemented:
   - Always provide a preferences link immediately after successful linking (when preferences exist).
   - Also push the same link via Zulip DM for continuity back in chat.
+- Zulip API payload nuance:
+  - Direct-message recipients and user-group member update lists must be JSON-encoded in form payloads.
+  - `send_direct_message` uses `type="direct"` with JSON-encoded `to`.
 - The registration token includes sender metadata (`sender_email`, `sender_full_name`) as convenience context only; identity authority remains Zulip sender id + future GitHub OAuth proof.
 
 ## Data and Model Notes
@@ -215,9 +156,9 @@
 - Add tests for token/state validation, linking success, and conflict rejection.
 
 ### Phase 2: Preference bootstrap
-- Add onboarding behavior for users with no `ReviewerPreference`.
-- Start with deterministic default creation for active repositories.
-- Add tests for first-run preference creation and idempotent retries.
+- Implement deterministic default creation for active repositories.
+- Keep path idempotent for repeated callback runs.
+- (Optional refinement) introduce explicit repo picker instead of default-all.
 
 ### Phase 3: UX and observability hardening
 - Improve registration page content and failure messages.
