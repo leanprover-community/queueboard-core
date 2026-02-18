@@ -6,6 +6,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from core.models import Repository, ReviewerPreference, User
+from syncer.models import LabelDef
 from zulip_bot.forms import reviewer_preference_unaccounted_fields
 from zulip_bot.services.prefs_links import PrefsLinkClaims, issue_prefs_token
 
@@ -34,6 +35,17 @@ class TestPrefsForm(TestCase):
             free_form="note two",
             conflict_of_interest=[],
         )
+        LabelDef.objects.bulk_create(
+            [
+                LabelDef(repository=self.repo1, name="t-algebra", color="111111"),
+                LabelDef(repository=self.repo1, name="t-number-theory", color="222222"),
+                LabelDef(repository=self.repo1, name="CI", color="333333"),
+                LabelDef(repository=self.repo1, name="maintainer-merge", color="444444"),
+                LabelDef(repository=self.repo2, name="t-analysis", color="555555"),
+                LabelDef(repository=self.repo2, name="IMO", color="666666"),
+                LabelDef(repository=self.repo2, name="tech debt", color="777777"),
+            ]
+        )
 
     def _token(self) -> str:
         return issue_prefs_token(
@@ -44,7 +56,7 @@ class TestPrefsForm(TestCase):
             )
         )
 
-    def _post_data(self) -> tuple[dict[str, str], dict[int, int]]:
+    def _post_data(self) -> tuple[dict[str, str | list[str]], dict[int, int]]:
         prefs = list(
             ReviewerPreference.objects.filter(id__in=[self.pref1.id, self.pref2.id]).order_by(
                 "repository__owner",
@@ -52,7 +64,7 @@ class TestPrefsForm(TestCase):
                 "id",
             )
         )
-        data: dict[str, str] = {
+        data: dict[str, str | list[str]] = {
             "form-TOTAL_FORMS": str(len(prefs)),
             "form-INITIAL_FORMS": str(len(prefs)),
             "form-MIN_NUM_FORMS": "0",
@@ -65,7 +77,7 @@ class TestPrefsForm(TestCase):
             data[f"form-{idx}-maximum_capacity"] = str(pref.maximum_capacity)
             data[f"form-{idx}-auto_assign"] = "on" if pref.auto_assign else ""
             data[f"form-{idx}-away_until"] = ""
-            data[f"form-{idx}-preferred_labels"] = "\n".join(pref.preferred_labels)
+            data[f"form-{idx}-preferred_labels"] = list(pref.preferred_labels)
             data[f"form-{idx}-conflict_of_interest"] = "\n".join(pref.conflict_of_interest)
             data[f"form-{idx}-free_form"] = pref.free_form or ""
         return data, index_by_pref_id
@@ -80,6 +92,8 @@ class TestPrefsForm(TestCase):
         self.assertContains(response, "Save Preferences")
         self.assertContains(response, "Turn this off to opt out of automatic reviewer assignment for this repository.")
         self.assertContains(response, "A free form description of your reviewing interests.")
+        self.assertContains(response, "t-number-theory")
+        self.assertNotContains(response, "maintainer-merge")
         self.assertLess(body.index("Free form"), body.index("Conflict of interest"))
         self.assertEqual(response["Cache-Control"], "no-store")
 
@@ -89,7 +103,7 @@ class TestPrefsForm(TestCase):
         pref1_i = index_by_id[self.pref1.id]
         pref2_i = index_by_id[self.pref2.id]
         data[f"form-{pref1_i}-maximum_capacity"] = "7"
-        data[f"form-{pref1_i}-preferred_labels"] = "t-algebra\nt-number-theory\nt-algebra"
+        data[f"form-{pref1_i}-preferred_labels"] = ["t-algebra", "t-number-theory"]
         data[f"form-{pref2_i}-free_form"] = "updated note"
         data[f"form-{pref2_i}-auto_assign"] = "on"
 
@@ -133,6 +147,30 @@ class TestPrefsForm(TestCase):
         self.assertContains(response, "Ensure this value is greater than or equal to 1")
         self.pref1.refresh_from_db()
         self.assertEqual(self.pref1.maximum_capacity, 10)
+
+    def test_post_rejects_unknown_preferred_label_choice(self) -> None:
+        token = self._token()
+        data, index_by_id = self._post_data()
+        pref1_i = index_by_id[self.pref1.id]
+        data[f"form-{pref1_i}-preferred_labels"] = ["not-a-real-label"]
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Select a valid choice")
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.preferred_labels, ["t-algebra"])
+
+    def test_get_shows_legacy_selected_labels_with_warning(self) -> None:
+        self.pref1.preferred_labels = ["legacy-topic", "t-algebra"]
+        self.pref1.save(update_fields=["preferred_labels"])
+        token = self._token()
+
+        response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": token}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Legacy labels currently selected: legacy-topic.")
+        self.assertContains(response, "legacy-topic (legacy: not in synced topic labels)")
 
     def test_invalid_token_returns_forbidden(self) -> None:
         response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": "not-a-token"}))

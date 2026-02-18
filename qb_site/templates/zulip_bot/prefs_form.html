@@ -93,7 +93,21 @@
 
             <div class="field field-wide">
               <label for="{{ form.preferred_labels.id_for_label }}">{{ form.preferred_labels.label }}</label>
-              {{ form.preferred_labels }}
+              <div class="topic-label-selector">
+                {% for option in form.preferred_labels %}
+                  <label class="topic-label-option" for="{{ option.id_for_label }}">
+                    {{ option.tag }}
+                    <span>{{ option.choice_label }}</span>
+                  </label>
+                {% empty %}
+                  <span class="help">No topic label options available for this repository.</span>
+                {% endfor %}
+              </div>
+              {% if form.legacy_preferred_labels %}
+                <span class="help warning">
+                  Legacy labels currently selected: {{ form.legacy_preferred_labels|join:", " }}.
+                </span>
+              {% endif %}
               {% if form.preferred_labels.help_text %}<span class="help">{{ form.preferred_labels.help_text }}</span>{% endif %}
               {% if form.preferred_labels.errors %}<ul class="errors">{% for error in form.preferred_labels.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
             </div>
