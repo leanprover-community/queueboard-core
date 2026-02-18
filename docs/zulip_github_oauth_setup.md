@@ -92,6 +92,7 @@ Example policy snippet:
 {
   "register_test": {
     "allowed_groups": [1234],
+    "allowed_user_ids": [101],
     "allowed_contexts": ["dm"]
   }
 }

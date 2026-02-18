@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class CommandPolicy:
     allowed_groups: frozenset[int] | None = None
+    allowed_user_ids: frozenset[int] | None = None
     allowed_contexts: frozenset[str] | None = None
 
 
@@ -37,12 +38,34 @@ def _load_command_policy() -> dict[str, CommandPolicy]:
         if not isinstance(command_name, str) or not isinstance(rule, dict):
             continue
         groups = _parse_group_set(rule.get("allowed_groups"))
+        user_ids = _parse_user_id_set(rule.get("allowed_user_ids"))
         contexts = _parse_context_set(rule.get("allowed_contexts"))
-        policies[command_name] = CommandPolicy(allowed_groups=groups, allowed_contexts=contexts)
+        policies[command_name] = CommandPolicy(
+            allowed_groups=groups,
+            allowed_user_ids=user_ids,
+            allowed_contexts=contexts,
+        )
     return policies
 
 
 def _parse_group_set(value: Any) -> frozenset[int] | None:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        return frozenset()
+    unrestricted = False
+    parsed: set[int] = set()
+    for item in value:
+        if isinstance(item, int) and item > 0:
+            parsed.add(item)
+        elif isinstance(item, str) and item.lower() in {"*", "all"}:
+            unrestricted = True
+    if unrestricted:
+        return None
+    return frozenset(parsed)
+
+
+def _parse_user_id_set(value: Any) -> frozenset[int] | None:
     if value is None:
         return frozenset()
     if not isinstance(value, list):
@@ -89,8 +112,10 @@ def _is_command_allowed(
         logger.info("zulip_command_ignored", extra={"reason": "no_policy_entry", "command": command_name})
         return False
 
-    if not checker.is_member_any(user_id=context.sender_id, group_ids=rule.allowed_groups):
-        logger.info("zulip_command_ignored", extra={"reason": "not_in_allowed_group", "command": command_name})
+    allowed_by_user_id = _is_allowed_sender_id(sender_id=context.sender_id, allowed_user_ids=rule.allowed_user_ids)
+    allowed_by_group = checker.is_member_any(user_id=context.sender_id, group_ids=rule.allowed_groups)
+    if not (allowed_by_user_id or allowed_by_group):
+        logger.info("zulip_command_ignored", extra={"reason": "sender_not_allowed", "command": command_name})
         return False
 
     if not _is_context_allowed(context=context, allowed_contexts=rule.allowed_contexts):
@@ -98,6 +123,14 @@ def _is_command_allowed(
         return False
 
     return True
+
+
+def _is_allowed_sender_id(*, sender_id: int | None, allowed_user_ids: frozenset[int] | None) -> bool:
+    if allowed_user_ids is None:
+        return True
+    if not allowed_user_ids or sender_id is None:
+        return False
+    return sender_id in allowed_user_ids
 
 
 def _is_context_allowed(*, context: CommandContext, allowed_contexts: frozenset[str] | None) -> bool:

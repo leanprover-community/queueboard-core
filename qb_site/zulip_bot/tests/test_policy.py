@@ -86,6 +86,28 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_user_ids": [101], "allowed_contexts": ["all"]},
+        }
+    )
+    def test_allowed_user_ids_allows_specific_sender(self) -> None:
+        result = self._post_payload(self._payload(content="@**qb-bot** echo hi", id=20, stream_id=8, sender_id=101))
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertEqual(result["json"]["content"], "hi")
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_groups": [1234], "allowed_user_ids": [101], "allowed_contexts": ["all"]},
+        }
+    )
+    def test_allowed_user_ids_or_allowed_groups(self) -> None:
+        result = self._post_payload(self._payload(content="@**qb-bot** echo hi", id=21, stream_id=8, sender_id=101))
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertEqual(result["json"]["content"], "hi")
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
             "help": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
             "echo": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
         }

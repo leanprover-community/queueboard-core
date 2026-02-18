@@ -25,8 +25,9 @@
 - `ZULIP_COMMAND_POLICY` is a dictionary keyed by command name.
 - Each command rule currently supports:
   - `allowed_groups`: list of Zulip user-group IDs.
+  - `allowed_user_ids`: list of Zulip user IDs.
   - `allowed_contexts`: list of context selectors.
-- Empty or omitted `allowed_groups` means no allowed groups (deny).
+- Empty or omitted `allowed_groups` and `allowed_user_ids` means no allowed senders (deny).
 - Empty or omitted `allowed_contexts` means no allowed contexts (deny).
 - Use `"*"` or `"all"` in either list to mean unrestricted.
 - Supported context selectors:
@@ -41,10 +42,12 @@ Example:
 ZULIP_COMMAND_POLICY = {
     "help": {
         "allowed_groups": [1234],
+        "allowed_user_ids": [101, 202],
         "allowed_contexts": ["dm", "stream:5678", "stream:9012"],
     },
     "echo": {
         "allowed_groups": [1234],
+        "allowed_user_ids": [],
         "allowed_contexts": ["dm"],
     },
 }
@@ -54,6 +57,9 @@ ZULIP_COMMAND_POLICY = {
 - Commands are denied by default unless they have a matching policy entry.
 - If `ZULIP_COMMAND_POLICY` is empty or unset, all commands are ignored.
 - If a command is missing from `ZULIP_COMMAND_POLICY`, that command is ignored.
+- Sender authorization is `OR` across sender selectors:
+  - sender is in `allowed_user_ids`, or
+  - sender is a member of one of `allowed_groups`.
 - Webhook payloads are validated against expected Zulip message fields, including:
   - `message.id`
   - `message.type`

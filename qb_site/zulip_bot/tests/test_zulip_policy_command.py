@@ -28,6 +28,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
             self.assertGreaterEqual(len(payload), 1)
             self.assertEqual(payload["help"]["allowed_contexts"], ["dm"])
             self.assertEqual(payload["help"]["allowed_groups"], [1234])
+            self.assertEqual(payload["help"]["allowed_user_ids"], [])
 
     def test_init_refuses_to_overwrite(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -90,6 +91,7 @@ class TestZulipPolicyCommand(SimpleTestCase):
                     {
                         "help": {
                             "allowed_groups": ["all"],
+                            "allowed_user_ids": ["all"],
                             "allowed_contexts": ["all"],
                         }
                     }
@@ -100,6 +102,25 @@ class TestZulipPolicyCommand(SimpleTestCase):
 
             call_command("zulip_policy", "validate", str(path), stdout=out)
             self.assertIn("Valid policy", out.getvalue())
+
+    def test_validate_rejects_invalid_allowed_user_ids(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "policy.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "help": {
+                            "allowed_groups": [1234],
+                            "allowed_user_ids": [0],
+                            "allowed_contexts": ["dm"],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesMessage(CommandError, "rule for 'help'.allowed_user_ids must contain positive integers"):
+                call_command("zulip_policy", "validate", str(path))
 
     def test_sync_adds_missing_registered_commands(self) -> None:
         with TemporaryDirectory() as temp_dir:
