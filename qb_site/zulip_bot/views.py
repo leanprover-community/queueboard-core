@@ -23,6 +23,7 @@ from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.commands import register_test as _register_test  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
+from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from zulip_bot.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 from zulip_bot.services.prefs_links import PrefsTokenExpired, PrefsTokenInvalid, validate_prefs_token
 from zulip_bot.services.registration_links import (
@@ -299,6 +300,7 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
     except RegistrationLinkConflict:
         logger.info("registration_link_conflict", extra={"reason": "link_conflict"})
         return _register_invalid_response(request, reason="link_conflict")
+    bootstrap_result = ensure_default_preferences_for_user(user=link_result.user)
 
     response = TemplateResponse(
         request,
@@ -307,6 +309,7 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
             "registration_claims": registration_claims,
             "identity": identity,
             "link_result": link_result,
+            "bootstrap_result": bootstrap_result,
         },
         status=200,
     )

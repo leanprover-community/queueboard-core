@@ -12,6 +12,11 @@
   <p>Zulip user id: <code>{{ registration_claims.zulip_user_id }}</code></p>
   <p>Link outcome: <strong>{{ link_result.outcome }}</strong></p>
   <p>Queueboard user id: <code>{{ link_result.user.id }}</code></p>
-  <p>Preference bootstrap is the next implementation step.</p>
+  <p>Preference bootstrap complete.</p>
+  <p>
+    Active repositories: <code>{{ bootstrap_result.active_repository_count }}</code>,
+    created preferences: <code>{{ bootstrap_result.created_count }}</code>,
+    existing preferences: <code>{{ bootstrap_result.existing_count }}</code>.
+  </p>
 </body>
 </html>

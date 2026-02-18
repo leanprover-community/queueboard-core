@@ -69,8 +69,16 @@
   - Added tests:
     - `test_registration_linking`
     - `test_registration_callback_linking`
+- Completed in this increment (fifth chunk):
+  - Added preference bootstrap service:
+    - `qb_site/zulip_bot/services/registration_bootstrap.py`
+  - OAuth callback now auto-creates default `ReviewerPreference` rows for active repositories when missing.
+  - Callback page now shows bootstrap summary counts.
+  - Added tests:
+    - `test_registration_bootstrap`
+    - extended `test_registration_callback_linking` to assert bootstrap creation and idempotency.
 - Not yet implemented in this increment:
-  - Preference bootstrap after successful link.
+  - Optional repo picker for explicit preference opt-in (future refinement).
 
 ## Detailed Flow
 
@@ -155,6 +163,9 @@
 - Link conflict policy implemented:
   - If GitHub account is already linked to a different Zulip id, callback returns a conflict page (no reassignment).
   - If a GitHub login matches an existing row bound to a different `github_node_id`, callback returns conflict.
+- Bootstrap policy implemented:
+  - For a successfully linked user, create default preferences for all active repositories (`Repository.is_active=True`).
+  - Bootstrap is idempotent; existing preference rows are not duplicated.
 - The registration token includes sender metadata (`sender_email`, `sender_full_name`) as convenience context only; identity authority remains Zulip sender id + future GitHub OAuth proof.
 
 ## Data and Model Notes
