@@ -60,6 +60,7 @@ body {
   padding: 10px 12px;
   margin-bottom: 14px;
   font-size: 0.95rem;
+  overflow-wrap: anywhere;
 }
 
 .status-ok {
@@ -90,6 +91,7 @@ body {
 
 .cta {
   display: inline-block;
+  min-height: 44px;
   border-radius: 10px;
   padding: 10px 16px;
   text-decoration: none;
@@ -123,8 +125,26 @@ code {
     padding: 14px;
   }
 
+  .hero h1 {
+    font-size: 1.2rem;
+  }
+
+  .meta {
+    font-size: 0.98rem;
+  }
+
+  .card {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  .status {
+    font-size: 0.98rem;
+  }
+
   .cta {
     width: 100%;
     text-align: center;
+    padding: 11px 14px;
   }
 }

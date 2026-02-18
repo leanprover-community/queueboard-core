@@ -61,6 +61,7 @@ input[type="text"],
 input[type="number"],
 input[type="datetime-local"],
 textarea {
+  min-height: 42px;
   width: 100%;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -112,6 +113,7 @@ input[type="checkbox"] {
 button {
   border: 0;
   border-radius: 9px;
+  min-height: 44px;
   padding: 10px 16px;
   cursor: pointer;
   background: var(--accent);
@@ -140,6 +142,32 @@ button:disabled {
 }
 
 @media (max-width: 760px) {
+  .countdown {
+    font-size: 0.98rem;
+    padding: 12px;
+  }
+
+  .form-card {
+    padding: 12px;
+    border-radius: 10px;
+  }
+
+  .form-card h2 {
+    font-size: 1rem;
+  }
+
+  label {
+    font-size: 0.95rem;
+  }
+
+  input[type="text"],
+  input[type="number"],
+  input[type="datetime-local"],
+  textarea {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
   .field-grid {
     grid-template-columns: 1fr;
   }
@@ -150,9 +178,11 @@ button:disabled {
 
   .btn-secondary {
     width: 100%;
+    min-height: 42px;
   }
 
   button[type="submit"] {
     width: 100%;
+    min-height: 46px;
   }
 }
