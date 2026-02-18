@@ -1,36 +1,55 @@
+{% load static %}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Queueboard registration</title>
+  <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
 </head>
 <body>
-  <h1>GitHub verification complete</h1>
-  <p>Verified GitHub account: <strong>{{ identity.github_login }}</strong>.</p>
-  <p>GitHub node id: <code>{{ identity.github_node_id }}</code></p>
-  <p>Zulip user id: <code>{{ registration_claims.zulip_user_id }}</code></p>
-  <p>Link outcome: <strong>{{ link_result.outcome }}</strong></p>
-  <p>Queueboard user id: <code>{{ link_result.user.id }}</code></p>
-  <p>Preference bootstrap complete.</p>
-  <p>
-    Active repositories: <code>{{ bootstrap_result.active_repository_count }}</code>,
-    created preferences: <code>{{ bootstrap_result.created_count }}</code>,
-    existing preferences: <code>{{ bootstrap_result.existing_count }}</code>.
-  </p>
-  {% if prefs_link %}
-    <p>
-      Open your reviewer preferences form:
-      <a href="{{ prefs_link }}">Edit preferences</a>
-      (expires at <time datetime="{{ prefs_expires_iso }}">{{ prefs_expires_iso }}</time>).
-    </p>
-  {% else %}
-    <p>No preferences are available to edit yet.</p>
-  {% endif %}
-  {% if dm_sent %}
-    <p>Sent a confirmation DM in Zulip with the same preferences link.</p>
-  {% else %}
-    <p>Could not send confirmation DM in Zulip; please use the link on this page.</p>
-  {% endif %}
+  <main class="page">
+    <section class="hero">
+      <h1>GitHub Verification Complete</h1>
+      <p class="meta">Your Zulip identity is now connected to GitHub for Queueboard.</p>
+    </section>
+
+    <div class="status status-ok">Link outcome: <strong>{{ link_result.outcome }}</strong></div>
+
+    <section class="card">
+      <ul class="details">
+        <li>Verified GitHub account: <strong>{{ identity.github_login }}</strong></li>
+        <li>GitHub node id: <code>{{ identity.github_node_id }}</code></li>
+        <li>Zulip user id: <code>{{ registration_claims.zulip_user_id }}</code></li>
+        <li>Queueboard user id: <code>{{ link_result.user.id }}</code></li>
+        <li>
+          Preference bootstrap:
+          active repos <code>{{ bootstrap_result.active_repository_count }}</code>,
+          created <code>{{ bootstrap_result.created_count }}</code>,
+          existing <code>{{ bootstrap_result.existing_count }}</code>.
+        </li>
+      </ul>
+
+      {% if prefs_link %}
+        <div class="cta-wrap">
+          <p>Next step: click this button now to finalize your reviewer preferences.</p>
+          <a class="cta" href="{{ prefs_link }}">Edit Preferences Now</a>
+        </div>
+        <p class="help">
+          This link expires at <time datetime="{{ prefs_expires_iso }}">{{ prefs_expires_iso }}</time>.
+          We also sent this same link to you in Zulip.
+        </p>
+      {% else %}
+        <div class="status status-warn">No preferences are available to edit yet.</div>
+      {% endif %}
+
+      {% if dm_sent %}
+        <p class="help">Sent a confirmation DM in Zulip with the same preferences link.</p>
+      {% else %}
+        <div class="status status-warn">Could not send confirmation DM in Zulip; use the button on this page.</div>
+      {% endif %}
+    </section>
+  </main>
 </body>
 </html>

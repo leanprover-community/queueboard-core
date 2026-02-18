@@ -1,0 +1,40 @@
+.callout {
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  font-size: 0.95rem;
+}
+
+.expires {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+
+.details {
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.details li {
+  margin-bottom: 4px;
+}
+
+.cta-wrap {
+  margin: 14px 0;
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.cta-wrap p {
+  margin: 0 0 10px;
+  color: var(--warn-fg);
+  font-weight: 600;
+}

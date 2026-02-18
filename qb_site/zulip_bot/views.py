@@ -386,7 +386,7 @@ def _send_registration_success_dm(
     if prefs_link and prefs_expires_unix:
         content = (
             f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
-            f"Use this private link to [open your reviewer preferences form]({prefs_link}). "
+            f"Next step: click this private link to [finalize your reviewer preferences]({prefs_link}). "
             f"It expires at <time:{prefs_expires_unix}>."
         )
     else:
