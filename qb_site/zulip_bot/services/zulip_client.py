@@ -87,6 +87,10 @@ class ZulipClient:
         data = {"add": json.dumps(add), "delete": json.dumps(delete)}
         return self._request("POST", f"/user_groups/{user_group_id}/members", data=data)
 
+    def add_reaction(self, *, message_id: int, emoji_name: str) -> dict[str, Any]:
+        data = {"message_id": message_id, "emoji_name": emoji_name}
+        return self._request("POST", f"/messages/{message_id}/reactions", data=data)
+
     def _request(
         self,
         method: str,

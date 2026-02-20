@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from core.models import Repository, ReviewerPreference, User
 from zulip_bot.webhook.membership import GroupMembershipCheckError
 from zulip_bot.tests.webhook_test_utils import WebhookTestMixin
 
@@ -139,3 +140,25 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn('"message": "handler exploded"', result["json"]["content"])
         self.assertIn("```json", result["json"]["content"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "assign": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
+        }
+    )
+    def test_assign_command_executes_and_returns_private_preflight_summary(self) -> None:
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        user = User.objects.create(zulip_user_id=101, github_login="reviewer")
+        ReviewerPreference.objects.create(repository=repo, user=user)
+
+        result = self._post_payload(
+            self._payload(
+                content="@**qb-bot** assign https://github.com/leanprover-community/mathlib4/pull/123",
+                id=102,
+                stream_id=5,
+            )
+        )
+
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertIn("Preflight passed for `assign` on leanprover-community/mathlib4#123.", result["json"]["content"])

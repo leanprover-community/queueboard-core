@@ -226,6 +226,41 @@
   - If the repository is absent locally, all otherwise-valid reviewer targets currently fail with `repository_not_configured`; this is intentional for now and will be relaxed in the later GitHub read-through fallback chunk.
   - Validation is intentionally command-agnostic (`assign` vs `unassign`) so command-specific preconditions (open/closed state, currently assigned checks) can be layered separately.
 
+### 2026-02-20: Chunk 3 (Command wiring with preflight summaries)
+- Status: completed
+- Implemented:
+  - Added first-class commands:
+    - `zulip_bot.commands.assign`
+    - `zulip_bot.commands.unassign`
+  - Added shared `zulip_bot.services.assignment_preflight.run_assignment_preflight(...)` that composes:
+    - parser output (`assignment_command_parser`)
+    - reviewer/repo validation (`assignment_validation`)
+    - private textual summary for success/fail/mixed preflight outcomes
+  - Wired command registration import in `zulip_bot.views` so webhook command dispatch recognizes `assign`/`unassign`.
+  - Added command tests in `zulip_bot.tests.commands.test_assign_unassign_commands`.
+  - Added webhook integration test in `zulip_bot.tests.test_webhook_endpoint` for `assign`.
+- Nuances discovered during implementation:
+  - Until GitHub mutation/reaction plumbing lands, commands intentionally return a private “preflight passed” text response even on valid targets; this is a temporary behavior for incremental rollout.
+  - Parser+validator integration currently prioritizes rendered mention ids over raw mention tokens to avoid accidental targeting from ambiguous plain text mentions.
+  - Preflight summaries include stable machine-readable failure codes in parentheses to simplify future command-level error bucketing and regression assertions.
+
+### 2026-02-20: Chunk 4 (Outcome bucketing + Zulip reaction client scaffold)
+- Status: completed
+- Implemented:
+  - Refined `assignment_preflight` output into explicit grouped buckets:
+    - `Successes`
+    - `Warnings`
+    - `Failures`
+  - Added Zulip reaction API helper `ZulipClient.add_reaction(message_id, emoji_name)` targeting `/messages/{id}/reactions`.
+  - Added default settings knob `ZULIP_ASSIGNMENT_SUCCESS_EMOJI` (default `thumbs_up`) for later command success reaction behavior.
+  - Added/updated tests:
+    - `zulip_bot.tests.test_zulip_client` now covers reaction endpoint payload/shape.
+    - `zulip_bot.tests.commands.test_assign_unassign_commands` now asserts bucketed summary sections.
+- Nuances discovered during implementation:
+  - Preflight summaries now mirror the eventual mixed-outcome contract, so switching from preflight-only to mutation execution should mostly replace producer logic, not output structure.
+  - The reaction client method intentionally keeps payload minimal (`message_id`, `emoji_name`) and defers custom emoji/reaction_type handling until needed.
+  - Keeping success emoji configurable early avoids coupling command behavior to hardcoded reaction names when policy-level overrides are introduced.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

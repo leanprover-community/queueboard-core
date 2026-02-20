@@ -78,6 +78,20 @@ class TestZulipClient(SimpleTestCase):
             },
         )
 
+    def test_add_reaction_uses_reactions_endpoint(self) -> None:
+        with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
+            client = ZulipClient()
+            client.add_reaction(message_id=777, emoji_name="thumbs_up")
+
+        self.assertTrue(mock_request.call_args.args[1].endswith("/api/v1/messages/777/reactions"))
+        self.assertEqual(
+            mock_request.call_args.kwargs["data"],
+            {
+                "message_id": 777,
+                "emoji_name": "thumbs_up",
+            },
+        )
+
     def test_get_user_group_members_encodes_direct_member_only_as_json_bool(self) -> None:
         with patch("zulip_bot.services.zulip_client.requests.request", return_value=self._response()) as mock_request:
             client = ZulipClient()
