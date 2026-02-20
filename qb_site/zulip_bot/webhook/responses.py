@@ -31,6 +31,8 @@ def ignored_response() -> JsonResponse:
 
 
 def zulip_response(result: CommandResult, override_mode: ResponseMode | None = None) -> JsonResponse:
+    if result.response_not_required:
+        return ignored_response()
     response_mode = override_mode or result.response_mode
     return JsonResponse(
         {

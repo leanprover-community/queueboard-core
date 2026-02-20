@@ -5,8 +5,10 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from core.models import Repository, ReviewerPreference, User
+from syncer.models import PullRequest, PullRequestState
 from zulip_bot.webhook.membership import GroupMembershipCheckError
 from zulip_bot.tests.webhook_test_utils import WebhookTestMixin
 
@@ -162,3 +164,50 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         self.assertEqual(result["status"], 200)
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn("Preflight passed for `assign` on leanprover-community/mathlib4#123.", result["json"]["content"])
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "assign": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
+        },
+        ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
+        GITHUB_ASSIGNMENT_TOKEN="tok",
+    )
+    def test_assign_command_clean_success_returns_response_not_required(self) -> None:
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        user = User.objects.create(zulip_user_id=101, github_login="reviewer")
+        ReviewerPreference.objects.create(repository=repo, user=user)
+        now = timezone.now()
+        PullRequest.objects.create(
+            repository=repo,
+            number=124,
+            author=user,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="t",
+            body="b",
+            additions=1,
+            deletions=0,
+            changed_files_count=1,
+            assignees=[],
+        )
+        with (
+            patch("zulip_bot.services.assignment_execution.GitHubAssignmentClient.assign", return_value=None),
+            patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
+        ):
+            mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
+            result = self._post_payload(
+                self._payload(
+                    content="@**qb-bot** assign https://github.com/leanprover-community/mathlib4/pull/124",
+                    id=103,
+                    stream_id=5,
+                )
+            )
+
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"], {"response_not_required": True})
