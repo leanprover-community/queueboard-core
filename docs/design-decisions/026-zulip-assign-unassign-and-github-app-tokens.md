@@ -192,6 +192,24 @@
   - assert success path produces reaction call and no success text response
   - assert failure path returns private message
 
+## Implementation Progress
+
+### 2026-02-20: Chunk 1 (Parsing foundation)
+- Status: completed
+- Implemented:
+  - Added `zulip_bot.services.assignment_command_parser` with:
+    - PR extraction from both `args` and `rendered_content` anchor `href`s
+    - strict single-PR enforcement (`missing_pr`, `ambiguous_pr`)
+    - mention parsing from rendered HTML entities (`data-user-id`)
+    - sender fallback when no mentions are present
+    - unresolved mention reporting when mention syntax is present but no resolvable Zulip user id is available
+  - Extended `CommandContext` and webhook context builder to carry `message.rendered_content` for command handlers.
+  - Added focused parser tests in `zulip_bot.tests.test_assignment_command_parser`.
+- Nuances discovered during implementation:
+  - To keep false positives low, mention resolution currently treats rendered HTML mention entities as source of truth and only uses raw `@**...**` tokens as unresolved hints when no rendered mention ids are available.
+  - The parser intentionally supports full GitHub PR URLs (including those surfaced through Zulip linkifier anchors) and does not attempt to resolve bare `#123` without a rendered GitHub anchor.
+  - When mentions are syntactically present but unresolved, parser output returns no fallback target (does not silently default to sender), so command handlers can surface explicit private warnings/errors.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)
