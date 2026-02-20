@@ -19,10 +19,12 @@ from django.views.decorators.csrf import csrf_exempt
 from core.models import ReviewerPreference, User
 from syncer.models import LabelDef
 from zulip_bot.commands import CommandResult, ResponseMode, get_command
+from zulip_bot.commands import assign as _assign  # noqa: F401
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.commands import register_test as _register_test  # noqa: F401
+from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from zulip_bot.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
