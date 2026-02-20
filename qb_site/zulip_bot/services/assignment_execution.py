@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -7,11 +8,14 @@ from typing import Any
 import requests
 from django.conf import settings
 
+from core.models import Repository
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
 from zulip_bot.services.assignment_validation import AssignmentTargetValidation, validate_assignment_targets
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,12 @@ class GitHubAssignmentClient:
         raise AssignmentMutationError("github_error", f"GitHub API error during assignment mutation: {details}")
 
 
+@dataclass(frozen=True)
+class LivePullRequestView:
+    is_open: bool
+    assignees_lc: frozenset[str]
+
+
 def run_assignment_command(*, action: str, context: CommandContext, args: str) -> CommandResult:
     try:
         parsed = parse_assignment_command_args(
@@ -103,6 +113,20 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
                 valid_targets=valid_targets,
             )
             warnings.extend(idempotent_warnings)
+    elif _assignment_mutations_enabled():
+        live_pr = _fetch_live_pr_view(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number)
+        if live_pr is not None:
+            if not live_pr.is_open:
+                failures.append("Pull request is not open in GitHub live data.")
+                valid_targets = []
+            else:
+                valid_targets, idempotent_warnings = _apply_assignee_idempotency(
+                    action=action,
+                    assignees_lc=live_pr.assignees_lc,
+                    valid_targets=valid_targets,
+                    source_label="github live data",
+                )
+                warnings.extend(idempotent_warnings)
 
     if not valid_targets:
         failures.append(f"No valid reviewers to {action} after validation.")
@@ -141,6 +165,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
             failures.append(f"{action} failed for `{github_login}`: {exc.message} ({exc.code})")
 
     if mutation_successes > 0:
+        _enqueue_post_action_sync(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number)
         _try_add_success_reaction(context=context, warnings=warnings)
 
     if mutation_successes > 0 and not warnings and not failures:
@@ -177,7 +202,22 @@ def _apply_local_idempotency(
     local_pr: PullRequest,
     valid_targets: list[AssignmentTargetValidation],
 ) -> tuple[list[AssignmentTargetValidation], list[str]]:
-    assignees_lc = {str(login).strip().lower() for login in (local_pr.assignees or []) if str(login).strip()}
+    assignees_lc = frozenset(str(login).strip().lower() for login in (local_pr.assignees or []) if str(login).strip())
+    return _apply_assignee_idempotency(
+        action=action,
+        assignees_lc=assignees_lc,
+        valid_targets=valid_targets,
+        source_label="local data",
+    )
+
+
+def _apply_assignee_idempotency(
+    *,
+    action: str,
+    assignees_lc: frozenset[str],
+    valid_targets: list[AssignmentTargetValidation],
+    source_label: str,
+) -> tuple[list[AssignmentTargetValidation], list[str]]:
     remaining: list[AssignmentTargetValidation] = []
     warnings: list[str] = []
 
@@ -185,10 +225,10 @@ def _apply_local_idempotency(
         login = (target.github_login or "").strip()
         login_lc = login.lower()
         if action == "assign" and login_lc in assignees_lc:
-            warnings.append(f"`{login}` is already assigned (local data).")
+            warnings.append(f"`{login}` is already assigned ({source_label}).")
             continue
         if action == "unassign" and login_lc not in assignees_lc:
-            warnings.append(f"`{login}` is not currently assigned (local data).")
+            warnings.append(f"`{login}` is not currently assigned ({source_label}).")
             continue
         remaining.append(target)
 
@@ -212,6 +252,58 @@ def _assignment_token() -> str:
     env_tokens = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or ""
     first = next((token.strip() for token in env_tokens.split(",") if token.strip()), "")
     return first
+
+
+def _fetch_live_pr_view(*, owner: str, repo: str, number: int) -> LivePullRequestView | None:
+    token = _assignment_token()
+    if not token:
+        return None
+
+    api_base_url = "https://api.github.com"
+    url = f"{api_base_url}/repos/{owner}/{repo}/pulls/{number}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+    except requests.RequestException:
+        return None
+
+    if response.status_code >= 400:
+        return None
+
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+
+    state = str(payload.get("state", "")).strip().lower()
+    merged_at = payload.get("merged_at")
+    is_open = state == "open" and not merged_at
+    assignees = payload.get("assignees") or []
+    assignees_lc = frozenset(
+        str(node.get("login", "")).strip().lower()
+        for node in assignees
+        if isinstance(node, dict) and str(node.get("login", "")).strip()
+    )
+    return LivePullRequestView(is_open=is_open, assignees_lc=assignees_lc)
+
+
+def _enqueue_post_action_sync(*, owner: str, repo: str, number: int) -> None:
+    repository = Repository.objects.filter(owner=owner, name=repo).only("id").first()
+    if repository is None:
+        return
+
+    try:
+        from syncer.tasks.sync_tasks import sync_pr_task
+
+        sync_pr_task.delay(repository.id, int(number))
+    except Exception:
+        log.warning(
+            "assignment_post_action_sync_enqueue_failed",
+            extra={"owner": owner, "repo": repo, "number": number},
+        )
 
 
 def _try_add_success_reaction(*, context: CommandContext, warnings: list[str]) -> None:
