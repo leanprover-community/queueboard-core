@@ -302,6 +302,32 @@
 - Nuances discovered during implementation:
   - Patching instance methods alone is insufficient when the class constructor can fail first (e.g., missing config in `__init__`); patching the class boundary is safer for command-path tests.
 
+### 2026-02-20: Chunk 6 (Live read-through fallback + post-action sync enqueue)
+- Status: completed
+- Implemented:
+  - Added GitHub live PR read-through fallback in `assignment_execution` for cases where local `syncer.PullRequest` is missing.
+  - Live fallback currently checks:
+    - PR openness (`state` + `merged_at`)
+    - current assignee set for idempotency checks
+  - Added best-effort post-action sync enqueue hook after successful mutations:
+    - attempts `syncer.sync_pr` enqueue for the affected repo/PR
+    - failures are logged, not surfaced to end users
+  - Added tests for:
+    - live fallback closed-PR rejection
+    - live fallback unassign idempotency warning behavior
+    - successful mutation path invoking post-action sync enqueue
+- Nuances discovered during implementation:
+  - Live fallback uses the assignment token path; when no token is available, command logic continues using existing local/preflight behavior.
+  - Enqueue failures are intentionally non-user-facing so clean mutation successes can still return `response_not_required`.
+
+### 2026-02-20: Chunk 6a (Post-test correction)
+- Status: completed
+- Implemented:
+  - Restricted live GitHub read-through fallback to mutation-enabled mode (`ZULIP_ASSIGNMENT_MUTATIONS_ENABLED`) so preflight-only behavior remains deterministic and local-data based.
+  - Downgraded post-action sync enqueue failure logging from exception traceback to warning-level event to reduce noisy test output in environments without Redis/Celery broker.
+- Nuances discovered during implementation:
+  - Running live fallback in preflight-only mode can create non-deterministic test behavior (depends on live GitHub PR state) and violates the intended incremental rollout boundary.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

@@ -8,7 +8,7 @@ from django.utils import timezone
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext
-from zulip_bot.services.assignment_execution import run_assignment_command
+from zulip_bot.services.assignment_execution import LivePullRequestView, run_assignment_command
 
 
 class TestAssignmentExecution(TestCase):
@@ -83,6 +83,7 @@ class TestAssignmentExecution(TestCase):
         with (
             patch("zulip_bot.services.assignment_execution.GitHubAssignmentClient.assign", return_value=None) as mock_assign,
             patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
+            patch("zulip_bot.services.assignment_execution._enqueue_post_action_sync") as mock_enqueue_sync,
         ):
             mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
             result = run_assignment_command(
@@ -94,6 +95,7 @@ class TestAssignmentExecution(TestCase):
         self.assertTrue(result.response_not_required)
         self.assertEqual(result.content, "")
         mock_assign.assert_called_once()
+        mock_enqueue_sync.assert_called_once()
         mock_zulip_client.return_value.add_reaction.assert_called_once()
 
     @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
@@ -130,3 +132,35 @@ class TestAssignmentExecution(TestCase):
         self.assertIn("is not currently assigned", result.content)
         self.assertIn("No valid reviewers to unassign", result.content)
         mock_unassign.assert_not_called()
+
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
+    def test_missing_local_pr_uses_live_fallback_closed_pr(self) -> None:
+        self._make_repo_user_pref()
+        with patch(
+            "zulip_bot.services.assignment_execution._fetch_live_pr_view",
+            return_value=LivePullRequestView(is_open=False, assignees_lc=frozenset()),
+        ):
+            result = run_assignment_command(
+                action="assign",
+                context=self._context(),
+                args="https://github.com/leanprover-community/mathlib4/pull/3",
+            )
+
+        self.assertIn("Pull request is not open in GitHub live data.", result.content)
+        self.assertIn("No valid reviewers to assign after validation.", result.content)
+
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
+    def test_missing_local_pr_uses_live_fallback_for_unassign_idempotency(self) -> None:
+        self._make_repo_user_pref()
+        with patch(
+            "zulip_bot.services.assignment_execution._fetch_live_pr_view",
+            return_value=LivePullRequestView(is_open=True, assignees_lc=frozenset({"someone-else"})),
+        ):
+            result = run_assignment_command(
+                action="unassign",
+                context=self._context(),
+                args="https://github.com/leanprover-community/mathlib4/pull/4",
+            )
+
+        self.assertIn("is not currently assigned (github live data).", result.content)
+        self.assertIn("No valid reviewers to unassign after validation.", result.content)
