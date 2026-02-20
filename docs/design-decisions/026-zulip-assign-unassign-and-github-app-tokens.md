@@ -261,6 +261,47 @@
   - The reaction client method intentionally keeps payload minimal (`message_id`, `emoji_name`) and defers custom emoji/reaction_type handling until needed.
   - Keeping success emoji configurable early avoids coupling command behavior to hardcoded reaction names when policy-level overrides are introduced.
 
+### 2026-02-20: Chunk 5 (Feature-flagged mutation execution path)
+- Status: completed
+- Implemented:
+  - Added `zulip_bot.services.assignment_execution` with:
+    - parser + reviewer validation orchestration
+    - local PR preconditions/idempotency checks (open-state guard, already-assigned/not-assigned warnings from local assignee snapshot)
+    - feature-flagged mutation path via GitHub REST assignee endpoints
+    - normalized mutation error codes (`permission_denied`, `pr_not_found`, `validation_failed`, `github_transient`, `github_error`)
+    - success reaction attempt via Zulip API
+  - Added `GitHubAssignmentClient` for REST assignment/unassignment calls.
+  - Switched `assign`/`unassign` commands to `assignment_execution` service.
+  - Added command response suppression support:
+    - `CommandResult.response_not_required`
+    - webhook response renderer now emits `{response_not_required: true}` when set.
+  - Added new settings:
+    - `ZULIP_ASSIGNMENT_MUTATIONS_ENABLED`
+    - `GITHUB_ASSIGNMENT_TOKEN`
+  - Added tests:
+    - `zulip_bot.tests.test_assignment_execution`
+    - `zulip_bot.tests.test_github_assignment_client`
+    - webhook test for clean mutation success path returning `response_not_required`.
+- Nuances discovered during implementation:
+  - Mutation execution is intentionally gated behind `ZULIP_ASSIGNMENT_MUTATIONS_ENABLED`; default behavior remains preflight-only to keep rollout safe.
+  - Local `PullRequest.assignees` is treated as an idempotency hint, so stale local data can produce warnings that differ from live GitHub state until read-through fallback is added.
+  - Clean success now aligns with desired UX (`response_not_required` + reaction), while mixed outcomes continue to produce private summaries.
+
+### 2026-02-20: Chunk 5a (Post-test correction)
+- Status: completed
+- Implemented:
+  - Fixed local PR lookup in `assignment_execution._load_local_pr` by removing invalid `select_related("repository")` usage alongside deferred fields.
+- Nuances discovered during implementation:
+  - Django raises `FieldError` when a relation is both deferred via `.only(...)` and traversed via `select_related(...)`; for this lookup path, `select_related` is unnecessary because only PR-local fields (`id`, `state`, `assignees`) are read.
+
+### 2026-02-20: Chunk 5b (Post-test correction)
+- Status: completed
+- Implemented:
+  - Adjusted assignment execution summaries so `No valid reviewers to <action> after validation.` is always emitted when the valid target set is empty, even if other failures already exist.
+  - Updated clean-success tests to patch `ZulipClient` construction (not just `add_reaction`) so reaction success paths are exercised without requiring full Zulip credential settings in test environments.
+- Nuances discovered during implementation:
+  - Patching instance methods alone is insufficient when the class constructor can fail first (e.g., missing config in `__init__`); patching the class boundary is safer for command-path tests.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

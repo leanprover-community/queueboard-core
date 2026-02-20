@@ -28,6 +28,7 @@ class CommandContext:
 class CommandResult:
     content: str
     response_mode: ResponseMode
+    response_not_required: bool = False
 
 
 CommandHandler = Callable[[CommandContext, str], CommandResult]
