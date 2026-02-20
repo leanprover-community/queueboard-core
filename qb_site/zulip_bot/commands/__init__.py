@@ -20,6 +20,7 @@ class CommandContext:
     stream_id: int | None
     topic: str | None
     is_private: bool
+    rendered_content: str | None = None
     allowed_command_names: frozenset[str] = frozenset()
 
 

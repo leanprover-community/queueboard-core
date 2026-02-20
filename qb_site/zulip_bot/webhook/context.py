@@ -12,6 +12,7 @@ def build_context(payload: dict[str, Any]) -> CommandContext:
         sender_email=message.get("sender_email"),
         sender_full_name=message.get("sender_full_name"),
         message_content=message.get("content", ""),
+        rendered_content=message.get("rendered_content"),
         message_id=message.get("id"),
         stream_id=message.get("stream_id"),
         topic=message.get("subject"),
