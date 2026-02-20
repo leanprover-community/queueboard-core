@@ -210,6 +210,22 @@
   - The parser intentionally supports full GitHub PR URLs (including those surfaced through Zulip linkifier anchors) and does not attempt to resolve bare `#123` without a rendered GitHub anchor.
   - When mentions are syntactically present but unresolved, parser output returns no fallback target (does not silently default to sender), so command handlers can surface explicit private warnings/errors.
 
+### 2026-02-20: Chunk 2 (Reviewer/repo validation service)
+- Status: completed
+- Implemented:
+  - Added `zulip_bot.services.assignment_validation.validate_assignment_targets(...)` to enforce reviewer/repo preconditions before GitHub mutations.
+  - Validation outputs per-target structured results with explicit codes:
+    - `ok`
+    - `unknown_reviewer`
+    - `missing_github_login`
+    - `repository_not_configured`
+    - `missing_preference`
+  - Added DB-backed tests in `zulip_bot.tests.test_assignment_validation` for success and each failure mode.
+- Nuances discovered during implementation:
+  - Validation currently keys repository lookup by exact `owner`/`repo` match from parsed PR URL; no case-normalization is applied yet.
+  - If the repository is absent locally, all otherwise-valid reviewer targets currently fail with `repository_not_configured`; this is intentional for now and will be relaxed in the later GitHub read-through fallback chunk.
+  - Validation is intentionally command-agnostic (`assign` vs `unassign`) so command-specific preconditions (open/closed state, currently assigned checks) can be layered separately.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)
