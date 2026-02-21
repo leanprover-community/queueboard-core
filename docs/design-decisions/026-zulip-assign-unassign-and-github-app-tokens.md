@@ -433,6 +433,21 @@
   - Centralizing resolution reduces duplication and makes syncer adoption incremental: syncer can now call the same resolver without copying assignment-specific fallback logic.
   - Existing assignment-specific compatibility is preserved by passing `("GITHUB_ASSIGNMENT_TOKEN",)` as the named settings fallback in command execution.
 
+### 2026-02-21: Chunk 10 (Syncer command-path adoption of operation tokens)
+- Status: completed
+- Implemented:
+  - Extended `syncer.services.github_client.GitHubClient` to accept optional operation/repo context:
+    - `operation`, `owner`, `repo` constructor args
+    - when provided and no explicit token is passed, client attempts shared operation-token resolution first
+    - existing env-token chooser behavior remains as fallback
+  - Wired repo-scoped operation context into syncer management commands:
+    - `list_changed_prs` now uses operation `syncer_repo_discovery`
+    - `sync_repo` now uses operation `syncer_pr_read`
+  - Added syncer client test coverage for operation-token initialization path.
+- Nuances discovered during implementation:
+  - This chunk intentionally targets command paths only; Celery/task paths still instantiate `GitHubClient()` without operation context, preserving current production behavior while enabling incremental migration.
+  - Fallback order in `GitHubClient` remains compatible with existing rate-budget token selection when no operation token is resolved.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

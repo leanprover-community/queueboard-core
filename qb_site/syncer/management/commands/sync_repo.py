@@ -48,7 +48,7 @@ class Command(BaseCommand):
         owner, name = owner_name.split("/", 1)
 
         try:
-            client = GitHubClient()
+            client = GitHubClient(operation="syncer_pr_read", owner=owner, repo=name)
         except RuntimeError as e:
             raise CommandError(str(e))
 
