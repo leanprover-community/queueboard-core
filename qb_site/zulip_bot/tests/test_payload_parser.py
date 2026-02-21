@@ -34,6 +34,11 @@ class TestPayloadParser(SimpleTestCase):
         self.assertTrue(has_leading_bot_mention("@**qb-bot** help", payload))
 
     @override_settings(ZULIP_BOT_EMAIL="qb-bot@example.com")
+    def test_has_leading_bot_mention_rejects_silent_mention(self) -> None:
+        payload = {"bot_email": "qb-bot@example.com", "message": {}}
+        self.assertFalse(has_leading_bot_mention("@_**qb-bot** help", payload))
+
+    @override_settings(ZULIP_BOT_EMAIL="qb-bot@example.com")
     def test_has_leading_bot_mention_rejects_nonleading_mention(self) -> None:
         payload = {"bot_email": "qb-bot@example.com", "message": {}}
         self.assertFalse(has_leading_bot_mention("Announcing @**qb-bot**: help", payload))
@@ -48,6 +53,12 @@ class TestPayloadParser(SimpleTestCase):
         payload = {"bot_email": "qb-bot@example.com", "message": {}}
         stripped = strip_leading_bot_mention("@**qb-bot** @**alice** help", payload)
         self.assertEqual(stripped, "@**alice** help")
+
+    @override_settings(ZULIP_BOT_EMAIL="qb-bot@example.com")
+    def test_strip_leading_bot_silent_mention_is_not_stripped(self) -> None:
+        payload = {"bot_email": "qb-bot@example.com", "message": {}}
+        stripped = strip_leading_bot_mention("@_**qb-bot** @**alice** help", payload)
+        self.assertEqual(stripped, "@_**qb-bot** @**alice** help")
 
     def test_validate_payload_requires_sender_fields(self) -> None:
         payload = {

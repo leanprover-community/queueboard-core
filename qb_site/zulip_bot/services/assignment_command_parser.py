@@ -9,6 +9,8 @@ GITHUB_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 RAW_ZULIP_MENTION_RE = re.compile(r"@\*\*(?P<label>.+?)\*\*")
+RAW_ZULIP_SILENT_MENTION_RE = re.compile(r"@_\*\*(?P<label>.+?)\*\*")
+RAW_PR_LINKIFIER_TOKEN_RE = re.compile(r"(?:^|\s)(?:#\d+|[A-Za-z0-9_.-]+#\d+)(?=$|\s)")
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,13 @@ def parse_assignment_command_args(*, args: str, rendered_content: str | None, se
     """Parse PR target and reviewer mentions for assign/unassign commands."""
     pr = _parse_single_pr_ref(args=args, rendered_content=rendered_content)
     parsed_mentions = _parse_mentions(args=args, rendered_content=rendered_content)
+    unexpected_tokens = _find_unexpected_tokens(args=args)
+    if unexpected_tokens:
+        rendered_tokens = ", ".join(f"`{token}`" for token in unexpected_tokens)
+        raise AssignmentCommandParseError(
+            code="unexpected_args",
+            message=f"Unexpected argument token(s): {rendered_tokens}. Use: <pr> <optional zulip mention(s)>.",
+        )
 
     if parsed_mentions.resolved_user_ids:
         target_user_ids = parsed_mentions.resolved_user_ids
@@ -90,6 +99,21 @@ def parse_assignment_command_args(*, args: str, rendered_content: str | None, se
         target_user_ids=target_user_ids,
         unresolved_mentions=parsed_mentions.unresolved_mentions,
     )
+
+
+def _find_unexpected_tokens(*, args: str) -> tuple[str, ...]:
+    remaining = args.strip()
+    if not remaining:
+        return ()
+
+    remaining = GITHUB_PR_URL_RE.sub(" ", remaining)
+    remaining = RAW_ZULIP_MENTION_RE.sub(" ", remaining)
+    remaining = RAW_ZULIP_SILENT_MENTION_RE.sub(" ", remaining)
+    remaining = RAW_PR_LINKIFIER_TOKEN_RE.sub(" ", remaining)
+    remaining = re.sub(r"[,\s]+", " ", remaining).strip()
+    if not remaining:
+        return ()
+    return tuple(token for token in remaining.split(" ") if token)
 
 
 def _parse_single_pr_ref(*, args: str, rendered_content: str | None) -> GitHubPullRequestRef:
@@ -148,6 +172,9 @@ def _parse_mentions(*, args: str, rendered_content: str | None) -> _ParsedMentio
         rendered_unresolved = extractor.unresolved_mentions
 
     arg_mentions = [match.group("label").strip() for match in RAW_ZULIP_MENTION_RE.finditer(args) if match.group("label").strip()]
+    arg_mentions.extend(
+        match.group("label").strip() for match in RAW_ZULIP_SILENT_MENTION_RE.finditer(args) if match.group("label").strip()
+    )
     mentions_present = bool(rendered_resolved_ids or rendered_unresolved or arg_mentions)
 
     resolved_user_ids = tuple(sorted(set(rendered_resolved_ids)))
