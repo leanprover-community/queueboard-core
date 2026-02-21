@@ -43,6 +43,7 @@ class TestRepoHistoryBackfillTask(TestCase):
         self.assertEqual(mock_sync_pr_task.delay.call_count, 2)
         mock_sync_pr_task.delay.assert_any_call(self.repo.id, 10)
         mock_sync_pr_task.delay.assert_any_call(self.repo.id, 5)
+        MockClient.assert_called_once_with(operation="syncer_repo_discovery", owner=self.repo.owner, repo=self.repo.name)
 
         cursor = RepoBackfillCursor.objects.get(repository=self.repo)
         self.assertTrue(cursor.completed)

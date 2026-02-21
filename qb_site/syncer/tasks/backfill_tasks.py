@@ -34,7 +34,7 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
     repo = Repository.objects.get(id=int(repo_id))
     cursor, _ = RepoBackfillCursor.objects.get_or_create(repository=repo)
 
-    client = GitHubClient()
+    client = GitHubClient(operation="syncer_repo_discovery", owner=repo.owner, repo=repo.name)
     used_pages = 0
     enqueued = 0
     rate_events: list[dict] = []

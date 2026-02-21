@@ -448,6 +448,24 @@
   - This chunk intentionally targets command paths only; Celery/task paths still instantiate `GitHubClient()` without operation context, preserving current production behavior while enabling incremental migration.
   - Fallback order in `GitHubClient` remains compatible with existing rate-budget token selection when no operation token is resolved.
 
+### 2026-02-21: Chunk 11 (Syncer task-path adoption of operation tokens)
+- Status: completed
+- Implemented:
+  - Wired repo-scoped operation context into `GitHubClient` usage across task paths:
+    - `sync_pr_task` -> `syncer_pr_read`
+    - `sync_repo_since_task` -> `syncer_repo_discovery`
+    - `sync_ci_for_shas_task` -> `syncer_ci_read`
+    - `backfill_repo_history_task` -> `syncer_repo_discovery`
+    - `harvest_commit_history_task` -> `syncer_pr_read`
+  - Added/updated tests to assert constructor context for selected task flows:
+    - `syncer.tests.tasks.test_sync_repo_tasks`
+    - `syncer.tests.tasks.test_sync_ci_for_shas_task`
+    - `syncer.tests.backfill.test_repo_history_backfill_task`
+    - `syncer.tests.tasks.test_commit_history_tasks`
+- Nuances discovered during implementation:
+  - Task-level adoption is behavior-preserving because `GitHubClient` still falls back to existing token sources when no app token is resolved.
+  - Constructor-context assertions in task tests provide regression protection for future refactors where operation names might drift.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

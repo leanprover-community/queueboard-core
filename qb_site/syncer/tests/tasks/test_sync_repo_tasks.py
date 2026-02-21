@@ -3,9 +3,7 @@ from __future__ import annotations
 from unittest import mock
 
 from django.test import TestCase
-from django.utils import timezone
 
-from core.models import Repository
 from syncer.tasks.sync_tasks import sync_repo_since_task, sync_active_repos_task
 from syncer.tests.factories import make_repo
 
@@ -31,6 +29,11 @@ class TestSyncRepoTasks(TestCase):
         self.assertEqual(res.get("enqueued"), 3)
         self.assertEqual(
             res.get("rate_events"), [{"label": "repo_discovery", "cost": 9, "remaining": 4999, "resetAt": "2025-11-01T00:00:00Z"}]
+        )
+        MockClient.assert_called_once_with(
+            operation="syncer_repo_discovery",
+            owner=self.repo.owner,
+            repo=self.repo.name,
         )
         # Ensure per-PR tasks were enqueued with parent headers
         self.assertEqual(mock_enqueue.call_count, 3)
