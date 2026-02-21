@@ -6,7 +6,7 @@ from zulip_bot.services.assignment_execution import run_assignment_command
 
 @register_command(
     name="unassign",
-    description="Validate unassignment targets for a pull request.",
+    description="Unassign reviewer(s) from a PR. Syntax: unassign <GitHub PR URL or #linkifier> [@**user** ...].",
     response_mode=ResponseMode.PRIVATE,
 )
 def unassign_command(context: CommandContext, args: str) -> CommandResult:

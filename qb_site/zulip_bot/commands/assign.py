@@ -6,7 +6,7 @@ from zulip_bot.services.assignment_execution import run_assignment_command
 
 @register_command(
     name="assign",
-    description="Validate assignee targets for a pull request.",
+    description="Assign reviewer(s) to a PR. Syntax: assign <GitHub PR URL or #linkifier> [@**user** ...].",
     response_mode=ResponseMode.PRIVATE,
 )
 def assign_command(context: CommandContext, args: str) -> CommandResult:
