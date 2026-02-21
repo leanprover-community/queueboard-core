@@ -120,15 +120,18 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
 
 
 def _summary_response(*, action: str, successes: list[str], warnings: list[str], failures: list[str]) -> CommandResult:
-    lines = [f"Summary for `{action}`:"]
+    lines = [f"**Summary for `{action}`**"]
     if successes:
-        lines.append("Successes:")
+        lines.append("")
+        lines.append("**Successes:**")
         lines.extend(f"- {entry}" for entry in successes)
     if warnings:
-        lines.append("Warnings:")
+        lines.append("")
+        lines.append("**Warnings:**")
         lines.extend(f"- {entry}" for entry in warnings)
     if failures:
-        lines.append("Failures:")
+        lines.append("")
+        lines.append("**Failures:**")
         lines.extend(f"- {entry}" for entry in failures)
     return CommandResult(content="\n".join(lines), response_mode=ResponseMode.PRIVATE)
 

@@ -60,7 +60,7 @@ def validate_assignment_targets(*, pr: GitHubPullRequestRef, target_user_ids: tu
                     zulip_user_id=target_id,
                     ok=False,
                     code="missing_github_login",
-                    message="Reviewer is linked to Zulip but does not have a GitHub login set.",
+                    message="User is linked to Zulip but does not have a GitHub login set.",
                     user_id=user.id,
                 )
             )
@@ -85,7 +85,7 @@ def validate_assignment_targets(*, pr: GitHubPullRequestRef, target_user_ids: tu
                     zulip_user_id=target_id,
                     ok=False,
                     code="missing_preference",
-                    message=f"Reviewer has no ReviewerPreference for {pr.owner}/{pr.repo}.",
+                    message=f"User has not registered as a reviewer for {pr.owner}/{pr.repo}.",
                     user_id=user.id,
                     github_login=github_login,
                 )

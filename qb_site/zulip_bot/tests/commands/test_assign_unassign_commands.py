@@ -38,7 +38,7 @@ class TestAssignUnassignCommands(TestCase):
             "https://github.com/leanprover-community/mathlib4/pull/22",
         )
 
-        self.assertIn("Summary for `assign`:", result.content)
+        self.assertIn("**Summary for `assign`**", result.content)
         self.assertIn("Successes:", result.content)
         self.assertIn("Validated targets: `reviewer`.", result.content)
         self.assertIn("Preflight passed for `assign` on leanprover-community/mathlib4#22.", result.content)
