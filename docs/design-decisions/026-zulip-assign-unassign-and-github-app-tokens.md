@@ -509,6 +509,8 @@
   - operation-to-app mapping config
   - assignment success reaction emoji name (global default: `thumbs_up`)
   - optional per-command reaction emoji override in `ZULIP_COMMAND_POLICY`
+- Setup runbook:
+  - GitHub App creation, permissions, installation, and env configuration are documented in `docs/github_app_setup.md`.
 - Current token policy:
   - assignment operations require app tokens (no fallback)
   - syncer operations use app tokens when available, otherwise existing `GH_TOKEN`/`GITHUB_TOKEN`.
@@ -526,3 +528,19 @@
 
 ## Open Questions
 - None currently.
+
+## Current Status Summary
+- `assign` / `unassign` command implementation is functionally complete for the current scope.
+- Implemented end-to-end:
+  - PR + mention parsing from Zulip content/rendered HTML
+  - reviewer/repository validation and precondition checks
+  - local-first PR checks with live GitHub fallback where applicable
+  - GitHub assignment/unassignment mutation execution
+  - success reaction + private failure/mixed-outcome summaries
+  - post-action sync enqueue for convergence
+- Current token policy:
+  - assignment operations (`assign_pr`, `unassign_pr`) require GitHub App tokens (no fallback)
+  - syncer operations try app tokens first; if unavailable, use existing `GH_TOKEN`/`GITHUB_TOKEN` behavior
+- Remaining work is optional hardening/operations, not missing core command functionality:
+  - broader integration/soak testing in environment
+  - future authorization constraints (actor/target/repo policy) if desired
