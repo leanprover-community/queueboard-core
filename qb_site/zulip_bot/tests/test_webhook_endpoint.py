@@ -170,7 +170,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             "assign": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
         },
         ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
-        GITHUB_ASSIGNMENT_TOKEN="tok",
     )
     def test_assign_command_clean_success_returns_response_not_required(self) -> None:
         repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
@@ -198,8 +197,10 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         )
         with (
             patch("zulip_bot.services.assignment_execution.GitHubAssignmentClient.assign", return_value=None),
+            patch("core.services.github_operation_tokens.get_default_github_app_token_provider") as mock_provider,
             patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
         ):
+            mock_provider.return_value.get_token.return_value = "app-token"
             mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
             result = self._post_payload(
                 self._payload(

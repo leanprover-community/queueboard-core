@@ -10,7 +10,7 @@ from dateutil import parser as dtparser
 from django.conf import settings
 from django.utils import timezone
 
-from core.services.github_operation_tokens import resolve_github_operation_token
+from core.services.github_operation_tokens import resolve_github_app_operation_token
 from syncer.services.rate_budget import choose_token, throttle_request_slot, token_fingerprint
 
 
@@ -46,7 +46,7 @@ class GitHubClient:
         if provided:
             return provided
         if self.operation and self.owner and self.repo:
-            operation_token = resolve_github_operation_token(
+            operation_token = resolve_github_app_operation_token(
                 operation=self.operation,
                 owner=self.owner,
                 repo=self.repo,

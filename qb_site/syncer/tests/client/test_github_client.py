@@ -57,7 +57,7 @@ class TestGitHubClient(SimpleTestCase):
         mchoose.assert_called_once_with(["a", "b", "c"])
 
     def test_init_uses_operation_token_when_operation_and_repo_provided(self) -> None:
-        with mock.patch("syncer.services.github_client.resolve_github_operation_token", return_value="op-token") as mresolve:
+        with mock.patch("syncer.services.github_client.resolve_github_app_operation_token", return_value="op-token") as mresolve:
             client = GitHubClient(operation="syncer_pr_read", owner="o", repo="r")
 
         self.assertEqual(client.token, "op-token")
