@@ -35,6 +35,7 @@ class TestSyncCIForSHAsTask(TestCase):
         ).get()
         self.assertEqual(res.get("status"), "ok")
         self.assertEqual(sorted(res.get("shas_done") or []), ["a", "b"])
+        MockClient.assert_called_once_with(operation="syncer_ci_read", owner=self.repo.owner, repo=self.repo.name)
 
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
     def test_defers_on_low_budget(self, MockClient):

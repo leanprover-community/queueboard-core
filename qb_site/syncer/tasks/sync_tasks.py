@@ -67,7 +67,7 @@ def sync_pr_task(  # type: ignore[no-redef]
     Returns a summary dict with counts and rate limit info. Skips the PR if up-to-date.
     """
     repo = Repository.objects.get(id=repo_id)
-    client = GitHubClient()
+    client = GitHubClient(operation="syncer_pr_read", owner=repo.owner, repo=repo.name)
 
     def _schedule_defer(reset_at: Optional[str], where: str) -> Dict[str, Any]:
         """Schedule a retry of this PR task at resetAt (+ small jitter) and return a summary.
@@ -540,7 +540,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             log.info("sync_repo_since: lock not acquired; skipping repo=%s/%s", repo.owner, repo.name)
             return {"skipped": True, "reason": "lock_not_acquired"}
 
-        client = GitHubClient()
+        client = GitHubClient(operation="syncer_repo_discovery", owner=repo.owner, repo=repo.name)
         rate_events: list[dict] = []
 
         # Determine cutoff
@@ -699,7 +699,7 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
     """
     repo = Repository.objects.get(id=int(repo_id))
     pr = PullRequest.objects.get(repository=repo, number=int(number))
-    client = GitHubClient()
+    client = GitHubClient(operation="syncer_ci_read", owner=repo.owner, repo=repo.name)
 
     rate_events: list[dict] = []
     per_sha_cap = 50

@@ -22,7 +22,7 @@ def harvest_commit_history_task(
     if pr is None:
         return {"skipped": True, "reason": "pr_not_found"}
 
-    client = GitHubClient()
+    client = GitHubClient(operation="syncer_pr_read", owner=pr.repository.owner, repo=pr.repository.name)
     rate_events: list[dict] = []
 
     def rate_log(rl: dict) -> None:

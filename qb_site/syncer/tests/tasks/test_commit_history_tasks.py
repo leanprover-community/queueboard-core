@@ -36,7 +36,7 @@ class TestCommitHistoryTasks(TestCase):
         )
 
     def test_sweep_enqueues_harvest_tasks_with_cutoff(self) -> None:
-        ch = CommitHistoryHarvest.objects.create(
+        CommitHistoryHarvest.objects.create(
             pull_request=self.pr,
             start_sha="abc123",
             has_more=True,
@@ -56,7 +56,7 @@ class TestCommitHistoryTasks(TestCase):
     def test_sweep_truncates(self) -> None:
         CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="a", has_more=True)
         CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="b", has_more=True)
-        with patch("syncer.tasks.commit_history_tasks.harvest_commit_history_task.delay") as mock_delay:
+        with patch("syncer.tasks.commit_history_tasks.harvest_commit_history_task.delay"):
             res = harvest_commit_history_sweep(max_jobs=1)
         self.assertTrue(res["truncated"])
         self.assertEqual(len(res["enqueued"]), 1)
@@ -64,22 +64,27 @@ class TestCommitHistoryTasks(TestCase):
     def test_harvest_task_enqueues_ci_for_missing(self) -> None:
         # If harvest returns shas and no CI exists, ensure enqueue happens
         state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha1")
-        with patch(
-            "syncer.tasks.commit_history_tasks.harvest_commit_history_with_cursor",
-            return_value=(["shaX"], state),
+        with (
+            patch("syncer.tasks.commit_history_tasks.GitHubClient") as MockClient,
+            patch(
+                "syncer.tasks.commit_history_tasks.harvest_commit_history_with_cursor",
+                return_value=(["shaX"], state),
+            ),
+            patch("syncer.tasks.commit_history_tasks.sync_ci_for_shas_task.delay") as mock_ci,
         ):
-            with patch("syncer.tasks.commit_history_tasks.sync_ci_for_shas_task.delay") as mock_ci:
-                res = harvest_commit_history_task(
-                    pr_id=self.pr.id,
-                    start_sha="sha1",
-                    max_pages=1,
-                    page_size=1,
-                    since_iso=None,
-                )
-                mock_ci.assert_called_once()
-                self.assertEqual(res["ci_missing"], ["shaX"])
-                self.assertEqual(res["repo"], "o/r")
-                self.assertEqual(res["number"], 1)
+            MockClient.return_value.get_last_rate_limit.return_value = {}
+            res = harvest_commit_history_task(
+                pr_id=self.pr.id,
+                start_sha="sha1",
+                max_pages=1,
+                page_size=1,
+                since_iso=None,
+            )
+            mock_ci.assert_called_once()
+            self.assertEqual(res["ci_missing"], ["shaX"])
+            self.assertEqual(res["repo"], "o/r")
+            self.assertEqual(res["number"], 1)
+            MockClient.assert_called_once_with(operation="syncer_pr_read", owner="o", repo="r")
 
         # If CI already exists for the harvested sha, do not enqueue
         state2 = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha2")
