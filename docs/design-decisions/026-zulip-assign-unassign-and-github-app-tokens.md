@@ -352,7 +352,7 @@
   - Operation mapping errors are logged and PAT fallback is still allowed, matching the current migration-safe stance rather than strict enforcement.
 
 ### 2026-02-20: Chunk 7a (Operation-level strict mode for PAT fallback)
-- Status: completed
+- Status: superseded by Chunk 7c
 - Implemented:
   - Added operation-level strict mode handling in `assignment_execution`:
     - reads `GITHUB_APP_TOKEN_CONFIG.strict_operations` (list of operation names)
@@ -365,7 +365,7 @@
   - Strictness is interpreted at command execution time from settings, so behavior can be toggled without restarting workers only where settings reload semantics allow.
 
 ### 2026-02-20: Chunk 7b (Strict-mode failure UX: explicit GitHub App reasons)
-- Status: completed
+- Status: superseded by Chunk 7c
 - Implemented:
   - Refined assignment token resolution to return structured metadata (`AssignmentTokenResolution`) including:
     - resolved token (if any)
@@ -381,6 +381,17 @@
 - Nuances discovered during implementation:
   - Exposing app-token error codes in private failures significantly improves operator/debuggability for rollout misconfigurations (app not installed, auth mismatch) without leaking secrets.
   - Live fallback token lookup now uses the same structured token-resolution path, keeping strict-mode behavior consistent across precondition reads and mutation execution.
+
+### 2026-02-21: Chunk 7c (Strict mode removal)
+- Status: completed
+- Implemented:
+  - Removed operation-level strict behavior from assignment token resolution.
+  - Assignment flow now always follows one token policy:
+    - try GitHub App installation token first
+    - fallback to existing token sources (`GITHUB_ASSIGNMENT_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) when app token is unavailable
+  - Removed strict-mode-specific command failures and strict-mode-specific assignment tests.
+- Nuances discovered during implementation:
+  - This simplifies rollout and support by eliminating a second policy path; token-source behavior is now uniform across assign/unassign operations.
 
 ### 2026-02-21: Chunk 8 (Refactor: move GitHub services from Zulip app to Core app)
 - Status: completed
@@ -407,6 +418,21 @@
   - No behavior assertions changed; this is test ownership and path cleanup only.
   - Import targets already referenced `core.services.*`, so relocation required no runtime code changes.
 
+### 2026-02-21: Chunk 9 (Shared operation-token resolver in Core)
+- Status: completed
+- Implemented:
+  - Added `core.services.github_operation_tokens.resolve_github_operation_token(...)` as shared token resolution logic:
+    - operation-scoped app token lookup first
+    - fallback chain next (named Django settings token(s), then env token list)
+    - warning-level logging on app-token lookup errors, with fallback continuing
+  - Migrated `zulip_bot.services.assignment_execution` to use this resolver (behavior-preserving).
+  - Added new core unit tests:
+    - `core.tests.test_github_operation_tokens`
+    - covers app-token success, setting fallback, env fallback, app-error fallback, and no-operation fallback path
+- Nuances discovered during implementation:
+  - Centralizing resolution reduces duplication and makes syncer adoption incremental: syncer can now call the same resolver without copying assignment-specific fallback logic.
+  - Existing assignment-specific compatibility is preserved by passing `("GITHUB_ASSIGNMENT_TOKEN",)` as the named settings fallback in command execution.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)
@@ -430,7 +456,6 @@
   - operation-to-app mapping config
   - assignment success reaction emoji name (global default: `thumbs_up`)
   - optional per-command reaction emoji override in `ZULIP_COMMAND_POLICY`
-  - strict mode toggle for forbidding PAT fallback per operation
 - Migration path for syncer:
   - start by routing read-only sync operations through app-token provider
   - deprecate PAT env vars after parity and soak period
