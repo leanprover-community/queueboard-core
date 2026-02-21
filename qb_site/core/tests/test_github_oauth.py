@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, override_settings
 
-from zulip_bot.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
+from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 
 
 @override_settings(
@@ -33,7 +33,7 @@ class TestGitHubOAuthClient(SimpleTestCase):
 
     def test_exchange_code_for_access_token(self) -> None:
         with patch(
-            "zulip_bot.services.github_oauth.requests.post",
+            "core.services.github_oauth.requests.post",
             return_value=self._response({"access_token": "token-123"}),
         ):
             client = GitHubOAuthClient()
@@ -46,7 +46,7 @@ class TestGitHubOAuthClient(SimpleTestCase):
 
     def test_fetch_user_identity(self) -> None:
         with patch(
-            "zulip_bot.services.github_oauth.requests.get",
+            "core.services.github_oauth.requests.get",
             return_value=self._response(
                 {
                     "id": 123,

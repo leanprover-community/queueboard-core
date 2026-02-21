@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from django.db import transaction
 
 from core.models import User
-from zulip_bot.services.github_oauth import GitHubUserIdentity
+from core.services.github_oauth import GitHubUserIdentity
 
 
 @dataclass(frozen=True)

@@ -382,6 +382,31 @@
   - Exposing app-token error codes in private failures significantly improves operator/debuggability for rollout misconfigurations (app not installed, auth mismatch) without leaking secrets.
   - Live fallback token lookup now uses the same structured token-resolution path, keeping strict-mode behavior consistent across precondition reads and mutation execution.
 
+### 2026-02-21: Chunk 8 (Refactor: move GitHub services from Zulip app to Core app)
+- Status: completed
+- Implemented:
+  - Moved GitHub-specific service modules from `zulip_bot` to `core.services`:
+    - `github_oauth` -> `core.services.github_oauth`
+    - `github_app_tokens` -> `core.services.github_app_tokens`
+    - extracted assignment mutation client/error to `core.services.github_assignment`
+  - Updated all callsites/imports in webhook/views, registration linking, assignment execution, and tests to reference `core.services.*`.
+  - Removed old `zulip_bot.services.github_oauth` and `zulip_bot.services.github_app_tokens` modules after migration.
+- Nuances discovered during implementation:
+  - Assignment command tests can keep patching `zulip_bot.services.assignment_execution.GitHubAssignmentClient` because the symbol is imported into the command module namespace, even though implementation now lives in `core.services.github_assignment`.
+  - This refactor is intentionally behavior-preserving; it changes ownership boundaries (service location) but not runtime command semantics.
+
+### 2026-02-21: Chunk 8a (Refactor: move GitHub service unit tests to Core app)
+- Status: completed
+- Implemented:
+  - Moved GitHub service-focused unit tests from `zulip_bot/tests` to `core/tests`:
+    - `test_github_oauth.py`
+    - `test_github_app_tokens.py`
+    - `test_github_assignment_client.py`
+  - Kept Zulip command/webhook/registration flow tests in `zulip_bot/tests` unchanged.
+- Nuances discovered during implementation:
+  - No behavior assertions changed; this is test ownership and path cleanup only.
+  - Import targets already referenced `core.services.*`, so relocation required no runtime code changes.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

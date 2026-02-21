@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from django.test import SimpleTestCase
 from django.utils import timezone
 
-from zulip_bot.services.github_app_tokens import GitHubAppInstallationTokenProvider
+from core.services.github_app_tokens import GitHubAppInstallationTokenProvider
 
 
 class TestGitHubAppInstallationTokenProvider(SimpleTestCase):
@@ -46,11 +46,11 @@ class TestGitHubAppInstallationTokenProvider(SimpleTestCase):
         expires_at = self._iso_utc(timezone.now() + timedelta(hours=1))
         with (
             patch(
-                "zulip_bot.services.github_app_tokens.requests.get",
+                "core.services.github_app_tokens.requests.get",
                 return_value=self._response(status_code=200, payload={"id": 123}),
             ) as mock_get,
             patch(
-                "zulip_bot.services.github_app_tokens.requests.post",
+                "core.services.github_app_tokens.requests.post",
                 return_value=self._response(status_code=201, payload={"token": "inst-token-1", "expires_at": expires_at}),
             ) as mock_post,
         ):
@@ -80,11 +80,11 @@ class TestGitHubAppInstallationTokenProvider(SimpleTestCase):
 
         with (
             patch(
-                "zulip_bot.services.github_app_tokens.requests.get",
+                "core.services.github_app_tokens.requests.get",
                 return_value=self._response(status_code=200, payload={"id": 123}),
             ) as mock_get,
             patch(
-                "zulip_bot.services.github_app_tokens.requests.post",
+                "core.services.github_app_tokens.requests.post",
                 side_effect=[
                     self._response(status_code=201, payload={"token": "inst-token-1", "expires_at": near_expiry}),
                     self._response(status_code=201, payload={"token": "inst-token-2", "expires_at": far_expiry}),
@@ -119,13 +119,13 @@ class TestGitHubAppInstallationTokenProvider(SimpleTestCase):
         }
         provider = GitHubAppInstallationTokenProvider(config=config)
         with (
-            patch("zulip_bot.services.github_app_tokens._build_github_app_jwt", side_effect=["jwt-install", "jwt-token"]),
+            patch("core.services.github_app_tokens._build_github_app_jwt", side_effect=["jwt-install", "jwt-token"]),
             patch(
-                "zulip_bot.services.github_app_tokens.requests.get",
+                "core.services.github_app_tokens.requests.get",
                 return_value=self._response(status_code=200, payload={"id": 444}),
             ) as mock_get,
             patch(
-                "zulip_bot.services.github_app_tokens.requests.post",
+                "core.services.github_app_tokens.requests.post",
                 return_value=self._response(
                     status_code=201,
                     payload={"token": "mapped-token", "expires_at": self._iso_utc(timezone.now() + timedelta(hours=1))},

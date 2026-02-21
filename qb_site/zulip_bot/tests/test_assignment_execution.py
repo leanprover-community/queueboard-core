@@ -8,7 +8,7 @@ from django.utils import timezone
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext
-from zulip_bot.services.github_app_tokens import GitHubAppTokenError
+from core.services.github_app_tokens import GitHubAppTokenError
 from zulip_bot.services.assignment_execution import LivePullRequestView, run_assignment_command
 
 

@@ -6,7 +6,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from core.models import Repository, ReviewerPreference, User
-from zulip_bot.services.github_oauth import GitHubUserIdentity
+from core.services.github_oauth import GitHubUserIdentity
 from zulip_bot.services.registration_links import RegistrationLinkClaims, issue_registration_token
 from zulip_bot.services.registration_oauth_state import RegistrationOAuthStateClaims, issue_registration_oauth_state
 from zulip_bot.services.zulip_client import ZulipApiError
