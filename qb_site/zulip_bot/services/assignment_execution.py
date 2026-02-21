@@ -12,7 +12,6 @@ from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
 from zulip_bot.services.assignment_validation import AssignmentTargetValidation, validate_assignment_targets
-from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +19,6 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class LivePullRequestView:
     is_open: bool
-    assignees_lc: frozenset[str]
 
 
 def run_assignment_command(*, action: str, context: CommandContext, args: str) -> CommandResult:
@@ -55,27 +53,12 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
         if local_pr.state != PullRequestState.OPEN:
             failures.append("Pull request is not open in local sync data (state != open).")
             valid_targets = []
-        else:
-            valid_targets, idempotent_warnings = _apply_local_idempotency(
-                action=action,
-                local_pr=local_pr,
-                valid_targets=valid_targets,
-            )
-            warnings.extend(idempotent_warnings)
     elif _assignment_mutations_enabled():
         live_pr = _fetch_live_pr_view(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number, action=action)
         if live_pr is not None:
             if not live_pr.is_open:
                 failures.append("Pull request is not open in GitHub live data.")
                 valid_targets = []
-            else:
-                valid_targets, idempotent_warnings = _apply_assignee_idempotency(
-                    action=action,
-                    assignees_lc=live_pr.assignees_lc,
-                    valid_targets=valid_targets,
-                    source_label="github live data",
-                )
-                warnings.extend(idempotent_warnings)
 
     if not valid_targets:
         failures.append(f"No valid reviewers to {action} after validation.")
@@ -95,30 +78,43 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
 
     gh_client = GitHubAssignmentClient(token=token)
     mutation_successes = 0
-    for target in valid_targets:
-        github_login = target.github_login
-        if not github_login:
-            failures.append(f"Zulip user {target.zulip_user_id}: missing GitHub login after validation.")
-            continue
+    last_assignees_snapshot: tuple[str, ...] | None = None
+    target_logins = _dedupe_target_logins(valid_targets=valid_targets, failures=failures)
+    if target_logins:
         try:
-            if action == "assign":
-                gh_client.assign(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number, github_login=github_login)
-            elif action == "unassign":
-                gh_client.unassign(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number, github_login=github_login)
-            else:
-                failures.append(f"Unsupported action `{action}`.")
-                continue
-            mutation_successes += 1
-            successes.append(f"{action} succeeded for `{github_login}`.")
+            last_assignees_snapshot = _run_assignment_mutation(
+                gh_client=gh_client,
+                action=action,
+                owner=parsed.pr.owner,
+                repo=parsed.pr.repo,
+                number=parsed.pr.number,
+                github_logins=target_logins,
+            )
+            mutation_successes += len(target_logins)
+            successes.append(f"{action} succeeded for {_format_login_list(target_logins)}.")
         except AssignmentMutationError as exc:
-            failures.append(f"{action} failed for `{github_login}`: {exc.message} ({exc.code})")
+            if exc.code == "validation_failed" and len(target_logins) > 1:
+                warnings.append("Batch mutation failed validation; retrying one reviewer at a time to isolate invalid targets.")
+                for github_login in target_logins:
+                    try:
+                        last_assignees_snapshot = _run_assignment_mutation(
+                            gh_client=gh_client,
+                            action=action,
+                            owner=parsed.pr.owner,
+                            repo=parsed.pr.repo,
+                            number=parsed.pr.number,
+                            github_logins=(github_login,),
+                        )
+                        mutation_successes += 1
+                        successes.append(f"{action} succeeded for `{github_login}`.")
+                    except AssignmentMutationError as item_exc:
+                        failures.append(f"{action} failed for `{github_login}`: {item_exc.message} ({item_exc.code})")
+            else:
+                failures.append(f"{action} failed for {_format_login_list(target_logins)}: {exc.message} ({exc.code})")
 
     if mutation_successes > 0:
+        successes.append(_format_current_assignees(last_assignees_snapshot))
         _enqueue_post_action_sync(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number)
-        _try_add_success_reaction(context=context, warnings=warnings)
-
-    if mutation_successes > 0 and not warnings and not failures:
-        return CommandResult(content="", response_mode=ResponseMode.PRIVATE, response_not_required=True)
 
     return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
 
@@ -143,45 +139,6 @@ def _load_local_pr(*, owner: str, repo: str, number: int) -> PullRequest | None:
         .only("id", "state", "assignees")
         .first()
     )
-
-
-def _apply_local_idempotency(
-    *,
-    action: str,
-    local_pr: PullRequest,
-    valid_targets: list[AssignmentTargetValidation],
-) -> tuple[list[AssignmentTargetValidation], list[str]]:
-    assignees_lc = frozenset(str(login).strip().lower() for login in (local_pr.assignees or []) if str(login).strip())
-    return _apply_assignee_idempotency(
-        action=action,
-        assignees_lc=assignees_lc,
-        valid_targets=valid_targets,
-        source_label="local data",
-    )
-
-
-def _apply_assignee_idempotency(
-    *,
-    action: str,
-    assignees_lc: frozenset[str],
-    valid_targets: list[AssignmentTargetValidation],
-    source_label: str,
-) -> tuple[list[AssignmentTargetValidation], list[str]]:
-    remaining: list[AssignmentTargetValidation] = []
-    warnings: list[str] = []
-
-    for target in valid_targets:
-        login = (target.github_login or "").strip()
-        login_lc = login.lower()
-        if action == "assign" and login_lc in assignees_lc:
-            warnings.append(f"`{login}` is already assigned ({source_label}).")
-            continue
-        if action == "unassign" and login_lc not in assignees_lc:
-            warnings.append(f"`{login}` is not currently assigned ({source_label}).")
-            continue
-        remaining.append(target)
-
-    return remaining, warnings
 
 
 def _assignment_mutations_enabled() -> bool:
@@ -235,13 +192,56 @@ def _fetch_live_pr_view(*, owner: str, repo: str, number: int, action: str) -> L
     state = str(payload.get("state", "")).strip().lower()
     merged_at = payload.get("merged_at")
     is_open = state == "open" and not merged_at
-    assignees = payload.get("assignees") or []
-    assignees_lc = frozenset(
-        str(node.get("login", "")).strip().lower()
-        for node in assignees
-        if isinstance(node, dict) and str(node.get("login", "")).strip()
-    )
-    return LivePullRequestView(is_open=is_open, assignees_lc=assignees_lc)
+    return LivePullRequestView(is_open=is_open)
+
+
+def _run_assignment_mutation(
+    *,
+    gh_client: GitHubAssignmentClient,
+    action: str,
+    owner: str,
+    repo: str,
+    number: int,
+    github_logins: tuple[str, ...],
+) -> tuple[str, ...]:
+    if action == "assign":
+        return gh_client.assign_many(owner=owner, repo=repo, number=number, github_logins=github_logins)
+    if action == "unassign":
+        return gh_client.unassign_many(owner=owner, repo=repo, number=number, github_logins=github_logins)
+    raise AssignmentMutationError(code="unsupported_action", message=f"Unsupported action `{action}`.")
+
+
+def _dedupe_target_logins(
+    *,
+    valid_targets: list[AssignmentTargetValidation],
+    failures: list[str],
+) -> tuple[str, ...]:
+    seen: set[str] = set()
+    logins: list[str] = []
+    for target in valid_targets:
+        github_login = (target.github_login or "").strip()
+        if not github_login:
+            failures.append(f"Zulip user {target.zulip_user_id}: missing GitHub login after validation.")
+            continue
+        login_lc = github_login.lower()
+        if login_lc in seen:
+            continue
+        seen.add(login_lc)
+        logins.append(github_login)
+    return tuple(logins)
+
+
+def _format_current_assignees(assignees: tuple[str, ...] | None) -> str:
+    if assignees is None:
+        return "Current assignees: unavailable (no successful GitHub mutation response snapshot)."
+    if not assignees:
+        return "Current assignees: none."
+    rendered = ", ".join(f"`{login}`" for login in sorted(assignees, key=str.lower))
+    return f"Current assignees: {rendered}."
+
+
+def _format_login_list(logins: tuple[str, ...]) -> str:
+    return ", ".join(f"`{login}`" for login in logins)
 
 
 def _enqueue_post_action_sync(*, owner: str, repo: str, number: int) -> None:
@@ -258,15 +258,3 @@ def _enqueue_post_action_sync(*, owner: str, repo: str, number: int) -> None:
             "assignment_post_action_sync_enqueue_failed",
             extra={"owner": owner, "repo": repo, "number": number},
         )
-
-
-def _try_add_success_reaction(*, context: CommandContext, warnings: list[str]) -> None:
-    if context.message_id is None:
-        warnings.append("Mutation succeeded but message_id is missing, so no Zulip reaction was added.")
-        return
-
-    emoji_name = str(getattr(settings, "ZULIP_ASSIGNMENT_SUCCESS_EMOJI", "thumbs_up")).strip() or "thumbs_up"
-    try:
-        ZulipClient().add_reaction(message_id=context.message_id, emoji_name=emoji_name)
-    except ZulipApiError:
-        warnings.append("Mutation succeeded but adding Zulip reaction failed.")

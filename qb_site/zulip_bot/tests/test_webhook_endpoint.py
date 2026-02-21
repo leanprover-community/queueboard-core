@@ -171,7 +171,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         },
         ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
     )
-    def test_assign_command_clean_success_returns_response_not_required(self) -> None:
+    def test_assign_command_clean_success_returns_private_summary_with_assignees(self) -> None:
         repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
         user = User.objects.create(zulip_user_id=101, github_login="reviewer")
         ReviewerPreference.objects.create(repository=repo, user=user)
@@ -196,12 +196,13 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             assignees=[],
         )
         with (
-            patch("zulip_bot.services.assignment_execution.GitHubAssignmentClient.assign", return_value=None),
+            patch(
+                "zulip_bot.services.assignment_execution.GitHubAssignmentClient.assign_many",
+                return_value=("reviewer",),
+            ),
             patch("core.services.github_operation_tokens.get_default_github_app_token_provider") as mock_provider,
-            patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
         ):
             mock_provider.return_value.get_token.return_value = "app-token"
-            mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
             result = self._post_payload(
                 self._payload(
                     content="@**qb-bot** assign https://github.com/leanprover-community/mathlib4/pull/124",
@@ -211,4 +212,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             )
 
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"], {"response_not_required": True})
+        self.assertEqual(result["json"]["type"], "private")
+        self.assertIn("assign succeeded for `reviewer`.", result["json"]["content"])
+        self.assertIn("Current assignees: `reviewer`.", result["json"]["content"])
