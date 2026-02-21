@@ -364,6 +364,24 @@
   - Strict mode currently only changes token-source selection; user-facing failure remains the existing generic message (`GitHub assignment token is not configured.`), which keeps contract stable but does not yet explicitly indicate strict-mode enforcement.
   - Strictness is interpreted at command execution time from settings, so behavior can be toggled without restarting workers only where settings reload semantics allow.
 
+### 2026-02-20: Chunk 7b (Strict-mode failure UX: explicit GitHub App reasons)
+- Status: completed
+- Implemented:
+  - Refined assignment token resolution to return structured metadata (`AssignmentTokenResolution`) including:
+    - resolved token (if any)
+    - operation name
+    - strict-operation flag
+    - optional `GitHubAppTokenError` details
+  - Updated `run_assignment_command` failure messaging:
+    - strict operations now emit explicit private failures when app token resolution fails, including normalized app-token error code/message when available
+    - non-strict operations keep existing generic token-missing behavior for compatibility
+  - Added tests in `zulip_bot.tests.test_assignment_execution`:
+    - strict-mode missing app token now yields strict-mode-specific failure text
+    - strict-mode provider error (e.g. `installation_not_found`) is surfaced in private summary and blocks mutation
+- Nuances discovered during implementation:
+  - Exposing app-token error codes in private failures significantly improves operator/debuggability for rollout misconfigurations (app not installed, auth mismatch) without leaking secrets.
+  - Live fallback token lookup now uses the same structured token-resolution path, keeping strict-mode behavior consistent across precondition reads and mutation execution.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)

@@ -8,6 +8,7 @@ from django.utils import timezone
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext
+from zulip_bot.services.github_app_tokens import GitHubAppTokenError
 from zulip_bot.services.assignment_execution import LivePullRequestView, run_assignment_command
 
 
@@ -256,7 +257,54 @@ class TestAssignmentExecution(TestCase):
                 args="https://github.com/leanprover-community/mathlib4/pull/6",
             )
 
-        self.assertIn("GitHub assignment token is not configured.", result.content)
+        self.assertIn("GitHub App token is required for `assign_pr`", result.content)
+        mock_request.assert_not_called()
+
+    @override_settings(
+        ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
+        GITHUB_ASSIGNMENT_TOKEN="pat-token",
+        GITHUB_APP_TOKEN_CONFIG={"strict_operations": ["assign_pr"]},
+    )
+    def test_assign_strict_operation_surfaces_app_token_error_reason(self) -> None:
+        repo, user = self._make_repo_user_pref()
+        now = timezone.now()
+        PullRequest.objects.create(
+            repository=repo,
+            number=8,
+            author=user,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="t",
+            body="b",
+            additions=1,
+            deletions=0,
+            changed_files_count=1,
+            assignees=[],
+        )
+
+        provider = Mock()
+        provider.get_token.side_effect = GitHubAppTokenError(
+            code="installation_not_found",
+            message="GitHub app is not installed for `leanprover-community/mathlib4`.",
+        )
+        with (
+            patch("zulip_bot.services.assignment_execution.get_default_github_app_token_provider", return_value=provider),
+            patch("zulip_bot.services.assignment_execution.requests.request") as mock_request,
+        ):
+            result = run_assignment_command(
+                action="assign",
+                context=self._context(),
+                args="https://github.com/leanprover-community/mathlib4/pull/8",
+            )
+
+        self.assertIn("installation_not_found", result.content)
+        self.assertIn("GitHub app is not installed", result.content)
         mock_request.assert_not_called()
 
     @override_settings(
