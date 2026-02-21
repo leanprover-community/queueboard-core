@@ -328,6 +328,42 @@
 - Nuances discovered during implementation:
   - Running live fallback in preflight-only mode can create non-deterministic test behavior (depends on live GitHub PR state) and violates the intended incremental rollout boundary.
 
+### 2026-02-20: Chunk 7 (GitHub App installation-token provider + assignment integration)
+- Status: completed
+- Implemented:
+  - Added `zulip_bot.services.github_app_tokens` with:
+    - structured multi-app config parsing (`GITHUB_APP_TOKEN_CONFIG`)
+    - operation-to-app mapping (`operation_app_map`) with deterministic fallback to first app advertising the requested operation
+    - GitHub App JWT generation (RS256)
+    - installation-id lookup (`/repos/{owner}/{repo}/installation`) with cache
+    - installation-token minting (`/app/installations/{id}/access_tokens`) with expiration-aware cache refresh
+    - redaction-safe structured logging for cache hits/mints and error categories
+  - Added new settings support:
+    - `GITHUB_APP_TOKEN_CONFIG` (JSON object parsed at settings load)
+  - Wired `assignment_execution` token resolution to:
+    - request operation-scoped app tokens (`assign_pr`, `unassign_pr`) first
+    - fall back to existing PAT/env token paths (`GITHUB_ASSIGNMENT_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`) when no app token is available or app resolution fails
+  - Extended tests:
+    - `zulip_bot.tests.test_github_app_tokens` covers mint+cache reuse, near-expiry refresh, and explicit operation mapping selection
+    - `zulip_bot.tests.test_assignment_execution` now asserts assign flow uses app-token provider when available
+- Nuances discovered during implementation:
+  - `GITHUB_API_URL` remains the default REST base for app-token operations; if this setting includes a non-REST path in some environments, app config should explicitly set `api_base_url`.
+  - Caching is process-local in this chunk (in-memory singleton provider); cross-process cache sharing is intentionally deferred.
+  - Operation mapping errors are logged and PAT fallback is still allowed, matching the current migration-safe stance rather than strict enforcement.
+
+### 2026-02-20: Chunk 7a (Operation-level strict mode for PAT fallback)
+- Status: completed
+- Implemented:
+  - Added operation-level strict mode handling in `assignment_execution`:
+    - reads `GITHUB_APP_TOKEN_CONFIG.strict_operations` (list of operation names)
+    - when the current operation is strict (`assign_pr`/`unassign_pr`), PAT/env fallback is disabled if app-token resolution yields no token or raises an app-token error
+  - Added tests in `zulip_bot.tests.test_assignment_execution`:
+    - strict `assign_pr` prevents fallback to `GITHUB_ASSIGNMENT_TOKEN` when app token is missing
+    - non-strict `unassign_pr` continues to use PAT fallback
+- Nuances discovered during implementation:
+  - Strict mode currently only changes token-source selection; user-facing failure remains the existing generic message (`GitHub assignment token is not configured.`), which keeps contract stable but does not yet explicitly indicate strict-mode enforcement.
+  - Strictness is interpreted at command execution time from settings, so behavior can be toggled without restarting workers only where settings reload semantics allow.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)
