@@ -25,6 +25,7 @@ class ParsedAssignmentCommand:
     pr: GitHubPullRequestRef
     target_user_ids: tuple[int, ...]
     unresolved_mentions: tuple[str, ...]
+    mention_labels_by_user_id: tuple[tuple[int, str], ...]
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,9 @@ class _RenderedContentExtractor(HTMLParser):
         self.hrefs: list[str] = []
         self.mention_user_ids: list[int] = []
         self.unresolved_mentions: list[str] = []
+        self.mention_labels_by_user_id: dict[int, str] = {}
+        self._open_mention_user_id: int | None = None
+        self._open_mention_label_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_map = {key: value for key, value in attrs}
@@ -57,7 +61,10 @@ class _RenderedContentExtractor(HTMLParser):
 
         raw_id = attrs_map.get("data-user-id")
         if isinstance(raw_id, str) and raw_id.isdigit():
-            self.mention_user_ids.append(int(raw_id))
+            mention_user_id = int(raw_id)
+            self.mention_user_ids.append(mention_user_id)
+            self._open_mention_user_id = mention_user_id
+            self._open_mention_label_parts = []
             return
 
         label = (
@@ -68,6 +75,21 @@ class _RenderedContentExtractor(HTMLParser):
             or "unknown mention"
         )
         self.unresolved_mentions.append(str(label))
+
+    def handle_data(self, data: str) -> None:
+        if self._open_mention_user_id is None:
+            return
+        if data:
+            self._open_mention_label_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != "span" or self._open_mention_user_id is None:
+            return
+        label = _normalize_mention_label("".join(self._open_mention_label_parts))
+        if label and self._open_mention_user_id not in self.mention_labels_by_user_id:
+            self.mention_labels_by_user_id[self._open_mention_user_id] = label
+        self._open_mention_user_id = None
+        self._open_mention_label_parts = []
 
 
 def parse_assignment_command_args(*, args: str, rendered_content: str | None, sender_id: int | None) -> ParsedAssignmentCommand:
@@ -98,6 +120,7 @@ def parse_assignment_command_args(*, args: str, rendered_content: str | None, se
         pr=pr,
         target_user_ids=target_user_ids,
         unresolved_mentions=parsed_mentions.unresolved_mentions,
+        mention_labels_by_user_id=parsed_mentions.mention_labels_by_user_id,
     )
 
 
@@ -160,6 +183,7 @@ class _ParsedMentions:
     resolved_user_ids: tuple[int, ...]
     unresolved_mentions: tuple[str, ...]
     mentions_present: bool
+    mention_labels_by_user_id: tuple[tuple[int, str], ...]
 
 
 def _parse_mentions(*, args: str, rendered_content: str | None) -> _ParsedMentions:
@@ -170,6 +194,9 @@ def _parse_mentions(*, args: str, rendered_content: str | None) -> _ParsedMentio
         extractor.feed(rendered_content)
         rendered_resolved_ids = extractor.mention_user_ids
         rendered_unresolved = extractor.unresolved_mentions
+        rendered_labels_by_id = extractor.mention_labels_by_user_id
+    else:
+        rendered_labels_by_id = {}
 
     arg_mentions = [match.group("label").strip() for match in RAW_ZULIP_MENTION_RE.finditer(args) if match.group("label").strip()]
     arg_mentions.extend(
@@ -186,4 +213,14 @@ def _parse_mentions(*, args: str, rendered_content: str | None) -> _ParsedMentio
         resolved_user_ids=resolved_user_ids,
         unresolved_mentions=tuple(sorted(unresolved_mentions)),
         mentions_present=mentions_present,
+        mention_labels_by_user_id=tuple(sorted(rendered_labels_by_id.items(), key=lambda item: item[0])),
     )
+
+
+def _normalize_mention_label(value: str) -> str:
+    label = re.sub(r"\s+", " ", value.strip())
+    if label.startswith("@_"):
+        label = label[2:].strip()
+    elif label.startswith("@"):
+        label = label[1:].strip()
+    return label

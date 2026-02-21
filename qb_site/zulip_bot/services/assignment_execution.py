@@ -44,9 +44,17 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
 
     validation = validate_assignment_targets(pr=parsed.pr, target_user_ids=parsed.target_user_ids)
     valid_targets = [target for target in validation.targets if target.ok]
+    mention_labels_by_user_id = dict(parsed.mention_labels_by_user_id)
+    target_refs_by_zulip_id = _build_target_refs(
+        targets=validation.targets,
+        mention_labels_by_user_id=mention_labels_by_user_id,
+        sender_id=context.sender_id,
+        sender_full_name=context.sender_full_name,
+    )
     for target in validation.targets:
         if not target.ok:
-            failures.append(f"Zulip user {target.zulip_user_id}: {target.message} ({target.code})")
+            target_ref = target_refs_by_zulip_id.get(target.zulip_user_id, f"user {target.zulip_user_id}")
+            failures.append(f"{target_ref}: {target.message} ({target.code})")
 
     local_pr = _load_local_pr(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number)
     if local_pr is not None:
@@ -79,7 +87,11 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
     gh_client = GitHubAssignmentClient(token=token)
     mutation_successes = 0
     last_assignees_snapshot: tuple[str, ...] | None = None
-    target_logins = _dedupe_target_logins(valid_targets=valid_targets, failures=failures)
+    target_logins = _dedupe_target_logins(
+        valid_targets=valid_targets,
+        failures=failures,
+        target_refs_by_zulip_id=target_refs_by_zulip_id,
+    )
     if target_logins:
         try:
             last_assignees_snapshot = _run_assignment_mutation(
@@ -218,13 +230,15 @@ def _dedupe_target_logins(
     *,
     valid_targets: list[AssignmentTargetValidation],
     failures: list[str],
+    target_refs_by_zulip_id: dict[int, str],
 ) -> tuple[str, ...]:
     seen: set[str] = set()
     logins: list[str] = []
     for target in valid_targets:
         github_login = (target.github_login or "").strip()
         if not github_login:
-            failures.append(f"Zulip user {target.zulip_user_id}: missing GitHub login after validation.")
+            target_ref = target_refs_by_zulip_id.get(target.zulip_user_id, f"user {target.zulip_user_id}")
+            failures.append(f"{target_ref}: missing GitHub login after validation.")
             continue
         login_lc = github_login.lower()
         if login_lc in seen:
@@ -245,6 +259,27 @@ def _format_current_assignees(assignees: tuple[str, ...] | None) -> str:
 
 def _format_login_list(logins: tuple[str, ...]) -> str:
     return ", ".join(f"`{login}`" for login in logins)
+
+
+def _build_target_refs(
+    *,
+    targets: tuple[AssignmentTargetValidation, ...],
+    mention_labels_by_user_id: dict[int, str],
+    sender_id: int | None,
+    sender_full_name: str | None,
+) -> dict[int, str]:
+    refs: dict[int, str] = {}
+    for target in targets:
+        label = (mention_labels_by_user_id.get(target.zulip_user_id) or "").strip()
+        if not label and sender_id == target.zulip_user_id:
+            label = (sender_full_name or "").strip()
+        refs[target.zulip_user_id] = _format_silent_mention(zulip_user_id=target.zulip_user_id, label=label)
+    return refs
+
+
+def _format_silent_mention(*, zulip_user_id: int, label: str) -> str:
+    clean_label = label.replace("|", " ").replace("*", "").strip() or "user"
+    return f"@_**{clean_label}|{zulip_user_id}**"
 
 
 def _enqueue_post_action_sync(*, owner: str, repo: str, number: int) -> None:

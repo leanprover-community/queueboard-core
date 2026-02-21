@@ -26,6 +26,7 @@ class TestAssignmentCommandParser(SimpleTestCase):
         self.assertEqual(parsed.pr.number, 12345)
         self.assertEqual(parsed.target_user_ids, (777,))
         self.assertEqual(parsed.unresolved_mentions, ())
+        self.assertEqual(parsed.mention_labels_by_user_id, ((777, "Reviewer"),))
 
     def test_falls_back_to_sender_when_mentions_omitted(self) -> None:
         parsed = parse_assignment_command_args(
