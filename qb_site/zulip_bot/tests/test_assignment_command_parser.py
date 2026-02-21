@@ -79,3 +79,24 @@ class TestAssignmentCommandParser(SimpleTestCase):
             )
 
         self.assertEqual(exc.exception.code, "missing_sender")
+
+    def test_rejects_unexpected_non_mention_trailing_tokens(self) -> None:
+        with self.assertRaises(AssignmentCommandParseError) as exc:
+            parse_assignment_command_args(
+                args="https://github.com/leanprover-community/mathlib4/pull/22 definitely-not-a-mention",
+                rendered_content="",
+                sender_id=555,
+            )
+
+        self.assertEqual(exc.exception.code, "unexpected_args")
+        self.assertIn("definitely-not-a-mention", str(exc.exception))
+
+    def test_silent_mention_is_treated_as_mention_not_unexpected_text(self) -> None:
+        parsed = parse_assignment_command_args(
+            args="https://github.com/leanprover-community/mathlib4/pull/22 @_**Unknown Person**",
+            rendered_content="",
+            sender_id=555,
+        )
+
+        self.assertEqual(parsed.target_user_ids, ())
+        self.assertEqual(parsed.unresolved_mentions, ("Unknown Person",))
