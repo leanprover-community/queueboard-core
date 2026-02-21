@@ -85,7 +85,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
         return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
 
     gh_client = GitHubAssignmentClient(token=token)
-    mutation_successes = 0
+    successful_logins: list[str] = []
     last_assignees_snapshot: tuple[str, ...] | None = None
     target_logins = _dedupe_target_logins(
         valid_targets=valid_targets,
@@ -102,8 +102,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
                 number=parsed.pr.number,
                 github_logins=target_logins,
             )
-            mutation_successes += len(target_logins)
-            successes.append(f"{action} succeeded for {_format_login_list(target_logins)}.")
+            successful_logins.extend(target_logins)
         except AssignmentMutationError as exc:
             if exc.code == "validation_failed" and len(target_logins) > 1:
                 warnings.append("Batch mutation failed validation; retrying one reviewer at a time to isolate invalid targets.")
@@ -117,14 +116,14 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
                             number=parsed.pr.number,
                             github_logins=(github_login,),
                         )
-                        mutation_successes += 1
-                        successes.append(f"{action} succeeded for `{github_login}`.")
+                        successful_logins.append(github_login)
                     except AssignmentMutationError as item_exc:
                         failures.append(f"{action} failed for `{github_login}`: {item_exc.message} ({item_exc.code})")
             else:
                 failures.append(f"{action} failed for {_format_login_list(target_logins)}: {exc.message} ({exc.code})")
 
-    if mutation_successes > 0:
+    if successful_logins:
+        successes.append(f"{action} succeeded for {_format_login_list(tuple(successful_logins))}.")
         successes.append(_format_current_assignees(last_assignees_snapshot))
         _enqueue_post_action_sync(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number)
 
@@ -132,17 +131,21 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
 
 
 def _summary_response(*, action: str, successes: list[str], warnings: list[str], failures: list[str]) -> CommandResult:
-    lines = [f"**Summary for `{action}`**"]
+    del action  # action already reflected in entry lines
+    if successes and not warnings and not failures:
+        return CommandResult(content="\n".join(successes), response_mode=ResponseMode.PRIVATE)
+
+    lines: list[str] = []
     if successes:
-        lines.append("")
-        lines.append("**Successes:**")
-        lines.extend(f"- {entry}" for entry in successes)
+        lines.extend(successes)
     if warnings:
-        lines.append("")
+        if lines:
+            lines.append("")
         lines.append("**Warnings:**")
         lines.extend(f"- {entry}" for entry in warnings)
     if failures:
-        lines.append("")
+        if lines:
+            lines.append("")
         lines.append("**Failures:**")
         lines.extend(f"- {entry}" for entry in failures)
     return CommandResult(content="\n".join(lines), response_mode=ResponseMode.PRIVATE)
