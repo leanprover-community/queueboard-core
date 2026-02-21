@@ -7,7 +7,7 @@ from django.conf import settings
 
 from core.models import Repository
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
-from core.services.github_operation_tokens import resolve_github_operation_token
+from core.services.github_operation_tokens import resolve_github_app_operation_token
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
@@ -90,7 +90,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
 
     token = _assignment_token(action=action, owner=parsed.pr.owner, repo=parsed.pr.repo)
     if not token:
-        failures.append("GitHub assignment token is not configured.")
+        failures.append("GitHub App token for assignment is not available for this repository/operation.")
         return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
 
     gh_client = GitHubAssignmentClient(token=token)
@@ -190,11 +190,13 @@ def _assignment_mutations_enabled() -> bool:
 
 
 def _assignment_token(*, action: str, owner: str, repo: str) -> str:
-    return resolve_github_operation_token(
-        operation=_assignment_operation(action),
-        owner=owner,
-        repo=repo,
-        setting_token_names=("GITHUB_ASSIGNMENT_TOKEN",),
+    return (
+        resolve_github_app_operation_token(
+            operation=_assignment_operation(action),
+            owner=owner,
+            repo=repo,
+        )
+        or ""
     )
 
 

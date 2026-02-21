@@ -47,16 +47,15 @@ class TestAssignmentExecution(TestCase):
     @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
     def test_reports_token_missing_when_enabled_without_token(self) -> None:
         self._make_repo_user_pref()
-        with patch.dict("os.environ", {"GITHUB_ASSIGNMENT_TOKEN": "", "GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False):
-            result = run_assignment_command(
-                action="assign",
-                context=self._context(),
-                args="https://github.com/leanprover-community/mathlib4/pull/1",
-            )
+        result = run_assignment_command(
+            action="assign",
+            context=self._context(),
+            args="https://github.com/leanprover-community/mathlib4/pull/1",
+        )
 
-        self.assertIn("GitHub assignment token is not configured", result.content)
+        self.assertIn("GitHub App token for assignment is not available", result.content)
 
-    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
     def test_returns_response_not_required_on_clean_success(self) -> None:
         repo, user = self._make_repo_user_pref()
         now = timezone.now()
@@ -82,9 +81,11 @@ class TestAssignmentExecution(TestCase):
 
         with (
             patch("zulip_bot.services.assignment_execution.GitHubAssignmentClient.assign", return_value=None) as mock_assign,
+            patch("core.services.github_operation_tokens.get_default_github_app_token_provider") as mock_provider,
             patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
             patch("zulip_bot.services.assignment_execution._enqueue_post_action_sync") as mock_enqueue_sync,
         ):
+            mock_provider.return_value.get_token.return_value = "app-token"
             mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
             result = run_assignment_command(
                 action="assign",
@@ -98,7 +99,7 @@ class TestAssignmentExecution(TestCase):
         mock_enqueue_sync.assert_called_once()
         mock_zulip_client.return_value.add_reaction.assert_called_once()
 
-    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
     def test_unassign_local_not_assigned_yields_warning_and_no_mutation(self) -> None:
         repo, user = self._make_repo_user_pref()
         now = timezone.now()
@@ -133,7 +134,7 @@ class TestAssignmentExecution(TestCase):
         self.assertIn("No valid reviewers to unassign", result.content)
         mock_unassign.assert_not_called()
 
-    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
     def test_missing_local_pr_uses_live_fallback_closed_pr(self) -> None:
         self._make_repo_user_pref()
         with patch(
@@ -149,7 +150,7 @@ class TestAssignmentExecution(TestCase):
         self.assertIn("Pull request is not open in GitHub live data.", result.content)
         self.assertIn("No valid reviewers to assign after validation.", result.content)
 
-    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="tok")
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
     def test_missing_local_pr_uses_live_fallback_for_unassign_idempotency(self) -> None:
         self._make_repo_user_pref()
         with patch(
@@ -165,7 +166,7 @@ class TestAssignmentExecution(TestCase):
         self.assertIn("is not currently assigned (github live data).", result.content)
         self.assertIn("No valid reviewers to unassign after validation.", result.content)
 
-    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="")
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
     def test_assign_uses_github_app_token_provider_when_available(self) -> None:
         repo, user = self._make_repo_user_pref()
         now = timezone.now()
@@ -216,8 +217,8 @@ class TestAssignmentExecution(TestCase):
         )
         self.assertEqual(mock_request.call_args.kwargs["headers"]["Authorization"], "Bearer app-token")
 
-    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="pat-token")
-    def test_unassign_uses_pat_fallback_when_app_token_missing(self) -> None:
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
+    def test_unassign_fails_when_app_token_missing(self) -> None:
         repo, user = self._make_repo_user_pref()
         now = timezone.now()
         PullRequest.objects.create(
@@ -245,19 +246,12 @@ class TestAssignmentExecution(TestCase):
         with (
             patch("core.services.github_operation_tokens.get_default_github_app_token_provider", return_value=provider),
             patch("zulip_bot.services.assignment_execution.requests.request") as mock_request,
-            patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
-            patch("zulip_bot.services.assignment_execution._enqueue_post_action_sync"),
         ):
-            response = Mock()
-            response.status_code = 200
-            response.json.return_value = {}
-            mock_request.return_value = response
-            mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
             result = run_assignment_command(
                 action="unassign",
                 context=self._context(),
                 args="https://github.com/leanprover-community/mathlib4/pull/7",
             )
 
-        self.assertTrue(result.response_not_required)
-        self.assertEqual(mock_request.call_args.kwargs["headers"]["Authorization"], "Bearer pat-token")
+        self.assertIn("GitHub App token for assignment is not available", result.content)
+        mock_request.assert_not_called()

@@ -419,19 +419,15 @@
   - Import targets already referenced `core.services.*`, so relocation required no runtime code changes.
 
 ### 2026-02-21: Chunk 9 (Shared operation-token resolver in Core)
-- Status: completed
+- Status: superseded by Chunk 13
 - Implemented:
-  - Added `core.services.github_operation_tokens.resolve_github_operation_token(...)` as shared token resolution logic:
-    - operation-scoped app token lookup first
-    - fallback chain next (named Django settings token(s), then env token list)
-    - warning-level logging on app-token lookup errors, with fallback continuing
+  - Added `core.services.github_operation_tokens` shared resolver utility.
   - Migrated `zulip_bot.services.assignment_execution` to use this resolver (behavior-preserving).
   - Added new core unit tests:
     - `core.tests.test_github_operation_tokens`
-    - covers app-token success, setting fallback, env fallback, app-error fallback, and no-operation fallback path
+    - initial coverage included fallback-chain behavior.
 - Nuances discovered during implementation:
-  - Centralizing resolution reduces duplication and makes syncer adoption incremental: syncer can now call the same resolver without copying assignment-specific fallback logic.
-  - Existing assignment-specific compatibility is preserved by passing `("GITHUB_ASSIGNMENT_TOKEN",)` as the named settings fallback in command execution.
+  - Centralizing app-token lookup reduced duplication and made syncer adoption incremental.
 
 ### 2026-02-21: Chunk 10 (Syncer command-path adoption of operation tokens)
 - Status: completed
@@ -466,6 +462,30 @@
   - Task-level adoption is behavior-preserving because `GitHubClient` still falls back to existing token sources when no app token is resolved.
   - Constructor-context assertions in task tests provide regression protection for future refactors where operation names might drift.
 
+### 2026-02-21: Chunk 13 (Token policy simplification: assignment app-only, syncer app-or-existing-env)
+- Status: completed
+- Implemented:
+  - Simplified shared resolver to app-token lookup only:
+    - `core.services.github_operation_tokens.resolve_github_app_operation_token(...)`
+    - returns app token when available, otherwise `None` (no setting/env fallback in the resolver).
+  - Simplified assignment command auth path:
+    - `assign`/`unassign` now require app token resolution for `assign_pr`/`unassign_pr`
+    - if no app token is available, command fails with explicit private message
+    - removed assignment PAT fallback path.
+  - Kept syncer behavior aligned with current/legacy operation:
+    - syncer attempts app token first via operation/repo context
+    - if absent, `GitHubClient` falls back to existing `GH_TOKEN`/`GITHUB_TOKEN` chooser logic.
+  - Removed now-unused assignment fallback setting from Django base settings (`GITHUB_ASSIGNMENT_TOKEN`).
+  - Updated tests accordingly:
+    - assignment tests now assert app-token-required behavior
+    - shared resolver tests now cover app-only semantics
+    - syncer client test references updated resolver name.
+- Nuances discovered during implementation:
+  - This removes policy branching and clarifies behavior by subsystem:
+    - assignment = strict app token
+    - syncer = app token preferred, legacy env tokens as fallback.
+  - Keeping syncer fallback in `GitHubClient` preserves rate-budget token selection behavior already used in production.
+
 ## Consequences
 - Pros:
   - robust handling of real Zulip input patterns (linkifiers, mentions)
@@ -489,6 +509,9 @@
   - operation-to-app mapping config
   - assignment success reaction emoji name (global default: `thumbs_up`)
   - optional per-command reaction emoji override in `ZULIP_COMMAND_POLICY`
+- Current token policy:
+  - assignment operations require app tokens (no fallback)
+  - syncer operations use app tokens when available, otherwise existing `GH_TOKEN`/`GITHUB_TOKEN`.
 - Migration path for syncer:
   - start by routing read-only sync operations through app-token provider
   - deprecate PAT env vars after parity and soak period
