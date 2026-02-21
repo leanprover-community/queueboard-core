@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
-
 import requests
 from django.conf import settings
 
 from core.models import Repository
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
-from core.services.github_app_tokens import GitHubAppTokenError, get_default_github_app_token_provider
+from core.services.github_operation_tokens import resolve_github_operation_token
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
@@ -17,14 +15,6 @@ from zulip_bot.services.assignment_validation import AssignmentTargetValidation,
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class AssignmentTokenResolution:
-    token: str
-    operation: str | None
-    strict_operation: bool
-    app_error: GitHubAppTokenError | None = None
 
 
 @dataclass(frozen=True)
@@ -98,22 +88,9 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
         warnings.append("GitHub assignment mutation is disabled (enable ZULIP_ASSIGNMENT_MUTATIONS_ENABLED to execute).")
         return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
 
-    token_resolution = _assignment_token_resolution(action=action, owner=parsed.pr.owner, repo=parsed.pr.repo)
-    token = token_resolution.token
+    token = _assignment_token(action=action, owner=parsed.pr.owner, repo=parsed.pr.repo)
     if not token:
-        if token_resolution.strict_operation and token_resolution.operation:
-            if token_resolution.app_error is not None:
-                failures.append(
-                    f"GitHub App token is required for `{token_resolution.operation}` but unavailable: "
-                    f"{token_resolution.app_error.message} ({token_resolution.app_error.code})"
-                )
-            else:
-                failures.append(
-                    f"GitHub App token is required for `{token_resolution.operation}` but no app token was resolved "
-                    f"for {parsed.pr.owner}/{parsed.pr.repo}."
-                )
-        else:
-            failures.append("GitHub assignment token is not configured.")
+        failures.append("GitHub assignment token is not configured.")
         return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
 
     gh_client = GitHubAssignmentClient(token=token)
@@ -212,41 +189,13 @@ def _assignment_mutations_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _assignment_token_resolution(*, action: str, owner: str, repo: str) -> AssignmentTokenResolution:
-    operation = _assignment_operation(action)
-    strict_operation = _is_strict_operation(operation)
-    if operation:
-        try:
-            app_token = get_default_github_app_token_provider().get_token(operation=operation, owner=owner, repo=repo)
-        except GitHubAppTokenError as exc:
-            log.warning(
-                "github_app_token_resolution_failed",
-                extra={"code": exc.code, "action": action, "owner": owner, "repo": repo},
-            )
-            if strict_operation:
-                return AssignmentTokenResolution(
-                    token="",
-                    operation=operation,
-                    strict_operation=True,
-                    app_error=exc,
-                )
-        else:
-            if app_token:
-                return AssignmentTokenResolution(token=app_token, operation=operation, strict_operation=strict_operation)
-            if strict_operation:
-                return AssignmentTokenResolution(token="", operation=operation, strict_operation=True)
-
-    setting_token = str(getattr(settings, "GITHUB_ASSIGNMENT_TOKEN", "")).strip()
-    if setting_token:
-        return AssignmentTokenResolution(token=setting_token, operation=operation, strict_operation=strict_operation)
-
-    env_token = os.getenv("GITHUB_ASSIGNMENT_TOKEN", "").strip()
-    if env_token:
-        return AssignmentTokenResolution(token=env_token, operation=operation, strict_operation=strict_operation)
-
-    env_tokens = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN") or ""
-    first = next((token.strip() for token in env_tokens.split(",") if token.strip()), "")
-    return AssignmentTokenResolution(token=first, operation=operation, strict_operation=strict_operation)
+def _assignment_token(*, action: str, owner: str, repo: str) -> str:
+    return resolve_github_operation_token(
+        operation=_assignment_operation(action),
+        owner=owner,
+        repo=repo,
+        setting_token_names=("GITHUB_ASSIGNMENT_TOKEN",),
+    )
 
 
 def _assignment_operation(action: str) -> str | None:
@@ -257,21 +206,8 @@ def _assignment_operation(action: str) -> str | None:
     return None
 
 
-def _is_strict_operation(operation: str | None) -> bool:
-    if not operation:
-        return False
-    raw_config = getattr(settings, "GITHUB_APP_TOKEN_CONFIG", {}) or {}
-    if not isinstance(raw_config, dict):
-        return False
-    strict_operations_raw = raw_config.get("strict_operations") or []
-    if not isinstance(strict_operations_raw, list):
-        return False
-    strict_operations = {str(item).strip() for item in strict_operations_raw if str(item).strip()}
-    return operation in strict_operations
-
-
 def _fetch_live_pr_view(*, owner: str, repo: str, number: int, action: str) -> LivePullRequestView | None:
-    token = _assignment_token_resolution(action=action, owner=owner, repo=repo).token
+    token = _assignment_token(action=action, owner=owner, repo=repo)
     if not token:
         return None
 
