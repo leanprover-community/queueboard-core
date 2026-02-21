@@ -66,6 +66,10 @@
   - `name` (required)
   - `app_id` (required)
   - `operations` (optional list used for fallback selection)
+  - installation lookup controls (optional):
+    - `installation_lookup`: `repo` (default) or `owner`
+    - `installation_owner_type`: `org` (default) or `user`
+    - `installation_owner`: fixed org/user identifier for owner lookup
   - credential source (one required):
     - `private_key` (PEM string, `\\n` escaped in env JSON), or
     - `private_key_path` (filesystem path)

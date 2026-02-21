@@ -105,3 +105,30 @@ class TestGitHubAppConfigCommand(SimpleTestCase):
 
             with self.assertRaisesMessage(CommandError, "operation_app_map references unknown app"):
                 call_command("github_app_config", "validate", str(path))
+
+    def test_validate_accepts_owner_installation_lookup_fields(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "apps": [
+                            {
+                                "name": "queueboard-syncer-read",
+                                "app_id": 234567,
+                                "private_key": "-----BEGIN PRIVATE KEY-----\\nabc\\n-----END PRIVATE KEY-----",
+                                "installation_lookup": "owner",
+                                "installation_owner_type": "org",
+                                "installation_owner": "leanprover-community",
+                                "operations": ["syncer_pr_read"],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = io.StringIO()
+
+            call_command("github_app_config", "validate", str(path), stdout=out)
+
+            self.assertIn("Valid config", out.getvalue())
