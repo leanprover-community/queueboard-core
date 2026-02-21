@@ -41,7 +41,7 @@ class TestAssignmentExecution(TestCase):
             args="https://github.com/leanprover-community/mathlib4/pull/1",
         )
 
-        self.assertIn("Summary for `assign`", result.content)
+        self.assertIn("Validated targets: `reviewer`.", result.content)
         self.assertIn("GitHub assignment mutation is disabled", result.content)
 
     @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true")
