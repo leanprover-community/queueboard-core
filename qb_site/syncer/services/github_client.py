@@ -10,6 +10,7 @@ from dateutil import parser as dtparser
 from django.conf import settings
 from django.utils import timezone
 
+from core.services.github_operation_tokens import resolve_github_operation_token
 from syncer.services.rate_budget import choose_token, throttle_request_slot, token_fingerprint
 
 
@@ -23,8 +24,18 @@ class GitHubClient:
     by swapping in a fake client.
     """
 
-    def __init__(self, token: Optional[str] = None, endpoint: str = "https://api.github.com/graphql"):
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        endpoint: str = "https://api.github.com/graphql",
+        operation: Optional[str] = None,
+        owner: Optional[str] = None,
+        repo: Optional[str] = None,
+    ):
         self.endpoint = endpoint
+        self.operation = operation
+        self.owner = owner
+        self.repo = repo
         self.token = self._choose_token(token)
         if not self.token:
             raise RuntimeError("GitHub token not found; set GH_TOKEN/GITHUB_TOKEN or pass token explicitly")
@@ -34,6 +45,14 @@ class GitHubClient:
     def _choose_token(self, provided: Optional[str]) -> Optional[str]:
         if provided:
             return provided
+        if self.operation and self.owner and self.repo:
+            operation_token = resolve_github_operation_token(
+                operation=self.operation,
+                owner=self.owner,
+                repo=self.repo,
+            )
+            if operation_token:
+                return operation_token
         env_tokens = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if not env_tokens:
             return None

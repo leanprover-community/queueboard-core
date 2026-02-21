@@ -50,7 +50,7 @@ class Command(BaseCommand):
 
         # GitHub client
         try:
-            gh = GitHubClient()
+            gh = GitHubClient(operation="syncer_repo_discovery", owner=owner, repo=name)
         except RuntimeError as e:
             raise CommandError(str(e))
 
