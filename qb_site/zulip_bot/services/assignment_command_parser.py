@@ -189,19 +189,43 @@ class _ParsedMentions:
 def _parse_mentions(*, args: str, rendered_content: str | None) -> _ParsedMentions:
     rendered_resolved_ids: list[int] = []
     rendered_unresolved: list[str] = []
+    rendered_labels_by_id: dict[int, str] = {}
     if rendered_content:
         extractor = _RenderedContentExtractor()
         extractor.feed(rendered_content)
         rendered_resolved_ids = extractor.mention_user_ids
         rendered_unresolved = extractor.unresolved_mentions
         rendered_labels_by_id = extractor.mention_labels_by_user_id
-    else:
-        rendered_labels_by_id = {}
 
-    arg_mentions = [match.group("label").strip() for match in RAW_ZULIP_MENTION_RE.finditer(args) if match.group("label").strip()]
+    arg_mentions = [
+        _normalize_mention_label(match.group("label"))
+        for match in RAW_ZULIP_MENTION_RE.finditer(args)
+        if _normalize_mention_label(match.group("label"))
+    ]
     arg_mentions.extend(
-        match.group("label").strip() for match in RAW_ZULIP_SILENT_MENTION_RE.finditer(args) if match.group("label").strip()
+        _normalize_mention_label(match.group("label"))
+        for match in RAW_ZULIP_SILENT_MENTION_RE.finditer(args)
+        if _normalize_mention_label(match.group("label"))
     )
+    arg_mention_set = set(arg_mentions)
+
+    if arg_mention_set:
+        filtered_resolved_ids: list[int] = []
+        filtered_labels_by_id: dict[int, str] = {}
+        for mention_id in rendered_resolved_ids:
+            normalized_label = _normalize_mention_label(rendered_labels_by_id.get(mention_id, ""))
+            if normalized_label in arg_mention_set:
+                filtered_resolved_ids.append(mention_id)
+                if normalized_label:
+                    filtered_labels_by_id[mention_id] = normalized_label
+        rendered_resolved_ids = filtered_resolved_ids
+        rendered_labels_by_id = filtered_labels_by_id
+        rendered_unresolved = [label for label in rendered_unresolved if _normalize_mention_label(label) in arg_mention_set]
+    else:
+        rendered_resolved_ids = []
+        rendered_labels_by_id = {}
+        rendered_unresolved = []
+
     mentions_present = bool(rendered_resolved_ids or rendered_unresolved or arg_mentions)
 
     resolved_user_ids = tuple(sorted(set(rendered_resolved_ids)))

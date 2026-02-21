@@ -101,3 +101,17 @@ class TestAssignmentCommandParser(SimpleTestCase):
 
         self.assertEqual(parsed.target_user_ids, ())
         self.assertEqual(parsed.unresolved_mentions, ("Unknown Person",))
+
+    def test_ignores_leading_bot_mention_from_rendered_mentions(self) -> None:
+        rendered_content = (
+            '<p>@<span class="user-mention" data-user-id="500">queueboard-bot</span> '
+            '@<span class="user-mention" data-user-id="777">Reviewer</span> '
+            '<a href="https://github.com/leanprover-community/mathlib4/pull/12345">#12345</a></p>'
+        )
+        parsed = parse_assignment_command_args(
+            args="#12345 @**Reviewer**",
+            rendered_content=rendered_content,
+            sender_id=101,
+        )
+
+        self.assertEqual(parsed.target_user_ids, (777,))
