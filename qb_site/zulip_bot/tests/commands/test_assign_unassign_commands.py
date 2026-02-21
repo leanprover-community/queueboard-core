@@ -65,6 +65,7 @@ class TestAssignUnassignCommands(TestCase):
 
         self.assertIn("Failures:", result.content)
         self.assertIn("missing_preference", result.content)
+        self.assertIn("|101**", result.content)
         self.assertIn("No valid reviewers to unassign after validation.", result.content)
 
     def test_assign_prefers_rendered_mentions_over_raw_mentions(self) -> None:
@@ -85,3 +86,17 @@ class TestAssignUnassignCommands(TestCase):
 
         self.assertIn("Validated targets: `target`.", result.content)
         self.assertNotIn("`sender`", result.content)
+
+    def test_assign_unknown_reviewer_uses_mentioned_name_in_failure(self) -> None:
+        Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        rendered_content = (
+            '<p>@<span class="user-mention" data-user-id="999">Brand New Reviewer</span> '
+            '<a href="https://github.com/leanprover-community/mathlib4/pull/34">#34</a></p>'
+        )
+        result = assign_command(
+            self._context(sender_id=101, rendered_content=rendered_content),
+            "#34 @**Brand New Reviewer**",
+        )
+
+        self.assertIn("@_**Brand New Reviewer|999**", result.content)
+        self.assertIn("unknown_reviewer", result.content)
