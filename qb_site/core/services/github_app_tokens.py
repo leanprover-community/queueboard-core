@@ -29,6 +29,9 @@ class GitHubAppDefinition:
     app_id: int
     private_key_pem: str
     operations: frozenset[str]
+    installation_lookup: str
+    installation_owner_type: str
+    installation_owner: str | None
 
 
 @dataclass(frozen=True)
@@ -51,7 +54,7 @@ class GitHubAppInstallationTokenProvider:
         }
         self._apps = self._parse_apps(raw_config.get("apps") or [])
         self._apps_by_name = {app.name: app for app in self._apps}
-        self._installation_id_cache: dict[tuple[str, str, str], int] = {}
+        self._installation_id_cache: dict[tuple[str, str], int] = {}
         self._token_cache: dict[tuple[str, int], _CachedInstallationToken] = {}
 
     def get_token(self, *, operation: str, owner: str, repo: str) -> str | None:
@@ -101,12 +104,23 @@ class GitHubAppInstallationTokenProvider:
             if not private_key_pem:
                 continue
             operations = frozenset(str(op).strip() for op in (raw.get("operations") or []) if str(op).strip())
+            installation_lookup = str(raw.get("installation_lookup") or "repo").strip().lower()
+            if installation_lookup not in {"repo", "owner"}:
+                installation_lookup = "repo"
+            installation_owner_type = str(raw.get("installation_owner_type") or "org").strip().lower()
+            if installation_owner_type not in {"org", "user"}:
+                installation_owner_type = "org"
+            installation_owner_raw = str(raw.get("installation_owner") or "").strip()
+            installation_owner = installation_owner_raw or None
             apps.append(
                 GitHubAppDefinition(
                     name=name,
                     app_id=app_id,
                     private_key_pem=private_key_pem,
                     operations=operations,
+                    installation_lookup=installation_lookup,
+                    installation_owner_type=installation_owner_type,
+                    installation_owner=installation_owner,
                 )
             )
         return apps
@@ -145,13 +159,18 @@ class GitHubAppInstallationTokenProvider:
         return None
 
     def _resolve_installation_id(self, *, app: GitHubAppDefinition, owner: str, repo: str) -> int:
-        cache_key = (app.name, owner.lower(), repo.lower())
+        cache_owner = app.installation_owner or owner
+        if app.installation_lookup == "owner":
+            cache_subject = f"{app.installation_owner_type}:{cache_owner}".lower()
+        else:
+            cache_subject = f"repo:{owner}/{repo}".lower()
+        cache_key = (app.name, cache_subject)
         cached = self._installation_id_cache.get(cache_key)
         if cached is not None:
             return cached
 
         app_jwt = _build_github_app_jwt(app_id=app.app_id, private_key_pem=app.private_key_pem)
-        url = f"{self.api_base_url}/repos/{owner}/{repo}/installation"
+        url = self._installation_lookup_url(app=app, owner=owner, repo=repo)
         response = requests.get(
             url,
             headers=_github_headers_for_app_jwt(app_jwt),
@@ -162,26 +181,39 @@ class GitHubAppInstallationTokenProvider:
             if response.status_code in {401, 403}:
                 raise GitHubAppTokenError(
                     code="app_auth_failed",
-                    message=f"GitHub app authentication failed for repository `{owner}/{repo}`.",
+                    message=f"GitHub app authentication failed for installation lookup target `{self._installation_target_label(app=app, owner=owner, repo=repo)}`.",
                 )
             if response.status_code == 404:
                 raise GitHubAppTokenError(
                     code="installation_not_found",
-                    message=f"GitHub app is not installed for `{owner}/{repo}`.",
+                    message=f"GitHub app is not installed for `{self._installation_target_label(app=app, owner=owner, repo=repo)}`.",
                 )
             raise GitHubAppTokenError(
                 code="installation_lookup_failed",
-                message=f"GitHub installation lookup failed for `{owner}/{repo}`: {payload}",
+                message=f"GitHub installation lookup failed for `{self._installation_target_label(app=app, owner=owner, repo=repo)}`: {payload}",
             )
 
         installation_id = payload.get("id")
         if not isinstance(installation_id, int):
             raise GitHubAppTokenError(
                 code="installation_lookup_failed",
-                message=f"GitHub installation lookup did not return an installation id for `{owner}/{repo}`.",
+                message=f"GitHub installation lookup did not return an installation id for `{self._installation_target_label(app=app, owner=owner, repo=repo)}`.",
             )
         self._installation_id_cache[cache_key] = installation_id
         return installation_id
+
+    def _installation_lookup_url(self, *, app: GitHubAppDefinition, owner: str, repo: str) -> str:
+        if app.installation_lookup == "owner":
+            installation_owner = app.installation_owner or owner
+            owner_segment = "users" if app.installation_owner_type == "user" else "orgs"
+            return f"{self.api_base_url}/{owner_segment}/{installation_owner}/installation"
+        return f"{self.api_base_url}/repos/{owner}/{repo}/installation"
+
+    def _installation_target_label(self, *, app: GitHubAppDefinition, owner: str, repo: str) -> str:
+        if app.installation_lookup == "owner":
+            installation_owner = app.installation_owner or owner
+            return f"{app.installation_owner_type}:{installation_owner}"
+        return f"{owner}/{repo}"
 
     def _mint_installation_token(self, *, app: GitHubAppDefinition, installation_id: int) -> tuple[str, datetime]:
         app_jwt = _build_github_app_jwt(app_id=app.app_id, private_key_pem=app.private_key_pem)

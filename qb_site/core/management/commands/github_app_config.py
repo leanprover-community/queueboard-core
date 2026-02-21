@@ -187,12 +187,16 @@ class Command(BaseCommand):
                     "name": "queueboard-assignment",
                     "app_id": 123456,
                     "private_key_path": "/path/to/queueboard-assignment.pem",
+                    "installation_lookup": "repo",
                     "operations": ["assign_pr", "unassign_pr"],
                 },
                 {
                     "name": "queueboard-syncer-read",
                     "app_id": 234567,
                     "private_key_path": "/path/to/queueboard-syncer-read.pem",
+                    "installation_lookup": "owner",
+                    "installation_owner_type": "org",
+                    "installation_owner": "leanprover-community",
                     "operations": ["syncer_repo_discovery", "syncer_pr_read", "syncer_ci_read"],
                 },
             ],
@@ -230,7 +234,19 @@ class Command(BaseCommand):
         for index, app in enumerate(apps):
             if not isinstance(app, dict):
                 raise CommandError(f"apps[{index}] must be an object")
-            unknown_app_keys = sorted(set(app.keys()) - {"name", "app_id", "private_key", "private_key_path", "operations"})
+            unknown_app_keys = sorted(
+                set(app.keys())
+                - {
+                    "name",
+                    "app_id",
+                    "private_key",
+                    "private_key_path",
+                    "operations",
+                    "installation_lookup",
+                    "installation_owner_type",
+                    "installation_owner",
+                }
+            )
             if unknown_app_keys:
                 raise CommandError(f"apps[{index}] has unknown keys: {', '.join(unknown_app_keys)}")
 
@@ -250,6 +266,16 @@ class Command(BaseCommand):
                 raise CommandError(f"apps[{index}].operations must be a list")
             if not all(isinstance(item, str) and item.strip() for item in operations):
                 raise CommandError(f"apps[{index}].operations must contain non-empty strings")
+
+            installation_lookup = app.get("installation_lookup", "repo")
+            if not isinstance(installation_lookup, str) or installation_lookup not in {"repo", "owner"}:
+                raise CommandError(f"apps[{index}].installation_lookup must be 'repo' or 'owner' when provided")
+            installation_owner_type = app.get("installation_owner_type", "org")
+            if not isinstance(installation_owner_type, str) or installation_owner_type not in {"org", "user"}:
+                raise CommandError(f"apps[{index}].installation_owner_type must be 'org' or 'user' when provided")
+            installation_owner = app.get("installation_owner")
+            if installation_owner is not None and (not isinstance(installation_owner, str) or not installation_owner.strip()):
+                raise CommandError(f"apps[{index}].installation_owner must be a non-empty string when provided")
 
             private_key = app.get("private_key")
             private_key_path = app.get("private_key_path")

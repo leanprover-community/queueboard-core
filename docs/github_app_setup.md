@@ -79,6 +79,10 @@ Set these values in `.env` or your deployment secret manager:
   - `name` (string)
   - `app_id` (integer)
   - `operations` (list of operation names)
+  - installation lookup behavior (optional):
+    - `installation_lookup`: `repo` (default) or `owner`
+    - `installation_owner_type`: `org` (default) or `user` (used when `installation_lookup=owner`)
+    - `installation_owner`: fixed org/user name for owner lookup (optional; defaults to the repo owner from operation context)
   - one of:
     - `private_key` (PEM string; use `\\n` escapes in env JSON; preferred for current Heroku deployment), or
     - `private_key_path` (path to PEM file visible to the process)
@@ -101,12 +105,16 @@ Example (two-app config):
       "name": "queueboard-assignment",
       "app_id": 123456,
       "private_key_path": "/run/secrets/queueboard-assignment.pem",
+      "installation_lookup": "repo",
       "operations": ["assign_pr", "unassign_pr"]
     },
     {
       "name": "queueboard-syncer-read",
       "app_id": 234567,
       "private_key_path": "/run/secrets/queueboard-syncer-read.pem",
+      "installation_lookup": "owner",
+      "installation_owner_type": "org",
+      "installation_owner": "leanprover-community",
       "operations": ["syncer_repo_discovery", "syncer_pr_read", "syncer_ci_read"]
     }
   ]

@@ -136,3 +136,39 @@ class TestGitHubAppInstallationTokenProvider(SimpleTestCase):
 
         self.assertEqual(token, "mapped-token")
         self.assertEqual(mock_get.call_args.kwargs["headers"]["Authorization"], "Bearer jwt-install")
+
+    def test_owner_installation_lookup_uses_org_endpoint_and_reuses_installation(self) -> None:
+        config = {
+            "apps": [
+                {
+                    "name": "syncer-read-app",
+                    "app_id": 42,
+                    "private_key": self._private_key_pem(),
+                    "installation_lookup": "owner",
+                    "installation_owner_type": "org",
+                    "installation_owner": "leanprover-community",
+                    "operations": ["syncer_pr_read"],
+                }
+            ]
+        }
+        provider = GitHubAppInstallationTokenProvider(config=config)
+        expires_at = self._iso_utc(timezone.now() + timedelta(hours=1))
+        with (
+            patch(
+                "core.services.github_app_tokens.requests.get",
+                return_value=self._response(status_code=200, payload={"id": 321}),
+            ) as mock_get,
+            patch(
+                "core.services.github_app_tokens.requests.post",
+                return_value=self._response(status_code=201, payload={"token": "inst-token-owner", "expires_at": expires_at}),
+            ) as mock_post,
+        ):
+            token_a = provider.get_token(operation="syncer_pr_read", owner="leanprover-community", repo="mathlib4")
+            token_b = provider.get_token(operation="syncer_pr_read", owner="leanprover-community", repo="std4")
+
+        self.assertEqual(token_a, "inst-token-owner")
+        self.assertEqual(token_b, "inst-token-owner")
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(mock_post.call_count, 1)
+        called_url = mock_get.call_args.args[0]
+        self.assertTrue(called_url.endswith("/orgs/leanprover-community/installation"))
