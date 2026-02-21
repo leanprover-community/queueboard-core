@@ -17,14 +17,27 @@ class TestGitHubAssignmentClient(SimpleTestCase):
 
     def test_assign_calls_issues_assignees_endpoint(self) -> None:
         with patch(
-            "core.services.github_assignment.requests.request", return_value=self._response(status_code=200)
+            "core.services.github_assignment.requests.request",
+            return_value=self._response(status_code=200, payload={"assignees": [{"login": "alice"}]}),
         ) as mock_request:
             client = GitHubAssignmentClient(token="tok")
-            client.assign(owner="o", repo="r", number=3, github_login="alice")
+            assignees = client.assign(owner="o", repo="r", number=3, github_login="alice")
 
         self.assertEqual(mock_request.call_args.args[0], "POST")
         self.assertTrue(mock_request.call_args.args[1].endswith("/repos/o/r/issues/3/assignees"))
         self.assertEqual(mock_request.call_args.kwargs["json"], {"assignees": ["alice"]})
+        self.assertEqual(assignees, ("alice",))
+
+    def test_assign_many_sends_all_logins(self) -> None:
+        with patch(
+            "core.services.github_assignment.requests.request",
+            return_value=self._response(status_code=200, payload={"assignees": [{"login": "alice"}, {"login": "bob"}]}),
+        ) as mock_request:
+            client = GitHubAssignmentClient(token="tok")
+            assignees = client.assign_many(owner="o", repo="r", number=3, github_logins=("alice", "bob"))
+
+        self.assertEqual(mock_request.call_args.kwargs["json"], {"assignees": ["alice", "bob"]})
+        self.assertEqual(assignees, ("alice", "bob"))
 
     def test_unassign_maps_422_to_validation_failed(self) -> None:
         with patch(
