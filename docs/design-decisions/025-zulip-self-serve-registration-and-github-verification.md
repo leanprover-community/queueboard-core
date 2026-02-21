@@ -198,7 +198,7 @@
   - stateless token-only sufficient, or should we require one-time DB-backed token consumption?
 
 ## References
-- `/Users/bryanchen/Documents/lean/queueboard-core/docs/design-decisions/021-zulip-bot-architecture.md`
-- `/Users/bryanchen/Documents/lean/queueboard-core/docs/design-decisions/022-zulip-prefs-form-design.md`
-- `/Users/bryanchen/Documents/lean/queueboard-core/qb_site/zulip_bot/commands/prefs.py`
-- `/Users/bryanchen/Documents/lean/queueboard-core/qb_site/core/models/user.py`
+- `docs/design-decisions/021-zulip-bot-architecture.md`
+- `docs/design-decisions/022-zulip-prefs-form-design.md`
+- `qb_site/zulip_bot/commands/prefs.py`
+- `qb_site/core/models/user.py`
