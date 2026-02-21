@@ -120,8 +120,13 @@ class GitHubAppInstallationTokenProvider:
             return ""
         try:
             return Path(private_key_path).read_text(encoding="utf-8").strip()
-        except OSError:
-            log.warning("github_app_private_key_load_failed", extra={"private_key_path": private_key_path})
+        except OSError as exc:
+            log.warning(
+                "github_app_private_key_load_failed path=%s error=%s",
+                private_key_path,
+                exc,
+                extra={"private_key_path": private_key_path},
+            )
             return ""
 
     def _select_app(self, *, operation: str) -> GitHubAppDefinition | None:

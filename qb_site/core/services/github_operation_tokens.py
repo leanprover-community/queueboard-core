@@ -18,7 +18,12 @@ def resolve_github_app_operation_token(
             app_token = get_default_github_app_token_provider().get_token(operation=operation, owner=owner, repo=repo)
         except GitHubAppTokenError as exc:
             log.warning(
-                "github_app_token_resolution_failed",
+                "github_app_token_resolution_failed code=%s operation=%s repo=%s/%s message=%s",
+                exc.code,
+                operation,
+                owner,
+                repo,
+                exc.message,
                 extra={"code": exc.code, "operation": operation, "owner": owner, "repo": repo},
             )
         else:
