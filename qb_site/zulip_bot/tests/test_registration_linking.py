@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 
 from core.models import User
-from zulip_bot.services.github_oauth import GitHubUserIdentity
+from core.services.github_oauth import GitHubUserIdentity
 from zulip_bot.services.registration_linking import (
     RegistrationLinkConflict,
     link_or_create_user_from_registration,
