@@ -10,4 +10,5 @@ celerybeat-schedule*
 docs/graphql/github-schema.json
 zuliprc
 .zulip-policy.local.json
+.github-app-config.local.json
 node_modules/

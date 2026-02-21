@@ -113,6 +113,19 @@ Example (two-app config):
 }
 ```
 
+Helper command for generating/maintaining this JSON:
+
+```bash
+uv run python qb_site/manage.py github_app_config init .github-app-config.local.json
+uv run python qb_site/manage.py github_app_config validate .github-app-config.local.json --check-key-paths
+uv run python qb_site/manage.py github_app_config inline-keys .github-app-config.local.json --in-place
+uv run python qb_site/manage.py github_app_config to-env .github-app-config.local.json --export
+```
+
+Notes:
+- `inline-keys` reads each app `private_key_path` PEM and writes it into `private_key` with JSON-safe newline escaping.
+- Relative `private_key_path` values are resolved relative to the JSON config file location.
+
 ## 5) Quick Verification
 1. Restart services after updating env secrets.
 2. Run an `assign` command in Zulip against a repo where the assignment app is installed.
