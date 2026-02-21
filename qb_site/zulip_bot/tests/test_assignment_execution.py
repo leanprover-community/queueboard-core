@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -164,3 +164,147 @@ class TestAssignmentExecution(TestCase):
 
         self.assertIn("is not currently assigned (github live data).", result.content)
         self.assertIn("No valid reviewers to unassign after validation.", result.content)
+
+    @override_settings(ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true", GITHUB_ASSIGNMENT_TOKEN="")
+    def test_assign_uses_github_app_token_provider_when_available(self) -> None:
+        repo, user = self._make_repo_user_pref()
+        now = timezone.now()
+        PullRequest.objects.create(
+            repository=repo,
+            number=5,
+            author=user,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="t",
+            body="b",
+            additions=1,
+            deletions=0,
+            changed_files_count=1,
+            assignees=[],
+        )
+
+        provider = Mock()
+        provider.get_token.return_value = "app-token"
+        with (
+            patch("zulip_bot.services.assignment_execution.get_default_github_app_token_provider", return_value=provider),
+            patch("zulip_bot.services.assignment_execution.requests.request") as mock_request,
+            patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
+            patch("zulip_bot.services.assignment_execution._enqueue_post_action_sync"),
+        ):
+            response = Mock()
+            response.status_code = 200
+            response.json.return_value = {}
+            mock_request.return_value = response
+            mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
+            result = run_assignment_command(
+                action="assign",
+                context=self._context(),
+                args="https://github.com/leanprover-community/mathlib4/pull/5",
+            )
+
+        self.assertTrue(result.response_not_required)
+        provider.get_token.assert_called_once_with(
+            operation="assign_pr",
+            owner="leanprover-community",
+            repo="mathlib4",
+        )
+        self.assertEqual(mock_request.call_args.kwargs["headers"]["Authorization"], "Bearer app-token")
+
+    @override_settings(
+        ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
+        GITHUB_ASSIGNMENT_TOKEN="pat-token",
+        GITHUB_APP_TOKEN_CONFIG={"strict_operations": ["assign_pr"]},
+    )
+    def test_assign_strict_operation_disables_pat_fallback_when_app_token_missing(self) -> None:
+        repo, user = self._make_repo_user_pref()
+        now = timezone.now()
+        PullRequest.objects.create(
+            repository=repo,
+            number=6,
+            author=user,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="t",
+            body="b",
+            additions=1,
+            deletions=0,
+            changed_files_count=1,
+            assignees=[],
+        )
+
+        provider = Mock()
+        provider.get_token.return_value = None
+        with (
+            patch("zulip_bot.services.assignment_execution.get_default_github_app_token_provider", return_value=provider),
+            patch("zulip_bot.services.assignment_execution.requests.request") as mock_request,
+        ):
+            result = run_assignment_command(
+                action="assign",
+                context=self._context(),
+                args="https://github.com/leanprover-community/mathlib4/pull/6",
+            )
+
+        self.assertIn("GitHub assignment token is not configured.", result.content)
+        mock_request.assert_not_called()
+
+    @override_settings(
+        ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
+        GITHUB_ASSIGNMENT_TOKEN="pat-token",
+        GITHUB_APP_TOKEN_CONFIG={"strict_operations": ["assign_pr"]},
+    )
+    def test_unassign_non_strict_operation_keeps_pat_fallback(self) -> None:
+        repo, user = self._make_repo_user_pref()
+        now = timezone.now()
+        PullRequest.objects.create(
+            repository=repo,
+            number=7,
+            author=user,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="t",
+            body="b",
+            additions=1,
+            deletions=0,
+            changed_files_count=1,
+            assignees=["reviewer"],
+        )
+
+        provider = Mock()
+        provider.get_token.return_value = None
+        with (
+            patch("zulip_bot.services.assignment_execution.get_default_github_app_token_provider", return_value=provider),
+            patch("zulip_bot.services.assignment_execution.requests.request") as mock_request,
+            patch("zulip_bot.services.assignment_execution.ZulipClient") as mock_zulip_client,
+            patch("zulip_bot.services.assignment_execution._enqueue_post_action_sync"),
+        ):
+            response = Mock()
+            response.status_code = 200
+            response.json.return_value = {}
+            mock_request.return_value = response
+            mock_zulip_client.return_value.add_reaction.return_value = {"result": "success"}
+            result = run_assignment_command(
+                action="unassign",
+                context=self._context(),
+                args="https://github.com/leanprover-community/mathlib4/pull/7",
+            )
+
+        self.assertTrue(result.response_not_required)
+        self.assertEqual(mock_request.call_args.kwargs["headers"]["Authorization"], "Bearer pat-token")

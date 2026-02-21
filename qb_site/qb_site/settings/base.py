@@ -158,6 +158,13 @@ GITHUB_OAUTH_AUTHORIZE_URL = os.getenv("GITHUB_OAUTH_AUTHORIZE_URL", "https://gi
 GITHUB_OAUTH_TOKEN_URL = os.getenv("GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token")
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "read:user")
+GITHUB_APP_TOKEN_CONFIG: dict[str, object] = {}
+_GITHUB_APP_TOKEN_CONFIG_ENV = os.getenv("GITHUB_APP_TOKEN_CONFIG", "").strip()
+if _GITHUB_APP_TOKEN_CONFIG_ENV:
+    parsed_app_token_config = json.loads(_GITHUB_APP_TOKEN_CONFIG_ENV)
+    if not isinstance(parsed_app_token_config, dict):
+        raise RuntimeError("GITHUB_APP_TOKEN_CONFIG env var must be a JSON object")
+    GITHUB_APP_TOKEN_CONFIG = parsed_app_token_config
 ZULIP_COMMAND_POLICY: dict[str, dict[str, list[int | str]]] = {}
 _ZULIP_COMMAND_POLICY_ENV = os.getenv("ZULIP_COMMAND_POLICY", "").strip()
 if _ZULIP_COMMAND_POLICY_ENV:

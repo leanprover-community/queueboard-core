@@ -12,6 +12,7 @@ from core.models import Repository
 from syncer.models import PullRequest, PullRequestState
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
+from zulip_bot.services.github_app_tokens import GitHubAppTokenError, get_default_github_app_token_provider
 from zulip_bot.services.assignment_validation import AssignmentTargetValidation, validate_assignment_targets
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -114,7 +115,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
             )
             warnings.extend(idempotent_warnings)
     elif _assignment_mutations_enabled():
-        live_pr = _fetch_live_pr_view(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number)
+        live_pr = _fetch_live_pr_view(owner=parsed.pr.owner, repo=parsed.pr.repo, number=parsed.pr.number, action=action)
         if live_pr is not None:
             if not live_pr.is_open:
                 failures.append("Pull request is not open in GitHub live data.")
@@ -139,7 +140,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
         warnings.append("GitHub assignment mutation is disabled (enable ZULIP_ASSIGNMENT_MUTATIONS_ENABLED to execute).")
         return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
 
-    token = _assignment_token()
+    token = _assignment_token(action=action, owner=parsed.pr.owner, repo=parsed.pr.repo)
     if not token:
         failures.append("GitHub assignment token is not configured.")
         return _summary_response(action=action, successes=successes, warnings=warnings, failures=failures)
@@ -240,7 +241,25 @@ def _assignment_mutations_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _assignment_token() -> str:
+def _assignment_token(*, action: str, owner: str, repo: str) -> str:
+    operation = _assignment_operation(action)
+    strict_operation = _is_strict_operation(operation)
+    if operation:
+        try:
+            app_token = get_default_github_app_token_provider().get_token(operation=operation, owner=owner, repo=repo)
+        except GitHubAppTokenError as exc:
+            log.warning(
+                "github_app_token_resolution_failed",
+                extra={"code": exc.code, "action": action, "owner": owner, "repo": repo},
+            )
+            if strict_operation:
+                return ""
+        else:
+            if app_token:
+                return app_token
+            if strict_operation:
+                return ""
+
     setting_token = str(getattr(settings, "GITHUB_ASSIGNMENT_TOKEN", "")).strip()
     if setting_token:
         return setting_token
@@ -254,8 +273,29 @@ def _assignment_token() -> str:
     return first
 
 
-def _fetch_live_pr_view(*, owner: str, repo: str, number: int) -> LivePullRequestView | None:
-    token = _assignment_token()
+def _assignment_operation(action: str) -> str | None:
+    if action == "assign":
+        return "assign_pr"
+    if action == "unassign":
+        return "unassign_pr"
+    return None
+
+
+def _is_strict_operation(operation: str | None) -> bool:
+    if not operation:
+        return False
+    raw_config = getattr(settings, "GITHUB_APP_TOKEN_CONFIG", {}) or {}
+    if not isinstance(raw_config, dict):
+        return False
+    strict_operations_raw = raw_config.get("strict_operations") or []
+    if not isinstance(strict_operations_raw, list):
+        return False
+    strict_operations = {str(item).strip() for item in strict_operations_raw if str(item).strip()}
+    return operation in strict_operations
+
+
+def _fetch_live_pr_view(*, owner: str, repo: str, number: int, action: str) -> LivePullRequestView | None:
+    token = _assignment_token(action=action, owner=owner, repo=repo)
     if not token:
         return None
 
