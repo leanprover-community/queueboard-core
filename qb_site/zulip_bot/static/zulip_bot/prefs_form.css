@@ -30,6 +30,23 @@
   font-size: 1.05rem;
 }
 
+.prefs-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.prefs-section:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.prefs-section h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
