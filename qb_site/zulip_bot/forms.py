@@ -8,10 +8,12 @@ from django import forms
 from django.utils import timezone
 
 from core.models import ReviewerPreference
+from core.services.reviewer_notification_settings import parse_notification_policy
 
 REVIEWER_PREFERENCE_EDITABLE_FIELDS: tuple[str, ...] = (
     "maximum_capacity",
     "auto_assign",
+    "notifications_enabled",
     "away_until",
     "preferred_labels",
     "free_form",
@@ -24,7 +26,6 @@ REVIEWER_PREFERENCE_NON_FORM_FIELDS: tuple[str, ...] = (
     "user",
     "created_at",
     "updated_at",
-    "notifications_enabled",
     "notification_settings",
 )
 
@@ -90,6 +91,16 @@ class ReviewerPreferenceForm(forms.ModelForm):
         widget=forms.Textarea(attrs={"rows": 3}),
         help_text="GitHub handles of users whose PRs should not be assigned to you (comma or newline separated).",
     )
+    stale_nudge_days = forms.IntegerField(
+        required=False,
+        min_value=1,
+        widget=forms.NumberInput(attrs={"min": 1, "step": 1}),
+    )
+    auto_unassign_days = forms.IntegerField(
+        required=False,
+        min_value=1,
+        widget=forms.NumberInput(attrs={"min": 1, "step": 1}),
+    )
 
     class Meta:
         model = ReviewerPreference
@@ -137,7 +148,14 @@ class ReviewerPreferenceForm(forms.ModelForm):
         tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
+        self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
         self.fields["free_form"].help_text = "A free form description of your reviewing interests."
+        self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
+        self.fields["auto_unassign_days"].help_text = "Automatically unassign after this many consecutive queue days."
+
+        policy = parse_notification_policy(self.instance.notification_settings)
+        self.initial["stale_nudge_days"] = policy.stale_nudge_days
+        self.initial["auto_unassign_days"] = policy.auto_unassign_days
         if topic_labels:
             labels_help = "Select topic labels used by auto-assignment (`t-*`, `CI`, `IMO`, `tech debt`)."
         else:
@@ -164,3 +182,33 @@ class ReviewerPreferenceForm(forms.ModelForm):
     def clean_preferred_labels(self) -> list[str]:
         labels = self.cleaned_data.get("preferred_labels") or []
         return _dedupe_case_insensitive_preserve_first(str(label) for label in labels)
+
+    def clean(self) -> dict[str, object]:
+        cleaned_data = super().clean()
+
+        stale_raw = cleaned_data.get("stale_nudge_days")
+        unassign_raw = cleaned_data.get("auto_unassign_days")
+        policy = parse_notification_policy(
+            {
+                "stale_nudge_days": stale_raw,
+                "auto_unassign_days": unassign_raw,
+            }
+        )
+        cleaned_data["stale_nudge_days"] = policy.stale_nudge_days
+        cleaned_data["auto_unassign_days"] = policy.auto_unassign_days
+
+        if stale_raw is not None and unassign_raw is not None and int(unassign_raw) <= int(stale_raw):
+            self.add_error("auto_unassign_days", "Auto-unassign days must be greater than stale nudge days.")
+
+        return cleaned_data
+
+    def save(self, commit: bool = True) -> ReviewerPreference:
+        instance = super().save(commit=False)
+        instance.notification_settings = {
+            "stale_nudge_days": int(self.cleaned_data["stale_nudge_days"]),
+            "auto_unassign_days": int(self.cleaned_data["auto_unassign_days"]),
+        }
+        if commit:
+            instance.save()
+            self.save_m2m()
+        return instance

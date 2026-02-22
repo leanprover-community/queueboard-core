@@ -75,6 +75,27 @@
               {% if form.auto_assign.errors %}<ul class="errors">{% for error in form.auto_assign.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
             </div>
 
+            <div class="field checkbox">
+              {{ form.notifications_enabled }}
+              <label for="{{ form.notifications_enabled.id_for_label }}">{{ form.notifications_enabled.label }}</label>
+              {% if form.notifications_enabled.help_text %}<span class="help">{{ form.notifications_enabled.help_text }}</span>{% endif %}
+              {% if form.notifications_enabled.errors %}<ul class="errors">{% for error in form.notifications_enabled.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field">
+              <label for="{{ form.stale_nudge_days.id_for_label }}">{{ form.stale_nudge_days.label }}</label>
+              {{ form.stale_nudge_days }}
+              {% if form.stale_nudge_days.help_text %}<span class="help">{{ form.stale_nudge_days.help_text }}</span>{% endif %}
+              {% if form.stale_nudge_days.errors %}<ul class="errors">{% for error in form.stale_nudge_days.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field">
+              <label for="{{ form.auto_unassign_days.id_for_label }}">{{ form.auto_unassign_days.label }}</label>
+              {{ form.auto_unassign_days }}
+              {% if form.auto_unassign_days.help_text %}<span class="help">{{ form.auto_unassign_days.help_text }}</span>{% endif %}
+              {% if form.auto_unassign_days.errors %}<ul class="errors">{% for error in form.auto_unassign_days.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
             <div class="field field-wide">
               <label for="{{ form.away_until.id_for_label }}">{{ form.away_until.label }}</label>
               <div class="away-row">
