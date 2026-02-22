@@ -205,9 +205,18 @@
   - Added `notifications_enabled` and `notification_settings` to `core.ReviewerPreference`.
   - Added migration `core.0005_reviewerpreference_notifications`.
   - Added `core.services.reviewer_notification_settings.parse_notification_policy(...)` and tests.
+- **Completed:** Chunk A2.
+  - Added reviewer-facing notification controls in Zulip prefs form:
+    - `notifications_enabled`
+    - `stale_nudge_days` (X)
+    - `auto_unassign_days` (Y)
+  - Added form-layer validation for `Y > X` and defaulting behavior for blank values.
+  - Wired persistence so form submissions store normalized values in `notification_settings`.
+  - Exposed `notifications_enabled` in `ReviewerPreferenceAdmin` list display/filter.
 - **Nuance discovered during implementation:**
   - Existing field-coverage guard (`reviewer_preference_unaccounted_fields`) requires every model field to be explicitly classified.
   - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
+  - Form submissions now write canonical threshold values into `notification_settings`; this means legacy rows with empty settings become explicit after first save.
 
 ## Operational Notes
 - Suggested schedule relationship:

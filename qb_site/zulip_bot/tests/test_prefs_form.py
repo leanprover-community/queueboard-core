@@ -6,6 +6,10 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from core.models import Repository, ReviewerPreference, User
+from core.services.reviewer_notification_settings import (
+    DEFAULT_AUTO_UNASSIGN_DAYS,
+    DEFAULT_STALE_NUDGE_DAYS,
+)
 from syncer.models import LabelDef
 from zulip_bot.forms import reviewer_preference_unaccounted_fields
 from zulip_bot.services.prefs_links import PrefsLinkClaims, issue_prefs_token
@@ -22,6 +26,8 @@ class TestPrefsForm(TestCase):
             repository=self.repo1,
             maximum_capacity=10,
             auto_assign=True,
+            notifications_enabled=False,
+            notification_settings={"stale_nudge_days": 2, "auto_unassign_days": 5},
             preferred_labels=["t-algebra"],
             free_form="note one",
             conflict_of_interest=["alice"],
@@ -31,6 +37,7 @@ class TestPrefsForm(TestCase):
             repository=self.repo2,
             maximum_capacity=4,
             auto_assign=False,
+            notifications_enabled=False,
             preferred_labels=["t-analysis"],
             free_form="note two",
             conflict_of_interest=[],
@@ -76,6 +83,10 @@ class TestPrefsForm(TestCase):
             data[f"form-{idx}-id"] = str(pref.id)
             data[f"form-{idx}-maximum_capacity"] = str(pref.maximum_capacity)
             data[f"form-{idx}-auto_assign"] = "on" if pref.auto_assign else ""
+            data[f"form-{idx}-notifications_enabled"] = "on" if pref.notifications_enabled else ""
+            settings = pref.notification_settings or {}
+            data[f"form-{idx}-stale_nudge_days"] = str(settings.get("stale_nudge_days", DEFAULT_STALE_NUDGE_DAYS))
+            data[f"form-{idx}-auto_unassign_days"] = str(settings.get("auto_unassign_days", DEFAULT_AUTO_UNASSIGN_DAYS))
             data[f"form-{idx}-away_until"] = ""
             data[f"form-{idx}-preferred_labels"] = list(pref.preferred_labels)
             data[f"form-{idx}-conflict_of_interest"] = "\n".join(pref.conflict_of_interest)
@@ -91,6 +102,9 @@ class TestPrefsForm(TestCase):
         self.assertContains(response, "Reviewer Preferences")
         self.assertContains(response, "Save Preferences")
         self.assertContains(response, "Turn this off to opt out of automatic reviewer assignment for this repository.")
+        self.assertContains(response, "Enable daily queue nudge notifications for this repository.")
+        self.assertContains(response, "Send a nudge when a PR has stayed on queue this many consecutive days.")
+        self.assertContains(response, "Automatically unassign after this many consecutive queue days.")
         self.assertContains(response, "A free form description of your reviewing interests.")
         self.assertContains(response, "t-number-theory")
         self.assertNotContains(response, "maintainer-merge")
@@ -103,6 +117,9 @@ class TestPrefsForm(TestCase):
         pref1_i = index_by_id[self.pref1.id]
         pref2_i = index_by_id[self.pref2.id]
         data[f"form-{pref1_i}-maximum_capacity"] = "7"
+        data[f"form-{pref1_i}-notifications_enabled"] = "on"
+        data[f"form-{pref1_i}-stale_nudge_days"] = "4"
+        data[f"form-{pref1_i}-auto_unassign_days"] = "9"
         data[f"form-{pref1_i}-preferred_labels"] = ["t-algebra", "t-number-theory"]
         data[f"form-{pref2_i}-free_form"] = "updated note"
         data[f"form-{pref2_i}-auto_assign"] = "on"
@@ -114,6 +131,11 @@ class TestPrefsForm(TestCase):
         self.pref1.refresh_from_db()
         self.pref2.refresh_from_db()
         self.assertEqual(self.pref1.maximum_capacity, 7)
+        self.assertTrue(self.pref1.notifications_enabled)
+        self.assertEqual(
+            self.pref1.notification_settings,
+            {"stale_nudge_days": 4, "auto_unassign_days": 9},
+        )
         self.assertEqual(self.pref1.preferred_labels, ["t-algebra", "t-number-theory"])
         self.assertEqual(self.pref2.free_form, "updated note")
         self.assertTrue(self.pref2.auto_assign)
@@ -147,6 +169,36 @@ class TestPrefsForm(TestCase):
         self.assertContains(response, "Ensure this value is greater than or equal to 1")
         self.pref1.refresh_from_db()
         self.assertEqual(self.pref1.maximum_capacity, 10)
+
+    def test_post_invalid_notification_threshold_order_shows_validation_error(self) -> None:
+        token = self._token()
+        data, index_by_id = self._post_data()
+        pref1_i = index_by_id[self.pref1.id]
+        data[f"form-{pref1_i}-stale_nudge_days"] = "5"
+        data[f"form-{pref1_i}-auto_unassign_days"] = "5"
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Auto-unassign days must be greater than stale nudge days.")
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.notification_settings, {"stale_nudge_days": 2, "auto_unassign_days": 5})
+
+    def test_post_blank_notification_thresholds_use_defaults(self) -> None:
+        token = self._token()
+        data, index_by_id = self._post_data()
+        pref1_i = index_by_id[self.pref1.id]
+        data[f"form-{pref1_i}-stale_nudge_days"] = ""
+        data[f"form-{pref1_i}-auto_unassign_days"] = ""
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.pref1.refresh_from_db()
+        self.assertEqual(
+            self.pref1.notification_settings,
+            {"stale_nudge_days": DEFAULT_STALE_NUDGE_DAYS, "auto_unassign_days": DEFAULT_AUTO_UNASSIGN_DAYS},
+        )
 
     def test_post_rejects_unknown_preferred_label_choice(self) -> None:
         token = self._token()

@@ -711,11 +711,12 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
         "user",
         "maximum_capacity",
         "auto_assign",
+        "notifications_enabled",
         "away_until",
         "created_at",
         "updated_at",
     )
-    list_filter = ("auto_assign", "repository")
+    list_filter = ("auto_assign", "notifications_enabled", "repository")
     search_fields = (
         "user__github_login",
         "repository__owner",
