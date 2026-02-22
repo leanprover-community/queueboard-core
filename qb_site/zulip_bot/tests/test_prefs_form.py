@@ -101,11 +101,19 @@ class TestPrefsForm(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Reviewer Preferences")
         self.assertContains(response, "Save Preferences")
-        self.assertContains(response, "Turn this off to opt out of automatic reviewer assignment for this repository.")
-        self.assertContains(response, "Enable daily queue nudge notifications for this repository.")
-        self.assertContains(response, "Send a nudge when a PR has stayed on queue this many consecutive days.")
-        self.assertContains(response, "Automatically unassign after this many consecutive queue days.")
-        self.assertContains(response, "A free form description of your reviewing interests.")
+        # Assert stable semantics (sections + fields), not exact help-text wording.
+        self.assertContains(response, "Auto-Assignment")
+        self.assertContains(response, "Notifications")
+        self.assertContains(response, "Interests")
+        self.assertIn('name="form-0-auto_assign"', body)
+        self.assertIn('name="form-0-auto_unassign_days"', body)
+        self.assertIn('name="form-0-away_until"', body)
+        self.assertIn('name="form-0-maximum_capacity"', body)
+        self.assertIn('name="form-0-notifications_enabled"', body)
+        self.assertIn('name="form-0-stale_nudge_days"', body)
+        self.assertIn('name="form-0-preferred_labels"', body)
+        self.assertIn('name="form-0-free_form"', body)
+        self.assertIn('name="form-0-conflict_of_interest"', body)
         self.assertContains(response, "t-number-theory")
         self.assertNotContains(response, "maintainer-merge")
         self.assertLess(body.index("Free form"), body.index("Conflict of interest"))
@@ -199,6 +207,20 @@ class TestPrefsForm(TestCase):
             self.pref1.notification_settings,
             {"stale_nudge_days": DEFAULT_STALE_NUDGE_DAYS, "auto_unassign_days": DEFAULT_AUTO_UNASSIGN_DAYS},
         )
+
+    def test_post_rejects_auto_unassign_days_above_hard_max(self) -> None:
+        token = self._token()
+        data, index_by_id = self._post_data()
+        pref1_i = index_by_id[self.pref1.id]
+        data[f"form-{pref1_i}-stale_nudge_days"] = "14"
+        data[f"form-{pref1_i}-auto_unassign_days"] = "22"
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ensure this value is less than or equal to 21.")
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.notification_settings, {"stale_nudge_days": 2, "auto_unassign_days": 5})
 
     def test_post_rejects_unknown_preferred_label_choice(self) -> None:
         token = self._token()

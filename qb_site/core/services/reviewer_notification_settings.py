@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
-DEFAULT_STALE_NUDGE_DAYS = 3
-DEFAULT_AUTO_UNASSIGN_DAYS = 7
+DEFAULT_STALE_NUDGE_DAYS = 14
+DEFAULT_AUTO_UNASSIGN_DAYS = 21
+MAX_AUTO_UNASSIGN_DAYS = 21
 
 
 @dataclass(frozen=True)
@@ -28,8 +29,12 @@ def parse_notification_policy(settings_payload: Any) -> ReviewerNotificationPoli
     stale_nudge_days = _parse_positive_int(settings_payload.get("stale_nudge_days"), DEFAULT_STALE_NUDGE_DAYS)
     auto_unassign_days = _parse_positive_int(settings_payload.get("auto_unassign_days"), DEFAULT_AUTO_UNASSIGN_DAYS)
 
+    # Hard cap for enforcement policy.
+    auto_unassign_days = min(auto_unassign_days, MAX_AUTO_UNASSIGN_DAYS)
+    # stale nudge must leave at least one day before auto-unassign.
+    stale_nudge_days = min(stale_nudge_days, MAX_AUTO_UNASSIGN_DAYS - 1)
     if auto_unassign_days <= stale_nudge_days:
-        auto_unassign_days = stale_nudge_days + 1
+        auto_unassign_days = min(stale_nudge_days + 1, MAX_AUTO_UNASSIGN_DAYS)
 
     return ReviewerNotificationPolicy(
         stale_nudge_days=stale_nudge_days,
