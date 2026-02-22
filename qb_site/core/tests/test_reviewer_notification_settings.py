@@ -5,6 +5,7 @@ from django.test import SimpleTestCase
 from core.services.reviewer_notification_settings import (
     DEFAULT_AUTO_UNASSIGN_DAYS,
     DEFAULT_STALE_NUDGE_DAYS,
+    MAX_AUTO_UNASSIGN_DAYS,
     parse_notification_policy,
 )
 
@@ -33,3 +34,15 @@ class ReviewerNotificationSettingsTests(SimpleTestCase):
 
         self.assertEqual(policy.stale_nudge_days, 4)
         self.assertEqual(policy.auto_unassign_days, 9)
+
+    def test_auto_unassign_is_capped_at_max(self) -> None:
+        policy = parse_notification_policy({"stale_nudge_days": 14, "auto_unassign_days": 99})
+
+        self.assertEqual(policy.stale_nudge_days, 14)
+        self.assertEqual(policy.auto_unassign_days, MAX_AUTO_UNASSIGN_DAYS)
+
+    def test_stale_nudge_is_capped_to_allow_y_greater_than_x(self) -> None:
+        policy = parse_notification_policy({"stale_nudge_days": 50, "auto_unassign_days": 21})
+
+        self.assertEqual(policy.stale_nudge_days, MAX_AUTO_UNASSIGN_DAYS - 1)
+        self.assertEqual(policy.auto_unassign_days, MAX_AUTO_UNASSIGN_DAYS)

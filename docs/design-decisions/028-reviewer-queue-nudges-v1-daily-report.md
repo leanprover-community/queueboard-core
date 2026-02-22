@@ -27,6 +27,14 @@
 - Add reviewer notification settings with:
   - `notifications_enabled` (boolean, default `False`)
   - configurable `X` and `Y` thresholds (initially in JSON settings to allow future options).
+- Set default thresholds to:
+  - `stale_nudge_days = 14`
+  - `auto_unassign_days = 21`
+- Enforce a hard maximum:
+  - `auto_unassign_days <= 21`.
+- Apply enforcement policy independently of notification preference:
+  - `notifications_enabled` controls messaging behavior,
+  - auto-unassign eligibility still applies at the effective enforcement threshold.
 - Preserve a seam for migration:
   - keep policy/enforcement logic independent from assignment producer,
   - later switch producer from GitHub Action to `qb_site` assignment task without redesigning nudges.
@@ -87,8 +95,14 @@
 
 ### C) Unassign threshold behavior
 - `Y` must be strictly greater than `X`.
+- `Y` is hard-capped at `21`.
 - Auto-unassign at first run where `days >= Y`.
 - Do not repeatedly unassign; treat as idempotent action by checking current assignees and prior recorded success.
+
+### F) Notification toggle vs enforcement
+- `notifications_enabled=False` suppresses reviewer nudge/report messaging.
+- It does **not** exempt the reviewer from stale auto-unassign policy.
+- Rationale: queue health policy should not depend on whether a reviewer opted into messaging.
 
 ### D) Reassignment behavior after auto-unassign
 - V1: no immediate reassignment inside this task.
@@ -173,7 +187,8 @@
 #### Chunk C2: Auto-unassign execution
 1. Enable GitHub unassign behind feature flag.
 2. Execute idempotently and append results to summary.
-3. Add tests around duplicate runs and partial failures.
+3. Enforce hard max policy (`21`) regardless of reviewer notification toggle.
+4. Add tests around duplicate runs and partial failures.
 
 #### Chunk C3: Incremental rollout
 1. Start with small cohort.
@@ -213,6 +228,10 @@
   - Added form-layer validation for `Y > X` and defaulting behavior for blank values.
   - Wired persistence so form submissions store normalized values in `notification_settings`.
   - Exposed `notifications_enabled` in `ReviewerPreferenceAdmin` list display/filter.
+- **Adjustment after A2:**
+  - Updated defaults to `X=14`, `Y=21`.
+  - Added hard max validation/cap for `Y<=21`.
+  - Confirmed intended policy: notification opt-out does not disable stale auto-unassign enforcement.
 - **Nuance discovered during implementation:**
   - Existing field-coverage guard (`reviewer_preference_unaccounted_fields`) requires every model field to be explicitly classified.
   - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
@@ -252,7 +271,6 @@
   - Deferred: creates coupling with assignment producer while assignment still runs outside Django.
 
 ## Open Questions
-- Defaults for `X` and `Y` at rollout.
 - Whether to include "newly assigned today" in summary when assignment provenance is ambiguous.
 - Whether per-repository overrides are needed in `notification_settings` or global per reviewer is sufficient.
 

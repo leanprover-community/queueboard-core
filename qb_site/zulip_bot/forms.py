@@ -8,7 +8,7 @@ from django import forms
 from django.utils import timezone
 
 from core.models import ReviewerPreference
-from core.services.reviewer_notification_settings import parse_notification_policy
+from core.services.reviewer_notification_settings import MAX_AUTO_UNASSIGN_DAYS, parse_notification_policy
 
 REVIEWER_PREFERENCE_EDITABLE_FIELDS: tuple[str, ...] = (
     "maximum_capacity",
@@ -94,12 +94,14 @@ class ReviewerPreferenceForm(forms.ModelForm):
     stale_nudge_days = forms.IntegerField(
         required=False,
         min_value=1,
-        widget=forms.NumberInput(attrs={"min": 1, "step": 1}),
+        max_value=MAX_AUTO_UNASSIGN_DAYS - 1,
+        widget=forms.NumberInput(attrs={"min": 1, "max": MAX_AUTO_UNASSIGN_DAYS - 1, "step": 1}),
     )
     auto_unassign_days = forms.IntegerField(
         required=False,
         min_value=1,
-        widget=forms.NumberInput(attrs={"min": 1, "step": 1}),
+        max_value=MAX_AUTO_UNASSIGN_DAYS,
+        widget=forms.NumberInput(attrs={"min": 1, "max": MAX_AUTO_UNASSIGN_DAYS, "step": 1}),
     )
 
     class Meta:
@@ -151,7 +153,9 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
         self.fields["free_form"].help_text = "A free form description of your reviewing interests."
         self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
-        self.fields["auto_unassign_days"].help_text = "Automatically unassign after this many consecutive queue days."
+        self.fields[
+            "auto_unassign_days"
+        ].help_text = f"Automatically unassign after this many consecutive queue days (maximum {MAX_AUTO_UNASSIGN_DAYS})."
 
         policy = parse_notification_policy(self.instance.notification_settings)
         self.initial["stale_nudge_days"] = policy.stale_nudge_days
