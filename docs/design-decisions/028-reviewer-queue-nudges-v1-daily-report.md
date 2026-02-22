@@ -127,39 +127,87 @@
 ## Implementation Plan
 
 ### Sub-plan A: V1 foundation (data + policy skeleton)
-1. Add `ReviewerPreference` notification fields and migration.
-2. Add/update forms/admin/prefs page to expose the new controls.
-3. Add a policy service module in `analyzer` (or `core`) that computes reviewer attention items from DB state.
-4. Add unit tests for threshold validation and queue-age computation edge cases.
+#### Chunk A1: Notification preference schema + parsing defaults (**completed**)
+1. Add `ReviewerPreference` fields:
+  - `notifications_enabled` (default `False`)
+  - `notification_settings` (JSON, default `{}`)
+2. Add migration for those fields.
+3. Add pure settings parser/normalizer (`X`, `Y`) with non-DB tests.
+4. Keep existing preference forms unchanged in this chunk (no UX changes yet).
+
+#### Chunk A2: Preference UI/admin wiring + validation
+1. Add form fields for notifications in Zulip prefs form.
+2. Add admin exposure for new notification controls.
+3. Validate and normalize `notification_settings` values (`X >= 1`, `Y > X`) in form/service path.
+4. Add form tests for valid/invalid submissions and persistence.
+
+#### Chunk A3: Run-state persistence models
+1. Add minimal model(s) for run metadata and per-day dedupe records.
+2. Add model indexes/constraints for idempotency keys.
+3. Add tests for dedupe semantics and retry-safe writes.
+
+#### Chunk A4: Policy computation service (read-only)
+1. Implement DB-backed policy evaluator (no sends/mutations).
+2. Compute per-reviewer report rows and unassign candidates from queue/timeline state.
+3. Add unit tests for queue continuity, reassignment reset, and missing-data fallbacks.
 
 ### Sub-plan B: Daily report task (dry-run first)
-1. Add Celery task and beat schedule entry.
-2. Implement dry-run mode:
-  - compute report rows,
-  - persist run summary,
-  - do not mutate GitHub or send Zulip.
-3. Add logging and basic admin visibility for dry-run output.
-4. Validate on production-like data for at least several days.
+#### Chunk B1: Task wiring and schedule
+1. Add Celery task and beat schedule entry (daily).
+2. Add feature flags for global enable + enforcement toggle.
+
+#### Chunk B2: Dry-run execution path
+1. Run policy evaluator and persist run summary only.
+2. Do not call Zulip or GitHub yet.
+3. Add structured logs + admin visibility.
+
+#### Chunk B3: Dry-run validation period
+1. Run for several days.
+2. Review "would-nudge/would-unassign" outputs and tune defaults.
 
 ### Sub-plan C: Enable messaging and enforcement
-1. Enable Zulip summary DM sending.
-2. Add unassign execution path behind feature flag.
-3. Add idempotency checks and retry handling.
-4. Roll out gradually (small cohort, then full).
+#### Chunk C1: Zulip summary delivery
+1. Send one summary DM per reviewer when report non-empty.
+2. Record delivery outcomes and retry-safe status.
+
+#### Chunk C2: Auto-unassign execution
+1. Enable GitHub unassign behind feature flag.
+2. Execute idempotently and append results to summary.
+3. Add tests around duplicate runs and partial failures.
+
+#### Chunk C3: Incremental rollout
+1. Start with small cohort.
+2. Expand after error rates and outcomes are acceptable.
 
 ### Sub-plan D: Stabilization and tuning
+#### Chunk D1: Policy and UX tuning
 1. Tune defaults for `X` and `Y`.
 2. Improve report formatting and actionable links.
-3. Add metrics/alerts for:
+
+#### Chunk D2: Observability hardening
+1. Add metrics/alerts for:
   - report generation failures,
   - Zulip delivery failures,
   - GitHub unassign failures,
   - skipped decisions due to missing data.
 
 ### Sub-plan E: Later migration of assignment producer
-1. Move assignment execution from GitHub Actions into `qb_site` task.
+#### Chunk E1: Move assignment execution to `qb_site`
+1. Implement native assignment executor task in Django.
 2. Keep nudge policy/enforcement unchanged.
-3. Remove/retire Action assignment step after parity period.
+
+#### Chunk E2: Parity and retirement
+1. Run parity/shadow period.
+2. Remove/retire Action assignment step.
+
+## Progress and Implementation Notes
+- **Completed:** Chunk A1.
+  - Added `notifications_enabled` and `notification_settings` to `core.ReviewerPreference`.
+  - Added migration `core.0005_reviewerpreference_notifications`.
+  - Added `core.services.reviewer_notification_settings.parse_notification_policy(...)` and tests.
+- **Nuance discovered during implementation:**
+  - Existing field-coverage guard (`reviewer_preference_unaccounted_fields`) requires every model field to be explicitly classified.
+  - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
 
 ## Operational Notes
 - Suggested schedule relationship:
