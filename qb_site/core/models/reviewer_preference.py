@@ -19,6 +19,8 @@ class ReviewerPreference(TimestampedModel):
     - ``preferred_labels``: list of GitHub label names the reviewer prefers (e.g., ["t-analysis", "t-algebra"]).
     - ``free_form``: optional free‑text notes from reviewer‑topics.json for context.
     - ``conflict_of_interest``: list of GitHub handles this reviewer should not be auto-assigned to.
+    - ``notifications_enabled``: whether reviewer receives queue nudge notifications.
+    - ``notification_settings``: extensible JSON settings for notification policy (for example X/Y thresholds).
     """
 
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="reviewer_preferences")
@@ -35,6 +37,12 @@ class ReviewerPreference(TimestampedModel):
     free_form = models.TextField(null=True, blank=True)
     # GitHub handles that should not be auto-assigned to this reviewer (legacy: conflict_of_interest list).
     conflict_of_interest = models.JSONField(default=list, blank=True)
+    notifications_enabled = models.BooleanField(default=False)
+    # Extensible settings for queue nudge policy.
+    # Initial keys are expected to include:
+    # - stale_nudge_days (X)
+    # - auto_unassign_days (Y)
+    notification_settings = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [

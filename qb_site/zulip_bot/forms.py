@@ -24,6 +24,8 @@ REVIEWER_PREFERENCE_NON_FORM_FIELDS: tuple[str, ...] = (
     "user",
     "created_at",
     "updated_at",
+    "notifications_enabled",
+    "notification_settings",
 )
 
 
