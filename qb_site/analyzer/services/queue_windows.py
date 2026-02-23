@@ -517,74 +517,85 @@ def rebuild_queue_windows_for_ruleset(
     rules = rules_for_rule_set(rule_set)
     windows = _queue_windows_with_rules(pr, rules=rules, as_of=as_of)
 
-    created = 0
-    updated = 0
-
     window_count = len(windows)
     first_on_queue_ts = windows[0][0] if windows else None
     cumulative_seconds = 0
 
-    expected_starts: List[datetime] = []
+    existing_by_start = {obj.from_ts: obj for obj in PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)}
+    to_create: list[PRQueueWindow] = []
+    to_update: list[PRQueueWindow] = []
+
     for cycle_index, (start, end) in enumerate(windows):
         duration_seconds = 0
         if end is not None:
             duration_seconds = int((end - start).total_seconds())
         cumulative_seconds += duration_seconds
-        expected_starts.append(start)
-        obj, was_created = PRQueueWindow.objects.get_or_create(
-            pull_request=pr,
-            rule_set=rule_set,
-            from_ts=start,
-            defaults={
-                "to_ts": end,
-                "cycle_index": cycle_index,
-                "duration_seconds_closed": duration_seconds,
-                "cumulative_seconds_closed": cumulative_seconds,
-                "window_count": window_count,
-                "first_on_queue_ts": first_on_queue_ts,
-            },
-        )
-        if was_created:
-            created += 1
-        else:
-            changed = False
-            if obj.to_ts != end:
-                obj.to_ts = end
-                changed = True
-            if obj.cycle_index != cycle_index:
-                obj.cycle_index = cycle_index
-                changed = True
-            if obj.duration_seconds_closed != duration_seconds:
-                obj.duration_seconds_closed = duration_seconds
-                changed = True
-            if obj.cumulative_seconds_closed != cumulative_seconds:
-                obj.cumulative_seconds_closed = cumulative_seconds
-                changed = True
-            if obj.window_count != window_count:
-                obj.window_count = window_count
-                changed = True
-            if obj.first_on_queue_ts != first_on_queue_ts:
-                obj.first_on_queue_ts = first_on_queue_ts
-                changed = True
-            if changed:
-                obj.save(
-                    update_fields=[
-                        "to_ts",
-                        "cycle_index",
-                        "duration_seconds_closed",
-                        "cumulative_seconds_closed",
-                        "window_count",
-                        "first_on_queue_ts",
-                    ]
+        obj = existing_by_start.pop(start, None)
+        if obj is None:
+            to_create.append(
+                PRQueueWindow(
+                    pull_request=pr,
+                    rule_set=rule_set,
+                    from_ts=start,
+                    to_ts=end,
+                    cycle_index=cycle_index,
+                    duration_seconds_closed=duration_seconds,
+                    cumulative_seconds_closed=cumulative_seconds,
+                    window_count=window_count,
+                    first_on_queue_ts=first_on_queue_ts,
                 )
-                updated += 1
+            )
+            continue
 
-    qs = PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)
-    if expected_starts:
-        qs = qs.exclude(from_ts__in=expected_starts)
-    deleted, _ = qs.delete()
+        changed = False
+        if obj.to_ts != end:
+            obj.to_ts = end
+            changed = True
+        if obj.cycle_index != cycle_index:
+            obj.cycle_index = cycle_index
+            changed = True
+        if obj.duration_seconds_closed != duration_seconds:
+            obj.duration_seconds_closed = duration_seconds
+            changed = True
+        if obj.cumulative_seconds_closed != cumulative_seconds:
+            obj.cumulative_seconds_closed = cumulative_seconds
+            changed = True
+        if obj.window_count != window_count:
+            obj.window_count = window_count
+            changed = True
+        if obj.first_on_queue_ts != first_on_queue_ts:
+            obj.first_on_queue_ts = first_on_queue_ts
+            changed = True
+        if changed:
+            to_update.append(obj)
 
-    return QueueWindowRebuildResult(created=created, updated=updated, deleted=deleted, status="rebuilt", reason=None)
+    if to_create:
+        PRQueueWindow.objects.bulk_create(to_create, batch_size=200)
+    if to_update:
+        PRQueueWindow.objects.bulk_update(
+            to_update,
+            [
+                "to_ts",
+                "cycle_index",
+                "duration_seconds_closed",
+                "cumulative_seconds_closed",
+                "window_count",
+                "first_on_queue_ts",
+            ],
+            batch_size=200,
+        )
+
+    deleted = 0
+    if existing_by_start:
+        deleted, _ = PRQueueWindow.objects.filter(id__in=[obj.id for obj in existing_by_start.values()]).delete()
+
+    return QueueWindowRebuildResult(
+        created=len(to_create),
+        updated=len(to_update),
+        deleted=deleted,
+        status="rebuilt",
+        reason=None,
+    )
 
 
 def rebuild_queue_windows_for_pr(

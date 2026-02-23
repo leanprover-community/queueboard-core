@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from celery import shared_task
-from django.conf import settings
 from django.utils import timezone
 
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, F, OuterRef, Q
 
-from analyzer.models import QueueRuleSet, PRRevisionBuildState, PRRevision
-from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
+from analyzer.models import PRQueueWindow, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
 
@@ -32,50 +31,46 @@ def rebuild_queue_windows_sweep_task(
     per_repo: list[dict] = []
 
     for repo in repos:
+        rulesets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
+        max_ruleset_updated_at = max((rs.updated_at for rs in rulesets if rs.updated_at is not None), default=None)
+        rule_set_ids = [int(rs.id) for rs in rulesets]
+
         has_revisions = PRRevision.objects.filter(pull_request=OuterRef("pk"))
-        pr_qs = (
-            PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
-            .select_related("revision_build_state")
-            .only(
-                "id",
-                "number",
-                "gh_created_at",
-                "gh_updated_at",
-                "timeline_backfill_done",
-                "commits_backfill_done",
-                "revision_build_state__revision_version",
-                "revision_build_state__windows_built_revision_version",
-                "revision_build_state__windows_built_at",
-            )
-            .annotate(has_revisions=Exists(has_revisions))
-            .filter(has_revisions=True)
-            .order_by("-gh_updated_at", "-id")
-            .iterator(chunk_size=100)
-        )
+        rollup_backfill = PRQueueWindow.objects.filter(
+            pull_request=OuterRef("pk"),
+            rule_set_id__in=rule_set_ids,
+        ).filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+
+        pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
         if only_complete_backfill:
-            pr_qs = (
-                PullRequest.objects.filter(
-                    repository=repo,
-                    timeline_backfill_done=True,
-                    commits_backfill_done=True,
-                )
-                .select_related("revision_build_state")
-                .only(
-                    "id",
-                    "number",
-                    "gh_created_at",
-                    "gh_updated_at",
-                    "timeline_backfill_done",
-                    "commits_backfill_done",
-                    "revision_build_state__revision_version",
-                    "revision_build_state__windows_built_revision_version",
-                    "revision_build_state__windows_built_at",
-                )
-                .annotate(has_revisions=Exists(has_revisions))
-                .filter(has_revisions=True)
-                .order_by("-gh_updated_at", "-id")
-                .iterator(chunk_size=100)
-            )
+            pr_qs = pr_qs.filter(commits_backfill_done=True)
+        pr_qs = pr_qs.select_related("revision_build_state").only(
+            "id",
+            "number",
+            "gh_created_at",
+            "gh_updated_at",
+            "timeline_backfill_done",
+            "commits_backfill_done",
+            "revision_build_state__revision_version",
+            "revision_build_state__windows_built_revision_version",
+            "revision_build_state__windows_built_at",
+        )
+        pr_qs = pr_qs.annotate(
+            has_revisions=Exists(has_revisions),
+            has_rollup_backfill=Exists(rollup_backfill),
+        ).filter(has_revisions=True)
+
+        needs_rebuild = (
+            Q(revision_build_state__isnull=True)
+            | Q(revision_build_state__windows_built_revision_version__isnull=True)
+            | ~Q(revision_build_state__windows_built_revision_version=F("revision_build_state__revision_version"))
+            | Q(revision_build_state__windows_built_at__isnull=True)
+            | Q(has_rollup_backfill=True)
+        )
+        if max_ruleset_updated_at is not None:
+            needs_rebuild |= Q(revision_build_state__windows_built_at__lt=max_ruleset_updated_at)
+        pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
+
         repo_rebuilt = 0
         repo_prs = 0
         repo_prs_skipped_up_to_date: list[int] = []
@@ -88,7 +83,6 @@ def rebuild_queue_windows_sweep_task(
         repo_prs_rebuilt_stale_ruleset_seen: set[int] = set()
         repo_limit_hit = False
 
-        rulesets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
         if not rulesets:
             per_repo.append(
                 {
@@ -109,16 +103,17 @@ def rebuild_queue_windows_sweep_task(
                 repo_limit_hit = True
                 break
 
-            state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+            try:
+                state = pr.revision_build_state
+            except PRRevisionBuildState.DoesNotExist:
+                state = PRRevisionBuildState.objects.create(pull_request=pr)
             # Skip if windows already built for current revision_version and not stale vs ruleset updates.
-            stale_ruleset = False
-            for rs in rulesets:
-                if state.windows_built_at and rs.updated_at and state.windows_built_at < rs.updated_at:
-                    stale_ruleset = True
-                    break
-                if queue_windows_need_rollup_backfill(pr=pr, rule_set=rs):
-                    stale_ruleset = True
-                    break
+            stale_ruleset = bool(getattr(pr, "has_rollup_backfill", False)) or state.windows_built_at is None
+            if not stale_ruleset:
+                for rs in rulesets:
+                    if state.windows_built_at and rs.updated_at and state.windows_built_at < rs.updated_at:
+                        stale_ruleset = True
+                        break
             if stale_ruleset:
                 pr_num = int(pr.number)
                 if pr_num not in repo_prs_stale_ruleset_seen:
