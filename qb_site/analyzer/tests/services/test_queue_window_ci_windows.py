@@ -284,7 +284,6 @@ class TestQueueWindowCIWindows(TestCase):
 
     def test_end_to_end_force_push_and_ci_inferred_heads(self) -> None:
         pr = self._mk_pr(5)
-        created = _dt(2024, 9, 1)
         t_fp = _dt(2024, 9, 5)
 
         # Force-push splits the timeline into two segments with baselines h0 and h2.
@@ -369,3 +368,103 @@ class TestQueueWindowCIWindows(TestCase):
         self.assertEqual(windows[0].to_ts, t_fp)
         self.assertEqual(windows[1].from_ts, _dt(2024, 9, 6))
         self.assertEqual(windows[1].to_ts, _dt(2024, 9, 7))
+
+    def test_checkrun_wins_tie_over_status_context_at_same_timestamp(self) -> None:
+        pr = self._mk_pr(6)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_TIE_FAIL",
+            head_sha="sha1",
+            name="lint",
+            status="COMPLETED",
+            conclusion="FAILURE",
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 4),
+            gh_completed_at=_dt(2024, 9, 4),
+        )
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_TIE_OK",
+            head_sha="sha1",
+            name="lint",
+            state="SUCCESS",
+            description="ok",
+            target_url=None,
+            gh_created_at=_dt(2024, 9, 4),
+        )
+
+        rebuild_queue_windows_for_ruleset(pr=pr, rule_set=self.rules, as_of=_dt(2024, 9, 6))
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
+        self.assertEqual(windows, [])
+
+    def test_required_contexts_can_be_satisfied_across_checkrun_and_status_context(self) -> None:
+        rules_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            required_label_names=[],
+            forbidden_label_names=[],
+            required_ci_contexts=["lint", "build"],
+        )
+        pr = self._mk_pr(7)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_LINT_OK",
+            head_sha="sha1",
+            name="lint",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 2),
+            gh_completed_at=_dt(2024, 9, 2),
+        )
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_BUILD_OK",
+            head_sha="sha1",
+            name="build",
+            state="SUCCESS",
+            description="ok",
+            target_url=None,
+            gh_created_at=_dt(2024, 9, 4),
+        )
+
+        rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rules_two, as_of=_dt(2024, 9, 6))
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=rules_two).order_by("from_ts"))
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].from_ts, _dt(2024, 9, 4))
+        self.assertIsNone(windows[0].to_ts)
+
+    def test_revision_to_ts_without_boundary_event_keeps_window_open_until_as_of(self) -> None:
+        pr = self._mk_pr(8)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), _dt(2024, 9, 5), 0)
+
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_SHA1_OK",
+            head_sha="sha1",
+            name="lint",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 2),
+            gh_completed_at=_dt(2024, 9, 2),
+        )
+
+        rebuild_queue_windows_for_ruleset(pr=pr, rule_set=self.rules, as_of=_dt(2024, 9, 7))
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rules).order_by("from_ts"))
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].from_ts, _dt(2024, 9, 2))
+        # Legacy behavior: revision to_ts is not itself a boundary unless another
+        # event occurs there, so this window closes at the next evaluated boundary
+        # (as_of in this test).
+        self.assertEqual(windows[0].to_ts, _dt(2024, 9, 7))

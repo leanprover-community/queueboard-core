@@ -308,68 +308,107 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
 
         return windows
 
-    # CI-gated rulesets: build windows from a combined event timeline and evaluate
-    # rules (including CI and PRRevision) at each boundary.
-    # Collect timeline events up front for incremental state updates.
+    # CI-gated rulesets: preload revisions/CI snapshots once, then evaluate queue
+    # membership incrementally at each boundary.
     closed_ts = pr.closed_at or pr.merged_at
+    required_ci = sorted({_normalize_label(name) for name in (rules.required_ci_contexts or set()) if _normalize_label(name)})
 
-    # Collect boundary times where queue membership may change:
-    # - PR creation
-    # - Timeline events (labels/draft/open/closed)
-    # - Revision boundaries (from_ts)
-    # - CI snapshots for required contexts
-    boundary_times: set[datetime] = set()
-    boundary_times.add(t0)
-    boundary_times.add(as_of)
+    revisions = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id"))
+    has_revisions = bool(revisions)
 
+    check_run_qs = CheckRun.objects.filter(
+        pull_request=pr,
+        gh_completed_at__isnull=False,
+        gh_completed_at__gte=t0,
+        gh_completed_at__lte=as_of,
+    ).only("id", "name", "head_sha", "status", "conclusion", "gh_completed_at", "gh_started_at")
+    status_qs = StatusContext.objects.filter(
+        pull_request=pr,
+        gh_created_at__gte=t0,
+        gh_created_at__lte=as_of,
+    ).only("id", "name", "head_sha", "state", "gh_created_at")
+
+    if required_ci:
+        ctx_q = models.Q()
+        for ctx in required_ci:
+            ctx_q |= models.Q(name__icontains=ctx)
+        check_run_qs = check_run_qs.filter(ctx_q)
+        status_qs = status_qs.filter(ctx_q)
+    else:
+        check_run_qs = check_run_qs.none()
+        status_qs = status_qs.none()
+
+    check_runs = list(check_run_qs.order_by("gh_completed_at", "id"))
+    statuses = list(status_qs.order_by("gh_created_at", "id"))
+
+    # Collect boundary times where queue membership may change.
+    boundary_times: set[datetime] = {t0, as_of}
     for ev in timeline_events:
         if ev.occurred_at >= t0 and ev.occurred_at <= as_of:
             boundary_times.add(ev.occurred_at)
-
-    # Revision boundaries
-    for rev in PRRevision.objects.filter(pull_request=pr):
+    for rev in revisions:
         if rev.from_ts >= t0 and rev.from_ts <= as_of:
             boundary_times.add(rev.from_ts)
-
-    # CI snapshot boundaries for required contexts
-    required_ci = rules.required_ci_contexts or set()
-    if required_ci:
-        for ctx_name in required_ci:
-            ctx_norm = _normalize_label(ctx_name)
-            # CheckRun completions
-            for ts in CheckRun.objects.filter(
-                pull_request=pr,
-                name__icontains=ctx_norm,
-                gh_completed_at__isnull=False,
-                gh_completed_at__gte=t0,
-                gh_completed_at__lte=as_of,
-            ).values_list("gh_completed_at", flat=True):
-                boundary_times.add(ts)
-            # StatusContext creation
-            for ts in StatusContext.objects.filter(
-                pull_request=pr,
-                name__icontains=ctx_norm,
-                gh_created_at__gte=t0,
-                gh_created_at__lte=as_of,
-            ).values_list("gh_created_at", flat=True):
-                boundary_times.add(ts)
-
-    # If we know the PR was closed/merged at a time not represented by a timeline
-    # event, include that timestamp as a boundary as well.
+    for cr in check_runs:
+        if cr.gh_completed_at is not None:
+            boundary_times.add(cr.gh_completed_at)
+    for sc in statuses:
+        boundary_times.add(sc.gh_created_at)
     if closed_ts is not None and closed_ts >= t0 and closed_ts <= as_of:
         boundary_times.add(closed_ts)
 
     times = sorted(boundary_times)
 
-    # Walk the boundary times, updating timeline-derived state incrementally and
-    # evaluating CI and rules at each step.
+    # Latest CI status maps:
+    # - global: when revisions are absent (legacy fallback).
+    # - per-head: when revisions are present (head-aware evaluation).
+    global_ctx_latest: dict[str, dict[str, tuple[datetime, bool, str]]] = {ctx: {} for ctx in required_ci}
+    head_ctx_latest: dict[str, dict[str, dict[str, tuple[datetime, bool, str]]]] = {}
+
+    def _merge_latest_for_ctx(
+        latest: dict[str, tuple[datetime, bool, str]],
+        *,
+        name: str,
+        ts: datetime,
+        ok: bool,
+        source: str,
+    ) -> None:
+        # Match existing behavior from _latest_ci_statuses_for_fragment:
+        # latest timestamp wins; if tied, prefer CheckRun over StatusContext.
+        cur = latest.get(name)
+        if cur is None:
+            latest[name] = (ts, ok, source)
+            return
+        cur_ts, _, cur_source = cur
+        if ts > cur_ts or (ts == cur_ts and source == "check_run" and cur_source == "status_context"):
+            latest[name] = (ts, ok, source)
+
+    def _apply_ci_snapshot(*, name: str | None, ts: datetime | None, head_sha: str | None, ok: bool, source: str) -> None:
+        if ts is None:
+            return
+        name_norm = _normalize_label(name)
+        if not name_norm:
+            return
+        matched = [ctx for ctx in required_ci if ctx in name_norm]
+        if not matched:
+            return
+        for ctx in matched:
+            _merge_latest_for_ctx(global_ctx_latest[ctx], name=name_norm, ts=ts, ok=ok, source=source)
+        if head_sha:
+            per_head = head_ctx_latest.setdefault(head_sha, {ctx: {} for ctx in required_ci})
+            for ctx in matched:
+                _merge_latest_for_ctx(per_head[ctx], name=name_norm, ts=ts, ok=ok, source=source)
+
     windows: List[QueueWindow] = []
     event_idx = 0
+    rev_idx = 0
+    current_rev: PRRevision | None = None
+    cr_idx = 0
+    sc_idx = 0
     current_on: Optional[bool] = None
     current_start: Optional[datetime] = None
 
     for t in times:
-        # Apply all timeline events up to and including this boundary.
         while event_idx < len(timeline_events) and timeline_events[event_idx].occurred_at <= t:
             ev = timeline_events[event_idx]
             event_idx += 1
@@ -390,11 +429,76 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             elif ev.type == PRTimelineEventType.CLOSED:
                 state.is_open = False
 
-        # Ensure closure is honoured even if we never saw a CLOSED event.
+        while rev_idx < len(revisions) and revisions[rev_idx].from_ts <= t:
+            current_rev = revisions[rev_idx]
+            rev_idx += 1
+
+        while (
+            cr_idx < len(check_runs)
+            and check_runs[cr_idx].gh_completed_at is not None
+            and check_runs[cr_idx].gh_completed_at <= t
+        ):
+            cr = check_runs[cr_idx]
+            cr_idx += 1
+            _apply_ci_snapshot(
+                name=cr.name,
+                ts=cr.gh_completed_at or cr.gh_started_at,
+                head_sha=cr.head_sha,
+                ok=_check_run_ok(cr),
+                source="check_run",
+            )
+
+        while sc_idx < len(statuses) and statuses[sc_idx].gh_created_at <= t:
+            sc = statuses[sc_idx]
+            sc_idx += 1
+            _apply_ci_snapshot(
+                name=sc.name,
+                ts=sc.gh_created_at,
+                head_sha=sc.head_sha,
+                ok=_status_context_ok(sc),
+                source="status_context",
+            )
+
         if closed_ts is not None and t >= closed_ts:
             state.is_open = False
 
-        ci_ok = _ci_required_contexts_ok(pr, rules, t)
+        if not required_ci:
+            ci_ok = True
+        else:
+            head_sha: str | None = None
+            if has_revisions:
+                if current_rev is not None and (current_rev.to_ts is None or t < current_rev.to_ts):
+                    head_sha = current_rev.head_sha or None
+                if not head_sha:
+                    ci_ok = False
+                    new_on = rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=ci_ok)
+                    if current_on is None:
+                        current_on = new_on
+                        if new_on:
+                            current_start = t
+                        continue
+                    if current_on and not new_on:
+                        if current_start is not None and current_start < t:
+                            windows.append((current_start, t))
+                        current_start = None
+                    elif not current_on and new_on:
+                        current_start = t
+                    current_on = new_on
+                    continue
+
+            ci_ok = True
+            for ctx in required_ci:
+                if has_revisions:
+                    statuses_for_ctx = (head_ctx_latest.get(head_sha or "", {}) or {}).get(ctx, {})
+                else:
+                    statuses_for_ctx = global_ctx_latest.get(ctx, {})
+                if not statuses_for_ctx:
+                    ci_ok = False
+                    break
+                if not all(ok for _, ok, _ in statuses_for_ctx.values()):
+                    ci_ok = False
+                    break
+
         new_on = rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=ci_ok)
 
         if current_on is None:
