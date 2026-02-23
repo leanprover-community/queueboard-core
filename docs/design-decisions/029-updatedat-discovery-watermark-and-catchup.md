@@ -48,9 +48,11 @@
   2. Choose mode:
      - continuation when both continuation cutoff and cursor exist,
      - otherwise fresh.
-  3. Compute effective cutoff:
-     - fresh: base lookback cutoff, optionally pulled older via watermark overlap,
-     - continuation: fixed persisted continuation cutoff.
+  3. Compute cutoff(s):
+     - fresh mode computes:
+       - `base_cutoff` (target boundary): current sliding-window cutoff,
+       - `scan_start_cutoff` (query start): `min(base_cutoff, last_successful_cutoff_at - overlap)`.
+     - continuation mode uses fixed persisted continuation cutoff.
   4. Run structured discovery.
   5. Persist state transition:
      - complete scan (`reached_cutoff` or no `next_cursor`): `mark_success`,
@@ -76,6 +78,7 @@
 - Watermark invariant:
   - `last_successful_cutoff_at` represents fully scanned coverage only.
   - It must not advance on partial discovery progress.
+  - In fresh mode, successful completion advances watermark to `base_cutoff` (the target boundary), not to older overlap-expanded scan start.
 - Continuation invariant:
   - continuation cutoff is fixed for a continuation sequence.
 - Serialization invariant:
@@ -121,6 +124,12 @@
 - Trade-offs:
   - more state complexity in repo sync task,
   - intentional duplicate work in overlap/recovery paths to preserve correctness.
+
+## Implementation Nuance
+- Overlap is a scan-safety mechanism only.
+  - It may expand where a fresh scan starts.
+  - It must not anchor successful watermark advancement to an ever-older cutoff.
+- If watermark advancement incorrectly uses overlap-expanded scan start, discovery lag can drift upward despite successful runs; the implemented design avoids this by advancing to fresh `base_cutoff`.
 
 ## Out of Scope
 - Queue isolation / dedicated GitHub queue strategy changes.

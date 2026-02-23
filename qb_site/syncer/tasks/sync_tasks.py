@@ -547,7 +547,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         tk = int(timelineK) if isinstance(timelineK, int) else int(getattr(settings, "SYNCER_TIMELINE_K_DEFAULT", 150))
         cm = int(commitsM) if isinstance(commitsM, int) else int(getattr(settings, "SYNCER_COMMITS_M_DEFAULT", 15))
 
-        def _compute_fresh_cutoff() -> timezone.datetime:
+        def _compute_base_fresh_cutoff() -> timezone.datetime:
             if since_iso:
                 base_cutoff = _parse_iso_awareness(since_iso) or timezone.now()
             else:
@@ -555,6 +555,9 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 base_cutoff = timezone.now() - timedelta(minutes=lookback_min)
                 if timezone.is_naive(base_cutoff):
                     base_cutoff = timezone.make_aware(base_cutoff)
+            return base_cutoff
+
+        def _compute_fresh_scan_start_cutoff(*, base_cutoff: datetime) -> timezone.datetime:
             overlap_seconds = int(getattr(settings, "SYNCER_DISCOVERY_OVERLAP_SECONDS", 300))
             if state.last_successful_cutoff_at is not None:
                 watermark_overlap_cutoff = state.last_successful_cutoff_at - timedelta(seconds=max(0, overlap_seconds))
@@ -564,14 +567,18 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         # Determine mode/cutoff.
         mode: str
         discovery_after: Optional[str]
+        success_cutoff: datetime
         if state.continuation_cutoff_at and state.continuation_cursor:
             mode = "continuation"
             effective_cutoff = state.continuation_cutoff_at
             discovery_after = state.continuation_cursor
+            success_cutoff = effective_cutoff
         else:
             mode = "fresh"
-            effective_cutoff = _compute_fresh_cutoff()
+            fresh_base_cutoff = _compute_base_fresh_cutoff()
+            effective_cutoff = _compute_fresh_scan_start_cutoff(base_cutoff=fresh_base_cutoff)
             discovery_after = None
+            success_cutoff = fresh_base_cutoff
 
         cutoff_iso = effective_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
@@ -598,7 +605,9 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             state.continuation_started_at = None
             state.save(update_fields=["continuation_cutoff_at", "continuation_cursor", "continuation_started_at", "updated_at"])
             mode = "fresh_recovery"
-            effective_cutoff = _compute_fresh_cutoff()
+            fresh_base_cutoff = _compute_base_fresh_cutoff()
+            effective_cutoff = _compute_fresh_scan_start_cutoff(base_cutoff=fresh_base_cutoff)
+            success_cutoff = fresh_base_cutoff
             cutoff_iso = effective_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
             discovery = client.discover_changed_pr_numbers(
                 owner=repo.owner,
@@ -629,7 +638,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
 
         scan_complete = bool(discovery.reached_cutoff or discovery.next_cursor is None)
         if scan_complete:
-            state.mark_success(cutoff_at=effective_cutoff)
+            state.mark_success(cutoff_at=success_cutoff)
         else:
             state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor)
 
