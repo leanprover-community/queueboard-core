@@ -547,15 +547,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         tk = int(timelineK) if isinstance(timelineK, int) else int(getattr(settings, "SYNCER_TIMELINE_K_DEFAULT", 150))
         cm = int(commitsM) if isinstance(commitsM, int) else int(getattr(settings, "SYNCER_COMMITS_M_DEFAULT", 15))
 
-        # Determine mode/cutoff.
-        mode: str
-        discovery_after: Optional[str]
-        if state.continuation_cutoff_at and state.continuation_cursor:
-            mode = "continuation"
-            effective_cutoff = state.continuation_cutoff_at
-            discovery_after = state.continuation_cursor
-        else:
-            mode = "fresh"
+        def _compute_fresh_cutoff() -> timezone.datetime:
             if since_iso:
                 base_cutoff = _parse_iso_awareness(since_iso) or timezone.now()
             else:
@@ -566,20 +558,56 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             overlap_seconds = int(getattr(settings, "SYNCER_DISCOVERY_OVERLAP_SECONDS", 300))
             if state.last_successful_cutoff_at is not None:
                 watermark_overlap_cutoff = state.last_successful_cutoff_at - timedelta(seconds=max(0, overlap_seconds))
-                effective_cutoff = min(base_cutoff, watermark_overlap_cutoff)
-            else:
-                effective_cutoff = base_cutoff
+                return min(base_cutoff, watermark_overlap_cutoff)
+            return base_cutoff
+
+        # Determine mode/cutoff.
+        mode: str
+        discovery_after: Optional[str]
+        if state.continuation_cutoff_at and state.continuation_cursor:
+            mode = "continuation"
+            effective_cutoff = state.continuation_cutoff_at
+            discovery_after = state.continuation_cursor
+        else:
+            mode = "fresh"
+            effective_cutoff = _compute_fresh_cutoff()
             discovery_after = None
 
         cutoff_iso = effective_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
-        discovery = client.discover_changed_pr_numbers(
-            owner=repo.owner,
-            name=repo.name,
-            since_iso=cutoff_iso,
-            states=st,
-            limit=lim,
-            after=discovery_after,
-        )
+        try:
+            discovery = client.discover_changed_pr_numbers(
+                owner=repo.owner,
+                name=repo.name,
+                since_iso=cutoff_iso,
+                states=st,
+                limit=lim,
+                after=discovery_after,
+            )
+        except Exception:
+            if mode != "continuation":
+                raise
+            # Stale/corrupt continuation cursors should fail-safe: clear and restart fresh.
+            log.warning(
+                "sync_repo_since: continuation discovery failed, resetting continuation repo=%s/%s",
+                repo.owner,
+                repo.name,
+                exc_info=True,
+            )
+            state.continuation_cutoff_at = None
+            state.continuation_cursor = None
+            state.continuation_started_at = None
+            state.save(update_fields=["continuation_cutoff_at", "continuation_cursor", "continuation_started_at", "updated_at"])
+            mode = "fresh_recovery"
+            effective_cutoff = _compute_fresh_cutoff()
+            cutoff_iso = effective_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+            discovery = client.discover_changed_pr_numbers(
+                owner=repo.owner,
+                name=repo.name,
+                since_iso=cutoff_iso,
+                states=st,
+                limit=lim,
+                after=None,
+            )
         numbers = discovery.numbers
 
         # Snapshot after discovery

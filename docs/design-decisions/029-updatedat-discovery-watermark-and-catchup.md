@@ -163,7 +163,7 @@ Status: Implemented on 2026-02-23 (awaiting full-battery validation).
 - Add debounce/guard parity with existing rate defer scheduling.
 
 ### Chunk 5: Observability
-Status: Implemented on 2026-02-23 (awaiting full-battery validation).
+Status: Completed on 2026-02-23.
 - Extend convergence/metrics snapshots with:
   - discovery lag,
   - continuation active flag,
@@ -171,7 +171,7 @@ Status: Implemented on 2026-02-23 (awaiting full-battery validation).
 - Add admin display for quick diagnosis.
 
 ### Chunk 6: Tests and failure-path hardening
-Status: Not started.
+Status: Implemented on 2026-02-23 (awaiting full-battery validation).
 - Outage recovery test:
   - no sync for > lookback; recovery eventually enqueues missed updates.
 - High churn test:
@@ -267,6 +267,21 @@ Status: Not started.
   - Updated convergence collector `qb_site/syncer/tasks/collect_convergence.py` to populate discovery diagnostics from `RepoDiscoveryState`.
   - Updated admin display in `qb_site/syncer/admin.py` to include the new discovery observability fields and filter by continuation-active state.
   - Extended convergence task test coverage in `qb_site/syncer/tests/tasks/test_collect_convergence_task.py` for the new fields.
+  - Local verification done:
+    - `uv run ruff format` on changed files,
+    - `uv run ruff check` on changed files.
+  - DB-backed tests were not run in this sandbox; pending user full-battery run.
+- 2026-02-23:
+  - User-reported full-battery test run: passing for Chunk 5 changes.
+- 2026-02-23:
+  - Implemented Chunk 6 failure-path hardening in `qb_site/syncer/tasks/sync_tasks.py`:
+    - if continuation discovery fails (for example stale/invalid cursor), clear continuation state and retry once in fresh mode (`mode="fresh_recovery"`),
+    - preserves watermark safety invariant (no advancement on incomplete scans).
+  - Added task state-machine test coverage in `qb_site/syncer/tests/tasks/test_sync_repo_discovery_state_machine.py`:
+    - continuation across multiple runs eventually advances watermark and clears continuation state,
+    - partial/incomplete runs do not advance watermark,
+    - overlap boundary behavior uses `last_successful_cutoff_at - overlap`,
+    - invalid continuation cursor falls back to fresh recovery.
   - Local verification done:
     - `uv run ruff format` on changed files,
     - `uv run ruff check` on changed files.
