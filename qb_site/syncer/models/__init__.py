@@ -11,3 +11,4 @@ from .commit_history_harvest import CommitHistoryHarvest  # noqa: F401
 from .metrics import SyncerMetricsSnapshot  # noqa: F401
 from .convergence_snapshot import SyncerConvergenceSnapshot  # noqa: F401
 from .repo_backfill_cursor import RepoBackfillCursor  # noqa: F401
+from .repo_discovery_state import RepoDiscoveryState  # noqa: F401

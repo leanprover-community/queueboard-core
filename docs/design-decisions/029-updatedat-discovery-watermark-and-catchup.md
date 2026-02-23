@@ -141,24 +141,29 @@
 ## Chunked Implementation Plan
 
 ### Chunk 1: Model + migration + read/write scaffolding
+Status: Completed on 2026-02-23.
 - Add `RepoDiscoveryState` model and migration.
 - Register in admin for visibility (read-only fields where appropriate).
 - Add minimal model tests and import wiring.
 
 ### Chunk 2: Client discovery contract
+Status: Not started.
 - Implement structured discovery helper returning progress metadata (`next_cursor`, `reached_cutoff`, `hit_limit`).
 - Add unit tests for cutoff, limit, and cursor behavior.
 
 ### Chunk 3: Task mode/state transitions
+Status: Not started.
 - Update `sync_repo_since_task` to use fresh/continuation modes.
 - Persist continuation state and watermark transitions with strict invariants.
 - Keep current lock and rate-limit defer paths.
 
 ### Chunk 4: Continuation scheduling for non-rate cap exhaustion
+Status: Not started.
 - Ensure continuation is scheduled when local discovery cap is hit before cutoff completion.
 - Add debounce/guard parity with existing rate defer scheduling.
 
 ### Chunk 5: Observability
+Status: Not started.
 - Extend convergence/metrics snapshots with:
   - discovery lag,
   - continuation active flag,
@@ -166,6 +171,7 @@
 - Add admin display for quick diagnosis.
 
 ### Chunk 6: Tests and failure-path hardening
+Status: Not started.
 - Outage recovery test:
   - no sync for > lookback; recovery eventually enqueues missed updates.
 - High churn test:
@@ -174,6 +180,25 @@
   - watermark does not advance on incomplete runs.
 - Boundary test:
   - overlap prevents equality/race misses around cutoff timestamps.
+
+## Progress Notes
+- 2026-02-23:
+  - Implemented `RepoDiscoveryState` model in `qb_site/syncer/models/repo_discovery_state.py` with:
+    - `last_successful_cutoff_at`,
+    - `continuation_cutoff_at`,
+    - `continuation_cursor`,
+    - `continuation_started_at`,
+    - `last_attempted_at`,
+    - `last_successful_at`,
+    - helper methods `mark_attempted`, `set_continuation`, and `mark_success`.
+  - Generated migration `qb_site/syncer/migrations/0028_repodiscoverystate.py`.
+  - Wired model export in `qb_site/syncer/models/__init__.py`.
+  - Added read-only Django admin registration `RepoDiscoveryStateAdmin` in `qb_site/syncer/admin.py`.
+  - Added model tests in `qb_site/syncer/tests/models/test_repo_discovery_state.py`.
+  - Local verification done:
+    - `uv run ruff format` on changed files,
+    - `uv run ruff check` on changed files.
+  - Django test execution in sandbox was blocked by unavailable PostgreSQL; tests were run and confirmed passing by user.
 
 ## Validation Plan
 - Unit tests:

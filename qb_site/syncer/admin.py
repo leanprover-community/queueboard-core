@@ -20,6 +20,7 @@ from .models import (
     SyncerMetricsSnapshot,
     SyncerConvergenceSnapshot,
     RepoBackfillCursor,
+    RepoDiscoveryState,
     CommitHistoryHarvest,
     CIShaFetchState,
 )
@@ -986,6 +987,39 @@ class RepoBackfillCursorAdmin(ReadOnlyAdmin):
 
     def created_cursor_short(self, obj: RepoBackfillCursor) -> str:  # pragma: no cover - simple formatting
         cur = obj.created_cursor or ""
+        return cur[:16] + "…" if len(cur) > 16 else cur
+
+
+@admin.register(RepoDiscoveryState)
+class RepoDiscoveryStateAdmin(ReadOnlyAdmin):
+    list_display = (
+        "repository",
+        "last_successful_cutoff_at",
+        "continuation_cutoff_at",
+        "continuation_cursor_short",
+        "continuation_started_at",
+        "last_attempted_at",
+        "last_successful_at",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = ("repository", "last_successful_at", "last_attempted_at")
+    search_fields = ("repository__owner", "repository__name")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "last_successful_cutoff_at",
+        "continuation_cutoff_at",
+        "continuation_cursor",
+        "continuation_started_at",
+        "last_attempted_at",
+        "last_successful_at",
+        "created_at",
+        "updated_at",
+    )
+
+    def continuation_cursor_short(self, obj: RepoDiscoveryState) -> str:  # pragma: no cover - simple formatting
+        cur = obj.continuation_cursor or ""
         return cur[:16] + "…" if len(cur) > 16 else cur
 
 
