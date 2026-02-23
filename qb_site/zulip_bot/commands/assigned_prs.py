@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from datetime import timezone
 
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
@@ -83,8 +84,8 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
         lines.append("No assigned PR data is available for your configured repositories.")
         return "\n".join(lines)
 
-    now_iso = _now_utc_iso()
-    lines.append(f"Generated at `{now_iso}`.")
+    now_unix = _now_utc_unix()
+    lines.append(f"Generated at <time:{now_unix}>.")
 
     any_assigned = False
     for repo_label, report in reports:
@@ -115,17 +116,43 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
 
 def _render_items(items: tuple[ReviewerAttentionItem, ...]) -> list[str]:
     lines: list[str] = []
-    for item in sorted(items, key=lambda entry: entry.pr_number):
+    on_queue_items = tuple(
+        sorted(
+            (item for item in items if item.is_on_queue),
+            key=lambda entry: (
+                -(entry.days_on_queue_since_assignment or -1),
+                entry.pr_number,
+            ),
+        )
+    )
+    off_queue_items = tuple(sorted((item for item in items if not item.is_on_queue), key=lambda entry: entry.pr_number))
+
+    lines.extend(_render_item_group(title=f"On Queue ({len(on_queue_items)})", items=on_queue_items, include_consecutive=True))
+    lines.extend(
+        _render_item_group(title=f"Not On Queue ({len(off_queue_items)})", items=off_queue_items, include_consecutive=False)
+    )
+    return lines
+
+
+def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], include_consecutive: bool) -> list[str]:
+    lines: list[str] = [f"```spoiler {title}"]
+    if not items:
+        lines.append("- None.")
+        lines.append("```")
+        return lines
+
+    for item in items:
         lines.append(f"- PR #{item.pr_number}: {item.pr_title}")
-        lines.append(f"  - On queue now: {'yes' if item.is_on_queue else 'no'}")
-        if item.days_on_queue_since_assignment is None:
-            lines.append("  - Consecutive queue age since assignment: unavailable")
-        else:
-            lines.append(f"  - Consecutive queue age since assignment: {item.days_on_queue_since_assignment} day(s)")
+        if include_consecutive:
+            if item.days_on_queue_since_assignment is None:
+                lines.append("  - Consecutive queue age since assignment: unavailable")
+            else:
+                consecutive_seconds = int(item.days_on_queue_since_assignment) * 24 * 60 * 60
+                lines.append(f"  - Consecutive queue age since assignment: {_format_duration(consecutive_seconds)}")
         if item.total_queue_days is None:
             lines.append("  - Total queue time: unavailable")
         else:
-            lines.append(f"  - Total queue time: {item.total_queue_days} day(s) ({item.total_queue_seconds} seconds)")
+            lines.append(f"  - Total queue time: {_format_duration(item.total_queue_seconds or 0)}")
         if item.missing_assignment_timestamp:
             lines.append("  - Note: missing assignment timestamp; policy flags suppressed")
         flags: list[str] = []
@@ -134,7 +161,34 @@ def _render_items(items: tuple[ReviewerAttentionItem, ...]) -> list[str]:
         if item.needs_auto_unassign:
             flags.append("needs_auto_unassign")
         lines.append(f"  - Flags: {', '.join(flags) if flags else 'none'}")
+    lines.append("```")
     return lines
+
+
+def _format_duration(total_seconds: int) -> str:
+    if total_seconds < 0:
+        total_seconds = 0
+    delta = timedelta(seconds=int(total_seconds))
+    seconds = int(delta.total_seconds())
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+
+    # Readability thresholds:
+    # - >= 5 days: day precision
+    # - [1 day, 5 days): days + hours
+    # - [1 hour, 1 day): hours + minutes
+    # - [1 minute, 1 hour): minutes + seconds
+    # - < 1 minute: seconds
+    if days >= 5:
+        return f"{days}d"
+    if days >= 1:
+        return f"{days}d {hours}h"
+    if hours >= 1:
+        return f"{hours}h {minutes}m"
+    if minutes >= 1:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
@@ -170,7 +224,5 @@ def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _now_utc_iso() -> str:
-    from datetime import datetime
-
-    return datetime.now(timezone.utc).isoformat()
+def _now_utc_unix() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
