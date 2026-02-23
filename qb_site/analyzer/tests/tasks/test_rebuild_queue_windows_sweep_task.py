@@ -70,7 +70,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
     def test_skips_when_windows_already_built_for_version(self) -> None:
         pr = self._mk_pr(2)
         PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
-        state = PRRevisionBuildState.objects.create(
+        PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
             windows_built_revision_version=2,
@@ -140,3 +140,89 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertEqual(state.windows_built_revision_version, state.revision_version)
         self.assertIsNotNone(state.windows_built_at)
         self.assertGreater(state.windows_built_at, old_built_at)
+
+    def test_rollup_backfill_on_inactive_ruleset_does_not_trigger_rebuild(self) -> None:
+        pr = self._mk_pr(5)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now()
+        state = PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=3,
+            windows_built_revision_version=3,
+            windows_built_at=built_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        inactive = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            is_active=False,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=inactive,
+            from_ts=pr.gh_created_at + timezone.timedelta(minutes=1),
+            to_ts=None,
+            cycle_index=0,
+            window_count=0,
+            first_on_queue_ts=None,
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertEqual(res["windows_rebuilt"], 0)
+        state.refresh_from_db()
+        self.assertEqual(state.windows_built_revision_version, 3)
+        self.assertEqual(state.windows_built_at, built_at)
+
+    def test_windows_built_at_equal_ruleset_updated_at_is_not_stale(self) -> None:
+        pr = self._mk_pr(6)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now()
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=4,
+            windows_built_revision_version=4,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertEqual(res["windows_rebuilt"], 0)
+
+    def test_missing_build_state_is_initialized_then_skipped_next_sweep(self) -> None:
+        pr = self._mk_pr(7)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        res1 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res1["prs_checked"], 1)
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        self.assertEqual(state.windows_built_revision_version, state.revision_version)
+        self.assertIsNotNone(state.windows_built_at)
+
+        res2 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+        self.assertEqual(res2["prs_checked"], 0)
+        self.assertEqual(res2["windows_rebuilt"], 0)
