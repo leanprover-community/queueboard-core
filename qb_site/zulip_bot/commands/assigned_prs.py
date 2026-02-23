@@ -5,6 +5,7 @@ from datetime import timezone
 
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
 from core.models import ReviewerPreference, User
+from syncer.models import PRLabel
 from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -105,7 +106,8 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
             continue
 
         any_assigned = True
-        lines.extend(_render_items(report.items))
+        maintainer_merge_pr_numbers = _maintainer_merge_pr_numbers(report=report)
+        lines.extend(_render_items(items=report.items, maintainer_merge_pr_numbers=maintainer_merge_pr_numbers))
 
     if not any_assigned:
         lines.append("")
@@ -114,11 +116,20 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
     return "\n".join(lines)
 
 
-def _render_items(items: tuple[ReviewerAttentionItem, ...]) -> list[str]:
+def _render_items(*, items: tuple[ReviewerAttentionItem, ...], maintainer_merge_pr_numbers: set[int]) -> list[str]:
     lines: list[str] = []
+    maintainer_merged_items = tuple(
+        sorted(
+            (item for item in items if item.is_on_queue and int(item.pr_number) in maintainer_merge_pr_numbers),
+            key=lambda entry: (
+                -(entry.days_on_queue_since_assignment or -1),
+                entry.pr_number,
+            ),
+        )
+    )
     on_queue_items = tuple(
         sorted(
-            (item for item in items if item.is_on_queue),
+            (item for item in items if item.is_on_queue and int(item.pr_number) not in maintainer_merge_pr_numbers),
             key=lambda entry: (
                 -(entry.days_on_queue_since_assignment or -1),
                 entry.pr_number,
@@ -128,6 +139,13 @@ def _render_items(items: tuple[ReviewerAttentionItem, ...]) -> list[str]:
     off_queue_items = tuple(sorted((item for item in items if not item.is_on_queue), key=lambda entry: entry.pr_number))
 
     lines.extend(_render_item_group(title=f"On Queue ({len(on_queue_items)})", items=on_queue_items, include_consecutive=True))
+    lines.extend(
+        _render_item_group(
+            title=f"Maintainer Merged ({len(maintainer_merged_items)})",
+            items=maintainer_merged_items,
+            include_consecutive=True,
+        )
+    )
     lines.extend(
         _render_item_group(title=f"Not On Queue ({len(off_queue_items)})", items=off_queue_items, include_consecutive=False)
     )
@@ -226,3 +244,16 @@ def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
 
 def _now_utc_unix() -> int:
     return int(datetime.now(timezone.utc).timestamp())
+
+
+def _maintainer_merge_pr_numbers(*, report: ReviewerAttentionReport) -> set[int]:
+    pr_numbers = [int(item.pr_number) for item in report.items if item.is_on_queue]
+    if not pr_numbers:
+        return set()
+    return set(
+        PRLabel.objects.filter(
+            pull_request__repository_id=report.repository_id,
+            pull_request__number__in=pr_numbers,
+            label_def__name__iexact="maintainer-merge",
+        ).values_list("pull_request__number", flat=True)
+    )
