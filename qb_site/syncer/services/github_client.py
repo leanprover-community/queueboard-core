@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
@@ -269,6 +270,7 @@ class GitHubClient:
         limit: int = 50,
         per_page: int = 100,
         max_pages: Optional[int] = None,
+        after: Optional[str] = None,
     ) -> list[int]:
         """Enumerate PR numbers updated on or after ``since_iso``.
 
@@ -279,15 +281,56 @@ class GitHubClient:
         - ``states`` defaults to ["OPEN"]. Pass e.g. ("OPEN","MERGED","CLOSED") to broaden.
         - Returns numbers in descending updatedAt order.
         """
+        result = self.discover_changed_pr_numbers(
+            owner=owner,
+            name=name,
+            since_iso=since_iso,
+            states=states,
+            limit=limit,
+            per_page=per_page,
+            max_pages=max_pages,
+            after=after,
+        )
+        return result.numbers
+
+    @dataclass
+    class ChangedPRDiscoveryResult:
+        numbers: list[int]
+        next_cursor: Optional[str]
+        reached_cutoff: bool
+        hit_limit: bool
+
+    def discover_changed_pr_numbers(
+        self,
+        *,
+        owner: str,
+        name: str,
+        since_iso: str,
+        states: Optional[Sequence[str]] = ("OPEN",),
+        limit: int = 50,
+        per_page: int = 100,
+        max_pages: Optional[int] = None,
+        after: Optional[str] = None,
+    ) -> ChangedPRDiscoveryResult:
+        """Enumerate changed PR numbers with continuation metadata.
+
+        Returns:
+        - ``numbers``: discovered PR numbers in UPDATED_AT DESC order.
+        - ``next_cursor``: cursor to continue from when the scan stopped early.
+        - ``reached_cutoff``: whether ``updatedAt < since_iso`` was encountered.
+        - ``hit_limit``: whether local page/count caps stopped the scan before completion.
+        """
         cutoff = dtparser.isoparse(since_iso)
         if timezone.is_naive(cutoff):
             cutoff = timezone.make_aware(cutoff)
 
         per_page = max(1, min(int(per_page), 100))
         remaining = max(1, int(limit))
-        after: Optional[str] = None
         page_count = 0
         out: list[int] = []
+        next_cursor: Optional[str] = None
+        reached_cutoff = False
+        hit_limit = False
 
         query = (
             "query PRList($owner: String!, $name: String!, $first: Int!, $after: String, $states: [PullRequestState!]) {\n"
@@ -303,11 +346,13 @@ class GitHubClient:
 
         while remaining > 0:
             if max_pages is not None and page_count >= max_pages:
+                hit_limit = True
                 break
+            request_first = min(per_page, remaining)
             variables: Dict[str, Any] = {
                 "owner": owner,
                 "name": name,
-                "first": per_page,
+                "first": request_first,
                 "after": after,
                 "states": list(states) if states else None,
             }
@@ -328,23 +373,41 @@ class GitHubClient:
                     updated = cutoff
                 if updated < cutoff:
                     stop = True
+                    reached_cutoff = True
                     break
                 out.append(int(n.get("number")))
                 remaining -= 1
                 if remaining <= 0:
+                    hit_limit = True
                     break
 
             page_count += 1
-            if remaining <= 0 or stop:
-                break
             page = conn.get("pageInfo") or {}
-            if not page.get("hasNextPage"):
+            page_has_next = bool(page.get("hasNextPage"))
+            page_end_cursor = page.get("endCursor")
+
+            if stop:
                 break
-            after = page.get("endCursor")
+            if remaining <= 0:
+                next_cursor = page_end_cursor if page_has_next else None
+                break
+            if not page_has_next:
+                break
+            after = page_end_cursor
             if not after:
                 break
+            next_cursor = after
 
-        return out
+        if reached_cutoff:
+            next_cursor = None
+            hit_limit = False
+
+        return self.ChangedPRDiscoveryResult(
+            numbers=out,
+            next_cursor=next_cursor,
+            reached_cutoff=reached_cutoff,
+            hit_limit=hit_limit,
+        )
 
     def get_prs_created_page(
         self,

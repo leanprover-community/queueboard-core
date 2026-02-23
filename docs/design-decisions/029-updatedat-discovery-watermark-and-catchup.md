@@ -147,7 +147,7 @@ Status: Completed on 2026-02-23.
 - Add minimal model tests and import wiring.
 
 ### Chunk 2: Client discovery contract
-Status: Not started.
+Status: Completed on 2026-02-23.
 - Implement structured discovery helper returning progress metadata (`next_cursor`, `reached_cutoff`, `hit_limit`).
 - Add unit tests for cutoff, limit, and cursor behavior.
 
@@ -199,6 +199,25 @@ Status: Not started.
     - `uv run ruff format` on changed files,
     - `uv run ruff check` on changed files.
   - Django test execution in sandbox was blocked by unavailable PostgreSQL; tests were run and confirmed passing by user.
+- 2026-02-23:
+  - Implemented structured discovery API in `qb_site/syncer/services/github_client.py`:
+    - new method `discover_changed_pr_numbers(...)` returning:
+      - `numbers`,
+      - `next_cursor`,
+      - `reached_cutoff`,
+      - `hit_limit`.
+    - supports continuation input via `after=...`.
+  - Kept backward compatibility by making `get_changed_pr_numbers(...)` delegate to `discover_changed_pr_numbers(...)` and return only `numbers`.
+  - Updated pagination behavior to avoid mid-page truncation by requesting `first=min(per_page, remaining)` so continuation via `endCursor` is safe.
+  - Added client tests in `qb_site/syncer/tests/client/test_github_client.py` for:
+    - cutoff stop semantics (`reached_cutoff`),
+    - limit stop semantics (`hit_limit` + `next_cursor`),
+    - continuation start cursor (`after`) and `max_pages` behavior,
+    - backward-compatible number-only method behavior remains covered.
+  - Local verification done:
+    - `uv run ruff format` on changed files,
+    - `uv run ruff check` on changed files,
+    - `uv run python qb_site/manage.py test syncer.tests.client.test_github_client` (passes).
 
 ## Validation Plan
 - Unit tests:

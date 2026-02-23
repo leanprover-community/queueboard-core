@@ -163,3 +163,132 @@ class TestGitHubClient(SimpleTestCase):
             self.assertEqual(nums, [10, 9])
             rl = client.get_last_rate_limit()
             self.assertIsNotNone(rl)
+
+    def test_discover_changed_pr_numbers_returns_cutoff_progress(self) -> None:
+        client = GitHubClient(token="t")
+
+        pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                            "nodes": [
+                                {"number": 7, "updatedAt": "2025-10-20T05:00:00Z", "state": "OPEN"},
+                                {"number": 6, "updatedAt": "2025-10-20T04:00:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            },
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c2"},
+                            "nodes": [
+                                {"number": 5, "updatedAt": "2025-10-19T23:59:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            },
+        ]
+        calls = {"i": 0}
+
+        def fake_execute(_self, q, variables):  # type: ignore[no-redef]
+            idx = calls["i"]
+            calls["i"] = idx + 1
+            return pages[idx]
+
+        with mock.patch.object(GitHubClient, "execute", new=fake_execute):
+            result = client.discover_changed_pr_numbers(
+                owner="o", name="r", since_iso="2025-10-20T00:00:00Z", limit=10, per_page=2
+            )
+
+        self.assertEqual(result.numbers, [7, 6])
+        self.assertTrue(result.reached_cutoff)
+        self.assertFalse(result.hit_limit)
+        self.assertIsNone(result.next_cursor)
+
+    def test_discover_changed_pr_numbers_hit_limit_sets_next_cursor(self) -> None:
+        client = GitHubClient(token="t")
+        captured_first: list[int] = []
+        pages = [
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                            "nodes": [
+                                {"number": 10, "updatedAt": "2025-10-21T01:00:00Z", "state": "OPEN"},
+                                {"number": 9, "updatedAt": "2025-10-21T00:30:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            },
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c2"},
+                            "nodes": [
+                                {"number": 8, "updatedAt": "2025-10-21T00:00:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            },
+        ]
+        calls = {"i": 0}
+
+        def fake_execute(_self, q, variables):  # type: ignore[no-redef]
+            captured_first.append(int(variables["first"]))
+            idx = calls["i"]
+            calls["i"] = idx + 1
+            return pages[idx]
+
+        with mock.patch.object(GitHubClient, "execute", new=fake_execute):
+            result = client.discover_changed_pr_numbers(
+                owner="o", name="r", since_iso="2025-10-20T00:00:00Z", limit=3, per_page=2
+            )
+
+        self.assertEqual(result.numbers, [10, 9, 8])
+        self.assertFalse(result.reached_cutoff)
+        self.assertTrue(result.hit_limit)
+        self.assertEqual(result.next_cursor, "c2")
+        self.assertEqual(captured_first, [2, 1])
+
+    def test_discover_changed_pr_numbers_with_after_and_max_pages(self) -> None:
+        client = GitHubClient(token="t")
+
+        def fake_execute(_self, q, variables):  # type: ignore[no-redef]
+            self.assertEqual(variables["after"], "CUR-START")
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": True, "endCursor": "CUR-NEXT"},
+                            "nodes": [
+                                {"number": 42, "updatedAt": "2025-10-21T01:00:00Z", "state": "OPEN"},
+                            ],
+                        }
+                    }
+                }
+            }
+
+        with mock.patch.object(GitHubClient, "execute", new=fake_execute):
+            result = client.discover_changed_pr_numbers(
+                owner="o",
+                name="r",
+                since_iso="2025-10-20T00:00:00Z",
+                after="CUR-START",
+                per_page=50,
+                max_pages=1,
+            )
+
+        self.assertEqual(result.numbers, [42])
+        self.assertFalse(result.reached_cutoff)
+        self.assertTrue(result.hit_limit)
+        self.assertEqual(result.next_cursor, "CUR-NEXT")
