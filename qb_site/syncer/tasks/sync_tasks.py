@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from celery import shared_task
 from django.db import models
@@ -609,6 +609,29 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
         low_budget = isinstance(remaining, int) and remaining <= threshold
         continuation_scheduled = False
+        continuation_reason: Optional[str] = None
+        continuation_debounce_key: Optional[str] = None
+
+        def _schedule_repo_continuation(*, debounce_key: Optional[str], eta: Optional[datetime]) -> bool:
+            if not debounce_key or eta is None:
+                return False
+            if not debounce_repo_schedule(repo.id, debounce_key):
+                return False
+            try:
+                sig = sync_repo_since_task.s(
+                    repo.id,
+                    since_iso=since_iso,
+                    limit=lim,
+                    states=st,
+                    timelineK=tk,
+                    commitsM=cm,
+                    dry_run=dry_run,
+                )
+                enqueue_with_parent(sig, self.request, eta=eta)
+                return True
+            except Exception:
+                return False
+
         if low_budget:
             # Stop early; schedule a continuation at resetAt + small jitter if possible.
             eta = None
@@ -621,22 +644,11 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                     eta = rdt + timedelta(seconds=5)
                 except Exception:
                     eta = None
-            if not scan_complete and eta is not None and debounce_repo_schedule(repo.id, reset_at):
-                # schedule a continuation with same parameters
-                try:
-                    sig = sync_repo_since_task.s(
-                        repo.id,
-                        since_iso=since_iso,
-                        limit=lim,
-                        states=st,
-                        timelineK=tk,
-                        commitsM=cm,
-                        dry_run=dry_run,
-                    )
-                    enqueue_with_parent(sig, self.request, eta=eta)
-                    continuation_scheduled = True
-                except Exception:
-                    pass
+            if not scan_complete:
+                continuation_debounce_key = reset_at if isinstance(reset_at, str) else None
+                continuation_scheduled = _schedule_repo_continuation(debounce_key=continuation_debounce_key, eta=eta)
+                if continuation_scheduled:
+                    continuation_reason = "low_budget"
         else:
             # Proceed to enqueue per-PR tasks in batches sized by remaining budget.
             batch_max = int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))
@@ -666,8 +678,20 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                     self.request,
                 )
                 enqueued += 1
+
+            # If discovery did not reach cutoff, schedule a continuation even when budget is healthy.
+            if not scan_complete:
+                cap_delay_seconds = int(getattr(settings, "SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS", 5))
+                cap_eta = timezone.now() + timedelta(seconds=max(1, cap_delay_seconds))
+                continuation_debounce_key = f"cap:{cutoff_iso}:{discovery.next_cursor or ''}"
+                continuation_scheduled = _schedule_repo_continuation(
+                    debounce_key=continuation_debounce_key,
+                    eta=cap_eta,
+                )
+                if continuation_scheduled:
+                    continuation_reason = "cap_exhausted"
         log.info(
-            "sync_repo_since: repo=%s/%s mode=%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s complete=%s next_cursor=%s",
+            "sync_repo_since: repo=%s/%s mode=%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s complete=%s next_cursor=%s continuation_scheduled=%s continuation_reason=%s",
             repo.owner,
             repo.name,
             mode,
@@ -678,6 +702,8 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             rl.get("resetAt"),
             scan_complete,
             bool(discovery.next_cursor),
+            continuation_scheduled,
+            continuation_reason,
         )
         return {
             "skipped": False,
@@ -694,6 +720,8 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             "hit_limit": bool(discovery.hit_limit),
             "next_cursor": discovery.next_cursor,
             "continuation_scheduled": continuation_scheduled,
+            "continuation_reason": continuation_reason,
+            "continuation_debounce_key": continuation_debounce_key,
             "batch_max": int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30)),
             "discovery_cost": rl.get("cost") if isinstance(rl, dict) else None,
             "rate_events": rate_events,
