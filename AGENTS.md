@@ -2,8 +2,8 @@
 
 ## Project Structure & Module Organization
 - `src/queueboard/` contains the legacy Python data pipeline: GraphQL queries under `queries/`, HTML assets in `static/`, and scripts like `dashboard.py`, `process.py`, and `suggest_reviewer.py`.
-- `qb_site/` hosts the Django codebase; apps live in `qb_site/{core,syncer,analyzer,api}/` and pick up shared configuration from `qb_site/qb_site/settings/`.
-- `scripts/` provides operational helpers (`gather_stats.sh`, `dashboard.sh`, `download_missing_outdated_PRs.sh`); `test/` stores fixture JSON for dashboard regression checks; `docs/` captures architectural decisions and migration plans.
+- `qb_site/` hosts the Django codebase; apps live in `qb_site/{core,syncer,analyzer,api,zulip_bot}/` and share settings from `qb_site/qb_site/settings/`.
+- `scripts/` provides operational helpers; `test/` stores fixture JSON for dashboard regression checks; `docs/` captures architecture plans/decisions.
 
 ## Build, Test, and Development Commands
 ```bash
@@ -13,7 +13,7 @@ uv run ruff format .                           # apply canonical formatting
 uv run python -m queueboard.dashboard test/all-open-PRs-1.json test/all-open-PRs-2.json  # regenerate HTML from fixtures
 uv run python src/queueboard/test_state_evolution.py                                    # run targeted state evolution tests
 docker compose up --build                      # launch web + Postgres + Redis + Celery worker/beat
-bash scripts/repo_check_compose.sh             # run compose-based repo checks inside Docker
+bash scripts/repo_check_compose.sh             # canonical full-repo checks (Compose + Postgres + Django tests)
 ```
 
 Notes
@@ -21,6 +21,8 @@ Notes
   a refused DB connection or missing password. This is harmless and migrations are still created.
 - Compose runs migrations via a dedicated `migrate` service; `web`/`worker`/`beat` depend on it to avoid
   concurrent migration races.
+- `scripts/repo_check_compose.sh` requires Docker/Compose and starts services; it may not be runnable in sandboxed environments.
+- In restricted/sandboxed environments, prefer non-DB checks (lint/format, GraphQL validation, pure-Python tests) or ask the user to run compose checks and share output.
 
 ## Coding Style & Naming Conventions
 - Use four-space indentation, explicit imports, and `snake_case` for modules/functions, `PascalCase` for classes, `SCREAMING_SNAKE_CASE` for settings.
@@ -29,8 +31,10 @@ Notes
 - Add type hints on new public functions, especially in Django services; reuse helpers from `queueboard.util` instead of duplicating logic.
 
 ## Testing Guidelines
+- Use `bash scripts/repo_check_compose.sh` as the primary end-to-end test/check entrypoint.
 - Exercise dashboard generation with the provided fixtures via `uv run python -m queueboard.dashboard ...`; capture `before/` and `after/` HTML snapshots when comparing layout changes.
 - Keep unit tests colocated (`test_*.py`); expand `src/queueboard/test_state_evolution.py` or add pytest modules under the relevant Django app (`qb_site/<app>/tests/`).
+- If Compose/Postgres is unavailable, run focused non-DB tests where possible and clearly call out coverage gaps.
 - Document any manual data validation or backfill steps in your PR description so reviewers can reproduce the checks.
 
 ## Commit & Pull Request Guidelines
