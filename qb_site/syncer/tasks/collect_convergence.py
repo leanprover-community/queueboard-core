@@ -9,6 +9,7 @@ from syncer.models import (
     PullRequest,
     CommitHistoryHarvest,
     RepoBackfillCursor,
+    RepoDiscoveryState,
     SyncerConvergenceSnapshot,
     CheckRun,
     StatusContext,
@@ -42,6 +43,14 @@ def collect_syncer_convergence_task() -> dict:
         harvest_open = CommitHistoryHarvest.objects.filter(pull_request__repository=repo, has_more=True).count()
         cursor = RepoBackfillCursor.objects.filter(repository=repo).first()
         history_completed = bool(cursor.completed) if cursor else False
+        discovery_state = RepoDiscoveryState.objects.filter(repository=repo).first()
+        discovery_cutoff = discovery_state.last_successful_cutoff_at if discovery_state else None
+        discovery_lag_seconds = None
+        if discovery_cutoff is not None:
+            discovery_lag_seconds = max(0, int((collected_at - discovery_cutoff).total_seconds()))
+        discovery_continuation_active = bool(
+            discovery_state and discovery_state.continuation_cutoff_at is not None and discovery_state.continuation_cursor
+        )
 
         engagement_missing = qs.filter(engagement_synced_at__isnull=True).count()
         engagement_incomplete = (
@@ -72,6 +81,10 @@ def collect_syncer_convergence_task() -> dict:
             incomplete_prs=incomplete,
             harvest_jobs_open=harvest_open,
             history_cursor_completed=history_completed,
+            discovery_lag_seconds=discovery_lag_seconds,
+            discovery_continuation_active=discovery_continuation_active,
+            discovery_last_attempted_at=discovery_state.last_attempted_at if discovery_state else None,
+            discovery_last_successful_at=discovery_state.last_successful_at if discovery_state else None,
             prs_missing_engagement=engagement_missing,
             prs_engagement_incomplete=engagement_incomplete,
             prs_missing_head_ci_state=missing_head_ci,
@@ -86,6 +99,18 @@ def collect_syncer_convergence_task() -> dict:
                 "commits_pending": commits_pending,
                 "harvest_open": harvest_open,
                 "history_completed": history_completed,
+                "discovery_lag_seconds": discovery_lag_seconds,
+                "discovery_continuation_active": discovery_continuation_active,
+                "discovery_last_attempted_at": (
+                    discovery_state.last_attempted_at.isoformat()
+                    if discovery_state and discovery_state.last_attempted_at
+                    else None
+                ),
+                "discovery_last_successful_at": (
+                    discovery_state.last_successful_at.isoformat()
+                    if discovery_state and discovery_state.last_successful_at
+                    else None
+                ),
                 "prs_missing_engagement": engagement_missing,
                 "prs_engagement_incomplete": engagement_incomplete,
                 "prs_missing_head_ci_state": missing_head_ci,

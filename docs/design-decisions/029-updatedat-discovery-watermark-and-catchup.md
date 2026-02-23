@@ -163,7 +163,7 @@ Status: Implemented on 2026-02-23 (awaiting full-battery validation).
 - Add debounce/guard parity with existing rate defer scheduling.
 
 ### Chunk 5: Observability
-Status: Not started.
+Status: Implemented on 2026-02-23 (awaiting full-battery validation).
 - Extend convergence/metrics snapshots with:
   - discovery lag,
   - continuation active flag,
@@ -256,6 +256,21 @@ Status: Not started.
     - `uv run ruff format` on changed files,
     - `uv run ruff check` on changed files.
   - DB-backed task tests were not run in this sandbox; pending user full-battery run.
+- 2026-02-23:
+  - Implemented Chunk 5 observability extensions on `SyncerConvergenceSnapshot`:
+    - `discovery_lag_seconds`,
+    - `discovery_continuation_active`,
+    - `discovery_last_attempted_at`,
+    - `discovery_last_successful_at`.
+  - Added migration:
+    - `qb_site/syncer/migrations/0029_syncerconvergencesnapshot_discovery_continuation_active_and_more.py`.
+  - Updated convergence collector `qb_site/syncer/tasks/collect_convergence.py` to populate discovery diagnostics from `RepoDiscoveryState`.
+  - Updated admin display in `qb_site/syncer/admin.py` to include the new discovery observability fields and filter by continuation-active state.
+  - Extended convergence task test coverage in `qb_site/syncer/tests/tasks/test_collect_convergence_task.py` for the new fields.
+  - Local verification done:
+    - `uv run ruff format` on changed files,
+    - `uv run ruff check` on changed files.
+  - DB-backed tests were not run in this sandbox; pending user full-battery run.
 
 ## Validation Plan
 - Unit tests:
