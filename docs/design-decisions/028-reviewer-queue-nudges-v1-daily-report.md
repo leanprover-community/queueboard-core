@@ -160,7 +160,7 @@
 2. Add model indexes/constraints for idempotency keys.
 3. Add tests for dedupe semantics and retry-safe writes.
 
-#### Chunk A4: Policy computation service (read-only)
+#### Chunk A4: Policy computation service (read-only) (**completed**)
 1. Implement DB-backed policy evaluator (no sends/mutations).
 2. Compute per-reviewer report rows and unassign candidates from queue/timeline state.
 3. Add unit tests for queue continuity, reassignment reset, and missing-data fallbacks.
@@ -236,10 +236,25 @@
   - We are intentionally shipping V1 without run-state/dedupe tables.
   - Near-term tradeoff is lower reliability under retries/overlapping runs and weaker post-hoc observability.
   - We keep A3 as a future hardening step if duplicate/missed notification behavior becomes operationally problematic.
+- **Completed:** Chunk A4.
+  - Added read-only policy service `build_reviewer_attention_reports(...)` that returns:
+    - full per-reviewer status rows for on-demand reporting,
+    - derived event flags (`needs_nudge`, `needs_auto_unassign`) for scheduled notification/enforcement.
+    - queue duration rollups per assigned PR:
+      - consecutive days since assignment anchor,
+      - total queue time/days across queue windows (active ruleset scope).
+  - Added service tests covering:
+    - `X <= days < Y` nudge behavior,
+    - `days >= Y` auto-unassign behavior,
+    - enforcement flags still computed when notifications are disabled,
+    - missing assignment timestamp fallback behavior,
+    - queue re-entry reset behavior via active queue-window anchoring.
+  - Added an on-demand consumer command: `assigned_prs` (Zulip private command) that renders reviewer-facing status summaries using A4 output.
 - **Nuance discovered during implementation:**
   - Existing field-coverage guard (`reviewer_preference_unaccounted_fields`) requires every model field to be explicitly classified.
   - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
   - Form submissions now write canonical threshold values into `notification_settings`; this means legacy rows with empty settings become explicit after first save.
+  - A4 currently anchors queue-age at `max(last_assigned_at, active_queue_window.from_ts)`, which naturally resets stale age on queue re-entry even without persisting extra run-state.
 
 ## Operational Notes
 - Suggested schedule relationship:
