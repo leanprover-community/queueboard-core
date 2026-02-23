@@ -97,12 +97,40 @@ class TestSyncRepoTasks(TestCase):
         self.assertTrue(res.get("low_budget"))
         self.assertFalse(res.get("scan_complete"))
         self.assertTrue(res.get("continuation_scheduled"))
+        self.assertEqual(res.get("continuation_reason"), "low_budget")
         state = RepoDiscoveryState.objects.get(repository=self.repo)
         self.assertIsNotNone(state.continuation_cutoff_at)
         self.assertEqual(state.continuation_cursor, "CUR-1")
         self.assertIsNotNone(state.continuation_started_at)
         # No PR tasks enqueued under low budget
         mock_enqueue.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
+    @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    @mock.patch("syncer.tasks.sync_tasks.debounce_repo_schedule", return_value=True)
+    def test_sync_repo_since_cap_exhausted_schedules_continuation(
+        self, mock_debounce, MockClient, mock_sync_pr, mock_enqueue, mock_lock
+    ) -> None:
+        mock_lock.return_value.__enter__.return_value = True
+        gh = MockClient.return_value
+        gh.discover_changed_pr_numbers.return_value = mock.Mock(
+            numbers=[21, 22],
+            reached_cutoff=False,
+            next_cursor="CUR-CAP",
+            hit_limit=True,
+        )
+        gh.get_last_rate_limit.return_value = {"remaining": 9999, "resetAt": "2030-01-01T00:00:00Z"}
+
+        res = sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
+        self.assertFalse(res.get("low_budget"))
+        self.assertFalse(res.get("scan_complete"))
+        self.assertTrue(res.get("continuation_scheduled"))
+        self.assertEqual(res.get("continuation_reason"), "cap_exhausted")
+        self.assertIn("cap:", str(res.get("continuation_debounce_key")))
+        self.assertEqual(mock_enqueue.call_count, 3)  # 2 PR tasks + 1 continuation
+        mock_debounce.assert_called_once()
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
     @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")

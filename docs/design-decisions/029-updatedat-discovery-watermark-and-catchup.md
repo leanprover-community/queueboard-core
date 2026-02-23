@@ -158,7 +158,7 @@ Status: Completed on 2026-02-23.
 - Keep current lock and rate-limit defer paths.
 
 ### Chunk 4: Continuation scheduling for non-rate cap exhaustion
-Status: Not started.
+Status: Implemented on 2026-02-23 (awaiting full-battery validation).
 - Ensure continuation is scheduled when local discovery cap is hit before cutoff completion.
 - Add debounce/guard parity with existing rate defer scheduling.
 
@@ -242,6 +242,20 @@ Status: Not started.
     - `uv run ruff check` on changed files.
   - DB-backed task tests were not run in this sandbox.
   - User-reported full-battery test run: passing.
+- 2026-02-23:
+  - Implemented Chunk 4 continuation scheduling in `qb_site/syncer/tasks/sync_tasks.py`:
+    - when discovery is incomplete and budget is healthy (cap/page-limited path), schedule a follow-up `sync_repo_since_task` continuation,
+    - continuation scheduling now uses debounce guard parity with low-budget path via `debounce_repo_schedule(...)`,
+    - introduced `continuation_reason` in task summary (`low_budget` vs `cap_exhausted`) and surfaced `continuation_debounce_key` for diagnostics.
+  - Added setting in `qb_site/qb_site/settings/base.py`:
+    - `SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS` (default `5`) for non-rate cap continuations.
+  - Updated task tests in `qb_site/syncer/tests/tasks/test_sync_repo_tasks.py`:
+    - low-budget continuation assertions now check `continuation_reason="low_budget"`,
+    - new cap-exhaustion test verifies continuation scheduling and debounce-key shape.
+  - Local verification done:
+    - `uv run ruff format` on changed files,
+    - `uv run ruff check` on changed files.
+  - DB-backed task tests were not run in this sandbox; pending user full-battery run.
 
 ## Validation Plan
 - Unit tests:
