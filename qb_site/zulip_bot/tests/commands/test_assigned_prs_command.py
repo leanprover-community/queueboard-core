@@ -9,7 +9,7 @@ from analyzer.models import PRQueueWindow, QueueRuleSet
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
 from zulip_bot.commands import CommandContext
-from zulip_bot.commands.assigned_prs import assigned_prs_command, _split_message_chunks
+from zulip_bot.commands.assigned_prs import _format_duration, _split_message_chunks, assigned_prs_command
 
 
 def _dt(year: int, month: int, day: int, hour: int = 0) -> datetime:
@@ -114,9 +114,13 @@ class TestAssignedPrsCommand(TestCase):
         self.assertEqual(kwargs["to"], [101])
         self.assertIn("Assigned PRs report for `alice`", kwargs["content"])
         self.assertIn("leanprover-community/mathlib4", kwargs["content"])
+        self.assertIn("```spoiler On Queue (1)", kwargs["content"])
+        self.assertIn("```spoiler Not On Queue (0)", kwargs["content"])
         self.assertIn("PR #123", kwargs["content"])
         self.assertIn("Consecutive queue age since assignment", kwargs["content"])
         self.assertIn("Total queue time", kwargs["content"])
+        self.assertNotIn("On queue now", kwargs["content"])
+        self.assertNotIn("seconds)", kwargs["content"])
 
 
 class TestSplitMessageChunks(TestCase):
@@ -126,3 +130,12 @@ class TestSplitMessageChunks(TestCase):
 
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 12 for chunk in chunks))
+
+
+class TestFormatDuration(TestCase):
+    def test_format_duration_thresholds(self) -> None:
+        self.assertEqual(_format_duration(45), "45s")
+        self.assertEqual(_format_duration(3 * 60 + 2), "3m 2s")
+        self.assertEqual(_format_duration(2 * 3600 + 5 * 60), "2h 5m")
+        self.assertEqual(_format_duration(2 * 86400 + 4 * 3600), "2d 4h")
+        self.assertEqual(_format_duration(8 * 86400 + 17 * 3600), "8d")
