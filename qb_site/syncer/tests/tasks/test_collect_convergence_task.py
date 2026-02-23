@@ -108,3 +108,35 @@ class TestCollectConvergenceTask(TestCase):
         self.assertEqual(res["per_repo"][0]["discovery_continuation_active"], True)
         self.assertIsNotNone(res["per_repo"][0]["discovery_lag_seconds"])
         self.assertEqual(res["rows_created"], 1)
+
+    def test_discovery_lag_uses_current_successful_cutoff(self) -> None:
+        now = timezone.now()
+        # Simulate a stale/old watermark first, then a newer successful cutoff.
+        state = RepoDiscoveryState.objects.create(
+            repository=self.repo,
+            last_successful_cutoff_at=now - timezone.timedelta(hours=3),
+            last_attempted_at=now - timezone.timedelta(hours=3),
+            last_successful_at=now - timezone.timedelta(hours=3),
+        )
+
+        collect_syncer_convergence_task.apply().get()
+        first = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertIsNotNone(first.discovery_lag_seconds)
+
+        # Advance watermark to a much newer cutoff as a successful fresh run would.
+        state.last_successful_cutoff_at = timezone.now() - timezone.timedelta(minutes=20)
+        state.last_attempted_at = timezone.now() - timezone.timedelta(minutes=1)
+        state.last_successful_at = timezone.now() - timezone.timedelta(minutes=1)
+        state.save(update_fields=["last_successful_cutoff_at", "last_attempted_at", "last_successful_at", "updated_at"])
+
+        collect_syncer_convergence_task.apply().get()
+        snaps = list(SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at")[:2])
+        self.assertEqual(len(snaps), 2)
+        newer, older = snaps[0], snaps[1]
+        self.assertIsNotNone(newer.discovery_lag_seconds)
+        self.assertIsNotNone(older.discovery_lag_seconds)
+        assert newer.discovery_lag_seconds is not None
+        assert older.discovery_lag_seconds is not None
+        self.assertLess(newer.discovery_lag_seconds, older.discovery_lag_seconds)

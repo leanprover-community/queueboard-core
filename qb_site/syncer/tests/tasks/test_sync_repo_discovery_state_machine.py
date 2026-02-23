@@ -99,6 +99,30 @@ class TestSyncRepoDiscoveryStateMachine(TestCase):
         assert args is not None
         expected = (watermark - timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.assertEqual(args.kwargs["since_iso"], expected)
+        state = RepoDiscoveryState.objects.get(repository=self.repo)
+        self.assertGreater(state.last_successful_cutoff_at, watermark)
+
+    @override_settings(SYNCER_DISCOVERY_LOOKBACK_MINUTES=10, SYNCER_DISCOVERY_OVERLAP_SECONDS=300)
+    @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
+    @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_fresh_success_does_not_regress_watermark(self, MockClient, mock_sync_pr, mock_enqueue, mock_lock) -> None:
+        mock_lock.return_value.__enter__.return_value = True
+        old_watermark = timezone.now() - timedelta(minutes=30)
+        RepoDiscoveryState.objects.create(repository=self.repo, last_successful_cutoff_at=old_watermark)
+        gh = MockClient.return_value
+        gh.get_last_rate_limit.return_value = {"remaining": 9999, "resetAt": "2030-01-01T00:00:00Z", "cost": 1}
+        gh.discover_changed_pr_numbers.return_value = mock.Mock(
+            numbers=[],
+            reached_cutoff=True,
+            next_cursor=None,
+            hit_limit=False,
+        )
+
+        sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
+        state = RepoDiscoveryState.objects.get(repository=self.repo)
+        self.assertGreater(state.last_successful_cutoff_at, old_watermark)
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
     @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
