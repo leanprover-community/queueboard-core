@@ -1,6 +1,6 @@
 # Design Decisions
 
-This directory captures concise, versioned decisions that affect architecture, runtime behavior, or operational posture. Treat each file as a durable record that future contributors can scan quickly.
+This directory captures versioned architecture/design records that affect runtime behavior, operations, or long-lived implementation direction. Files here can be either concise final decisions or implementation-driven living plans that are refined as work progresses.
 
 ## When to Write One
 - You’re choosing between credible alternatives (e.g., libraries, deployment patterns, schemas).
@@ -11,24 +11,44 @@ This directory captures concise, versioned decisions that affect architecture, r
 - Use a zero‑padded numeric prefix and a short slug: `NNN-short-title.md`.
 - Increment the prefix for new decisions (see existing `000-`, `001-`, `002-`).
 
+## Document Types
+- Final decision record (concise ADR style):
+  - Used when scope is settled and implementation is complete (or nearly complete).
+  - Preferred shape: `Context`, `Decision`, `Consequences`, `Operational Notes`, optional `Alternatives`.
+- Living implementation plan (work-in-progress design doc):
+  - Used for larger features where implementation proceeds in chunks and details evolve.
+  - Expected lifecycle:
+    1. Start with a detailed plan emphasizing correctness/completeness over brevity.
+    2. Keep the doc updated while implementing testable chunks; capture plan changes and discovered nuances.
+    3. After implementation, clean up into a coherent final architecture/design record.
+  - This format is explicitly allowed in this directory and should be preferred for multi-step work with non-trivial subtleties.
+
 ## Structure
-- Context: the problem and constraints in bullets.
-- Decision: the chosen option, stated clearly and concisely.
-- Consequences: trade‑offs; what gets easier or harder.
-- Operational Notes: rollout steps, flags, migrations, follow‑ups.
-- (Optional) Alternatives: briefly note discarded options and why.
+- Final decision record:
+  - Context: the problem and constraints in bullets.
+  - Decision: the chosen option, stated clearly and concisely.
+  - Consequences: trade‑offs; what gets easier or harder.
+  - Operational Notes: rollout steps, flags, migrations, follow‑ups.
+  - (Optional) Alternatives: briefly note discarded options and why.
+- Living implementation plan:
+  - Problem framing and goals.
+  - Proposed architecture/plan (with subtleties and invariants).
+  - Chunked implementation plan and test strategy.
+  - Progress notes / deltas discovered during implementation.
+  - Final cleanup section (or follow-up pass) to converge on durable architecture docs.
 
 ## Style
 - Prefer bullets and short sentences over long prose.
-- One decision per file; link related decisions rather than combining.
+- One main theme per file; link related decisions/plans rather than combining unrelated topics.
 - Reference concrete files/paths and commands where useful.
 - Link to PRs, issues, or external docs for deeper context.
+- For living plans, prioritize technical correctness and explicit invariants; brevity is secondary until final cleanup.
 
 ## Location & Scope
 - Keep decisions here under `docs/design-decisions/`.
 - Component‑specific choices can still live here; mention the scope in “Context”.
 
-## Example Skeleton
+## Example Skeleton (Final Decision Record)
 ```
 # Title
 
@@ -46,4 +66,35 @@ This directory captures concise, versioned decisions that affect architecture, r
 
 ## Alternatives (Optional)
 - ...
+```
+
+## Example Skeleton (Living Implementation Plan)
+```
+# Title
+
+## Context
+- ...
+
+## Goals / Non-Goals
+- ...
+
+## Proposed Design
+- ...
+
+## Subtleties / Invariants
+- ...
+
+## Implementation Plan (Chunks)
+1. Chunk 1 ...
+2. Chunk 2 ...
+
+## Validation Plan
+- tests:
+- manual checks:
+
+## Progress Notes
+- YYYY-MM-DD: ...
+
+## Finalization Notes
+- Follow-up cleanup to produce durable final architecture summary.
 ```
