@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 
 from analyzer.models import PRQueueWindow, QueueRuleSet
 from core.models import Repository, ReviewerPreference, User
-from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
+from syncer.models import LabelDef, PRLabel, PullRequest, PRTimelineEvent, PRTimelineEventType
 from zulip_bot.commands import CommandContext
 from zulip_bot.commands.assigned_prs import _format_duration, _split_message_chunks, assigned_prs_command
 
@@ -115,12 +115,84 @@ class TestAssignedPrsCommand(TestCase):
         self.assertIn("Assigned PRs report for `alice`", kwargs["content"])
         self.assertIn("leanprover-community/mathlib4", kwargs["content"])
         self.assertIn("```spoiler On Queue (1)", kwargs["content"])
+        self.assertIn("```spoiler Maintainer Merged (0)", kwargs["content"])
         self.assertIn("```spoiler Not On Queue (0)", kwargs["content"])
         self.assertIn("PR #123", kwargs["content"])
         self.assertIn("Consecutive queue age since assignment", kwargs["content"])
         self.assertIn("Total queue time", kwargs["content"])
         self.assertNotIn("On queue now", kwargs["content"])
         self.assertNotIn("seconds)", kwargs["content"])
+
+    def test_maintainer_merge_prs_are_separated_into_own_section(self) -> None:
+        user = User.objects.create(github_login="alice", zulip_user_id=101)
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        ReviewerPreference.objects.create(
+            user=user,
+            repository=repo,
+            notifications_enabled=True,
+            notification_settings={"stale_nudge_days": 14, "auto_unassign_days": 21},
+        )
+        rules = QueueRuleSet.objects.create(
+            repository=repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+            is_active=True,
+        )
+        label = LabelDef.objects.create(repository=repo, name="maintainer-merge", color="123abc")
+        now_ts = _dt(2026, 2, 23, 12)
+        pr = PullRequest.objects.create(
+            repository=repo,
+            number=124,
+            author=None,
+            state="open",
+            is_draft=False,
+            gh_created_at=now_ts - timedelta(days=8),
+            gh_updated_at=now_ts,
+            base_ref_name="master",
+            head_ref_name="branch2",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="Maintainer merged PR",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+            assignees=["alice"],
+            approvals=[],
+            commenters=[],
+            files=[],
+        )
+        PRLabel.objects.create(pull_request=pr, label_def=label)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.ASSIGNED,
+            occurred_at=now_ts - timedelta(days=8),
+            assignee_login="alice",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rules,
+            from_ts=now_ts - timedelta(days=8),
+            to_ts=None,
+            cycle_index=0,
+            duration_seconds_closed=0,
+            cumulative_seconds_closed=0,
+            window_count=1,
+            first_on_queue_ts=now_ts - timedelta(days=8),
+        )
+
+        with patch("zulip_bot.commands.assigned_prs.ZulipClient.send_direct_message") as mock_send:
+            result = assigned_prs_command(self._context(), "")
+
+        self.assertTrue(result.response_not_required)
+        kwargs = mock_send.call_args.kwargs
+        self.assertIn("```spoiler On Queue (0)", kwargs["content"])
+        self.assertIn("```spoiler Maintainer Merged (1)", kwargs["content"])
+        self.assertIn("PR #124", kwargs["content"])
 
 
 class TestSplitMessageChunks(TestCase):
