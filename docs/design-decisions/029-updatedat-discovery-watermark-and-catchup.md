@@ -152,7 +152,7 @@ Status: Completed on 2026-02-23.
 - Add unit tests for cutoff, limit, and cursor behavior.
 
 ### Chunk 3: Task mode/state transitions
-Status: Not started.
+Status: Completed on 2026-02-23.
 - Update `sync_repo_since_task` to use fresh/continuation modes.
 - Persist continuation state and watermark transitions with strict invariants.
 - Keep current lock and rate-limit defer paths.
@@ -218,6 +218,30 @@ Status: Not started.
     - `uv run ruff format` on changed files,
     - `uv run ruff check` on changed files,
     - `uv run python qb_site/manage.py test syncer.tests.client.test_github_client` (passes).
+- 2026-02-23:
+  - Implemented Chunk 3 task-mode/state-transition changes in `qb_site/syncer/tasks/sync_tasks.py`:
+    - `sync_repo_since_task` now loads/creates `RepoDiscoveryState` under repo lock.
+    - Added fresh vs continuation mode selection:
+      - continuation when both `continuation_cutoff_at` and `continuation_cursor` exist,
+      - fresh otherwise.
+    - Switched discovery call to `client.discover_changed_pr_numbers(...)`.
+    - Added effective-cutoff overlap logic in fresh mode:
+      - `effective_cutoff = min(base_cutoff, last_successful_cutoff_at - overlap)` when watermark exists.
+    - Added strict state transitions:
+      - on complete scan: `mark_success(cutoff_at=effective_cutoff)` (advances watermark + clears continuation),
+      - on incomplete scan: `set_continuation(cutoff_at=effective_cutoff, cursor=next_cursor)`.
+    - Kept low-budget defer path and debounce behavior; continuation scheduling still happens on low-budget defer (non-rate cap continuation scheduling remains Chunk 4).
+    - Added summary fields for mode/progress (`mode`, `scan_complete`, `reached_cutoff`, `hit_limit`, `next_cursor`, `continuation_scheduled`).
+  - Added setting in `qb_site/qb_site/settings/base.py`:
+    - `SYNCER_DISCOVERY_OVERLAP_SECONDS` (default `300`).
+  - Updated task tests:
+    - `qb_site/syncer/tests/tasks/test_sync_repo_tasks.py`,
+    - `qb_site/syncer/tests/tasks/test_sync_repo_tasks_batch.py`.
+  - Local verification done:
+    - `uv run ruff format` on changed files,
+    - `uv run ruff check` on changed files.
+  - DB-backed task tests were not run in this sandbox.
+  - User-reported full-battery test run: passing.
 
 ## Validation Plan
 - Unit tests:

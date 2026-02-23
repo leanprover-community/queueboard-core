@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.conf import settings
 
 from core.models import Repository
-from syncer.models import PullRequest
+from syncer.models import PullRequest, RepoDiscoveryState
 from syncer.services.github_client import GitHubClient
 from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
@@ -519,19 +519,11 @@ def sync_repo_since_task(  # type: ignore[no-redef]
     commitsM: Optional[int] = None,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Discover changed PRs since cutoff and enqueue per-PR sync tasks.
+    """Discover changed PRs and enqueue per-PR sync tasks.
 
-    Behavior
-    - Uses a sliding window cutoff (from settings) when ``since_iso`` is not provided.
-    - After discovery, reads the last ``rateLimit`` snapshot (captured during the call) and:
-      - if ``remaining <= SYNCER_RATE_REMAINING_MIN``: stops early and schedules a continuation
-        of this task at ``resetAt`` with a small jitter, debounced via Redis so only one
-        continuation is scheduled per repo/resetAt.
-      - otherwise enqueues one ``sync_pr_task`` per discovered PR number.
-    - Per-repo Postgres advisory lock prevents overlapping runs for the same repository.
-
-    Returns a summary including discovery/enqueue counts, the rate limit snapshot, and a
-    ``low_budget`` flag indicating whether a continuation was scheduled.
+    Discovery runs in two modes, under a per-repo lock:
+    - fresh sweep: compute a sliding cutoff with watermark overlap;
+    - continuation: resume from persisted cursor + fixed cutoff.
     """
     repo = Repository.objects.get(id=int(repo_id))
 
@@ -542,16 +534,8 @@ def sync_repo_since_task(  # type: ignore[no-redef]
 
         client = GitHubClient(operation="syncer_repo_discovery", owner=repo.owner, repo=repo.name)
         rate_events: list[dict] = []
-
-        # Determine cutoff
-        if since_iso:
-            cutoff_iso = since_iso
-        else:
-            lookback_min = int(getattr(settings, "SYNCER_DISCOVERY_LOOKBACK_MINUTES", 60))
-            cutoff_dt = timezone.now() - timedelta(minutes=lookback_min)
-            if timezone.is_naive(cutoff_dt):
-                cutoff_dt = timezone.make_aware(cutoff_dt)
-            cutoff_iso = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        state, _ = RepoDiscoveryState.objects.get_or_create(repository=repo)
+        state.mark_attempted()
 
         # Parameters
         lim = int(limit) if isinstance(limit, int) else int(getattr(settings, "SYNCER_DISCOVERY_LIMIT", 30))
@@ -563,7 +547,40 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         tk = int(timelineK) if isinstance(timelineK, int) else int(getattr(settings, "SYNCER_TIMELINE_K_DEFAULT", 150))
         cm = int(commitsM) if isinstance(commitsM, int) else int(getattr(settings, "SYNCER_COMMITS_M_DEFAULT", 15))
 
-        numbers = client.get_changed_pr_numbers(owner=repo.owner, name=repo.name, since_iso=cutoff_iso, states=st, limit=lim)
+        # Determine mode/cutoff.
+        mode: str
+        discovery_after: Optional[str]
+        if state.continuation_cutoff_at and state.continuation_cursor:
+            mode = "continuation"
+            effective_cutoff = state.continuation_cutoff_at
+            discovery_after = state.continuation_cursor
+        else:
+            mode = "fresh"
+            if since_iso:
+                base_cutoff = _parse_iso_awareness(since_iso) or timezone.now()
+            else:
+                lookback_min = int(getattr(settings, "SYNCER_DISCOVERY_LOOKBACK_MINUTES", 60))
+                base_cutoff = timezone.now() - timedelta(minutes=lookback_min)
+                if timezone.is_naive(base_cutoff):
+                    base_cutoff = timezone.make_aware(base_cutoff)
+            overlap_seconds = int(getattr(settings, "SYNCER_DISCOVERY_OVERLAP_SECONDS", 300))
+            if state.last_successful_cutoff_at is not None:
+                watermark_overlap_cutoff = state.last_successful_cutoff_at - timedelta(seconds=max(0, overlap_seconds))
+                effective_cutoff = min(base_cutoff, watermark_overlap_cutoff)
+            else:
+                effective_cutoff = base_cutoff
+            discovery_after = None
+
+        cutoff_iso = effective_cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+        discovery = client.discover_changed_pr_numbers(
+            owner=repo.owner,
+            name=repo.name,
+            since_iso=cutoff_iso,
+            states=st,
+            limit=lim,
+            after=discovery_after,
+        )
+        numbers = discovery.numbers
 
         # Snapshot after discovery
         rl = client.get_last_rate_limit() or {}
@@ -582,9 +599,16 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             except Exception:
                 pass
 
+        scan_complete = bool(discovery.reached_cutoff or discovery.next_cursor is None)
+        if scan_complete:
+            state.mark_success(cutoff_at=effective_cutoff)
+        else:
+            state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor)
+
         enqueued = 0
         threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
         low_budget = isinstance(remaining, int) and remaining <= threshold
+        continuation_scheduled = False
         if low_budget:
             # Stop early; schedule a continuation at resetAt + small jitter if possible.
             eta = None
@@ -597,12 +621,12 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                     eta = rdt + timedelta(seconds=5)
                 except Exception:
                     eta = None
-            if eta is not None and debounce_repo_schedule(repo.id, reset_at):
+            if not scan_complete and eta is not None and debounce_repo_schedule(repo.id, reset_at):
                 # schedule a continuation with same parameters
                 try:
                     sig = sync_repo_since_task.s(
                         repo.id,
-                        since_iso=cutoff_iso,
+                        since_iso=since_iso,
                         limit=lim,
                         states=st,
                         timelineK=tk,
@@ -610,6 +634,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                         dry_run=dry_run,
                     )
                     enqueue_with_parent(sig, self.request, eta=eta)
+                    continuation_scheduled = True
                 except Exception:
                     pass
         else:
@@ -642,23 +667,33 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 )
                 enqueued += 1
         log.info(
-            "sync_repo_since: repo=%s/%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s",
+            "sync_repo_since: repo=%s/%s mode=%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s complete=%s next_cursor=%s",
             repo.owner,
             repo.name,
+            mode,
             cutoff_iso,
             len(numbers),
             enqueued,
             rl.get("remaining"),
             rl.get("resetAt"),
+            scan_complete,
+            bool(discovery.next_cursor),
         )
         return {
             "skipped": False,
             "repo": f"{repo.owner}/{repo.name}",
+            "mode": mode,
             "since": cutoff_iso,
+            "cutoff_iso": cutoff_iso,
             "discovered": len(numbers),
             "enqueued": enqueued,
             "rate_limit": rl,
             "low_budget": bool(low_budget),
+            "scan_complete": scan_complete,
+            "reached_cutoff": bool(discovery.reached_cutoff),
+            "hit_limit": bool(discovery.hit_limit),
+            "next_cursor": discovery.next_cursor,
+            "continuation_scheduled": continuation_scheduled,
             "batch_max": int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30)),
             "discovery_cost": rl.get("cost") if isinstance(rl, dict) else None,
             "rate_events": rate_events,
