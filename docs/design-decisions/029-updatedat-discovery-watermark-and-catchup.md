@@ -1,322 +1,137 @@
 # UpdatedAt Discovery Watermark and Catch-up Continuations
 
 ## Context
-- The sync pipeline currently relies on a sliding discovery window in `syncer.sync_repo_since` (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`, default 60).
-- Discovery is additionally bounded by per-run caps (`SYNCER_DISCOVERY_LIMIT`, `SYNCER_REPO_ENQUEUE_BATCH_MAX`) and rate budget guards.
-- During outages or prolonged task starvation (> lookback window), PR updates can be missed permanently because no durable updatedAt progress marker is persisted.
-- Existing `RepoBackfillCursor` is createdAt-based and guarantees eventual first-seen coverage of PRs, but does not guarantee recovery of updates to already-known PRs.
-- We want to close this outage gap first. We will defer queue-isolation changes and any broader scheduling refactor.
-
-## Problem Statement
-- We need discovery semantics that are robust to:
-  - sync task downtime longer than the lookback window,
-  - high update churn beyond per-run discovery caps,
-  - low-budget deferrals and partial progress.
-- We must preserve idempotent behavior and avoid dropping updates when tasks partially succeed or retry.
+- Repository discovery previously depended on a sliding `updatedAt` lookback window (`SYNCER_DISCOVERY_LOOKBACK_MINUTES`).
+- During outages or prolonged queue starvation longer than that window, updates to already-known PRs could be missed permanently.
+- Existing createdAt history backfill (`RepoBackfillCursor`) ensures first-seen coverage, but does not recover missed `updatedAt` discovery updates.
 
 ## Decision
-- Introduce a per-repo **updatedAt discovery state machine** with:
-  - a durable watermark of the last fully scanned cutoff,
-  - resumable continuation cursor state for in-progress catch-up scans.
-- Extend repo discovery to run in two explicit modes:
-  - **fresh sweep mode** (new sliding-window scan),
-  - **continuation mode** (resume unfinished scan with fixed cutoff).
-- Advance the watermark only after a full scan to cutoff has completed successfully.
-- Keep overlap between scans to protect against boundary and race conditions.
+- Introduce a per-repo `updatedAt` discovery state machine with:
+  - a durable watermark for fully scanned cutoffs,
+  - resumable continuation cursor/cutoff state for incomplete scans.
+- Discovery now runs in explicit modes:
+  - fresh sweep (sliding cutoff + overlap),
+  - continuation (fixed cutoff + persisted cursor).
+- Watermark advances only on completed scan coverage to the cutoff.
+- Incomplete scans always persist continuation state and are resumed.
 
-## Scope of Immediate Work
-- In scope:
-  - new persistence model for updatedAt discovery progress,
-  - resumable discovery pagination and continuation scheduling,
-  - task semantics for safe watermark advancement,
-  - tests for outage and high-churn recovery behavior,
-  - observability for discovery lag and continuation state.
-- Out of scope for this phase:
-  - queue isolation (`SYNCER_GITHUB_QUEUE` + dedicated worker),
-  - analyzer scheduling/prioritization redesign,
-  - major backfill policy changes outside updatedAt discovery flow.
+## Architecture
 
-## Design
+### State Model
+- New model: `syncer.RepoDiscoveryState` (one-to-one with `core.Repository`).
+- Fields:
+  - `last_successful_cutoff_at`: fully scanned cutoff watermark.
+  - `continuation_cutoff_at`: fixed cutoff for in-progress catch-up sequence.
+  - `continuation_cursor`: GraphQL cursor to resume from.
+  - `continuation_started_at`: when current continuation sequence began.
+  - `last_attempted_at`: last discovery attempt timestamp.
+  - `last_successful_at`: last successful full-scan timestamp.
+- Helper transitions:
+  - `mark_attempted()`
+  - `set_continuation(cutoff_at, cursor)`
+  - `mark_success(cutoff_at)` (also clears continuation fields).
 
-### 1) New Model: `RepoDiscoveryState`
-- Add a new one-to-one model in `syncer.models` keyed by `Repository`.
-- Proposed fields:
-  - `repository` (OneToOne, required).
-  - `last_successful_cutoff_at` (`DateTimeField`, nullable):
-    - the oldest boundary for which updatedAt discovery has been fully scanned.
-  - `continuation_cutoff_at` (`DateTimeField`, nullable):
-    - fixed cutoff for the currently active continuation run.
-  - `continuation_cursor` (`TextField`, nullable):
-    - GraphQL cursor for `pullRequests(orderBy: UPDATED_AT DESC, after=...)`.
-  - `continuation_started_at` (`DateTimeField`, nullable):
-    - when current continuation sequence began.
-  - `last_attempted_at` (`DateTimeField`, nullable):
-    - most recent attempt timestamp (for diagnostics).
-  - `last_successful_at` (`DateTimeField`, nullable):
-    - most recent successful completion timestamp.
-- Notes:
-  - This is intentionally separate from `RepoBackfillCursor` because state/order/semantics differ (updatedAt DESC recovery vs createdAt ASC history walk).
+### Discovery Query Contract
+- `GitHubClient.discover_changed_pr_numbers(...)` provides structured progress:
+  - `numbers`
+  - `next_cursor`
+  - `reached_cutoff`
+  - `hit_limit`
+- Supports continuation input via `after=...`.
+- `get_changed_pr_numbers(...)` remains as compatibility wrapper returning only `numbers`.
+- Pagination uses `first=min(per_page, remaining)` so a run does not stop mid-page; this keeps continuation safe when resuming from page `endCursor`.
 
-### 2) Discovery Query Contract
-- Extend `GitHubClient.get_changed_pr_numbers(...)` or add a sibling API that:
-  - accepts `after` cursor input,
-  - enforces per-call/per-run cap,
-  - returns structured progress output:
-    - `numbers`,
-    - `next_cursor`,
-    - `reached_cutoff` (encountered `updatedAt < cutoff`),
-    - `hit_limit` (local cap exhausted before completion).
-- Query ordering remains:
-  - `pullRequests(states: ..., orderBy: {field: UPDATED_AT, direction: DESC})`.
+### Repo Discovery Task State Machine
+- Task: `syncer.sync_repo_since`.
+- Steps under per-repo advisory lock:
+  1. Load/create `RepoDiscoveryState`; mark attempt.
+  2. Choose mode:
+     - continuation when both continuation cutoff and cursor exist,
+     - otherwise fresh.
+  3. Compute effective cutoff:
+     - fresh: base lookback cutoff, optionally pulled older via watermark overlap,
+     - continuation: fixed persisted continuation cutoff.
+  4. Run structured discovery.
+  5. Persist state transition:
+     - complete scan (`reached_cutoff` or no `next_cursor`): `mark_success`,
+     - incomplete scan: `set_continuation`.
+  6. Enqueue `sync_pr` tasks under existing dynamic batch/rate budget rules.
+  7. Schedule continuation when needed.
 
-### 3) Task State Machine in `sync_repo_since_task`
-- Step A: acquire repo advisory lock (existing behavior).
-- Step B: load/create `RepoDiscoveryState`.
-- Step C: choose mode.
-  - Continuation mode if `continuation_cursor` and `continuation_cutoff_at` exist.
-  - Fresh mode otherwise.
-- Step D: execute discovery page(s), enqueue `sync_pr` tasks as budget allows.
-- Step E: persist state transition:
-  - If full scan to cutoff completes:
-    - set `last_successful_cutoff_at = effective_cutoff`,
-    - set `last_successful_at = now`,
-    - clear continuation fields.
-  - If scan incomplete:
-    - persist `continuation_cutoff_at` and `continuation_cursor`,
-    - preserve watermark,
-    - schedule continuation.
+### Continuation Scheduling
+- Low-budget path (existing behavior retained):
+  - if remaining GitHub budget is low, defer to `resetAt` with debounce.
+- Cap/page exhaustion path (new):
+  - if scan incomplete even with healthy budget, schedule near-term continuation.
+- Both paths use `debounce_repo_schedule(...)` to suppress duplicate scheduling.
+- Continuation reasons are surfaced in task result (`low_budget` / `cap_exhausted`).
 
-### 4) Effective Cutoff and Overlap
-- Fresh mode computes:
-  - `base_cutoff = now - SYNCER_DISCOVERY_LOOKBACK_MINUTES`.
-  - `overlap_seconds` from new setting (for example 300-600 seconds).
-- If watermark exists:
-  - `effective_cutoff = min(base_cutoff, last_successful_cutoff_at - overlap)`.
-- Rationale:
-  - overlap tolerates timestamp equality/races and keeps discovery idempotent.
+### Failure Handling
+- If continuation discovery fails (for example stale/invalid cursor):
+  - clear continuation cursor/cutoff/start,
+  - retry immediately in fresh recovery mode using overlap logic.
+- This fail-safe prefers duplicate work over missed updates.
 
-### 5) Watermark Advancement Rule (Critical Invariant)
-- Only advance `last_successful_cutoff_at` when the scan for that cutoff is complete.
-- Never advance on:
-  - low-budget defer before completion,
-  - partial enqueue/processing,
-  - exceptions/retries after partial progress.
-- Consequence:
-  - recovery may duplicate work, but should not lose updates.
+## Invariants
+- Watermark invariant:
+  - `last_successful_cutoff_at` represents fully scanned coverage only.
+  - It must not advance on partial discovery progress.
+- Continuation invariant:
+  - continuation cutoff is fixed for a continuation sequence.
+- Serialization invariant:
+  - state transitions occur under per-repo advisory lock.
+- Idempotency invariant:
+  - duplicate PR enqueue is acceptable; downstream sync remains idempotent.
 
-### 6) Continuation Scheduling
-- Keep existing rate-budget defer behavior (`resetAt`) and debounce strategy.
-- Continuation tasks must resume from persisted cursor/cutoff rather than recomputing a fresh sliding cutoff.
-- Continuation should also be scheduled when local cap is reached before cutoff completion, not only on rate-low events.
+## Observability
+- `SyncerConvergenceSnapshot` includes discovery diagnostics:
+  - `discovery_lag_seconds`
+  - `discovery_continuation_active`
+  - `discovery_last_attempted_at`
+  - `discovery_last_successful_at`
+- Admin surfaces:
+  - read-only `RepoDiscoveryState` admin
+  - expanded convergence snapshot admin columns/filters for discovery status.
+- Task result diagnostics include:
+  - mode, scan completion, cutoff/cursor progress, continuation scheduling reason.
 
-### 7) Compatibility with Existing Backfills
-- `RepoBackfillCursor` and createdAt history backfill remain unchanged.
-- Incomplete/pending-CI/engagement backfills remain unchanged.
-- This change addresses the specific gap where remote updates are missed because updatedAt discovery window was not fully traversed.
+## Settings
+- Added:
+  - `SYNCER_DISCOVERY_OVERLAP_SECONDS` (default `300`)
+  - `SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS` (default `5`)
+- Existing settings still used:
+  - `SYNCER_DISCOVERY_LOOKBACK_MINUTES`
+  - `SYNCER_DISCOVERY_LIMIT`
+  - `SYNCER_REPO_ENQUEUE_BATCH_MAX`
+  - `SYNCER_RATE_REMAINING_MIN`
 
-## Settings Plan
-- Add:
-  - `SYNCER_DISCOVERY_OVERLAP_SECONDS` (default 300).
-  - optional `SYNCER_DISCOVERY_CONTINUATION_MAX_PAGES` (if we want explicit per-run page budget).
-- Keep existing:
-  - `SYNCER_DISCOVERY_LOOKBACK_MINUTES`,
-  - `SYNCER_DISCOVERY_LIMIT`,
-  - `SYNCER_REPO_ENQUEUE_BATCH_MAX`,
-  - `SYNCER_RATE_REMAINING_MIN`.
+## Operational Notes
+- Rollout does not require full-repo re-scan:
+  - `RepoDiscoveryState` is lazy-created per repo on first discovery run.
+- This change prevents future misses from outages/cap pressure, but does not retroactively recover updates already missed before rollout.
+  - For one-time deeper catch-up, use existing `sync_repo --since ...` workflows.
+- Schema changes:
+  - `syncer` migrations `0028` (discovery state) and `0029` (convergence observability).
 
-## Invariants and Subtleties
-- Invariant 1:
-  - Watermark represents fully completed scan boundary, never partial progress.
-- Invariant 2:
-  - Continuation cutoff is fixed for a continuation sequence.
-- Invariant 3:
-  - Cursor progression and watermark updates are performed under repo lock to avoid conflicting transitions.
-- Subtlety A:
-  - Dynamic enqueue caps may enqueue fewer PRs than discovered. Discovery completion and enqueue completion are intentionally decoupled; continuation still needed until scan coverage is complete.
-- Subtlety B:
-  - Duplicate `sync_pr` enqueue is acceptable. `sync_pr` remains idempotent via header skip + upsert behavior.
-- Subtlety C:
-  - If continuation state is stale/corrupt (invalid cursor), fail safe by clearing continuation and restarting fresh with overlap; emit warning metrics.
+## Consequences
+- Pros:
+  - robust recovery from long outages and high update churn,
+  - explicit progress semantics for discovery coverage,
+  - improved operational visibility for lag and continuation health.
+- Trade-offs:
+  - more state complexity in repo sync task,
+  - intentional duplicate work in overlap/recovery paths to preserve correctness.
 
-## Chunked Implementation Plan
-
-### Chunk 1: Model + migration + read/write scaffolding
-Status: Completed on 2026-02-23.
-- Add `RepoDiscoveryState` model and migration.
-- Register in admin for visibility (read-only fields where appropriate).
-- Add minimal model tests and import wiring.
-
-### Chunk 2: Client discovery contract
-Status: Completed on 2026-02-23.
-- Implement structured discovery helper returning progress metadata (`next_cursor`, `reached_cutoff`, `hit_limit`).
-- Add unit tests for cutoff, limit, and cursor behavior.
-
-### Chunk 3: Task mode/state transitions
-Status: Completed on 2026-02-23.
-- Update `sync_repo_since_task` to use fresh/continuation modes.
-- Persist continuation state and watermark transitions with strict invariants.
-- Keep current lock and rate-limit defer paths.
-
-### Chunk 4: Continuation scheduling for non-rate cap exhaustion
-Status: Implemented on 2026-02-23 (awaiting full-battery validation).
-- Ensure continuation is scheduled when local discovery cap is hit before cutoff completion.
-- Add debounce/guard parity with existing rate defer scheduling.
-
-### Chunk 5: Observability
-Status: Completed on 2026-02-23.
-- Extend convergence/metrics snapshots with:
-  - discovery lag,
-  - continuation active flag,
-  - last attempted/success timestamps.
-- Add admin display for quick diagnosis.
-
-### Chunk 6: Tests and failure-path hardening
-Status: Implemented on 2026-02-23 (awaiting full-battery validation).
-- Outage recovery test:
-  - no sync for > lookback; recovery eventually enqueues missed updates.
-- High churn test:
-  - > discovery limit within window; continuation covers all pages.
-- Partial-failure test:
-  - watermark does not advance on incomplete runs.
-- Boundary test:
-  - overlap prevents equality/race misses around cutoff timestamps.
-
-## Progress Notes
-- 2026-02-23:
-  - Implemented `RepoDiscoveryState` model in `qb_site/syncer/models/repo_discovery_state.py` with:
-    - `last_successful_cutoff_at`,
-    - `continuation_cutoff_at`,
-    - `continuation_cursor`,
-    - `continuation_started_at`,
-    - `last_attempted_at`,
-    - `last_successful_at`,
-    - helper methods `mark_attempted`, `set_continuation`, and `mark_success`.
-  - Generated migration `qb_site/syncer/migrations/0028_repodiscoverystate.py`.
-  - Wired model export in `qb_site/syncer/models/__init__.py`.
-  - Added read-only Django admin registration `RepoDiscoveryStateAdmin` in `qb_site/syncer/admin.py`.
-  - Added model tests in `qb_site/syncer/tests/models/test_repo_discovery_state.py`.
-  - Local verification done:
-    - `uv run ruff format` on changed files,
-    - `uv run ruff check` on changed files.
-  - Django test execution in sandbox was blocked by unavailable PostgreSQL; tests were run and confirmed passing by user.
-- 2026-02-23:
-  - Implemented structured discovery API in `qb_site/syncer/services/github_client.py`:
-    - new method `discover_changed_pr_numbers(...)` returning:
-      - `numbers`,
-      - `next_cursor`,
-      - `reached_cutoff`,
-      - `hit_limit`.
-    - supports continuation input via `after=...`.
-  - Kept backward compatibility by making `get_changed_pr_numbers(...)` delegate to `discover_changed_pr_numbers(...)` and return only `numbers`.
-  - Updated pagination behavior to avoid mid-page truncation by requesting `first=min(per_page, remaining)` so continuation via `endCursor` is safe.
-  - Added client tests in `qb_site/syncer/tests/client/test_github_client.py` for:
-    - cutoff stop semantics (`reached_cutoff`),
-    - limit stop semantics (`hit_limit` + `next_cursor`),
-    - continuation start cursor (`after`) and `max_pages` behavior,
-    - backward-compatible number-only method behavior remains covered.
-  - Local verification done:
-    - `uv run ruff format` on changed files,
-    - `uv run ruff check` on changed files,
-    - `uv run python qb_site/manage.py test syncer.tests.client.test_github_client` (passes).
-- 2026-02-23:
-  - Implemented Chunk 3 task-mode/state-transition changes in `qb_site/syncer/tasks/sync_tasks.py`:
-    - `sync_repo_since_task` now loads/creates `RepoDiscoveryState` under repo lock.
-    - Added fresh vs continuation mode selection:
-      - continuation when both `continuation_cutoff_at` and `continuation_cursor` exist,
-      - fresh otherwise.
-    - Switched discovery call to `client.discover_changed_pr_numbers(...)`.
-    - Added effective-cutoff overlap logic in fresh mode:
-      - `effective_cutoff = min(base_cutoff, last_successful_cutoff_at - overlap)` when watermark exists.
-    - Added strict state transitions:
-      - on complete scan: `mark_success(cutoff_at=effective_cutoff)` (advances watermark + clears continuation),
-      - on incomplete scan: `set_continuation(cutoff_at=effective_cutoff, cursor=next_cursor)`.
-    - Kept low-budget defer path and debounce behavior; continuation scheduling still happens on low-budget defer (non-rate cap continuation scheduling remains Chunk 4).
-    - Added summary fields for mode/progress (`mode`, `scan_complete`, `reached_cutoff`, `hit_limit`, `next_cursor`, `continuation_scheduled`).
-  - Added setting in `qb_site/qb_site/settings/base.py`:
-    - `SYNCER_DISCOVERY_OVERLAP_SECONDS` (default `300`).
-  - Updated task tests:
-    - `qb_site/syncer/tests/tasks/test_sync_repo_tasks.py`,
-    - `qb_site/syncer/tests/tasks/test_sync_repo_tasks_batch.py`.
-  - Local verification done:
-    - `uv run ruff format` on changed files,
-    - `uv run ruff check` on changed files.
-  - DB-backed task tests were not run in this sandbox.
-  - User-reported full-battery test run: passing.
-- 2026-02-23:
-  - Implemented Chunk 4 continuation scheduling in `qb_site/syncer/tasks/sync_tasks.py`:
-    - when discovery is incomplete and budget is healthy (cap/page-limited path), schedule a follow-up `sync_repo_since_task` continuation,
-    - continuation scheduling now uses debounce guard parity with low-budget path via `debounce_repo_schedule(...)`,
-    - introduced `continuation_reason` in task summary (`low_budget` vs `cap_exhausted`) and surfaced `continuation_debounce_key` for diagnostics.
-  - Added setting in `qb_site/qb_site/settings/base.py`:
-    - `SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS` (default `5`) for non-rate cap continuations.
-  - Updated task tests in `qb_site/syncer/tests/tasks/test_sync_repo_tasks.py`:
-    - low-budget continuation assertions now check `continuation_reason="low_budget"`,
-    - new cap-exhaustion test verifies continuation scheduling and debounce-key shape.
-  - Local verification done:
-    - `uv run ruff format` on changed files,
-    - `uv run ruff check` on changed files.
-  - DB-backed task tests were not run in this sandbox; pending user full-battery run.
-- 2026-02-23:
-  - Implemented Chunk 5 observability extensions on `SyncerConvergenceSnapshot`:
-    - `discovery_lag_seconds`,
-    - `discovery_continuation_active`,
-    - `discovery_last_attempted_at`,
-    - `discovery_last_successful_at`.
-  - Added migration:
-    - `qb_site/syncer/migrations/0029_syncerconvergencesnapshot_discovery_continuation_active_and_more.py`.
-  - Updated convergence collector `qb_site/syncer/tasks/collect_convergence.py` to populate discovery diagnostics from `RepoDiscoveryState`.
-  - Updated admin display in `qb_site/syncer/admin.py` to include the new discovery observability fields and filter by continuation-active state.
-  - Extended convergence task test coverage in `qb_site/syncer/tests/tasks/test_collect_convergence_task.py` for the new fields.
-  - Local verification done:
-    - `uv run ruff format` on changed files,
-    - `uv run ruff check` on changed files.
-  - DB-backed tests were not run in this sandbox; pending user full-battery run.
-- 2026-02-23:
-  - User-reported full-battery test run: passing for Chunk 5 changes.
-- 2026-02-23:
-  - Implemented Chunk 6 failure-path hardening in `qb_site/syncer/tasks/sync_tasks.py`:
-    - if continuation discovery fails (for example stale/invalid cursor), clear continuation state and retry once in fresh mode (`mode="fresh_recovery"`),
-    - preserves watermark safety invariant (no advancement on incomplete scans).
-  - Added task state-machine test coverage in `qb_site/syncer/tests/tasks/test_sync_repo_discovery_state_machine.py`:
-    - continuation across multiple runs eventually advances watermark and clears continuation state,
-    - partial/incomplete runs do not advance watermark,
-    - overlap boundary behavior uses `last_successful_cutoff_at - overlap`,
-    - invalid continuation cursor falls back to fresh recovery.
-  - Local verification done:
-    - `uv run ruff format` on changed files,
-    - `uv run ruff check` on changed files.
-  - DB-backed tests were not run in this sandbox; pending user full-battery run.
-
-## Validation Plan
-- Unit tests:
-  - discovery helper pagination semantics,
-  - task state machine transitions,
-  - watermark invariants.
-- Integration-style task tests:
-  - sequential continuation runs over mocked discovery pages,
-  - defer/retry behavior with persisted continuation.
-- Manual verification:
-  - inspect `RepoDiscoveryState` transitions for one active repo in staging/local,
-  - confirm lag metric decreases to steady-state.
-
-## Operational Rollout
-- Phase 1:
-  - ship model + task logic with metrics.
-- Phase 2:
-  - observe lag/backlog behavior for several days.
-- Phase 3:
-  - tune overlap and per-run limits if needed.
-
-## Deferred / Follow-up Work (Not Immediate)
-- Queue isolation (`SYNCER_GITHUB_QUEUE` plus dedicated worker) is deferred.
-- Analyzer pressure/sweep tuning is not part of this implementation:
-  - `ANALYZER_QUEUE_WINDOWS_SWEEP_MAX_PRS_PER_REPO` has already been lowered operationally.
-- Additional scheduling fairness work can be revisited after discovery correctness is restored.
+## Out of Scope
+- Queue isolation / dedicated GitHub queue strategy changes.
+- Analyzer scheduling redesign.
+- CreatedAt history backfill policy changes outside updatedAt discovery flow.
 
 ## References
-- `qb_site/syncer/tasks/sync_tasks.py`
+- `qb_site/syncer/models/repo_discovery_state.py`
 - `qb_site/syncer/services/github_client.py`
-- `qb_site/syncer/models/repo_backfill_cursor.py`
-- `qb_site/syncer/tasks/backfill_tasks.py`
+- `qb_site/syncer/tasks/sync_tasks.py`
 - `qb_site/syncer/tasks/collect_convergence.py`
+- `qb_site/syncer/models/convergence_snapshot.py`
+- `qb_site/syncer/admin.py`
 - `qb_site/qb_site/settings/base.py`
