@@ -15,6 +15,7 @@ from .reviewer_assignment import (
     suggest_reviewer_for_pr,
     suggest_reviewers_many,
 )
+from .reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
 from .queue_windows import (
     QueueSummary,
     QueueWindow,
@@ -44,6 +45,9 @@ __all__ = [
     "compute_area_stats",
     "suggest_reviewer_for_pr",
     "suggest_reviewers_many",
+    "ReviewerAttentionItem",
+    "ReviewerAttentionReport",
+    "build_reviewer_attention_reports",
     "QueueSummary",
     "QueueWindow",
     "queue_windows_for_pr",

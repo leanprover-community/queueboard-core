@@ -20,6 +20,7 @@ from core.models import ReviewerPreference, User
 from syncer.models import LabelDef
 from zulip_bot.commands import CommandResult, ResponseMode, get_command
 from zulip_bot.commands import assign as _assign  # noqa: F401
+from zulip_bot.commands import assigned_prs as _assigned_prs  # noqa: F401
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
