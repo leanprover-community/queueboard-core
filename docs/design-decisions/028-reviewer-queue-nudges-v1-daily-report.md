@@ -155,7 +155,7 @@
 3. Validate and normalize `notification_settings` values (`X >= 1`, `Y > X`) in form/service path.
 4. Add form tests for valid/invalid submissions and persistence.
 
-#### Chunk A3: Run-state persistence models
+#### Chunk A3: Run-state persistence models (**deferred**)
 1. Add minimal model(s) for run metadata and per-day dedupe records.
 2. Add model indexes/constraints for idempotency keys.
 3. Add tests for dedupe semantics and retry-safe writes.
@@ -171,7 +171,7 @@
 2. Add feature flags for global enable + enforcement toggle.
 
 #### Chunk B2: Dry-run execution path
-1. Run policy evaluator and persist run summary only.
+1. Run policy evaluator and emit run summary to logs/metrics only.
 2. Do not call Zulip or GitHub yet.
 3. Add structured logs + admin visibility.
 
@@ -232,6 +232,10 @@
   - Updated defaults to `X=14`, `Y=21`.
   - Added hard max validation/cap for `Y<=21`.
   - Confirmed intended policy: notification opt-out does not disable stale auto-unassign enforcement.
+- **Deferred:** Chunk A3.
+  - We are intentionally shipping V1 without run-state/dedupe tables.
+  - Near-term tradeoff is lower reliability under retries/overlapping runs and weaker post-hoc observability.
+  - We keep A3 as a future hardening step if duplicate/missed notification behavior becomes operationally problematic.
 - **Nuance discovered during implementation:**
   - Existing field-coverage guard (`reviewer_preference_unaccounted_fields`) requires every model field to be explicitly classified.
   - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
@@ -260,7 +264,7 @@
 - Trade-offs:
   - daily summaries are less immediate than live pings,
   - correctness depends on freshness of timeline/queue data at run time,
-  - some minimal run-state persistence is still needed for safe idempotency.
+  - without run-state persistence in V1, retries/overlapping runs can produce duplicate or missing daily notifications.
 
 ## Alternatives Considered
 - Build notifications directly in GitHub Actions.
