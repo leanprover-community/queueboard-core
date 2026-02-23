@@ -1033,13 +1033,17 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "incomplete_prs",
         "harvest_jobs_open",
         "history_cursor_completed",
+        "discovery_lag_seconds",
+        "discovery_continuation_active",
+        "discovery_last_attempted_at",
+        "discovery_last_successful_at",
         "prs_missing_engagement",
         "prs_engagement_incomplete",
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
         "prs_missing_head_ci_contexts",
     )
-    list_filter = ("repository", "history_cursor_completed")
+    list_filter = ("repository", "history_cursor_completed", "discovery_continuation_active")
     date_hierarchy = "collected_at"
     search_fields = ("repository__owner", "repository__name")
     raw_id_fields = ("repository",)
@@ -1051,6 +1055,10 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "incomplete_prs",
         "harvest_jobs_open",
         "history_cursor_completed",
+        "discovery_lag_seconds",
+        "discovery_continuation_active",
+        "discovery_last_attempted_at",
+        "discovery_last_successful_at",
         "prs_missing_engagement",
         "prs_engagement_incomplete",
         "prs_missing_head_ci_state",

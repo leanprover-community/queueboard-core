@@ -4,7 +4,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import PullRequest, CommitHistoryHarvest, RepoBackfillCursor, SyncerConvergenceSnapshot
+from syncer.models import PullRequest, CommitHistoryHarvest, RepoBackfillCursor, RepoDiscoveryState, SyncerConvergenceSnapshot
 from syncer.tasks.collect_convergence import collect_syncer_convergence_task
 
 
@@ -78,6 +78,15 @@ class TestCollectConvergenceTask(TestCase):
         )
         CommitHistoryHarvest.objects.create(pull_request=pr2, start_sha="a" * 40, has_more=True)
         RepoBackfillCursor.objects.create(repository=self.repo, completed=False)
+        cutoff = now - timezone.timedelta(minutes=20)
+        RepoDiscoveryState.objects.create(
+            repository=self.repo,
+            last_successful_cutoff_at=cutoff,
+            continuation_cutoff_at=cutoff,
+            continuation_cursor="CUR-1",
+            last_attempted_at=now - timezone.timedelta(minutes=2),
+            last_successful_at=now - timezone.timedelta(minutes=5),
+        )
 
         res = collect_syncer_convergence_task.apply().get()
         snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
@@ -87,8 +96,15 @@ class TestCollectConvergenceTask(TestCase):
         self.assertEqual(snap.incomplete_prs, 3)
         self.assertEqual(snap.harvest_jobs_open, 1)
         self.assertFalse(snap.history_cursor_completed)
+        self.assertIsNotNone(snap.discovery_lag_seconds)
+        self.assertGreaterEqual(int(snap.discovery_lag_seconds), 1200)
+        self.assertTrue(snap.discovery_continuation_active)
+        self.assertIsNotNone(snap.discovery_last_attempted_at)
+        self.assertIsNotNone(snap.discovery_last_successful_at)
         self.assertEqual(snap.prs_missing_engagement, 2)
         self.assertEqual(snap.prs_engagement_incomplete, 1)
         self.assertEqual(snap.prs_missing_head_ci_state, 2)
         self.assertEqual(snap.prs_missing_head_sha, 1)
+        self.assertEqual(res["per_repo"][0]["discovery_continuation_active"], True)
+        self.assertIsNotNone(res["per_repo"][0]["discovery_lag_seconds"])
         self.assertEqual(res["rows_created"], 1)
