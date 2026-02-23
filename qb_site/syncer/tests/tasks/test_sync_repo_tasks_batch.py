@@ -4,7 +4,6 @@ from unittest import mock
 
 from django.test import TestCase, override_settings
 
-from core.models import Repository
 from syncer.tasks.sync_tasks import sync_repo_since_task
 from syncer.tests.factories import make_repo
 
@@ -22,7 +21,12 @@ class TestSyncRepoTasksBatching(TestCase):
         mock_lock.return_value.__enter__.return_value = True
         gh = MockClient.return_value
         # 10 candidates discovered
-        gh.get_changed_pr_numbers.return_value = list(range(1, 11))
+        gh.discover_changed_pr_numbers.return_value = mock.Mock(
+            numbers=list(range(1, 11)),
+            reached_cutoff=True,
+            next_cursor=None,
+            hit_limit=False,
+        )
         # remaining 1000, threshold 200 -> allowed=800 -> dynamic_cap=5
         gh.get_last_rate_limit.return_value = {"remaining": 1000, "resetAt": "2030-01-01T00:00:00Z"}
 
