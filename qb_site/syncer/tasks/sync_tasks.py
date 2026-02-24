@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from celery import shared_task
 from django.db import models
+from django.db.models.functions import Coalesce
 from dateutil import parser as dtparser
 from django.utils import timezone
 from django.conf import settings
@@ -972,9 +973,38 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             "max_shas_per_pr": max_shas_int,
         }
 
+    # Max age GitHub is allowed to report a CI row as pending before we stop polling it.
+    if max_pending_hours is None:
+        max_pending_hours = int(getattr(settings, "SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
+    max_age = timedelta(hours=max_pending_hours)
+
     # Identify PRs that currently have any pending CI.
+    cr_origin = Coalesce("gh_started_at", "gh_completed_at", "created_at")
+    sc_origin = Coalesce("gh_created_at", "created_at")
     pending_cr = CheckRun.objects.filter(pull_request=OuterRef("pk")).exclude(status="COMPLETED")
     pending_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), state="PENDING")
+    eligible_pending_cr = pending_cr.filter(
+        models.Q(last_synced_at__isnull=True)
+        | models.Q(
+            last_synced_at__lt=(
+                models.ExpressionWrapper(
+                    cr_origin + models.Value(max_age),
+                    output_field=models.DateTimeField(),
+                )
+            )
+        )
+    )
+    eligible_pending_sc = pending_sc.filter(
+        models.Q(last_synced_at__isnull=True)
+        | models.Q(
+            last_synced_at__lt=(
+                models.ExpressionWrapper(
+                    sc_origin + models.Value(max_age),
+                    output_field=models.DateTimeField(),
+                )
+            )
+        )
+    )
     # Identify PRs whose head SHA has no CI contexts stored at all.
     head_cr = CheckRun.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
     head_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
@@ -982,24 +1012,17 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     prs_qs = (
         PullRequest.objects.filter(repository=repo)
         .annotate(
-            has_pending_ci=Exists(pending_cr) | Exists(pending_sc),
+            has_recent_pending_ci=Exists(eligible_pending_cr) | Exists(eligible_pending_sc),
             has_head_cr=Exists(head_cr),
             has_head_sc=Exists(head_sc),
         )
         .filter(
-            Q(has_pending_ci=True) | (Q(head_sha__isnull=False) & ~Q(head_sha="") & Q(has_head_cr=False) & Q(has_head_sc=False))
+            Q(has_recent_pending_ci=True)
+            | (Q(head_sha__isnull=False) & ~Q(head_sha="") & Q(has_head_cr=False) & Q(has_head_sc=False))
         )
         .annotate(state_rank=models.Case(models.When(state="open", then=0), default=1, output_field=models.IntegerField()))
         .order_by("state_rank", "gh_updated_at", "id")
     )
-
-    from django.utils import timezone
-    from datetime import timedelta
-
-    # Max age GitHub is allowed to report a CI row as pending before we stop polling it.
-    if max_pending_hours is None:
-        max_pending_hours = int(getattr(settings, "SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
-    max_age = timedelta(hours=max_pending_hours)
 
     prs_enqueued = 0
     shas_enqueued = 0

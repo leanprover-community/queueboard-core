@@ -390,7 +390,8 @@ class TestRefreshPendingCITask(TestCase):
 
         self.assertEqual(res.get("prs_enqueued"), 1)
         self.assertEqual(res.get("shas_enqueued"), 1)
-        self.assertEqual(res.get("prs_skipped_stale"), 2)
+        self.assertEqual(res.get("prs_skipped_stale"), 0)
+        self.assertEqual(res.get("prs_scanned_total"), 1)
         items = res.get("items") or []
         self.assertEqual(items[0]["number"], 12)
         self.assertEqual(items[0]["shas"], ["sha_ok"])
@@ -485,7 +486,7 @@ class TestRefreshPendingCITask(TestCase):
 
         self.assertEqual(res.get("prs_considered"), 1)
         self.assertEqual(res.get("backlog_prs_actionable_scanned"), 1)
-        self.assertEqual(res.get("prs_scanned_total"), 2)
-        self.assertEqual(res.get("prs_seen_pending_or_missing_head"), 2)
-        self.assertEqual(res.get("prs_skipped_stale"), 1)
+        self.assertEqual(res.get("prs_scanned_total"), 1)
+        self.assertEqual(res.get("prs_seen_pending_or_missing_head"), 1)
+        self.assertEqual(res.get("prs_skipped_stale"), 0)
         self.assertEqual(res.get("prs_enqueued"), 1)
