@@ -1018,7 +1018,13 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         )
         .filter(
             Q(has_recent_pending_ci=True)
-            | (Q(head_sha__isnull=False) & ~Q(head_sha="") & Q(has_head_cr=False) & Q(has_head_sc=False))
+            | (
+                Q(head_sha__isnull=False)
+                & ~Q(head_sha="")
+                & Q(has_head_cr=False)
+                & Q(has_head_sc=False)
+                & ~Q(head_ci_state__iexact="UNAVAILABLE")
+            )
         )
         .annotate(state_rank=models.Case(models.When(state="open", then=0), default=1, output_field=models.IntegerField()))
         .order_by("state_rank", "gh_updated_at", "id")
@@ -1033,6 +1039,7 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     per_pr: list[dict[str, Any]] = []
     skipped_stale = 0
     skipped_no_eligible = 0
+    skipped_unavailable_head_ci = 0
     prs_scanned_total = 0
     prs_seen_pending_or_missing_head = 0
 
@@ -1049,6 +1056,13 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             and not bool(getattr(pr, "has_head_sc", False))
             and str(getattr(pr, "head_ci_state", "")).upper() != "UNAVAILABLE"
         )
+        if (
+            bool(getattr(pr, "head_sha", None))
+            and not bool(getattr(pr, "has_head_cr", False))
+            and not bool(getattr(pr, "has_head_sc", False))
+            and str(getattr(pr, "head_ci_state", "")).upper() == "UNAVAILABLE"
+        ):
+            skipped_unavailable_head_ci += 1
 
         # Pending CheckRuns with acceptable "pending duration".
         cr_qs = latest_check_runs_for_pr(pr)
@@ -1167,6 +1181,7 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         "max_pending_hours": int(max_pending_hours),
         "prs_skipped_stale": skipped_stale,
         "prs_skipped_no_eligible": skipped_no_eligible,
+        "prs_skipped_unavailable_head_ci": skipped_unavailable_head_ci,
         "items": per_pr,
     }
 
