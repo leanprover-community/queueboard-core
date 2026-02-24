@@ -31,6 +31,14 @@
   - `set_continuation(cutoff_at, cursor)`
   - `mark_success(cutoff_at)` (also clears continuation fields).
 
+### Backfill Seed Semantics
+- Timeline/commit backfill completion flags are seeded from bundle pageInfo with monotone semantics.
+- For unfiltered bundles:
+  - if `hasPreviousPage=False`, mark `*_backfill_done=True` even when `startCursor` is absent.
+- For filtered timeline bundles (`timelineSince` present):
+  - do not mark timeline backfill complete from filtered pageInfo alone.
+- This avoids "stuck pending" rows where `*_backfill_done=False` and cursor is null forever.
+
 ### Discovery Query Contract
 - `GitHubClient.discover_changed_pr_numbers(...)` provides structured progress:
   - `numbers`

@@ -4,7 +4,6 @@ from unittest import mock
 
 from django.test import TestCase
 
-from core.models import Repository
 from syncer.models import PullRequest
 from syncer.models.check_run import CheckRun
 from syncer.models.status_context import StatusContext
@@ -119,3 +118,51 @@ class TestCommitBackfillSynced(TestCase):
         self.assertTrue(pr.commits_backfill_done)
         self.assertGreaterEqual(CheckRun.objects.filter(pull_request=pr, head_sha="def456").count(), 1)
         self.assertGreaterEqual(StatusContext.objects.filter(pull_request=pr, head_sha="def456").count(), 1)
+
+    @mock.patch("syncer.services.pr_sync_service.GitHubClient")
+    def test_unfiltered_bundle_without_commit_cursor_marks_backfill_done(self, MockClient) -> None:
+        svc = PRSyncService()
+        gh = MockClient.return_value
+        gh.get_pr_bundle.return_value = {
+            "data": {
+                "repository": {
+                    "id": "R_repo",
+                    "name": "r",
+                    "owner": {"login": "o"},
+                    "defaultBranchRef": {"name": "master"},
+                    "pullRequest": {
+                        "timelineItems": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                        "commits": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                    },
+                }
+            }
+        }
+
+        with mock.patch.object(
+            PRSyncService,
+            "sync_pull_request_bundle",
+            return_value={
+                "labels_created": 0,
+                "labels_updated": 0,
+                "prlabels_created": 0,
+                "prlabels_deleted": 0,
+                "events_created": 0,
+                "checkruns_upserted": 0,
+                "statusctx_upserted": 0,
+            },
+        ):
+            svc.sync_pull_request(
+                self.repo,
+                number=101,
+                client=gh,  # type: ignore[arg-type]
+                timelineK=1,
+                commitsM=1,
+                max_timeline_pages=0,
+                max_commit_pages=0,
+                backfill_timeline_pages=0,
+                backfill_commit_pages=0,
+            )
+
+        pr = PullRequest.objects.get(repository=self.repo, number=101)
+        self.assertTrue(pr.commits_backfill_done)
+        self.assertIsNone(pr.commits_backfill_cursor)
