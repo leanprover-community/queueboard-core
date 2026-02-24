@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from core.models import Repository
 from syncer.models import CIShaFetchState, PullRequest, CheckRun, StatusContext
-from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task, sync_ci_for_shas_task
+from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.factories import make_repo, make_pr
 
@@ -247,7 +247,7 @@ class TestRefreshPendingCITask(TestCase):
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_open_prs_prioritized_over_closed(self, mock_sync_ci_for_shas) -> None:
         now = timezone.now()
-        closed_pr = make_pr(self.repo, 20, state="closed", gh_updated_at=now - timedelta(hours=2), head_sha="sha_closed")
+        make_pr(self.repo, 20, state="closed", gh_updated_at=now - timedelta(hours=2), head_sha="sha_closed")
         open_pr = make_pr(self.repo, 21, state="open", gh_updated_at=now - timedelta(hours=1), head_sha="sha_open")
         self._make_checkrun(pr=open_pr, status="IN_PROGRESS", head_sha="sha_open", started_at_delta_hours=1)
 
@@ -395,3 +395,97 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(items[0]["number"], 12)
         self.assertEqual(items[0]["shas"], ["sha_ok"])
         mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=60)
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_multi_sha_gating_keeps_allowed_sha_when_head_sha_blocked(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = "sha_missing"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        self._make_status(state="PENDING", head_sha="sha_ok", created_delta_hours=1, last_synced_at_delta_hours=None)
+
+        blocked = CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha_missing",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="filtered",
+            attempts=2,
+        )
+        CIShaFetchState.objects.filter(pk=blocked.pk).update(created_at=timezone.now() - timedelta(minutes=5))
+        mock_sync_ci_for_shas.delay.return_value.id = "task-mixed"
+
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        self.assertEqual(res.get("shas_skipped_backoff"), 1)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["reason"], "missing_head_ci")
+        self.assertEqual(items[0]["shas"], ["sha_ok"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_mixed_missing_head_and_pending_reasons(self, mock_sync_ci_for_shas) -> None:
+        now = timezone.now()
+        make_pr(self.repo, 30, state="open", gh_updated_at=now - timedelta(hours=2), head_sha="sha_missing")
+        pr_pending = make_pr(self.repo, 31, state="open", gh_updated_at=now - timedelta(hours=1), head_sha="sha_pending")
+        self._make_status(pr=pr_pending, state="PENDING", head_sha="sha_pending", created_delta_hours=1)
+
+        mock_sync_ci_for_shas.delay.side_effect = [
+            mock.Mock(id="task-a"),
+            mock.Mock(id="task-b"),
+        ]
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=2, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 2)
+        reasons = {item["reason"] for item in (res.get("items") or [])}
+        self.assertEqual(reasons, {"missing_head_ci", "pending_ci"})
+        mock_sync_ci_for_shas.delay.assert_called()
+
+    @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=60)
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_scans_past_backoff_blocked_prs_to_enqueue_later_pr(self, mock_sync_ci_for_shas) -> None:
+        now = timezone.now()
+        pr1 = make_pr(self.repo, 40, state="open", gh_updated_at=now - timedelta(hours=3), head_sha="sha_block_1")
+        pr2 = make_pr(self.repo, 41, state="open", gh_updated_at=now - timedelta(hours=2), head_sha="sha_block_2")
+        make_pr(self.repo, 42, state="open", gh_updated_at=now - timedelta(hours=1), head_sha="sha_ok")
+        for pr, sha in ((pr1, "sha_block_1"), (pr2, "sha_block_2")):
+            state = CIShaFetchState.objects.create(
+                repository=self.repo,
+                sha=sha,
+                last_attempted_at=timezone.now(),
+                last_success_at=None,
+                last_result="filtered",
+                attempts=2,
+            )
+            CIShaFetchState.objects.filter(pk=state.pk).update(created_at=timezone.now() - timedelta(minutes=5))
+
+        mock_sync_ci_for_shas.delay.return_value.id = "task-later"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=1, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("prs_skipped_backoff"), 2)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["number"], 42)
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_reports_scan_counters(self, mock_sync_ci_for_shas) -> None:
+        now = timezone.now()
+        pr1 = make_pr(self.repo, 50, state="open", gh_updated_at=now - timedelta(hours=2), head_sha="sha_old")
+        pr2 = make_pr(self.repo, 51, state="open", gh_updated_at=now - timedelta(hours=1), head_sha="sha_ok")
+        self._make_checkrun(
+            pr=pr1,
+            status="IN_PROGRESS",
+            head_sha="sha_old",
+            started_at_delta_hours=48,
+            last_synced_at_delta_hours=0,
+        )
+        self._make_status(pr=pr2, state="PENDING", head_sha="sha_ok", created_delta_hours=1)
+
+        mock_sync_ci_for_shas.delay.return_value.id = "task-counters"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=1, max_shas_per_pr=5, max_pending_hours=12)
+
+        self.assertEqual(res.get("prs_considered"), 1)
+        self.assertEqual(res.get("backlog_prs_actionable_scanned"), 1)
+        self.assertEqual(res.get("prs_scanned_total"), 2)
+        self.assertEqual(res.get("prs_seen_pending_or_missing_head"), 2)
+        self.assertEqual(res.get("prs_skipped_stale"), 1)
+        self.assertEqual(res.get("prs_enqueued"), 1)

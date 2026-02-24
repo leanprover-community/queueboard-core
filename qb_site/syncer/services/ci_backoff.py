@@ -37,6 +37,24 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
     if not sha:
         return False
     state = CIShaFetchState.objects.filter(repository=pr.repository, sha=sha).first()
+    return should_enqueue_ci_sha_with_state(pr=pr, sha=sha, state=state, reason=reason)
+
+
+def should_enqueue_ci_sha_with_state(
+    *,
+    pr: PullRequest,
+    sha: str,
+    state: CIShaFetchState | None,
+    reason: str | None = None,
+) -> bool:
+    """Return True if CI-by-SHA should be enqueued using a preloaded fetch-state.
+
+    This mirrors ``should_enqueue_ci_sha`` but avoids a per-SHA database query
+    when callers have already loaded ``CIShaFetchState`` rows in bulk.
+    """
+    _ = reason
+    if not sha:
+        return False
     if state is None:
         return True
     last = state.last_result or ""
