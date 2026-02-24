@@ -313,6 +313,10 @@ function optionsFromParams() {
       sort_config.push([getIdx(col), dir]);
     }
    }
+  if (STANDARD && sort_config.length === 0) {
+    sort_config = [[getIdx("totalTimeReview", false), "desc"]];
+    sort_config_approvals = [[getIdx("totalTimeReview", true), "desc"]];
+  }
   const options = {
     stateDuration: 0,
     pageLength: pageLength,
