@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import resource
 import sys
+from datetime import timezone
+from datetime import datetime
 from typing import Optional
 
-from celery.signals import task_postrun, task_prerun
+from celery.signals import before_task_publish, task_postrun, task_prerun
 from django_celery_results.models import TaskResult
 
 from core.models import TaskResultLink
@@ -104,5 +106,16 @@ def log_task_rss_postrun(sender=None, task_id=None, task=None, **kwargs):  # pra
         rss_mb = _rss_mb()
         if rss_mb is not None:
             log.info("celery_rss event=postrun task=%s id=%s rss_mb=%.1f", getattr(task, "name", sender), task_id, rss_mb)
+    except Exception:
+        return
+
+
+@before_task_publish.connect
+def stamp_enqueue_headers(headers=None, **kwargs):  # pragma: no cover - integration hook
+    """Attach best-effort publish-time metadata to task headers."""
+    if not isinstance(headers, dict):
+        return
+    try:
+        headers.setdefault("qb_enqueued_at", datetime.now(tz=timezone.utc).isoformat())
     except Exception:
         return

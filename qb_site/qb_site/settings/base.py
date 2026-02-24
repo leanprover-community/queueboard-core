@@ -384,10 +384,12 @@ if ANALYTICS_CONVERGENCE_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["collect_convergence"] = {
         "task": "syncer.collect_convergence",
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
+        "options": {"headers": {"qb_enqueue_source": "beat_syncer_convergence"}},
     }
     CELERY_BEAT_SCHEDULE["collect_analyzer_convergence"] = {
         "task": "analyzer.collect_convergence",
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
+        "options": {"headers": {"qb_enqueue_source": "beat_analyzer_convergence"}},
     }
 # Optional engagement backfill; disable by setting SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS<=0
 if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:

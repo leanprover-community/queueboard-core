@@ -17,9 +17,21 @@ from syncer.models import (
 from core.models import Repository
 
 
-@shared_task(name="syncer.collect_convergence")
-def collect_syncer_convergence_task() -> dict:
+@shared_task(name="syncer.collect_convergence", bind=True)
+def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
     """Collect backfill/convergence counts per active repository."""
+    headers = getattr(self.request, "headers", {}) or {}
+    enqueue_source = headers.get("qb_enqueue_source") if isinstance(headers, dict) else None
+    delivery_info = getattr(self.request, "delivery_info", {}) or {}
+    request_meta = {
+        "id": getattr(self.request, "id", None),
+        "root_id": getattr(self.request, "root_id", None),
+        "parent_id": getattr(self.request, "parent_id", None),
+        "queue": delivery_info.get("routing_key") if isinstance(delivery_info, dict) else None,
+        "exchange": delivery_info.get("exchange") if isinstance(delivery_info, dict) else None,
+        "enqueue_source": enqueue_source or "unknown",
+        "enqueued_at": headers.get("qb_enqueued_at") if isinstance(headers, dict) else None,
+    }
     collected_at = timezone.now()
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     rows = 0
@@ -118,4 +130,4 @@ def collect_syncer_convergence_task() -> dict:
                 "prs_missing_head_ci_contexts": missing_head_contexts,
             }
         )
-    return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo}
+    return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo, "request_meta": request_meta}

@@ -1075,7 +1075,7 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
             try:
                 from syncer.tasks.collect_convergence import collect_syncer_convergence_task
 
-                async_res = collect_syncer_convergence_task.delay()
+                async_res = collect_syncer_convergence_task.apply_async(headers={"qb_enqueue_source": "admin_syncer_convergence"})
                 self.message_user(request, f"Enqueued syncer convergence collection task: {async_res.id}")
             except Exception as exc:  # pragma: no cover - external dependency
                 self.message_user(request, f"Failed to enqueue syncer convergence collection: {exc}")
