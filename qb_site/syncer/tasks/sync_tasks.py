@@ -17,10 +17,10 @@ from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
-from syncer.services.ci_backoff import should_enqueue_ci_sha, record_ci_sha_fetch
+from syncer.services.ci_backoff import record_ci_sha_fetch, should_enqueue_ci_sha_with_state
 from syncer.services.status_contexts import latest_status_contexts_for_pr
 from syncer.services.check_runs import latest_check_runs_for_pr
-from syncer.models import CheckRun, StatusContext
+from syncer.models import CIShaFetchState, CheckRun, StatusContext
 from core.celery_signals import enqueue_with_parent
 
 
@@ -1010,12 +1010,16 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     per_pr: list[dict[str, Any]] = []
     skipped_stale = 0
     skipped_no_eligible = 0
+    prs_scanned_total = 0
+    prs_seen_pending_or_missing_head = 0
 
     now = timezone.now()
 
     # Gather actionable PRs by scanning until we have max_prs_int eligible.
     actionable_found = 0
     for pr in prs_qs.iterator():
+        prs_scanned_total += 1
+        prs_seen_pending_or_missing_head += 1
         missing_head_ci = (
             bool(getattr(pr, "head_sha", None))
             and not bool(getattr(pr, "has_head_cr", False))
@@ -1070,7 +1074,23 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             continue
         shas = shas[:max_shas_int]
         pre_gate_count = len(shas)
-        shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="refresh_pending_ci")]
+        state_by_sha = {
+            row.sha: row
+            for row in CIShaFetchState.objects.filter(
+                repository=pr.repository,
+                sha__in=shas,
+            )
+        }
+        shas = [
+            sha
+            for sha in shas
+            if should_enqueue_ci_sha_with_state(
+                pr=pr,
+                sha=sha,
+                state=state_by_sha.get(sha),
+                reason="refresh_pending_ci",
+            )
+        ]
 
         # Enqueue CI refresh for these SHAs.
         if not shas:
@@ -1117,6 +1137,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         "prs_skipped_backoff": prs_skipped_backoff,
         "shas_skipped_backoff": shas_skipped_backoff,
         "backlog_prs_actionable_scanned": actionable_found,
+        "prs_scanned_total": prs_scanned_total,
+        "prs_seen_pending_or_missing_head": prs_seen_pending_or_missing_head,
         "max_prs": max_prs_int,
         "max_shas_per_pr": max_shas_int,
         "max_pending_hours": int(max_pending_hours),
