@@ -332,28 +332,34 @@ class PRSyncService:
         # don't treat a filtered window as full history.
         tl_conn0 = pr.get("timelineItems") or {}
         page0 = tl_conn0.get("pageInfo") or {}
+        timeline_seed_updates: list[str] = []
         if not pr_obj.timeline_backfill_cursor:
             start_cur = page0.get("startCursor")
             if start_cur:
                 pr_obj.timeline_backfill_cursor = start_cur
-                update_fields = ["timeline_backfill_cursor"]
-                if timeline_since_iso is None:
-                    pr_obj.timeline_backfill_done = not bool(page0.get("hasPreviousPage"))
-                    update_fields.append("timeline_backfill_done")
-                pr_obj.save(update_fields=update_fields)
+                timeline_seed_updates.append("timeline_backfill_cursor")
+        if timeline_since_iso is None and not bool(page0.get("hasPreviousPage")) and not pr_obj.timeline_backfill_done:
+            pr_obj.timeline_backfill_done = True
+            timeline_seed_updates.append("timeline_backfill_done")
+        if timeline_seed_updates:
+            pr_obj.save(update_fields=timeline_seed_updates)
         # Seed commits backfill state from bundle pageInfo if missing.
         # Note: we only mark commits_backfill_done=True here when the bundle
         # already includes the entire commits connection (hasPreviousPage=False),
         # and never force it back to False (monotone semantics).
         c_conn0 = pr.get("commits") or {}
         c_page0 = c_conn0.get("pageInfo") or {}
+        commit_seed_updates: list[str] = []
         if not pr_obj.commits_backfill_cursor:
             c_start = c_page0.get("startCursor")
             if c_start:
                 pr_obj.commits_backfill_cursor = c_start
-                if not bool(c_page0.get("hasPreviousPage")) and not pr_obj.commits_backfill_done:
-                    pr_obj.commits_backfill_done = True
-                pr_obj.save(update_fields=["commits_backfill_cursor", "commits_backfill_done"])
+                commit_seed_updates.append("commits_backfill_cursor")
+        if not bool(c_page0.get("hasPreviousPage")) and not pr_obj.commits_backfill_done:
+            pr_obj.commits_backfill_done = True
+            commit_seed_updates.append("commits_backfill_done")
+        if commit_seed_updates:
+            pr_obj.save(update_fields=commit_seed_updates)
         # Log bundle query cost if available
         if rate_log is not None:
             rl = client.get_last_rate_limit()

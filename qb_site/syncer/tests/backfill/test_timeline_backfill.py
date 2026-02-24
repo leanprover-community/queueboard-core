@@ -4,7 +4,6 @@ from unittest import mock
 
 from django.test import TestCase
 
-from core.models import Repository
 from syncer.models import PullRequest, PRTimelineEvent
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tasks.backfill_tasks import backfill_repo_incomplete_prs_task
@@ -130,7 +129,7 @@ class TestTimelineBackfill(TestCase):
         svc = PRSyncService()
         gh = MockClient.return_value
 
-        # Bundle with empty timeline page and no startCursor (e.g., since window too recent)
+        # Bundle with no startCursor but still indicating older pages exist.
         gh.get_pr_bundle.return_value = {
             "data": {
                 "repository": {
@@ -139,7 +138,7 @@ class TestTimelineBackfill(TestCase):
                     "owner": {"login": "o"},
                     "defaultBranchRef": {"name": "master"},
                     "pullRequest": {
-                        "timelineItems": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                        "timelineItems": {"pageInfo": {"hasPreviousPage": True, "startCursor": None}, "nodes": []},
                         "commits": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
                     },
                 }
@@ -339,6 +338,54 @@ class TestTimelineBackfill(TestCase):
 
         pr = PullRequest.objects.get(repository=self.repo, number=99)
         self.assertFalse(pr.timeline_backfill_done)
+        self.assertIsNone(pr.timeline_backfill_cursor)
+
+    @mock.patch("syncer.services.pr_sync_service.GitHubClient")
+    def test_unfiltered_bundle_without_cursor_marks_backfill_done(self, MockClient) -> None:
+        svc = PRSyncService()
+        gh = MockClient.return_value
+
+        gh.get_pr_bundle.return_value = {
+            "data": {
+                "repository": {
+                    "id": "R_repo",
+                    "name": "r",
+                    "owner": {"login": "o"},
+                    "defaultBranchRef": {"name": "master"},
+                    "pullRequest": {
+                        "timelineItems": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                        "commits": {"pageInfo": {"hasPreviousPage": False, "startCursor": None}, "nodes": []},
+                    },
+                }
+            }
+        }
+
+        with mock.patch.object(
+            PRSyncService,
+            "sync_pull_request_bundle",
+            return_value={
+                "labels_created": 0,
+                "labels_updated": 0,
+                "prlabels_created": 0,
+                "prlabels_deleted": 0,
+                "events_created": 0,
+                "checkruns_upserted": 0,
+                "statusctx_upserted": 0,
+            },
+        ):
+            svc.sync_pull_request(
+                self.repo,
+                number=99,
+                client=gh,
+                timelineK=2,
+                commitsM=0,
+                max_timeline_pages=0,
+                max_commit_pages=0,
+                backfill_timeline_pages=0,
+            )
+
+        pr = PullRequest.objects.get(repository=self.repo, number=99)
+        self.assertTrue(pr.timeline_backfill_done)
         self.assertIsNone(pr.timeline_backfill_cursor)
 
     @mock.patch("syncer.services.pr_sync_service.GitHubClient")
