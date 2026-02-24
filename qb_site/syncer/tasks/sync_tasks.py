@@ -1009,15 +1009,15 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     head_cr = CheckRun.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
     head_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
 
+    has_recent_pending_ci = Exists(eligible_pending_cr) | Exists(eligible_pending_sc)
     prs_qs = (
         PullRequest.objects.filter(repository=repo)
         .annotate(
-            has_recent_pending_ci=Exists(eligible_pending_cr) | Exists(eligible_pending_sc),
             has_head_cr=Exists(head_cr),
             has_head_sc=Exists(head_sc),
         )
         .filter(
-            Q(has_recent_pending_ci=True)
+            has_recent_pending_ci
             | (
                 Q(head_sha__isnull=False)
                 & ~Q(head_sha="")
@@ -1027,6 +1027,7 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             )
         )
         .annotate(state_rank=models.Case(models.When(state="open", then=0), default=1, output_field=models.IntegerField()))
+        .only("id", "number", "state", "gh_updated_at", "head_sha", "head_ci_state")
         .order_by("state_rank", "gh_updated_at", "id")
     )
 
