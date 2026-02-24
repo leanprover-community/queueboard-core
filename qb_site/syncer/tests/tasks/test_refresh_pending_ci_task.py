@@ -227,6 +227,9 @@ class TestRefreshPendingCITask(TestCase):
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
         self.assertEqual(res.get("prs_enqueued"), 0)
         self.assertEqual(res.get("shas_enqueued"), 0)
+        # UNAVAILABLE rows should be filtered out before scanning.
+        self.assertEqual(res.get("prs_scanned_total"), 0)
+        self.assertEqual(res.get("prs_skipped_unavailable_head_ci"), 0)
         mock_sync_ci_for_shas.delay.assert_not_called()
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
