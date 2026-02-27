@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from datetime import timezone
 
+from analyzer.services.reviewer_attention_format import (
+    format_compact_duration,
+    format_since_timestamp,
+    sort_by_assignment_recency,
+    sort_by_queue_age,
+)
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
 from core.models import ReviewerPreference, User
 from syncer.models import PRLabel
@@ -119,24 +125,12 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
 def _render_items(*, items: tuple[ReviewerAttentionItem, ...], maintainer_merge_pr_numbers: set[int]) -> list[str]:
     lines: list[str] = []
     maintainer_merged_items = tuple(
-        sorted(
-            (item for item in items if item.is_on_queue and int(item.pr_number) in maintainer_merge_pr_numbers),
-            key=lambda entry: (
-                -(entry.days_on_queue_since_assignment or -1),
-                entry.pr_number,
-            ),
-        )
+        sort_by_queue_age([item for item in items if item.is_on_queue and int(item.pr_number) in maintainer_merge_pr_numbers])
     )
     on_queue_items = tuple(
-        sorted(
-            (item for item in items if item.is_on_queue and int(item.pr_number) not in maintainer_merge_pr_numbers),
-            key=lambda entry: (
-                -(entry.days_on_queue_since_assignment or -1),
-                entry.pr_number,
-            ),
-        )
+        sort_by_queue_age([item for item in items if item.is_on_queue and int(item.pr_number) not in maintainer_merge_pr_numbers])
     )
-    off_queue_items = tuple(sorted((item for item in items if not item.is_on_queue), key=lambda entry: entry.pr_number))
+    off_queue_items = tuple(sort_by_assignment_recency([item for item in items if not item.is_on_queue]))
 
     lines.extend(_render_item_group(title=f"On Queue ({len(on_queue_items)})", items=on_queue_items, include_consecutive=True))
     lines.extend(
@@ -167,6 +161,7 @@ def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], 
             else:
                 consecutive_seconds = int(item.days_on_queue_since_assignment) * 24 * 60 * 60
                 lines.append(f"  - Consecutive queue age since assignment: {_format_duration(consecutive_seconds)}")
+        lines.append(f"  - Assigned: {format_since_timestamp(item.last_assigned_at)}")
         if item.total_queue_days is None:
             lines.append("  - Total queue time: unavailable")
         else:
@@ -186,29 +181,7 @@ def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], 
 
 
 def _format_duration(total_seconds: int) -> str:
-    if total_seconds < 0:
-        total_seconds = 0
-    delta = timedelta(seconds=int(total_seconds))
-    seconds = int(delta.total_seconds())
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
-
-    # Readability thresholds:
-    # - >= 5 days: day precision
-    # - [1 day, 5 days): days + hours
-    # - [1 hour, 1 day): hours + minutes
-    # - [1 minute, 1 hour): minutes + seconds
-    # - < 1 minute: seconds
-    if days >= 5:
-        return f"{days}d"
-    if days >= 1:
-        return f"{days}d {hours}h"
-    if hours >= 1:
-        return f"{hours}h {minutes}m"
-    if minutes >= 1:
-        return f"{minutes}m {secs}s"
-    return f"{secs}s"
+    return format_compact_duration(total_seconds)
 
 
 def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:

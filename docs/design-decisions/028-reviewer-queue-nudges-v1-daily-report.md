@@ -182,7 +182,7 @@
 2. Review "would-nudge/would-unassign" outputs and tune defaults.
 
 ### Sub-plan C: Enable messaging and enforcement
-#### Chunk C1: Zulip summary delivery
+#### Chunk C1: Zulip summary delivery (**completed**)
 1. Send one summary DM per reviewer when report non-empty.
 2. Record delivery outcomes and retry-safe status.
 
@@ -284,6 +284,24 @@
   - The newly-assigned window is now derived from reviewer-attention sweep scheduling:
     - fixed UTC clock mode (`ANALYZER_REVIEWER_ATTENTION_UTC_HOUR` / `..._MINUTE`) => 24h window,
     - interval mode (`ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`) => interval-sized window.
+- **Completed:** Chunk C1.
+  - Added optional Zulip summary delivery in `analyzer.reviewer_attention_daily` behind `ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED`.
+  - Sends one DM per reviewer per run (aggregated across repositories) when reviewer has events of interest and notifications enabled.
+  - Message includes category-grouped PR lists:
+    - newly assigned,
+    - needs nudge,
+    - auto-unassign candidates.
+  - Added structured delivery outcomes in task result payload (attempted/sent/failed/skipped plus per-reviewer statuses).
+  - Current retry-safety/observability note: outcomes are recorded in task result/logs, but no dedicated run-state tables yet (A3 remains deferred).
+- **2026-02-27 message/UX tuning:**
+  - Refined reviewer DM content for compact actionable summaries:
+    - "Newly assigned" now includes assignment timestamp (`since <time:...>`) and relative age.
+    - "Needs nudge" copy updated to compactly state consecutive queue days since assignment.
+    - Auto-unassign section wording now distinguishes threshold vs actual unassignment based on enforcement mode.
+  - Added actionable reminders in DM footer:
+    - `unassign` command syntax example,
+    - `prefs` command hint for notification setting changes.
+  - Factored shared formatting/sorting helpers for reviewer attention views so daily DM and `assigned_prs` stay aligned on ordering and "assigned X ago" rendering.
 
 ## Operational Notes
 - Suggested schedule relationship:
