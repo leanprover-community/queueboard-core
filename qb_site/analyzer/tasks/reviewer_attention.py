@@ -10,6 +10,8 @@ from django.conf import settings
 from analyzer.services import build_reviewer_attention_reports
 from analyzer.services.reviewer_attention_format import format_since_timestamp, sort_by_assignment_recency, sort_by_queue_age
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
+from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
+from core.services.github_operation_tokens import resolve_github_app_operation_token
 from core.models import Repository, User
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -76,6 +78,7 @@ def _render_reviewer_message(
     reviewer_login: str,
     repo_reports: list[tuple[str, ReviewerAttentionReport]],
     enforcement_enabled: bool,
+    unassign_outcomes: dict[tuple[int, int, int], str],
 ) -> str:
     lines: list[str] = [
         "### Assigned queue PRs that need your attention",
@@ -104,12 +107,33 @@ def _render_reviewer_message(
                 lines.append(f"  - on queue for {item.days_on_queue_since_assignment or 0} consecutive days since assignment")
                 lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
         if unassign_items:
-            heading = "Auto-unassigned in this run" if enforcement_enabled else "At auto-unassign threshold"
-            lines.append(f"{heading} ({len(unassign_items)}):")
-            for item in unassign_items:
-                lines.append(f"{_format_item_line(item)}")
-                lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
-                lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
+            if enforcement_enabled:
+                unassigned_items: list[ReviewerAttentionItem] = []
+                threshold_items: list[ReviewerAttentionItem] = []
+                for item in unassign_items:
+                    outcome = unassign_outcomes.get((report.repository_id, int(report.reviewer_user_id), item.pr_number))
+                    if outcome == "unassigned":
+                        unassigned_items.append(item)
+                    else:
+                        threshold_items.append(item)
+                if unassigned_items:
+                    lines.append(f"Auto-unassigned in this run ({len(unassigned_items)}):")
+                    for item in unassigned_items:
+                        lines.append(f"{_format_item_line(item)}")
+                        lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
+                        lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
+                if threshold_items:
+                    lines.append(f"At auto-unassign threshold ({len(threshold_items)}):")
+                    for item in threshold_items:
+                        lines.append(f"{_format_item_line(item)}")
+                        lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
+                        lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
+            else:
+                lines.append(f"At auto-unassign threshold ({len(unassign_items)}):")
+                for item in unassign_items:
+                    lines.append(f"{_format_item_line(item)}")
+                    lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
+                    lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
         lines.append("")
 
     lines.append("Tips:")
@@ -165,6 +189,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "missing_assignment_timestamps": 0,
         "warnings": 0,
     }
+    auto_unassign_candidates: list[dict[str, Any]] = []
 
     for repo in repos:
         reports = build_reviewer_attention_reports(
@@ -200,6 +225,18 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         repos_summary.append(repo_payload)
 
         for report in reports:
+            for item in report.items:
+                if item.needs_auto_unassign:
+                    auto_unassign_candidates.append(
+                        {
+                            "repository_id": int(repo.id),
+                            "owner": repo.owner,
+                            "repo": repo.name,
+                            "reviewer_login": report.reviewer_login,
+                            "reviewer_user_id": int(report.reviewer_user_id),
+                            "pr_number": int(item.pr_number),
+                        }
+                    )
             if not report.has_notifications_to_send:
                 continue
             bucket = reports_by_reviewer.setdefault(
@@ -221,6 +258,47 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         totals["would_new_assignment_ping"] += would_new_assignment_ping
         totals["missing_assignment_timestamps"] += missing_assignment_timestamps
         totals["warnings"] += warnings
+
+    enforcement_stats = {
+        "candidates": len(auto_unassign_candidates),
+        "attempted": 0,
+        "unassigned": 0,
+        "failed": 0,
+        "skipped_disabled": 0,
+        "skipped_no_token": 0,
+    }
+    unassign_outcomes: dict[tuple[int, int, int], str] = {}
+    if enforcement_enabled:
+        assignment_clients_by_repo: dict[int, GitHubAssignmentClient] = {}
+        for candidate in auto_unassign_candidates:
+            repo_id = int(candidate["repository_id"])
+            pr_number = int(candidate["pr_number"])
+            reviewer_login = str(candidate["reviewer_login"])
+            owner = str(candidate["owner"])
+            repo_name = str(candidate["repo"])
+            token = resolve_github_app_operation_token(operation="unassign_pr", owner=owner, repo=repo_name)
+            if not token:
+                enforcement_stats["skipped_no_token"] += 1
+                unassign_outcomes[(repo_id, int(candidate["reviewer_user_id"]), pr_number)] = "skipped_no_token"
+                continue
+            client = assignment_clients_by_repo.get(repo_id)
+            if client is None:
+                client = GitHubAssignmentClient(token=token)
+                assignment_clients_by_repo[repo_id] = client
+            enforcement_stats["attempted"] += 1
+            try:
+                client.unassign(owner=owner, repo=repo_name, number=pr_number, github_login=reviewer_login)
+                enforcement_stats["unassigned"] += 1
+                unassign_outcomes[(repo_id, int(candidate["reviewer_user_id"]), pr_number)] = "unassigned"
+            except AssignmentMutationError:
+                enforcement_stats["failed"] += 1
+                unassign_outcomes[(repo_id, int(candidate["reviewer_user_id"]), pr_number)] = "failed"
+    else:
+        enforcement_stats["skipped_disabled"] = len(auto_unassign_candidates)
+        for candidate in auto_unassign_candidates:
+            unassign_outcomes[
+                (int(candidate["repository_id"]), int(candidate["reviewer_user_id"]), int(candidate["pr_number"]))
+            ] = "skipped_disabled"
 
     users_by_id = {
         int(user.id): user
@@ -294,6 +372,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
             reviewer_login=reviewer_login,
             repo_reports=list(payload["repo_reports"]),
             enforcement_enabled=enforcement_enabled,
+            unassign_outcomes=unassign_outcomes,
         )
         chunks = _split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS)
         delivery_stats["attempted"] += 1
@@ -335,6 +414,9 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "delivery": {
             "stats": delivery_stats,
             "per_reviewer": deliveries,
+        },
+        "enforcement": {
+            "stats": enforcement_stats,
         },
     }
 
