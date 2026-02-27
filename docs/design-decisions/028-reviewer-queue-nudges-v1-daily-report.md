@@ -321,7 +321,7 @@
 - **2026-02-27 manual execution tooling completed:**
   - Added a ReviewerPreference admin tool ("Run reviewer nudges") to manually trigger `analyzer.reviewer_attention_daily`.
   - Added run options for testing:
-    - `dry_run` (forces no unassign mutations),
+    - explicit auto-unassign enforcement toggle (unchecked is read-only),
     - optional Zulip delivery toggle,
     - optional reviewer-delivery allowlist via checkbox list of reviewer GitHub usernames,
     - optional repository scoping and async-vs-inline execution.
