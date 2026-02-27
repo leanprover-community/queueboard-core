@@ -125,6 +125,22 @@ class ReviewerAttentionDailyTaskTests(TestCase):
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
         ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_POLICY_START_AT="2026-02-20",
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    def test_parses_policy_start_at_setting_and_passes_to_service(self, mock_build_reports) -> None:
+        mock_build_reports.return_value = []
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertFalse(res["skipped"])
+        self.assertEqual(res["policy_start_at"], "2026-02-20T00:00:00+00:00")
+        kwargs = mock_build_reports.call_args.kwargs
+        self.assertEqual(str(kwargs["policy_start_at"].isoformat()), "2026-02-20T00:00:00+00:00")
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
         ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
     )
     @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")

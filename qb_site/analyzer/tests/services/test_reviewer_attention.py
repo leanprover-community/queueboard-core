@@ -209,3 +209,37 @@ class ReviewerAttentionServiceTests(TestCase):
         item = report.items[0]
 
         self.assertFalse(item.needs_new_assignment_ping)
+
+    def test_policy_start_at_caps_queue_age_for_flags(self) -> None:
+        pr = self._mk_pr(109, assignees=["alice"])
+        self._add_assignment_event(pr=pr, assignee_login="alice", occurred_at=self.now - timedelta(days=30))
+        self._add_active_window(pr=pr, from_ts=self.now - timedelta(days=30))
+        policy_start_at = self.now - timedelta(days=5)
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            policy_start_at=policy_start_at,
+        )
+        item = reports[0].items[0]
+
+        self.assertEqual(item.last_assigned_at, self.now - timedelta(days=30))
+        self.assertEqual(item.days_on_queue_since_assignment, 5)
+        self.assertFalse(item.needs_nudge)
+        self.assertFalse(item.needs_auto_unassign)
+
+    def test_policy_start_at_suppresses_new_assignment_ping_before_floor(self) -> None:
+        pr = self._mk_pr(110, assignees=["alice"])
+        assigned_at = self.now - timedelta(hours=12)
+        self._add_assignment_event(pr=pr, assignee_login="alice", occurred_at=assigned_at)
+        policy_start_at = self.now - timedelta(hours=6)
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            new_assignment_ping_window_seconds=24 * 60 * 60,
+            policy_start_at=policy_start_at,
+        )
+        item = reports[0].items[0]
+
+        self.assertFalse(item.needs_new_assignment_ping)

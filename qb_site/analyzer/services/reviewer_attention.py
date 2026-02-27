@@ -57,6 +57,7 @@ def build_reviewer_attention_reports(
     as_of: datetime | None = None,
     rule_set: QueueRuleSet | None = None,
     new_assignment_ping_window_seconds: int = 24 * 60 * 60,
+    policy_start_at: datetime | None = None,
 ) -> list[ReviewerAttentionReport]:
     """Build read-only reviewer attention reports from current DB state.
 
@@ -68,7 +69,12 @@ def build_reviewer_attention_reports(
     now_ts = as_of or datetime.now(timezone.utc)
     if now_ts.tzinfo is None:
         now_ts = now_ts.replace(tzinfo=timezone.utc)
+    policy_start_ts = policy_start_at
+    if policy_start_ts is not None and policy_start_ts.tzinfo is None:
+        policy_start_ts = policy_start_ts.replace(tzinfo=timezone.utc)
     new_assignment_ping_cutoff = now_ts - timedelta(seconds=max(1, int(new_assignment_ping_window_seconds)))
+    if policy_start_ts is not None and policy_start_ts > new_assignment_ping_cutoff:
+        new_assignment_ping_cutoff = policy_start_ts
 
     active_rule_set = rule_set
     if active_rule_set is None:
@@ -186,6 +192,8 @@ def build_reviewer_attention_reports(
                     warnings.append(f"Missing assignment timestamp for PR #{pr_number}.")
                 else:
                     queue_anchor_at = max(last_assigned_at, active_window.from_ts)
+                    if policy_start_ts is not None and policy_start_ts > queue_anchor_at:
+                        queue_anchor_at = policy_start_ts
                     total_seconds = max((now_ts - queue_anchor_at).total_seconds(), 0.0)
                     days_since_anchor = int(total_seconds // 86400)
                     needs_auto_unassign = days_since_anchor >= policy.auto_unassign_days
