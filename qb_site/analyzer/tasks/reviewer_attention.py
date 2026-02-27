@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Any
 
 from celery import shared_task
@@ -43,6 +43,31 @@ def _derive_new_assignment_ping_window_seconds() -> tuple[int, str]:
 
 def _now_utc_unix() -> int:
     return int(datetime.now(timezone.utc).timestamp())
+
+
+def _coerce_utc_datetime(raw: Any) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        if raw.tzinfo is None:
+            return raw.replace(tzinfo=timezone.utc)
+        return raw.astimezone(timezone.utc)
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            return None
+        try:
+            if "T" not in value and " " not in value:
+                parsed_date = datetime.strptime(value, "%Y-%m-%d").date()
+                return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc)
+            normalized = value.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
 
 
 def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
@@ -183,6 +208,7 @@ def reviewer_attention_daily_task(
     delivery_enabled_override: bool | None = None,
     delivery_reviewer_user_ids: list[int] | tuple[int, ...] | None = None,
     new_assignment_ping_window_seconds_override: int | None = None,
+    policy_start_at_override: datetime | str | None = None,
 ) -> dict[str, Any]:
     """Run daily reviewer-attention policy sweep and optional summary delivery."""
 
@@ -206,6 +232,11 @@ def reviewer_attention_daily_task(
         new_assignment_ping_window_source = "override"
     else:
         new_assignment_ping_window_seconds, new_assignment_ping_window_source = _derive_new_assignment_ping_window_seconds()
+    policy_start_at = (
+        _coerce_utc_datetime(policy_start_at_override)
+        if policy_start_at_override is not None
+        else _coerce_utc_datetime(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_POLICY_START_AT", None))
+    )
 
     if not reports_enabled:
         return {
@@ -252,6 +283,7 @@ def reviewer_attention_daily_task(
         reports = build_reviewer_attention_reports(
             repository=repo,
             new_assignment_ping_window_seconds=new_assignment_ping_window_seconds,
+            policy_start_at=policy_start_at,
         )
 
         reviewers = len(reports)
@@ -481,6 +513,7 @@ def reviewer_attention_daily_task(
         "include_inactive_repositories": bool(include_inactive_repositories),
         "new_assignment_ping_window_seconds": new_assignment_ping_window_seconds,
         "new_assignment_ping_window_source": new_assignment_ping_window_source,
+        "policy_start_at": policy_start_at.isoformat() if policy_start_at is not None else None,
         "repos": len(repos),
         "repository_id": int(repository_id) if repository_id is not None else None,
         "totals": totals,

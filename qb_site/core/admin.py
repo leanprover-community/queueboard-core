@@ -137,7 +137,10 @@ class ReviewerAttentionRunForm(forms.Form):
         label="Enable auto-unassign enforcement",
         required=False,
         initial=False,
-        help_text="If enabled, stale assignments may be unassigned via GitHub mutation.",
+        help_text=(
+            "If enabled, stale assignments may be unassigned via GitHub mutation. "
+            "This applies even when reviewer notifications are disabled."
+        ),
     )
     restrict_delivery_reviewers = forms.BooleanField(
         label="Restrict delivery to selected reviewers",

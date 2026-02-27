@@ -342,6 +342,14 @@
     - bypass global feature-flag disables (`reports_enabled_override=True`),
     - control delivery/enforcement per run,
     - restrict delivery to selected reviewer user ids.
+  - Added explicit admin UI warning that auto-unassign enforcement applies even when reviewer notifications are disabled.
+- **2026-02-27 policy-start floor added:**
+  - Added env setting `ANALYZER_REVIEWER_ATTENTION_POLICY_START_AT` (date or ISO datetime, UTC) to delay policy counting start.
+  - Policy floor affects eligibility/counting only:
+    - nudge and auto-unassign age are computed from `max(last_assigned_at, active_queue_window_start, policy_start_at)`,
+    - newly-assigned ping gating also respects the floor.
+  - Displayed assignment timestamps remain unchanged.
+  - Added service/task tests for floor behavior and parsing.
 
 ## Operational Notes
 - Suggested schedule relationship:

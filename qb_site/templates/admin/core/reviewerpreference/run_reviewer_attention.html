@@ -9,6 +9,10 @@
 <p>
   {% trans "Use this tool to manually run the reviewer-attention sweep with testing overrides." %}
 </p>
+<p>
+  <strong>{% trans "Warning" %}:</strong>
+  {% trans "Auto-unassign enforcement applies even for reviewers who have notifications disabled." %}
+</p>
 
 {% if form.non_field_errors %}
 <ul class="errorlist">
