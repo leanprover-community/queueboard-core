@@ -298,6 +298,18 @@
     - "Newly assigned" now includes assignment timestamp (`since <time:...>`) and relative age.
     - "Needs nudge" copy updated to compactly state consecutive queue days since assignment.
     - Auto-unassign section wording now distinguishes threshold vs actual unassignment based on enforcement mode.
+    - Added explicit per-repo policy thresholds in-message (`X` nudge days and `Y` auto-unassign days).
+    - Softened headline copy ("may need your attention") and clarified tips wording for settings scope.
+    - Removed redundant "queue age at threshold" detail lines in favor of threshold-policy wording plus assignment timestamp.
+    - Follow-up copy tweak: changed "Policy" label to "Settings" and moved `Y` threshold mention to auto-unassign section headers (not repeated per PR row).
+    - Follow-up wording tweak: updated auto-unassign section headers to clearer "after at least Y consecutive days" phrasing.
+    - Follow-up wording tweak: aligned nudge section phrasing with threshold-style headers and added per-PR total queue days in both nudge and auto-unassign sections.
+    - Follow-up wording tweak: removed per-PR consecutive-days restatement in nudge item rows to mirror unassign-item row density.
+    - Follow-up consistency tweak: restored consecutive queue-age lines in nudge/unassign item rows and aligned formatting with `assigned_prs` by reusing shared queue-age formatting helpers.
+    - Follow-up terminology tweak: renamed "Consecutive queue age since assignment" to "Consecutive time on queue since latest assignment" across daily DM and `assigned_prs`.
+    - Follow-up maintainability tweak: centralized queue-age/total-time line wording helpers in `reviewer_attention_format` and reused them in both daily DM and `assigned_prs`.
+    - Follow-up cleanup: removed temporary `_format_duration` compatibility shim from `assigned_prs`; tests now use shared `reviewer_attention_format` duration formatter directly.
+    - Follow-up test-hardening tweak: relaxed message-content assertions in reviewer-attention and `assigned_prs` tests to focus more on structure/signals and less on exact prose wording.
   - Added actionable reminders in DM footer:
     - `unassign` command syntax example,
     - `prefs` command hint for notification setting changes.

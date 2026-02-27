@@ -4,8 +4,9 @@ from datetime import datetime
 from datetime import timezone
 
 from analyzer.services.reviewer_attention_format import (
-    format_compact_duration,
     format_since_timestamp,
+    render_consecutive_queue_time_since_assignment_line,
+    render_total_queue_time_line,
     sort_by_assignment_recency,
     sort_by_queue_age,
 )
@@ -156,16 +157,9 @@ def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], 
     for item in items:
         lines.append(f"- PR #{item.pr_number}: {item.pr_title}")
         if include_consecutive:
-            if item.days_on_queue_since_assignment is None:
-                lines.append("  - Consecutive queue age since assignment: unavailable")
-            else:
-                consecutive_seconds = int(item.days_on_queue_since_assignment) * 24 * 60 * 60
-                lines.append(f"  - Consecutive queue age since assignment: {_format_duration(consecutive_seconds)}")
+            lines.append(f"  - {render_consecutive_queue_time_since_assignment_line(item)}")
         lines.append(f"  - Assigned: {format_since_timestamp(item.last_assigned_at)}")
-        if item.total_queue_days is None:
-            lines.append("  - Total queue time: unavailable")
-        else:
-            lines.append(f"  - Total queue time: {_format_duration(item.total_queue_seconds or 0)}")
+        lines.append(f"  - {render_total_queue_time_line(item)}")
         if item.missing_assignment_timestamp:
             lines.append("  - Note: missing assignment timestamp; policy flags suppressed")
         flags: list[str] = []
@@ -178,10 +172,6 @@ def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], 
         lines.append(f"  - Flags: {', '.join(flags) if flags else 'none'}")
     lines.append("```")
     return lines
-
-
-def _format_duration(total_seconds: int) -> str:
-    return format_compact_duration(total_seconds)
 
 
 def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:

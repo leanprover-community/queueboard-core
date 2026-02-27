@@ -169,13 +169,16 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(mock_client.send_direct_message.call_count, 1)
         kwargs = mock_client.send_direct_message.call_args.kwargs
         self.assertEqual(kwargs["to"], [101])
-        self.assertIn("Assigned queue PRs that need your attention", kwargs["content"])
+        self.assertIn("Assigned queue PRs that may need your attention", kwargs["content"])
+        self.assertIn("Settings:", kwargs["content"])
         self.assertIn("Newly assigned (1)", kwargs["content"])
-        self.assertIn("Queue attention (1)", kwargs["content"])
+        self.assertIn("Queue attention (1):", kwargs["content"])
+        self.assertIn("Consecutive time on queue since latest assignment: 16d", kwargs["content"])
+        self.assertIn("Total queue time: 16d", kwargs["content"])
         self.assertIn("since <time:", kwargs["content"])
-        self.assertIn("Unassign yourself: `unassign #<number>`", kwargs["content"])
-        self.assertIn("See all your assigned PRs: `assigned_prs`", kwargs["content"])
-        self.assertIn("Change notification settings: `prefs`", kwargs["content"])
+        self.assertIn("`unassign #<number>`", kwargs["content"])
+        self.assertIn("`assigned_prs`", kwargs["content"])
+        self.assertIn("`prefs`", kwargs["content"])
 
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
@@ -388,6 +391,8 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         kwargs = mock_zulip_client_cls.return_value.send_direct_message.call_args.kwargs
         self.assertIn("Auto-unassigned in this run (1)", kwargs["content"])
         self.assertIn("At auto-unassign threshold (1)", kwargs["content"])
+        self.assertIn("Consecutive time on queue since latest assignment: 30d", kwargs["content"])
+        self.assertIn("Total queue time: 30d", kwargs["content"])
 
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
