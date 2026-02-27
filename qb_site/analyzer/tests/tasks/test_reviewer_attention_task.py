@@ -171,8 +171,8 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(kwargs["to"], [101])
         self.assertIn("Assigned queue PRs that may need your attention", kwargs["content"])
         self.assertIn("Settings:", kwargs["content"])
-        self.assertIn("Newly assigned (1)", kwargs["content"])
-        self.assertIn("Queue attention (1):", kwargs["content"])
+        self.assertIn("#### Newly assigned (1)", kwargs["content"])
+        self.assertIn("#### Queue attention (1)", kwargs["content"])
         self.assertIn("Consecutive time on queue since latest assignment: 16d", kwargs["content"])
         self.assertIn("Total queue time: 16d", kwargs["content"])
         self.assertIn("since <time:", kwargs["content"])
@@ -389,8 +389,9 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(res["enforcement"]["stats"]["failed"], 1)
         self.assertEqual(mock_assignment_client.unassign.call_count, 2)
         kwargs = mock_zulip_client_cls.return_value.send_direct_message.call_args.kwargs
-        self.assertIn("Auto-unassigned in this run (1)", kwargs["content"])
-        self.assertIn("At auto-unassign threshold (1)", kwargs["content"])
+        self.assertIn("#### Auto-unassigned in this run (1)", kwargs["content"])
+        self.assertIn("#### At auto-unassign threshold (1)", kwargs["content"])
+        self.assertIn("At least 21 consecutive days on queue since assignment.", kwargs["content"])
         self.assertIn("Consecutive time on queue since latest assignment: 30d", kwargs["content"])
         self.assertIn("Total queue time: 30d", kwargs["content"])
 

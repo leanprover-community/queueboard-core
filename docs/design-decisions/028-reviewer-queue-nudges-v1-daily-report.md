@@ -310,6 +310,7 @@
     - Follow-up maintainability tweak: centralized queue-age/total-time line wording helpers in `reviewer_attention_format` and reused them in both daily DM and `assigned_prs`.
     - Follow-up cleanup: removed temporary `_format_duration` compatibility shim from `assigned_prs`; tests now use shared `reviewer_attention_format` duration formatter directly.
     - Follow-up test-hardening tweak: relaxed message-content assertions in reviewer-attention and `assigned_prs` tests to focus more on structure/signals and less on exact prose wording.
+    - Follow-up readability tweak: changed notification categories to level-4 markdown subheaders with explanatory text lines before PR bullet lists.
   - Added actionable reminders in DM footer:
     - `unassign` command syntax example,
     - `prefs` command hint for notification setting changes.
