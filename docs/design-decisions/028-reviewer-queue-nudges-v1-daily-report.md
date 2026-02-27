@@ -177,7 +177,7 @@
 2. Do not call Zulip or GitHub yet.
 3. Add structured logs + admin visibility.
 
-#### Chunk B3: Dry-run validation period
+#### Chunk B3: Dry-run validation period (**skipped**)
 1. Run for several days.
 2. Review "would-nudge/would-unassign" outputs and tune defaults.
 
@@ -186,7 +186,7 @@
 1. Send one summary DM per reviewer when report non-empty.
 2. Record delivery outcomes and retry-safe status.
 
-#### Chunk C2: Auto-unassign execution
+#### Chunk C2: Auto-unassign execution (**completed**)
 1. Enable GitHub unassign behind feature flag.
 2. Execute idempotently and append results to summary.
 3. Enforce hard max policy (`21`) regardless of reviewer notification toggle.
@@ -302,6 +302,16 @@
     - `unassign` command syntax example,
     - `prefs` command hint for notification setting changes.
   - Factored shared formatting/sorting helpers for reviewer attention views so daily DM and `assigned_prs` stay aligned on ordering and "assigned X ago" rendering.
+- **Completed:** Chunk C2.
+  - Added enforcement execution in `analyzer.reviewer_attention_daily` behind `ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED`.
+  - For `needs_auto_unassign` items, task now attempts GitHub unassign via operation-token path (`unassign_pr`) before DM delivery.
+  - Added structured enforcement outcomes in task results (candidates/attempted/unassigned/failed/skipped_no_token).
+  - Updated reviewer DM section to reflect actual outcomes:
+    - successfully unassigned items shown under "Auto-unassigned in this run",
+    - non-successful enforcement items remain under "At auto-unassign threshold".
+  - Added task tests covering:
+    - successful unassign-before-delivery path,
+    - no-token skip path.
 
 ## Operational Notes
 - Suggested schedule relationship:
