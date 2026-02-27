@@ -114,16 +114,16 @@ def _render_reviewer_message(
             f"{report.stale_nudge_days} consecutive days on queue since assignment; "
             f"auto-unassign at {report.auto_unassign_days} days."
         )
+        lines.append("")
         if new_items:
-            lines.append(f"Newly assigned ({len(new_items)}):")
+            lines.append(f"#### Newly assigned ({len(new_items)})")
+            lines.append("Assigned recently and worth an initial pass.")
             for item in new_items:
                 lines.append(f"{_format_item_line(item)}")
                 lines.append(f"  - since {format_since_timestamp(item.last_assigned_at)}")
         if nudge_items:
-            lines.append(
-                f"Queue attention ({len(nudge_items)}): "
-                f"at least {report.stale_nudge_days} consecutive days on queue since assignment."
-            )
+            lines.append(f"#### Queue attention ({len(nudge_items)})")
+            lines.append(f"At least {report.stale_nudge_days} consecutive days on queue since assignment.")
             for item in nudge_items:
                 lines.append(f"{_format_item_line(item)}")
                 lines.append(_format_consecutive_queue_age_line(item))
@@ -140,31 +140,24 @@ def _render_reviewer_message(
                     else:
                         threshold_items.append(item)
                 if unassigned_items:
-                    lines.append(
-                        "Auto-unassigned in this run "
-                        f"({len(unassigned_items)}) after at least {report.auto_unassign_days} consecutive days on queue "
-                        "since assignment:"
-                    )
+                    lines.append(f"#### Auto-unassigned in this run ({len(unassigned_items)})")
+                    lines.append(f"After at least {report.auto_unassign_days} consecutive days on queue since assignment.")
                     for item in unassigned_items:
                         lines.append(f"{_format_item_line(item)}")
                         lines.append(_format_consecutive_queue_age_line(item))
                         lines.append(_format_total_queue_time_line(item))
                         lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
                 if threshold_items:
-                    lines.append(
-                        f"At auto-unassign threshold ({len(threshold_items)}): "
-                        f"at least {report.auto_unassign_days} consecutive days on queue since assignment."
-                    )
+                    lines.append(f"#### At auto-unassign threshold ({len(threshold_items)})")
+                    lines.append(f"At least {report.auto_unassign_days} consecutive days on queue since assignment.")
                     for item in threshold_items:
                         lines.append(f"{_format_item_line(item)}")
                         lines.append(_format_consecutive_queue_age_line(item))
                         lines.append(_format_total_queue_time_line(item))
                         lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
             else:
-                lines.append(
-                    f"At auto-unassign threshold ({len(unassign_items)}): "
-                    f"at least {report.auto_unassign_days} consecutive days on queue since assignment."
-                )
+                lines.append(f"#### At auto-unassign threshold ({len(unassign_items)})")
+                lines.append(f"At least {report.auto_unassign_days} consecutive days on queue since assignment.")
                 for item in unassign_items:
                     lines.append(f"{_format_item_line(item)}")
                     lines.append(_format_consecutive_queue_age_line(item))
