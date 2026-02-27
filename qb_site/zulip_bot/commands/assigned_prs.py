@@ -174,6 +174,8 @@ def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], 
         if item.missing_assignment_timestamp:
             lines.append("  - Note: missing assignment timestamp; policy flags suppressed")
         flags: list[str] = []
+        if item.needs_new_assignment_ping:
+            flags.append("newly_assigned")
         if item.needs_nudge:
             flags.append("needs_nudge")
         if item.needs_auto_unassign:

@@ -177,3 +177,35 @@ class ReviewerAttentionServiceTests(TestCase):
         self.assertFalse(item.is_on_queue)
         self.assertIsNone(item.total_queue_days)
         self.assertIsNone(item.total_queue_seconds)
+
+    def test_flags_new_assignment_ping_within_window(self) -> None:
+        pr = self._mk_pr(107, assignees=["alice"])
+        self._add_assignment_event(pr=pr, assignee_login="alice", occurred_at=self.now - timedelta(hours=12))
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            new_assignment_ping_window_seconds=24 * 60 * 60,
+        )
+        report = reports[0]
+        item = report.items[0]
+
+        self.assertTrue(item.needs_new_assignment_ping)
+        self.assertFalse(item.needs_nudge)
+        self.assertFalse(item.needs_auto_unassign)
+        self.assertTrue(report.has_events_of_interest)
+        self.assertTrue(report.has_notifications_to_send)
+
+    def test_does_not_flag_new_assignment_ping_after_window(self) -> None:
+        pr = self._mk_pr(108, assignees=["alice"])
+        self._add_assignment_event(pr=pr, assignee_login="alice", occurred_at=self.now - timedelta(hours=26))
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            new_assignment_ping_window_seconds=24 * 60 * 60,
+        )
+        report = reports[0]
+        item = report.items[0]
+
+        self.assertFalse(item.needs_new_assignment_ping)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from django.db.models import Q
 
@@ -25,8 +25,9 @@ class ReviewerAttentionItem:
     days_on_queue_since_assignment: int | None
     total_queue_seconds: int | None
     total_queue_days: int | None
-    needs_nudge: bool
-    needs_auto_unassign: bool
+    needs_new_assignment_ping: bool = False
+    needs_nudge: bool = False
+    needs_auto_unassign: bool = False
     missing_assignment_timestamp: bool = False
 
 
@@ -43,7 +44,7 @@ class ReviewerAttentionReport:
 
     @property
     def has_events_of_interest(self) -> bool:
-        return any(item.needs_nudge or item.needs_auto_unassign for item in self.items)
+        return any(item.needs_new_assignment_ping or item.needs_nudge or item.needs_auto_unassign for item in self.items)
 
     @property
     def has_notifications_to_send(self) -> bool:
@@ -55,17 +56,19 @@ def build_reviewer_attention_reports(
     repository: Repository,
     as_of: datetime | None = None,
     rule_set: QueueRuleSet | None = None,
+    new_assignment_ping_window_seconds: int = 24 * 60 * 60,
 ) -> list[ReviewerAttentionReport]:
     """Build read-only reviewer attention reports from current DB state.
 
     Output intentionally includes both:
     - complete status rows (`items`) suitable for on-demand reporting;
-    - event flags (`needs_nudge`, `needs_auto_unassign`) for scheduled notifications/enforcement.
+    - event flags (`needs_new_assignment_ping`, `needs_nudge`, `needs_auto_unassign`) for scheduled notifications/enforcement.
     """
 
     now_ts = as_of or datetime.now(timezone.utc)
     if now_ts.tzinfo is None:
         now_ts = now_ts.replace(tzinfo=timezone.utc)
+    new_assignment_ping_cutoff = now_ts - timedelta(seconds=max(1, int(new_assignment_ping_window_seconds)))
 
     active_rule_set = rule_set
     if active_rule_set is None:
@@ -167,6 +170,7 @@ def build_reviewer_attention_reports(
             total_queue_seconds: int | None = None
             total_queue_days: int | None = None
             missing_assignment_timestamp = False
+            needs_new_assignment_ping = False
             needs_nudge = False
             needs_auto_unassign = False
 
@@ -186,6 +190,8 @@ def build_reviewer_attention_reports(
                     days_since_anchor = int(total_seconds // 86400)
                     needs_auto_unassign = days_since_anchor >= policy.auto_unassign_days
                     needs_nudge = (days_since_anchor >= policy.stale_nudge_days) and not needs_auto_unassign
+            if last_assigned_at is not None and last_assigned_at >= new_assignment_ping_cutoff:
+                needs_new_assignment_ping = True
 
             items.append(
                 ReviewerAttentionItem(
@@ -197,6 +203,7 @@ def build_reviewer_attention_reports(
                     days_on_queue_since_assignment=days_since_anchor,
                     total_queue_seconds=total_queue_seconds,
                     total_queue_days=total_queue_days,
+                    needs_new_assignment_ping=needs_new_assignment_ping,
                     needs_nudge=needs_nudge,
                     needs_auto_unassign=needs_auto_unassign,
                     missing_assignment_timestamp=missing_assignment_timestamp,

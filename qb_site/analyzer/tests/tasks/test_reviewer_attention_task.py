@@ -49,6 +49,7 @@ class ReviewerAttentionDailyTaskTests(TestCase):
                         days_on_queue_since_assignment=16,
                         total_queue_seconds=16 * 24 * 60 * 60,
                         total_queue_days=16,
+                        needs_new_assignment_ping=True,
                         needs_nudge=True,
                         needs_auto_unassign=False,
                         missing_assignment_timestamp=False,
@@ -75,9 +76,12 @@ class ReviewerAttentionDailyTaskTests(TestCase):
 
         self.assertFalse(res["skipped"])
         self.assertTrue(res["dry_run"])
+        self.assertEqual(res["new_assignment_ping_window_seconds"], 86400)
+        self.assertEqual(res["new_assignment_ping_window_source"], "period_seconds")
         self.assertEqual(res["repos"], 1)
         self.assertEqual(res["totals"]["would_nudge"], 1)
         self.assertEqual(res["totals"]["would_auto_unassign"], 1)
+        self.assertEqual(res["totals"]["would_new_assignment_ping"], 1)
         self.assertEqual(res["totals"]["reviewers_to_notify"], 1)
         self.assertEqual(res["totals"]["missing_assignment_timestamps"], 1)
         self.assertEqual(res["totals"]["warnings"], 1)
@@ -92,3 +96,20 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertTrue(res["skipped"])
         self.assertEqual(res["reason"], "repo_not_found_or_inactive")
         self.assertTrue(res["enforcement_enabled"])
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS=3600,
+        ANALYZER_REVIEWER_ATTENTION_UTC_HOUR=9,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    def test_uses_fixed_utc_clock_for_new_assignment_window(self, mock_build_reports) -> None:
+        mock_build_reports.return_value = []
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertFalse(res["skipped"])
+        self.assertEqual(res["new_assignment_ping_window_seconds"], 24 * 60 * 60)
+        self.assertEqual(res["new_assignment_ping_window_source"], "fixed_utc_clock")
+        mock_build_reports.assert_called_once()
