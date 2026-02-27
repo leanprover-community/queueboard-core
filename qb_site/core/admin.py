@@ -139,12 +139,6 @@ class ReviewerAttentionRunForm(forms.Form):
         initial=False,
         help_text="If enabled, stale assignments may be unassigned via GitHub mutation.",
     )
-    dry_run = forms.BooleanField(
-        label="Dry-run (no unassign)",
-        required=False,
-        initial=True,
-        help_text="When checked, auto-unassign is disabled even if enforcement is checked.",
-    )
     restrict_delivery_reviewers = forms.BooleanField(
         label="Restrict delivery to selected reviewers",
         required=False,
@@ -943,7 +937,6 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
                 run_async = bool(form.cleaned_data.get("run_async"))
                 send_zulip_messages = bool(form.cleaned_data.get("send_zulip_messages"))
                 enforce_auto_unassign = bool(form.cleaned_data.get("enforce_auto_unassign"))
-                dry_run = bool(form.cleaned_data.get("dry_run"))
                 restrict_delivery_reviewers = bool(form.cleaned_data.get("restrict_delivery_reviewers"))
                 delivery_reviewers = form.cleaned_data.get("delivery_reviewers")
                 new_assignment_ping_window_seconds = form.cleaned_data.get("new_assignment_ping_window_seconds")
@@ -956,7 +949,7 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
                     "repository_id": int(repository.id) if repository is not None else None,
                     "include_inactive_repositories": include_inactive_repositories,
                     "reports_enabled_override": True,
-                    "enforcement_enabled_override": bool(enforce_auto_unassign and not dry_run),
+                    "enforcement_enabled_override": enforce_auto_unassign,
                     "delivery_enabled_override": send_zulip_messages,
                     "delivery_reviewer_user_ids": delivery_reviewer_user_ids,
                     "new_assignment_ping_window_seconds_override": (
