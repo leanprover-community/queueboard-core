@@ -16,6 +16,7 @@ class ReviewerAttentionDailyTaskTests(TestCase):
     def setUp(self) -> None:
         self.repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
         self.user = User.objects.create(github_login="alice", zulip_user_id=101)
+        self.other_user = User.objects.create(github_login="bob", zulip_user_id=202)
 
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=False,
@@ -432,3 +433,125 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(res["enforcement"]["stats"]["candidates"], 1)
         self.assertEqual(res["enforcement"]["stats"]["attempted"], 1)
         self.assertEqual(mock_assignment_client_cls.return_value.unassign.call_count, 1)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=False,
+    )
+    @patch("analyzer.tasks.reviewer_attention.resolve_github_app_operation_token", return_value="tok")
+    @patch("analyzer.tasks.reviewer_attention.GitHubAssignmentClient")
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    def test_runtime_override_enables_enforcement_when_global_flags_disabled(
+        self,
+        mock_build_reports,
+        mock_assignment_client_cls,
+        _mock_resolve_token,
+    ) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=30)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=False,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=assigned_at,
+                        days_on_queue_since_assignment=30,
+                        total_queue_seconds=30 * 24 * 60 * 60,
+                        total_queue_days=30,
+                        needs_auto_unassign=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply(
+            kwargs={
+                "reports_enabled_override": True,
+                "enforcement_enabled_override": True,
+            }
+        ).get()
+
+        self.assertFalse(res["skipped"])
+        self.assertTrue(res["reports_enabled"])
+        self.assertTrue(res["enforcement_enabled"])
+        self.assertEqual(res["enforcement"]["stats"]["attempted"], 1)
+        self.assertEqual(mock_assignment_client_cls.return_value.unassign.call_count, 1)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_reviewer_filter_limits_message_recipients(self, mock_client_cls, mock_build_reports) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(hours=6)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=None,
+                        days_on_queue_since_assignment=1,
+                        total_queue_seconds=1 * 24 * 60 * 60,
+                        total_queue_days=1,
+                        needs_new_assignment_ping=True,
+                    ),
+                ),
+                warnings=(),
+            ),
+            ReviewerAttentionReport(
+                reviewer_login="bob",
+                reviewer_user_id=self.other_user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=102,
+                        pr_title="PR 102",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=None,
+                        days_on_queue_since_assignment=1,
+                        total_queue_seconds=1 * 24 * 60 * 60,
+                        total_queue_days=1,
+                        needs_new_assignment_ping=True,
+                    ),
+                ),
+                warnings=(),
+            ),
+        ]
+
+        res = reviewer_attention_daily_task.apply(
+            kwargs={
+                "delivery_reviewer_user_ids": [self.user.id],
+            }
+        ).get()
+
+        self.assertEqual(res["delivery"]["stats"]["attempted"], 1)
+        self.assertEqual(res["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(res["delivery"]["stats"]["skipped_by_reviewer_filter"], 1)
+        self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
+        kwargs = mock_client_cls.return_value.send_direct_message.call_args.kwargs
+        self.assertEqual(kwargs["to"], [self.user.zulip_user_id])

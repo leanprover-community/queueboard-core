@@ -109,6 +109,106 @@ class UserZulipImportForm(forms.Form):
     )
 
 
+class ReviewerAttentionRunForm(forms.Form):
+    repository = forms.ModelChoiceField(
+        queryset=Repository.objects.order_by("owner", "name"),
+        required=False,
+        help_text="Optional: run only for one repository.",
+    )
+    include_inactive_repositories = forms.BooleanField(
+        label="Include inactive repositories",
+        required=False,
+        initial=False,
+        help_text="Allow running for inactive repositories when a repository is selected.",
+    )
+    run_async = forms.BooleanField(
+        label="Enqueue as background task",
+        required=False,
+        initial=True,
+        help_text="Recommended for large runs. Uncheck to execute inline in this request.",
+    )
+    send_zulip_messages = forms.BooleanField(
+        label="Send Zulip messages",
+        required=False,
+        initial=False,
+        help_text="If unchecked, delivery is disabled and no Zulip DMs are sent.",
+    )
+    enforce_auto_unassign = forms.BooleanField(
+        label="Enable auto-unassign enforcement",
+        required=False,
+        initial=False,
+        help_text="If enabled, stale assignments may be unassigned via GitHub mutation.",
+    )
+    dry_run = forms.BooleanField(
+        label="Dry-run (no unassign)",
+        required=False,
+        initial=True,
+        help_text="When checked, auto-unassign is disabled even if enforcement is checked.",
+    )
+    restrict_delivery_reviewers = forms.BooleanField(
+        label="Restrict delivery to selected reviewers",
+        required=False,
+        initial=False,
+        help_text="If checked and no reviewers are selected, Zulip delivery is skipped.",
+    )
+    delivery_reviewers = forms.ModelMultipleChoiceField(
+        label="Reviewer delivery allowlist",
+        queryset=User.objects.none(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+    )
+    new_assignment_ping_window_seconds = forms.IntegerField(
+        required=False,
+        min_value=1,
+        label="New-assignment window override (seconds)",
+        help_text="Optional override for the newly-assigned ping window; blank uses schedule-derived value.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        repository = self._selected_repository()
+        users = User.objects.filter(reviewer_preferences__notifications_enabled=True)
+        if repository is not None:
+            users = users.filter(
+                reviewer_preferences__repository=repository,
+                reviewer_preferences__notifications_enabled=True,
+            )
+        users = users.order_by("github_login", "id").distinct()
+        self.fields["delivery_reviewers"].queryset = users
+        self.fields["delivery_reviewers"].label_from_instance = self._user_label  # type: ignore[attr-defined]
+
+    def _selected_repository(self) -> Repository | None:
+        raw_id = None
+        if self.is_bound:
+            raw_id = self.data.get(self.add_prefix("repository"))
+        else:
+            initial_val = self.initial.get("repository")
+            if isinstance(initial_val, Repository):
+                return initial_val
+            raw_id = initial_val
+        if not raw_id:
+            return None
+        try:
+            return Repository.objects.filter(id=int(raw_id)).only("id", "owner", "name", "is_active").first()
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _user_label(user: User) -> str:
+        return str(user.github_login or f"user#{user.id}")
+
+    def clean(self):
+        cleaned = super().clean()
+        repository = cleaned.get("repository")
+        include_inactive = bool(cleaned.get("include_inactive_repositories"))
+        if repository is not None and not repository.is_active and not include_inactive:
+            self.add_error(
+                "include_inactive_repositories",
+                "Selected repository is inactive. Enable 'Include inactive repositories' to run it.",
+            )
+        return cleaned
+
+
 @admin.register(Repository)
 class RepositoryAdmin(admin.ModelAdmin):
     list_display = (
@@ -738,6 +838,11 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
                 self.admin_site.admin_view(self.export_topics_view),
                 name="core_reviewerpreference_export_topics",
             ),
+            path(
+                "run-reviewer-attention/",
+                self.admin_site.admin_view(self.run_reviewer_attention_view),
+                name="core_reviewerpreference_run_reviewer_attention",
+            ),
         ]
         return custom + urls
 
@@ -745,6 +850,7 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
         extra = extra_context or {}
         extra["import_topics_url"] = reverse("admin:core_reviewerpreference_import_topics")
         extra["export_topics_url"] = reverse("admin:core_reviewerpreference_export_topics")
+        extra["run_reviewer_attention_url"] = reverse("admin:core_reviewerpreference_run_reviewer_attention")
         return super().changelist_view(request, extra_context=extra)
 
     def import_topics_view(self, request, *args, **kwargs):  # type: ignore[override]
@@ -826,6 +932,68 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
             "changelist_url": reverse("admin:core_reviewerpreference_changelist"),
         }
         return TemplateResponse(request, "admin/core/reviewerpreference/export_topics.html", context)
+
+    def run_reviewer_attention_view(self, request, *args, **kwargs):  # type: ignore[override]
+        result = None
+        if request.method == "POST":
+            form = ReviewerAttentionRunForm(request.POST)
+            if form.is_valid():
+                repository = form.cleaned_data.get("repository")
+                include_inactive_repositories = bool(form.cleaned_data.get("include_inactive_repositories"))
+                run_async = bool(form.cleaned_data.get("run_async"))
+                send_zulip_messages = bool(form.cleaned_data.get("send_zulip_messages"))
+                enforce_auto_unassign = bool(form.cleaned_data.get("enforce_auto_unassign"))
+                dry_run = bool(form.cleaned_data.get("dry_run"))
+                restrict_delivery_reviewers = bool(form.cleaned_data.get("restrict_delivery_reviewers"))
+                delivery_reviewers = form.cleaned_data.get("delivery_reviewers")
+                new_assignment_ping_window_seconds = form.cleaned_data.get("new_assignment_ping_window_seconds")
+
+                delivery_reviewer_user_ids = None
+                if send_zulip_messages and restrict_delivery_reviewers:
+                    delivery_reviewer_user_ids = [int(user.id) for user in delivery_reviewers]
+
+                task_kwargs = {
+                    "repository_id": int(repository.id) if repository is not None else None,
+                    "include_inactive_repositories": include_inactive_repositories,
+                    "reports_enabled_override": True,
+                    "enforcement_enabled_override": bool(enforce_auto_unassign and not dry_run),
+                    "delivery_enabled_override": send_zulip_messages,
+                    "delivery_reviewer_user_ids": delivery_reviewer_user_ids,
+                    "new_assignment_ping_window_seconds_override": (
+                        int(new_assignment_ping_window_seconds) if new_assignment_ping_window_seconds is not None else None
+                    ),
+                }
+                # Keep kwargs compact for readability in admin output.
+                task_kwargs = {key: value for key, value in task_kwargs.items() if value is not None}
+
+                from analyzer.tasks.reviewer_attention import reviewer_attention_daily_task
+
+                if run_async:
+                    async_res = reviewer_attention_daily_task.delay(**task_kwargs)
+                    self.message_user(
+                        request,
+                        f"Enqueued reviewer attention task: {async_res.id}",
+                    )
+                    result = {
+                        "mode": "enqueued",
+                        "task_id": getattr(async_res, "id", None),
+                        "task_kwargs": task_kwargs,
+                    }
+                else:
+                    result = reviewer_attention_daily_task.apply(kwargs=task_kwargs).get()
+                    self.message_user(request, "Reviewer attention task completed inline.")
+        else:
+            form = ReviewerAttentionRunForm()
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Run reviewer attention",
+            "form": form,
+            "result": result,
+            "result_summary": json.dumps(result, indent=2, sort_keys=True, default=str) if result is not None else None,
+            "changelist_url": reverse("admin:core_reviewerpreference_changelist"),
+        }
+        return TemplateResponse(request, "admin/core/reviewerpreference/run_reviewer_attention.html", context)
 
 
 # Enhance django-celery-results TaskResult admin with repo/PR context for syncer tasks

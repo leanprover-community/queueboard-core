@@ -1,0 +1,49 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content_title %}{% endblock %}
+
+{% block content %}
+<h1>{% trans "Run reviewer nudges" %}</h1>
+
+<p>
+  {% trans "Use this tool to manually run the reviewer-attention sweep with testing overrides." %}
+</p>
+
+{% if form.non_field_errors %}
+<ul class="errorlist">
+  {% for error in form.non_field_errors %}
+  <li>{{ error }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<form method="post" novalidate>
+  {% csrf_token %}
+  <table>
+    {% for field in form %}
+    <tr>
+      <th>{{ field.label_tag }}</th>
+      <td>
+        {{ field }}
+        {% if field.help_text %}
+        <br />
+        <small>{{ field.help_text }}</small>
+        {% endif %}
+        {% for error in field.errors %}
+        <p class="error">{{ error }}</p>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p><input type="submit" class="default" value="{% trans 'Run task' %}" /></p>
+</form>
+
+{% if result_summary %}
+<h2>{% trans "Result" %}</h2>
+<pre style="background:#f8f8f8; padding:1em; border:1px solid #ddd; white-space: pre-wrap; word-break: break-word;">{{ result_summary }}</pre>
+{% endif %}
+
+<p><a href="{{ changelist_url }}">{% trans "Return to reviewer preferences" %}</a></p>
+{% endblock %}

@@ -145,13 +145,38 @@ def _render_reviewer_message(
 
 
 @shared_task(name="analyzer.reviewer_attention_daily")
-def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[str, Any]:
+def reviewer_attention_daily_task(
+    *,
+    repository_id: int | None = None,
+    include_inactive_repositories: bool = False,
+    reports_enabled_override: bool | None = None,
+    enforcement_enabled_override: bool | None = None,
+    delivery_enabled_override: bool | None = None,
+    delivery_reviewer_user_ids: list[int] | tuple[int, ...] | None = None,
+    new_assignment_ping_window_seconds_override: int | None = None,
+) -> dict[str, Any]:
     """Run daily reviewer-attention policy sweep and optional summary delivery."""
 
-    reports_enabled = bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_ENABLED", False))
-    enforcement_enabled = bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED", False))
-    delivery_enabled = bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED", False))
-    new_assignment_ping_window_seconds, new_assignment_ping_window_source = _derive_new_assignment_ping_window_seconds()
+    reports_enabled = (
+        bool(reports_enabled_override)
+        if reports_enabled_override is not None
+        else bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_ENABLED", False))
+    )
+    enforcement_enabled = (
+        bool(enforcement_enabled_override)
+        if enforcement_enabled_override is not None
+        else bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED", False))
+    )
+    delivery_enabled = (
+        bool(delivery_enabled_override)
+        if delivery_enabled_override is not None
+        else bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED", False))
+    )
+    if new_assignment_ping_window_seconds_override is not None:
+        new_assignment_ping_window_seconds = max(1, int(new_assignment_ping_window_seconds_override))
+        new_assignment_ping_window_source = "override"
+    else:
+        new_assignment_ping_window_seconds, new_assignment_ping_window_source = _derive_new_assignment_ping_window_seconds()
 
     if not reports_enabled:
         return {
@@ -161,7 +186,9 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
             "enforcement_enabled": enforcement_enabled,
         }
 
-    repos_qs = Repository.objects.filter(is_active=True).only("id", "owner", "name")
+    repos_qs = Repository.objects.only("id", "owner", "name")
+    if not include_inactive_repositories:
+        repos_qs = repos_qs.filter(is_active=True)
     if repository_id is not None:
         repos_qs = repos_qs.filter(id=int(repository_id))
 
@@ -309,6 +336,17 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         int(user.id): user
         for user in User.objects.filter(id__in=list(reports_by_reviewer.keys())).only("id", "github_login", "zulip_user_id")
     }
+    delivery_filter_user_ids: set[int] | None = None
+    if delivery_reviewer_user_ids is not None:
+        delivery_filter_user_ids = {int(user_id) for user_id in delivery_reviewer_user_ids}
+    skipped_by_reviewer_filter = 0
+    if delivery_filter_user_ids is not None:
+        filtered_reports_by_reviewer = {
+            int(user_id): payload for user_id, payload in reports_by_reviewer.items() if int(user_id) in delivery_filter_user_ids
+        }
+        skipped_by_reviewer_filter = len(reports_by_reviewer) - len(filtered_reports_by_reviewer)
+        reports_by_reviewer = filtered_reports_by_reviewer
+
     deliveries: list[dict[str, Any]] = []
     delivery_stats = {
         "attempted": 0,
@@ -317,6 +355,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "skipped_no_user": 0,
         "skipped_no_zulip_user_id": 0,
         "skipped_delivery_disabled": 0,
+        "skipped_by_reviewer_filter": skipped_by_reviewer_filter,
     }
 
     client: ZulipClient | None = None
@@ -410,6 +449,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "reports_enabled": reports_enabled,
         "enforcement_enabled": enforcement_enabled,
         "delivery_enabled": delivery_enabled,
+        "include_inactive_repositories": bool(include_inactive_repositories),
         "new_assignment_ping_window_seconds": new_assignment_ping_window_seconds,
         "new_assignment_ping_window_source": new_assignment_ping_window_source,
         "repos": len(repos),
