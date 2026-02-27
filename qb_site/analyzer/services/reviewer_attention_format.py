@@ -4,6 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 from analyzer.services.reviewer_attention import ReviewerAttentionItem
 
+CONSECUTIVE_QUEUE_TIME_SINCE_ASSIGNMENT_LABEL = "Consecutive time on queue since latest assignment"
+TOTAL_QUEUE_TIME_LABEL = "Total queue time"
+
 
 def format_compact_duration(total_seconds: int) -> str:
     if total_seconds < 0:
@@ -55,3 +58,24 @@ def sort_by_queue_age(items: list[ReviewerAttentionItem]) -> list[ReviewerAttent
             item.pr_number,
         ),
     )
+
+
+def format_consecutive_queue_age_since_assignment(item: ReviewerAttentionItem) -> str:
+    if item.days_on_queue_since_assignment is None:
+        return "unavailable"
+    consecutive_seconds = int(item.days_on_queue_since_assignment) * 24 * 60 * 60
+    return format_compact_duration(consecutive_seconds)
+
+
+def format_total_queue_time(item: ReviewerAttentionItem) -> str:
+    if item.total_queue_days is None:
+        return "unavailable"
+    return format_compact_duration(item.total_queue_seconds or 0)
+
+
+def render_consecutive_queue_time_since_assignment_line(item: ReviewerAttentionItem, *, indent: str = "") -> str:
+    return f"{indent}{CONSECUTIVE_QUEUE_TIME_SINCE_ASSIGNMENT_LABEL}: {format_consecutive_queue_age_since_assignment(item)}"
+
+
+def render_total_queue_time_line(item: ReviewerAttentionItem, *, indent: str = "") -> str:
+    return f"{indent}{TOTAL_QUEUE_TIME_LABEL}: {format_total_queue_time(item)}"

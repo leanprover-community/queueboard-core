@@ -8,7 +8,13 @@ from celery import shared_task
 from django.conf import settings
 
 from analyzer.services import build_reviewer_attention_reports
-from analyzer.services.reviewer_attention_format import format_since_timestamp, sort_by_assignment_recency, sort_by_queue_age
+from analyzer.services.reviewer_attention_format import (
+    format_since_timestamp,
+    render_consecutive_queue_time_since_assignment_line,
+    render_total_queue_time_line,
+    sort_by_assignment_recency,
+    sort_by_queue_age,
+)
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_operation_tokens import resolve_github_app_operation_token
@@ -73,6 +79,14 @@ def _format_item_line(item: ReviewerAttentionItem) -> str:
     return f"- PR #{item.pr_number}: {item.pr_title}"
 
 
+def _format_consecutive_queue_age_line(item: ReviewerAttentionItem) -> str:
+    return f"  - {render_consecutive_queue_time_since_assignment_line(item)}"
+
+
+def _format_total_queue_time_line(item: ReviewerAttentionItem) -> str:
+    return f"  - {render_total_queue_time_line(item)}"
+
+
 def _render_reviewer_message(
     *,
     reviewer_login: str,
@@ -81,7 +95,7 @@ def _render_reviewer_message(
     unassign_outcomes: dict[tuple[int, int, int], str],
 ) -> str:
     lines: list[str] = [
-        "### Assigned queue PRs that need your attention",
+        "### Assigned queue PRs that may need your attention",
         "",
         f"Generated at <time:{_now_utc_unix()}>.",
         "",
@@ -95,16 +109,25 @@ def _render_reviewer_message(
             continue
 
         lines.append(f"## {repo_label}")
+        lines.append(
+            "Settings: nudge after "
+            f"{report.stale_nudge_days} consecutive days on queue since assignment; "
+            f"auto-unassign at {report.auto_unassign_days} days."
+        )
         if new_items:
             lines.append(f"Newly assigned ({len(new_items)}):")
             for item in new_items:
                 lines.append(f"{_format_item_line(item)}")
                 lines.append(f"  - since {format_since_timestamp(item.last_assigned_at)}")
         if nudge_items:
-            lines.append(f"Queue attention ({len(nudge_items)}):")
+            lines.append(
+                f"Queue attention ({len(nudge_items)}): "
+                f"at least {report.stale_nudge_days} consecutive days on queue since assignment."
+            )
             for item in nudge_items:
                 lines.append(f"{_format_item_line(item)}")
-                lines.append(f"  - on queue for {item.days_on_queue_since_assignment or 0} consecutive days since assignment")
+                lines.append(_format_consecutive_queue_age_line(item))
+                lines.append(_format_total_queue_time_line(item))
                 lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
         if unassign_items:
             if enforcement_enabled:
@@ -117,29 +140,42 @@ def _render_reviewer_message(
                     else:
                         threshold_items.append(item)
                 if unassigned_items:
-                    lines.append(f"Auto-unassigned in this run ({len(unassigned_items)}):")
+                    lines.append(
+                        "Auto-unassigned in this run "
+                        f"({len(unassigned_items)}) after at least {report.auto_unassign_days} consecutive days on queue "
+                        "since assignment:"
+                    )
                     for item in unassigned_items:
                         lines.append(f"{_format_item_line(item)}")
-                        lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
+                        lines.append(_format_consecutive_queue_age_line(item))
+                        lines.append(_format_total_queue_time_line(item))
                         lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
                 if threshold_items:
-                    lines.append(f"At auto-unassign threshold ({len(threshold_items)}):")
+                    lines.append(
+                        f"At auto-unassign threshold ({len(threshold_items)}): "
+                        f"at least {report.auto_unassign_days} consecutive days on queue since assignment."
+                    )
                     for item in threshold_items:
                         lines.append(f"{_format_item_line(item)}")
-                        lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
+                        lines.append(_format_consecutive_queue_age_line(item))
+                        lines.append(_format_total_queue_time_line(item))
                         lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
             else:
-                lines.append(f"At auto-unassign threshold ({len(unassign_items)}):")
+                lines.append(
+                    f"At auto-unassign threshold ({len(unassign_items)}): "
+                    f"at least {report.auto_unassign_days} consecutive days on queue since assignment."
+                )
                 for item in unassign_items:
                     lines.append(f"{_format_item_line(item)}")
-                    lines.append(f"  - queue age at threshold: {item.days_on_queue_since_assignment or 0} consecutive days")
+                    lines.append(_format_consecutive_queue_age_line(item))
+                    lines.append(_format_total_queue_time_line(item))
                     lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
         lines.append("")
 
     lines.append("Tips:")
     lines.append("- Unassign yourself: `unassign #<number>`")
     lines.append("- See all your assigned PRs: `assigned_prs`")
-    lines.append("- Change notification settings: `prefs`")
+    lines.append("- Change notification and auto-assignment settings: `prefs`")
 
     return "\n".join(lines).strip()
 

@@ -1,15 +1,15 @@
 from __future__ import annotations
-
 from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
 from analyzer.models import PRQueueWindow, QueueRuleSet
+from analyzer.services.reviewer_attention_format import format_compact_duration
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import LabelDef, PRLabel, PullRequest, PRTimelineEvent, PRTimelineEventType
 from zulip_bot.commands import CommandContext
-from zulip_bot.commands.assigned_prs import _format_duration, _split_message_chunks, assigned_prs_command
+from zulip_bot.commands.assigned_prs import _split_message_chunks, assigned_prs_command
 
 
 def _dt(year: int, month: int, day: int, hour: int = 0) -> datetime:
@@ -118,8 +118,12 @@ class TestAssignedPrsCommand(TestCase):
         self.assertIn("```spoiler Maintainer Merged (0)", kwargs["content"])
         self.assertIn("```spoiler Not On Queue (0)", kwargs["content"])
         self.assertIn("PR #123", kwargs["content"])
-        self.assertIn("Consecutive queue age since assignment", kwargs["content"])
-        self.assertIn("Total queue time", kwargs["content"])
+        self.assertIn("Assigned:", kwargs["content"])
+        self.assertRegex(
+            kwargs["content"],
+            r"Consecutive time on queue since latest assignment: [0-9]+d(?: [0-9]+h)?",
+        )
+        self.assertRegex(kwargs["content"], r"Total queue time: [0-9]+d(?: [0-9]+h)?")
         self.assertNotIn("On queue now", kwargs["content"])
         self.assertNotIn("seconds)", kwargs["content"])
 
@@ -206,8 +210,8 @@ class TestSplitMessageChunks(TestCase):
 
 class TestFormatDuration(TestCase):
     def test_format_duration_thresholds(self) -> None:
-        self.assertEqual(_format_duration(45), "45s")
-        self.assertEqual(_format_duration(3 * 60 + 2), "3m 2s")
-        self.assertEqual(_format_duration(2 * 3600 + 5 * 60), "2h 5m")
-        self.assertEqual(_format_duration(2 * 86400 + 4 * 3600), "2d 4h")
-        self.assertEqual(_format_duration(8 * 86400 + 17 * 3600), "8d")
+        self.assertEqual(format_compact_duration(45), "45s")
+        self.assertEqual(format_compact_duration(3 * 60 + 2), "3m 2s")
+        self.assertEqual(format_compact_duration(2 * 3600 + 5 * 60), "2h 5m")
+        self.assertEqual(format_compact_duration(2 * 86400 + 4 * 3600), "2d 4h")
+        self.assertEqual(format_compact_duration(8 * 86400 + 17 * 3600), "8d")
