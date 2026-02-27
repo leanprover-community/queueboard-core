@@ -13,6 +13,21 @@ from core.models import Repository
 log = logging.getLogger(__name__)
 
 
+def _derive_new_assignment_ping_window_seconds() -> tuple[int, str]:
+    """Derive 'new assignment' window from reviewer-attention sweep schedule."""
+    has_fixed_utc_clock = (
+        getattr(settings, "ANALYZER_REVIEWER_ATTENTION_UTC_HOUR", None) is not None
+        or getattr(settings, "ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE", None) is not None
+    )
+    if has_fixed_utc_clock:
+        return (24 * 60 * 60, "fixed_utc_clock")
+
+    period_seconds = int(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS", 86400))
+    if period_seconds > 0:
+        return (period_seconds, "period_seconds")
+    return (24 * 60 * 60, "fallback_24h")
+
+
 @shared_task(name="analyzer.reviewer_attention_daily")
 def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[str, Any]:
     """Run daily reviewer-attention policy sweep in dry-run mode.
@@ -25,6 +40,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
 
     reports_enabled = bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_ENABLED", False))
     enforcement_enabled = bool(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED", False))
+    new_assignment_ping_window_seconds, new_assignment_ping_window_source = _derive_new_assignment_ping_window_seconds()
 
     if not reports_enabled:
         return {
@@ -57,12 +73,16 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "assigned_items": 0,
         "would_nudge": 0,
         "would_auto_unassign": 0,
+        "would_new_assignment_ping": 0,
         "missing_assignment_timestamps": 0,
         "warnings": 0,
     }
 
     for repo in repos:
-        reports = build_reviewer_attention_reports(repository=repo)
+        reports = build_reviewer_attention_reports(
+            repository=repo,
+            new_assignment_ping_window_seconds=new_assignment_ping_window_seconds,
+        )
 
         reviewers = len(reports)
         reviewers_with_notifications = sum(1 for report in reports if report.notifications_enabled)
@@ -71,6 +91,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         assigned_items = sum(len(report.items) for report in reports)
         would_nudge = sum(1 for report in reports for item in report.items if item.needs_nudge)
         would_auto_unassign = sum(1 for report in reports for item in report.items if item.needs_auto_unassign)
+        would_new_assignment_ping = sum(1 for report in reports for item in report.items if item.needs_new_assignment_ping)
         missing_assignment_timestamps = sum(1 for report in reports for item in report.items if item.missing_assignment_timestamp)
         warnings = sum(len(report.warnings) for report in reports)
 
@@ -84,6 +105,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
             "assigned_items": assigned_items,
             "would_nudge": would_nudge,
             "would_auto_unassign": would_auto_unassign,
+            "would_new_assignment_ping": would_new_assignment_ping,
             "missing_assignment_timestamps": missing_assignment_timestamps,
             "warnings": warnings,
         }
@@ -96,6 +118,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         totals["assigned_items"] += assigned_items
         totals["would_nudge"] += would_nudge
         totals["would_auto_unassign"] += would_auto_unassign
+        totals["would_new_assignment_ping"] += would_new_assignment_ping
         totals["missing_assignment_timestamps"] += missing_assignment_timestamps
         totals["warnings"] += warnings
 
@@ -104,6 +127,8 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "dry_run": True,
         "reports_enabled": reports_enabled,
         "enforcement_enabled": enforcement_enabled,
+        "new_assignment_ping_window_seconds": new_assignment_ping_window_seconds,
+        "new_assignment_ping_window_source": new_assignment_ping_window_source,
         "repos": len(repos),
         "repository_id": int(repository_id) if repository_id is not None else None,
         "totals": totals,
@@ -111,8 +136,9 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
     }
 
     log.info(
-        "analyzer.reviewer_attention_daily: dry-run summary repos=%s nudge=%s auto_unassign=%s notify=%s enforcement=%s",
+        "analyzer.reviewer_attention_daily: dry-run summary repos=%s new_assignment=%s nudge=%s auto_unassign=%s notify=%s enforcement=%s",
         result["repos"],
+        totals["would_new_assignment_ping"],
         totals["would_nudge"],
         totals["would_auto_unassign"],
         totals["reviewers_to_notify"],

@@ -22,6 +22,7 @@
   - iterate reviewers with notifications enabled,
   - inspect currently assigned PRs,
   - compute queue age since the reviewer's most recent assignment to each PR,
+  - flag newly assigned PRs within configurable recent window,
   - send one summary DM per reviewer when action is needed,
   - unassign when `days_on_queue_since_assignment >= Y`.
 - Add reviewer notification settings with:
@@ -61,6 +62,7 @@
   - for each PR, find the reviewer’s **most recent assignment timestamp**,
   - compute consecutive queue duration since that assignment,
   - classify:
+    - assigned within new-assignment window: needs new-assignment ping,
     - `>= X` and `< Y`: needs nudge,
     - `>= Y`: auto-unassign candidate.
 - Build one summary payload per reviewer (single DM per run, only when non-empty).
@@ -274,6 +276,14 @@
     - `ANALYZER_REVIEWER_ATTENTION_UTC_HOUR`
     - `ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE`
   - If either UTC clock setting is present, it overrides interval schedule (`ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`).
+- **2026-02-27 policy adjustment (new-assignment trigger):**
+  - Added a third notification trigger: newly assigned PRs within a configurable window.
+  - Implemented as an additional flag in policy output (`needs_new_assignment_ping`) reusing existing assignment timeline data (no extra per-PR query path).
+- **2026-02-27 window-derivation adjustment:**
+  - Removed separate "new assignment window" setting.
+  - The newly-assigned window is now derived from reviewer-attention sweep scheduling:
+    - fixed UTC clock mode (`ANALYZER_REVIEWER_ATTENTION_UTC_HOUR` / `..._MINUTE`) => 24h window,
+    - interval mode (`ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`) => interval-sized window.
 
 ## Operational Notes
 - Suggested schedule relationship:
@@ -309,7 +319,6 @@
   - Deferred: creates coupling with assignment producer while assignment still runs outside Django.
 
 ## Open Questions
-- Whether to include "newly assigned today" in summary when assignment provenance is ambiguous.
 - Whether per-repository overrides are needed in `notification_settings` or global per reviewer is sufficient.
 
 ## References
