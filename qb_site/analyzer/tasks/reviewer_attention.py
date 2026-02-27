@@ -190,6 +190,7 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         "warnings": 0,
     }
     auto_unassign_candidates: list[dict[str, Any]] = []
+    seen_auto_unassign_candidates: set[tuple[int, int, int]] = set()
 
     for repo in repos:
         reports = build_reviewer_attention_reports(
@@ -227,6 +228,10 @@ def reviewer_attention_daily_task(*, repository_id: int | None = None) -> dict[s
         for report in reports:
             for item in report.items:
                 if item.needs_auto_unassign:
+                    candidate_key = (int(repo.id), int(report.reviewer_user_id), int(item.pr_number))
+                    if candidate_key in seen_auto_unassign_candidates:
+                        continue
+                    seen_auto_unassign_candidates.add(candidate_key)
                     auto_unassign_candidates.append(
                         {
                             "repository_id": int(repo.id),

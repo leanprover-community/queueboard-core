@@ -312,6 +312,12 @@
   - Added task tests covering:
     - successful unassign-before-delivery path,
     - no-token skip path.
+- **2026-02-27 C2 hardening follow-up completed:**
+  - Deduped same-run auto-unassign candidates by `(repo_id, reviewer_user_id, pr_number)` to avoid duplicate unassign mutation attempts when duplicate rows are present.
+  - Added enforcement test coverage for partial failures (mixed success + failure in one run) and resulting DM rendering split between:
+    - "Auto-unassigned in this run",
+    - "At auto-unassign threshold".
+  - Added enforcement test coverage proving duplicate candidate rows collapse to one unassign attempt.
 
 ## Operational Notes
 - Suggested schedule relationship:
