@@ -318,6 +318,17 @@
     - "Auto-unassigned in this run",
     - "At auto-unassign threshold".
   - Added enforcement test coverage proving duplicate candidate rows collapse to one unassign attempt.
+- **2026-02-27 manual execution tooling completed:**
+  - Added a ReviewerPreference admin tool ("Run reviewer nudges") to manually trigger `analyzer.reviewer_attention_daily`.
+  - Added run options for testing:
+    - `dry_run` (forces no unassign mutations),
+    - optional Zulip delivery toggle,
+    - optional reviewer-delivery allowlist via checkbox list of reviewer GitHub usernames,
+    - optional repository scoping and async-vs-inline execution.
+  - Added runtime task overrides so manual runs can:
+    - bypass global feature-flag disables (`reports_enabled_override=True`),
+    - control delivery/enforcement per run,
+    - restrict delivery to selected reviewer user ids.
 
 ## Operational Notes
 - Suggested schedule relationship:

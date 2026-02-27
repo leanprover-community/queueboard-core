@@ -17,6 +17,12 @@
         {% trans "Export reviewer-topics.json" %}
       </a>
     </li>
+    <li>
+      {% url 'admin:core_reviewerpreference_run_reviewer_attention' as fallback_run_attention_url %}
+      <a href="{{ run_reviewer_attention_url|default:fallback_run_attention_url }}" class="button">
+        {% trans "Run reviewer nudges" %}
+      </a>
+    </li>
   </ul>
 </div>
 {% endblock %}
