@@ -7,6 +7,8 @@ import os
 import sys
 from pathlib import Path
 
+from celery.schedules import crontab
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 APPS_DIR = Path(__file__).resolve().parent.parent
 
@@ -19,6 +21,22 @@ def env_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.lower() in {"1", "true", "t", "yes", "y"}
+
+
+def env_optional_bounded_int(name: str, *, minimum: int, maximum: int) -> int | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer in [{minimum}, {maximum}]") from exc
+    if parsed < minimum or parsed > maximum:
+        raise RuntimeError(f"{name} must be in [{minimum}, {maximum}]")
+    return parsed
 
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-change-me")
@@ -284,6 +302,22 @@ ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVIEWER_A
 ANALYZER_REVIEWER_ASSIGNMENT_TTL_SECONDS = int(
     os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_TTL_SECONDS", ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS)
 )
+ANALYZER_REVIEWER_ATTENTION_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ATTENTION_ENABLED"), False)
+ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED = env_bool(
+    os.getenv("ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED"),
+    False,
+)
+ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS", 86400))
+ANALYZER_REVIEWER_ATTENTION_UTC_HOUR = env_optional_bounded_int(
+    "ANALYZER_REVIEWER_ATTENTION_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE = env_optional_bounded_int(
+    "ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
 ANALYZER_AREA_STATS_PERIOD_SECONDS = int(os.getenv("ANALYZER_AREA_STATS_PERIOD_SECONDS", 300))
 ANALYZER_AREA_STATS_TTL_SECONDS = int(os.getenv("ANALYZER_AREA_STATS_TTL_SECONDS", ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS))
 ANALYTICS_CONVERGENCE_PERIOD_SECONDS = int(os.getenv("ANALYTICS_CONVERGENCE_PERIOD_SECONDS", 900))
@@ -417,6 +451,20 @@ if ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS > 0:
             "cache_key": "default",
             "fanout": True,
         },
+    }
+reviewer_attention_schedule = None
+if (ANALYZER_REVIEWER_ATTENTION_UTC_HOUR is not None) or (ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE is not None):
+    reviewer_attention_schedule = crontab(
+        hour=ANALYZER_REVIEWER_ATTENTION_UTC_HOUR or 0,
+        minute=ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE or 0,
+    )
+elif ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS > 0:
+    reviewer_attention_schedule = ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS
+
+if reviewer_attention_schedule is not None:
+    CELERY_BEAT_SCHEDULE["reviewer_attention_daily"] = {
+        "task": "analyzer.reviewer_attention_daily",
+        "schedule": reviewer_attention_schedule,
     }
 if ANALYZER_AREA_STATS_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["refresh_area_stats"] = {

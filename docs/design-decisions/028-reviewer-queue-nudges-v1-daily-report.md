@@ -166,11 +166,11 @@
 3. Add unit tests for queue continuity, reassignment reset, and missing-data fallbacks.
 
 ### Sub-plan B: Daily report task (dry-run first)
-#### Chunk B1: Task wiring and schedule
+#### Chunk B1: Task wiring and schedule (**completed**)
 1. Add Celery task and beat schedule entry (daily).
 2. Add feature flags for global enable + enforcement toggle.
 
-#### Chunk B2: Dry-run execution path
+#### Chunk B2: Dry-run execution path (**completed**)
 1. Run policy evaluator and emit run summary to logs/metrics only.
 2. Do not call Zulip or GitHub yet.
 3. Add structured logs + admin visibility.
@@ -255,6 +255,25 @@
   - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
   - Form submissions now write canonical threshold values into `notification_settings`; this means legacy rows with empty settings become explicit after first save.
   - A4 currently anchors queue-age at `max(last_assigned_at, active_queue_window.from_ts)`, which naturally resets stale age on queue re-entry even without persisting extra run-state.
+- **2026-02-27 review chunk completed:**
+  - Re-reviewed this living plan against current `qb_site/` implementation and relevant `AGENTS.md` guidance.
+  - Confirmed A1/A2/A4 status is accurate and no immediate plan-structure changes are required.
+  - Confirmed next execution target remains Sub-plan B / Chunk B1 (Celery task + beat wiring + feature flags).
+- **Completed:** Chunk B1 + B2.
+  - Added new Celery task `analyzer.reviewer_attention_daily` (`qb_site/analyzer/tasks/reviewer_attention.py`).
+  - Added settings/feature flags:
+    - `ANALYZER_REVIEWER_ATTENTION_ENABLED`
+    - `ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED`
+    - `ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`
+  - Added beat schedule wiring for `reviewer_attention_daily`.
+  - Implemented dry-run execution that computes per-repo and total counts from `build_reviewer_attention_reports(...)` and logs run summaries.
+  - Confirmed task is read-only for now (no Zulip sends, no GitHub unassign mutations).
+  - Added task tests for feature-disabled behavior, dry-run summary aggregation, and repo-filter skip behavior.
+- **2026-02-27 scheduling adjustment:**
+  - Added optional fixed UTC daily clock scheduling for reviewer-attention beat:
+    - `ANALYZER_REVIEWER_ATTENTION_UTC_HOUR`
+    - `ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE`
+  - If either UTC clock setting is present, it overrides interval schedule (`ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`).
 
 ## Operational Notes
 - Suggested schedule relationship:
