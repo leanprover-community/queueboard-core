@@ -377,6 +377,22 @@
     - queue re-entry after prior notification (new queue anchor) sends again,
     - threshold changes do not cause repeated nudge sends within same queue window,
     - category transition (`new_assignment` -> `nudge`) still allows one send per category in same window.
+- **2026-02-28 cleanup job added for reviewer-attention run-state:**
+  - Added periodic task `analyzer.reviewer_attention_cleanup` to prune stale run-state rows.
+  - Added retention settings and beat schedule entry:
+    - `ANALYZER_REVIEWER_ATTENTION_CLEANUP_DAY_OF_WEEK`,
+    - `ANALYZER_REVIEWER_ATTENTION_CLEANUP_UTC_HOUR`,
+    - `ANALYZER_REVIEWER_ATTENTION_CLEANUP_UTC_MINUTE`,
+    - `ANALYZER_REVIEWER_ATTENTION_NOTIFICATION_RETENTION_DAYS`,
+    - `ANALYZER_REVIEWER_ATTENTION_AUTO_UNASSIGN_RETENTION_DAYS`,
+    - `ANALYZER_REVIEWER_ATTENTION_RUN_RETENTION_DAYS`.
+  - Notification-row cleanup is conservative:
+    - deletes only aged rows where PR is no longer open, or reviewer is no longer assigned.
+    - keeps rows for open+assigned cases to preserve once-per-cycle dedupe guarantees.
+  - Added task tests for safe-delete behavior and retention cleanup.
+- **2026-02-28 cleanup schedule adjustment:**
+  - Switched reviewer-attention cleanup beat scheduling from interval-seconds to UTC crontab-style scheduling.
+  - Default schedule is weekly on Sunday at 03:00 UTC, with day/hour/minute env overrides.
 
 ## Operational Notes
 - Suggested schedule relationship:
