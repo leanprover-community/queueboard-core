@@ -393,6 +393,12 @@
 - **2026-02-28 cleanup schedule adjustment:**
   - Switched reviewer-attention cleanup beat scheduling from interval-seconds to UTC crontab-style scheduling.
   - Default schedule is weekly on Sunday at 03:00 UTC, with day/hour/minute env overrides.
+- **2026-02-28 admin visibility update:**
+  - Added read-only analyzer admin registrations for reviewer-attention run-state models:
+    - `ReviewerAttentionDailyRun`,
+    - `ReviewerAttentionNotificationRecord`,
+    - `ReviewerAttentionAutoUnassignRecord`.
+  - Added list filters/search/date hierarchy to support operational debugging of dedupe and enforcement outcomes.
 
 ## Operational Notes
 - Suggested schedule relationship:

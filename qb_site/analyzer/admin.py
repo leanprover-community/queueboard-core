@@ -19,6 +19,9 @@ from analyzer.models import (
     ReviewerAssignmentSnapshot,
     AreaStatsSnapshot,
     ReviewerOptOut,
+    ReviewerAttentionDailyRun,
+    ReviewerAttentionNotificationRecord,
+    ReviewerAttentionAutoUnassignRecord,
 )
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 from analyzer.services.reviewer_opt_out_backfill import backfill_reviewer_opt_outs
@@ -454,3 +457,99 @@ class AnalyzerConvergenceSnapshotAdmin(ReadOnlyAdmin):
                 self.message_user(request, f"Failed to enqueue analyzer convergence collection: {exc}")
             return HttpResponseRedirect(request.path)
         return super().changelist_view(request, extra_context=extra)
+
+
+@admin.register(ReviewerAttentionDailyRun)
+class ReviewerAttentionDailyRunAdmin(ReadOnlyAdmin):
+    list_display = (
+        "id",
+        "run_date",
+        "status",
+        "repository",
+        "reports_enabled",
+        "delivery_enabled",
+        "enforcement_enabled",
+        "started_at",
+        "completed_at",
+    )
+    list_filter = ("status", "reports_enabled", "delivery_enabled", "enforcement_enabled", "repository")
+    date_hierarchy = "started_at"
+    search_fields = ("id", "task_id", "repository__owner", "repository__name")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "run_date",
+        "started_at",
+        "completed_at",
+        "status",
+        "reports_enabled",
+        "delivery_enabled",
+        "enforcement_enabled",
+        "repository",
+        "task_id",
+        "summary",
+        "errors",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(ReviewerAttentionNotificationRecord)
+class ReviewerAttentionNotificationRecordAdmin(ReadOnlyAdmin):
+    list_display = (
+        "id",
+        "run_date",
+        "repository",
+        "reviewer",
+        "pr_number",
+        "category",
+        "status",
+        "cycle_anchor_at",
+        "delivered_at",
+    )
+    list_filter = ("status", "category", "repository")
+    date_hierarchy = "run_date"
+    search_fields = ("repository__owner", "repository__name", "reviewer__github_login", "pr_number")
+    raw_id_fields = ("repository", "reviewer", "run")
+    readonly_fields = (
+        "run_date",
+        "repository",
+        "reviewer",
+        "pr_number",
+        "category",
+        "cycle_anchor_at",
+        "status",
+        "delivered_at",
+        "error",
+        "run",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(ReviewerAttentionAutoUnassignRecord)
+class ReviewerAttentionAutoUnassignRecordAdmin(ReadOnlyAdmin):
+    list_display = (
+        "id",
+        "run_date",
+        "repository",
+        "reviewer",
+        "pr_number",
+        "status",
+        "completed_at",
+    )
+    list_filter = ("status", "repository")
+    date_hierarchy = "run_date"
+    search_fields = ("repository__owner", "repository__name", "reviewer__github_login", "pr_number")
+    raw_id_fields = ("repository", "reviewer", "run")
+    readonly_fields = (
+        "run_date",
+        "repository",
+        "reviewer",
+        "pr_number",
+        "status",
+        "completed_at",
+        "error",
+        "run",
+        "created_at",
+        "updated_at",
+    )
