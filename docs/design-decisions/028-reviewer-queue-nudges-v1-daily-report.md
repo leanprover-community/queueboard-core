@@ -1,448 +1,208 @@
-# Reviewer Queue Nudges V1 (Daily Report + Auto-Unassign)
+# Reviewer Queue Nudges and Auto-Unassign (Daily Attention Sweep)
 
 ## Context
-- Goal: nudge reviewers to move assigned PRs through the queue in a timely way, and automatically unassign when stale long enough.
-- Current assignment execution still runs in GitHub Actions:
-  - `.github/workflows/auto_assign_reviewers.yaml`
-  - `scripts/assign_reviewers.py`
-- Queueboard already has the state needed for queue-aware policy decisions in Django:
-  - reviewer preferences (`core.ReviewerPreference`)
-  - PR assignment timeline (`syncer.PRTimelineEvent`)
-  - queue windows (`analyzer.PRQueueWindow`)
-  - Zulip messaging client (`zulip_bot.services.zulip_client`)
-  - GitHub assignment mutation client (`core.services.github_assignment`)
-- We considered an event-bus-first architecture, but for V1 this is likely unnecessary scope.
-- Requirement for this phase: ship practical nudges/unassignment with low churn now, while preserving a clean path to later move assignment execution into `qb_site`.
+- Queueboard needs queue-health enforcement for assigned reviewers without coupling to immediate assignment production changes.
+- Assignment production still runs in GitHub Actions (`.github/workflows/auto_assign_reviewers.yaml`, `scripts/assign_reviewers.py`).
+- Django already has the data and integrations required for policy evaluation and enforcement:
+  - reviewer preferences (`core.ReviewerPreference`),
+  - assignment timeline (`syncer.PRTimelineEvent`),
+  - queue continuity windows (`analyzer.PRQueueWindow`),
+  - Zulip direct messaging (`zulip_bot.services.zulip_client`),
+  - GitHub unassign mutation client (`core.services.github_assignment`).
+- Requirements for this phase were:
+  - enforce stale-assignment policy,
+  - send actionable reviewer summaries,
+  - keep assignment producer migration optional for later,
+  - make retries/idempotency operationally safe.
 
 ## Decision
-- Implement a **daily reviewer attention report + auto-unassign task in `qb_site`**.
-- Keep assignment execution in GitHub Actions for now.
-- Do **not** introduce a generic event bus/event schema for V1.
-- Model V1 as a policy sweep:
-  - iterate reviewers with notifications enabled,
-  - inspect currently assigned PRs,
-  - compute queue age since the reviewer's most recent assignment to each PR,
-  - flag newly assigned PRs within configurable recent window,
-  - send one summary DM per reviewer when action is needed,
-  - unassign when `days_on_queue_since_assignment >= Y`.
-- Add reviewer notification settings with:
-  - `notifications_enabled` (boolean, default `False`)
-  - configurable `X` and `Y` thresholds (initially in JSON settings to allow future options).
-- Set default thresholds to:
-  - `stale_nudge_days = 14`
-  - `auto_unassign_days = 21`
-- Enforce a hard maximum:
-  - `auto_unassign_days <= 21`.
-- Apply enforcement policy independently of notification preference:
-  - `notifications_enabled` controls messaging behavior,
-  - auto-unassign eligibility still applies at the effective enforcement threshold.
-- Preserve a seam for migration:
-  - keep policy/enforcement logic independent from assignment producer,
-  - later switch producer from GitHub Action to `qb_site` assignment task without redesigning nudges.
+- Implement reviewer attention as a Django/Celery policy sweep (`analyzer.reviewer_attention_daily`) that:
+  - computes per-reviewer queue attention state,
+  - optionally sends one aggregated Zulip DM per reviewer,
+  - optionally executes GitHub auto-unassign mutations,
+  - persists run-state and dedupe data for retry/idempotency safety.
+- Keep assignment production outside Django for now.
+- Use reviewer-specific threshold policy:
+  - `stale_nudge_days` (X),
+  - `auto_unassign_days` (Y),
+  - defaults `X=14`, `Y=21`, hard max `Y<=21`, and `Y>X`.
+- Enforce stale auto-unassign independently of notification opt-in:
+  - `notifications_enabled` gates DM delivery,
+  - enforcement still applies when enabled globally.
+- Use per-cycle dedupe for notifications (not per-day):
+  - one notification per `(repo, reviewer, pr, category, cycle_anchor_at)`.
 
-## V1 Architecture
+## Architecture
 
-### 1) Scheduler and execution boundary
-- Add a Celery beat task in `qb_site` that runs daily after the assignment workflow and ingestion lag buffer.
-- Task responsibilities:
-  - evaluate attention conditions,
-  - execute unassignments,
-  - send per-reviewer summary DMs,
-  - persist enough run state for dedupe and observability.
+### 1) Policy Evaluation Service
+- Service: `analyzer.services.reviewer_attention.build_reviewer_attention_reports(...)`.
+- Inputs:
+  - repository,
+  - current open PR assignees,
+  - latest reviewer assignment event per PR,
+  - active queue window under active ruleset,
+  - reviewer threshold policy.
+- Outputs:
+  - per-reviewer `ReviewerAttentionReport` with `ReviewerAttentionItem` rows,
+  - event flags per item:
+    - `needs_new_assignment_ping`,
+    - `needs_nudge`,
+    - `needs_auto_unassign`.
 
-### 2) Inputs
-- Reviewer configuration from `core.ReviewerPreference`.
-- Current open PR assignment state from `syncer.PullRequest.assignees`.
-- Assignment history from `syncer.PRTimelineEvent` (`ASSIGNED` / `UNASSIGNED`).
-- Queue membership/continuity from `analyzer.PRQueueWindow` under the active ruleset.
+### 2) Queue-Age and Reset Semantics
+- Consecutive queue age anchor:
+  - `queue_anchor_at = max(last_assigned_at, active_queue_window.from_ts)`.
+- Effects:
+  - reassignment resets age,
+  - queue re-entry resets age,
+  - missing assignment timestamp suppresses strict actions and emits warning context.
+- Optional policy floor:
+  - `ANALYZER_REVIEWER_ATTENTION_POLICY_START_AT` clamps counting anchor forward.
 
-### 3) Policy engine (daily sweep)
-- For each reviewer with notifications enabled:
-  - collect open PRs currently assigned to that reviewer,
-  - for each PR, find the reviewer’s **most recent assignment timestamp**,
-  - compute consecutive queue duration since that assignment,
-  - classify:
-    - assigned within new-assignment window: needs new-assignment ping,
-    - `>= X` and `< Y`: needs nudge,
-    - `>= Y`: auto-unassign candidate.
-- Build one summary payload per reviewer (single DM per run, only when non-empty).
+### 3) Daily Task Orchestration
+- Task: `analyzer.reviewer_attention_daily`.
+- Sequence:
+  1. resolve effective runtime toggles (global flags + optional per-run overrides),
+  2. evaluate policy reports by repository,
+  3. execute optional auto-unassign mutations,
+  4. execute optional reviewer DM delivery,
+  5. persist run summary and outcomes.
+- Delivery model:
+  - one DM per reviewer per run when at least one claimable event exists,
+  - message sections grouped by event category and repository.
 
-### 4) Enforcement and delivery
-- Unassign via `GitHubAssignmentClient.unassign(...)` before finalizing summary content.
-- Send summary via Zulip direct message.
-- Keep send + mutation outcomes in DB so retries and idempotency are safe.
+### 4) Enforcement Path
+- Auto-unassign candidates come from `needs_auto_unassign` flags.
+- Mutation path:
+  - resolve operation token (`unassign_pr`),
+  - call `GitHubAssignmentClient.unassign(...)`.
+- Enforcement idempotency:
+  - de-duped by persisted `(run_date, repository, reviewer, pr_number)` key.
 
-### 5) Persistence (minimal V1 state)
-- Add a compact run-state model (or models) for:
-  - dedupe of repeated notifications for the same `(repo, pr, reviewer, category, cycle-anchor)`,
-  - tracking attempted/succeeded auto-unassign operations,
-  - run metadata (`started_at`, `completed_at`, counts, errors).
-- Keep storage narrow and purpose-built; do not generalize into an all-events ledger in V1.
+### 5) Run-State and Dedupe Persistence
+- Models (`analyzer.models.reviewer_attention_run_state`):
+  - `ReviewerAttentionDailyRun`: task run metadata and summary payload,
+  - `ReviewerAttentionNotificationRecord`: notification dedupe and delivery outcomes,
+  - `ReviewerAttentionAutoUnassignRecord`: enforcement outcomes.
+- Notification dedupe key:
+  - `(repository, reviewer, pr_number, category, cycle_anchor_at)`.
+- Category-scoped behavior is intentional:
+  - a PR can emit one `new_assignment` and later one `nudge` in same cycle.
+- Retry behavior:
+  - failed notification records are claimable on later runs,
+  - stale `pending` notification records are reclaimable after timeout to avoid deadlock.
 
-## Policy Semantics and Subtleties
+### 6) Cleanup Lifecycle
+- Task: `analyzer.reviewer_attention_cleanup`.
+- Cleanup policy:
+  - notification records: delete only when older than retention and either:
+    - PR is no longer open, or
+    - reviewer is no longer assigned.
+  - auto-unassign records: age-based retention deletion,
+  - run metadata: age-based retention deletion.
+- Rationale:
+  - preserve dedupe guarantees for still-open and still-assigned cycles.
 
-### A) "Consecutive days on queue since most recent assignment"
-- Anchor is the reviewer-specific latest `ASSIGNED` event for that PR.
-- Count queue time only from `max(last_assigned_at, first_on_queue_after_that_assignment)`.
-- If PR leaves queue and later re-enters, continuity resets based on queue windows.
-- If reviewer is reassigned later, clock resets to the new assignment timestamp.
+### 7) Admin and Operational Controls
+- Manual run tooling in `core.ReviewerPreference` admin supports targeted/manual runs.
+- Read-only analyzer admin visibility exists for:
+  - `ReviewerAttentionDailyRun`,
+  - `ReviewerAttentionNotificationRecord`,
+  - `ReviewerAttentionAutoUnassignRecord`.
 
-### B) Missing or delayed data
-- If assignment timestamp for a currently assigned reviewer cannot be determined confidently:
-  - skip auto-unassign for that PR in this run,
-  - include optional diagnostic metric/log entry.
-- If queue windows are stale or unavailable for the active ruleset:
-  - skip strict actions for affected PRs (fail safe),
-  - surface run warning and convergence metric.
+## Configuration and Scheduling
 
-### C) Unassign threshold behavior
-- `Y` must be strictly greater than `X`.
-- `Y` is hard-capped at `21`.
-- Auto-unassign at first run where `days >= Y`.
-- Do not repeatedly unassign; treat as idempotent action by checking current assignees and prior recorded success.
+### Feature Flags
+- `ANALYZER_REVIEWER_ATTENTION_ENABLED`
+- `ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED`
+- `ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED`
 
-### F) Notification toggle vs enforcement
-- `notifications_enabled=False` suppresses reviewer nudge/report messaging.
-- It does **not** exempt the reviewer from stale auto-unassign policy.
-- Rationale: queue health policy should not depend on whether a reviewer opted into messaging.
+### Daily Sweep Schedule
+- Interval mode:
+  - `ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`
+- UTC clock mode (overrides interval when present):
+  - `ANALYZER_REVIEWER_ATTENTION_UTC_HOUR`
+  - `ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE`
 
-### D) Reassignment behavior after auto-unassign
-- V1: no immediate reassignment inside this task.
-- Reassignment remains the responsibility of the existing assignment workflow on its next cycle.
-- Rationale: avoids coupling daily nudge task to assignment execution while assignment still lives in GitHub Actions.
+### New-Assignment Window Derivation
+- Derived from sweep scheduling mode:
+  - fixed UTC clock mode => 24h window,
+  - interval mode => interval-sized window.
 
-### E) Notification mode
-- V1 supports summary messaging only (one DM/day/reviewer as needed).
-- Live per-event pings are deferred.
+### Cleanup Schedule (Crontab)
+- `ANALYZER_REVIEWER_ATTENTION_CLEANUP_DAY_OF_WEEK` (default `sun`)
+- `ANALYZER_REVIEWER_ATTENTION_CLEANUP_UTC_HOUR` (default `3`)
+- `ANALYZER_REVIEWER_ATTENTION_CLEANUP_UTC_MINUTE` (default `0`)
 
-## Data Model and Settings Plan
-
-### 1) Reviewer preferences
-- Extend `core.ReviewerPreference`:
-  - `notifications_enabled = models.BooleanField(default=False)`
-  - `notification_settings = models.JSONField(default=dict, blank=True)`
-- Initial JSON keys:
-  - `stale_nudge_days` (X)
-  - `auto_unassign_days` (Y)
-  - optional future keys (quiet hours, channel mode, etc.)
-
-### 2) Validation rules
-- `X >= 1`
-- `Y >= 2`
-- `Y > X`
-- enforce at form/service layer; store normalized ints in JSON.
-
-### 3) Operational settings
-- Add task schedule config in `qb_site/settings/base.py`:
-  - run period (daily),
-  - optional UTC hour/minute window if later moved from fixed-seconds schedule.
-- Add feature flags:
-  - global enable for report generation,
-  - global enable for auto-unassign enforcement (supports dry-run).
-
-## Implementation Plan
-
-### Sub-plan A: V1 foundation (data + policy skeleton)
-#### Chunk A1: Notification preference schema + parsing defaults (**completed**)
-1. Add `ReviewerPreference` fields:
-  - `notifications_enabled` (default `False`)
-  - `notification_settings` (JSON, default `{}`)
-2. Add migration for those fields.
-3. Add pure settings parser/normalizer (`X`, `Y`) with non-DB tests.
-4. Keep existing preference forms unchanged in this chunk (no UX changes yet).
-
-#### Chunk A2: Preference UI/admin wiring + validation
-1. Add form fields for notifications in Zulip prefs form.
-2. Add admin exposure for new notification controls.
-3. Validate and normalize `notification_settings` values (`X >= 1`, `Y > X`) in form/service path.
-4. Add form tests for valid/invalid submissions and persistence.
-
-#### Chunk A3: Run-state persistence models (**completed**)
-1. Add minimal model(s) for run metadata and dedupe records.
-2. Add model indexes/constraints for idempotency keys.
-3. Add tests for dedupe semantics and retry-safe writes.
-
-#### Chunk A4: Policy computation service (read-only) (**completed**)
-1. Implement DB-backed policy evaluator (no sends/mutations).
-2. Compute per-reviewer report rows and unassign candidates from queue/timeline state.
-3. Add unit tests for queue continuity, reassignment reset, and missing-data fallbacks.
-
-### Sub-plan B: Daily report task (dry-run first)
-#### Chunk B1: Task wiring and schedule (**completed**)
-1. Add Celery task and beat schedule entry (daily).
-2. Add feature flags for global enable + enforcement toggle.
-
-#### Chunk B2: Dry-run execution path (**completed**)
-1. Run policy evaluator and emit run summary to logs/metrics only.
-2. Do not call Zulip or GitHub yet.
-3. Add structured logs + admin visibility.
-
-#### Chunk B3: Dry-run validation period (**skipped**)
-1. Run for several days.
-2. Review "would-nudge/would-unassign" outputs and tune defaults.
-
-### Sub-plan C: Enable messaging and enforcement
-#### Chunk C1: Zulip summary delivery (**completed**)
-1. Send one summary DM per reviewer when report non-empty.
-2. Record delivery outcomes and retry-safe status.
-
-#### Chunk C2: Auto-unassign execution (**completed**)
-1. Enable GitHub unassign behind feature flag.
-2. Execute idempotently and append results to summary.
-3. Enforce hard max policy (`21`) regardless of reviewer notification toggle.
-4. Add tests around duplicate runs and partial failures.
-
-#### Chunk C3: Incremental rollout
-1. Start with small cohort.
-2. Expand after error rates and outcomes are acceptable.
-
-### Sub-plan D: Stabilization and tuning
-#### Chunk D1: Policy and UX tuning
-1. Tune defaults for `X` and `Y`.
-2. Improve report formatting and actionable links.
-
-#### Chunk D2: Observability hardening
-1. Add metrics/alerts for:
-  - report generation failures,
-  - Zulip delivery failures,
-  - GitHub unassign failures,
-  - skipped decisions due to missing data.
-
-### Sub-plan E: Later migration of assignment producer
-#### Chunk E1: Move assignment execution to `qb_site`
-1. Implement native assignment executor task in Django.
-2. Keep nudge policy/enforcement unchanged.
-
-#### Chunk E2: Parity and retirement
-1. Run parity/shadow period.
-2. Remove/retire Action assignment step.
-
-## Progress and Implementation Notes
-- **Completed:** Chunk A1.
-  - Added `notifications_enabled` and `notification_settings` to `core.ReviewerPreference`.
-  - Added migration `core.0005_reviewerpreference_notifications`.
-  - Added `core.services.reviewer_notification_settings.parse_notification_policy(...)` and tests.
-- **Completed:** Chunk A2.
-  - Added reviewer-facing notification controls in Zulip prefs form:
-    - `notifications_enabled`
-    - `stale_nudge_days` (X)
-    - `auto_unassign_days` (Y)
-  - Added form-layer validation for `Y > X` and defaulting behavior for blank values.
-  - Wired persistence so form submissions store normalized values in `notification_settings`.
-  - Exposed `notifications_enabled` in `ReviewerPreferenceAdmin` list display/filter.
-- **Adjustment after A2:**
-  - Updated defaults to `X=14`, `Y=21`.
-  - Added hard max validation/cap for `Y<=21`.
-  - Confirmed intended policy: notification opt-out does not disable stale auto-unassign enforcement.
-- **Completed:** Chunk A3.
-  - Added run-state persistence models:
-    - `analyzer.ReviewerAttentionDailyRun` (run metadata, summaries, errors),
-    - `analyzer.ReviewerAttentionNotificationRecord` (per-cycle notification dedupe + send outcome),
-    - `analyzer.ReviewerAttentionAutoUnassignRecord` (per-day unassign execution outcome).
-  - Added migration `analyzer.0021_reviewerattentiondailyrun_and_more` with unique constraints and indexes for idempotency keys.
-  - Wired `analyzer.reviewer_attention_daily` to:
-    - persist run start/completion metadata and summaries,
-    - claim notification keys before delivery and dedupe same-day repeat sends,
-    - record notification send success/failure for retry-safe behavior,
-    - dedupe same-day auto-unassign attempts via persisted keys.
-  - Added task tests covering:
-    - same-day delivery dedupe across retry runs,
-    - retry of failed delivery record on subsequent run,
-    - same-day auto-unassign dedupe across retry runs.
-- **Completed:** Chunk A4.
-  - Added read-only policy service `build_reviewer_attention_reports(...)` that returns:
-    - full per-reviewer status rows for on-demand reporting,
-    - derived event flags (`needs_nudge`, `needs_auto_unassign`) for scheduled notification/enforcement.
-    - queue duration rollups per assigned PR:
-      - consecutive days since assignment anchor,
-      - total queue time/days across queue windows (active ruleset scope).
-  - Added service tests covering:
-    - `X <= days < Y` nudge behavior,
-    - `days >= Y` auto-unassign behavior,
-    - enforcement flags still computed when notifications are disabled,
-    - missing assignment timestamp fallback behavior,
-    - queue re-entry reset behavior via active queue-window anchoring.
-  - Added an on-demand consumer command: `assigned_prs` (Zulip private command) that renders reviewer-facing status summaries using A4 output.
-- **Nuance discovered during implementation:**
-  - Existing field-coverage guard (`reviewer_preference_unaccounted_fields`) requires every model field to be explicitly classified.
-  - To keep this first chunk isolated and testable, new fields were intentionally added to `REVIEWER_PREFERENCE_NON_FORM_FIELDS` first, deferring UI exposure to Chunk A2.
-  - Form submissions now write canonical threshold values into `notification_settings`; this means legacy rows with empty settings become explicit after first save.
-  - A4 currently anchors queue-age at `max(last_assigned_at, active_queue_window.from_ts)`, which naturally resets stale age on queue re-entry even without persisting extra run-state.
-- **2026-02-27 review chunk completed:**
-  - Re-reviewed this living plan against current `qb_site/` implementation and relevant `AGENTS.md` guidance.
-  - Confirmed A1/A2/A4 status is accurate and no immediate plan-structure changes are required.
-  - Confirmed next execution target remains Sub-plan B / Chunk B1 (Celery task + beat wiring + feature flags).
-- **Completed:** Chunk B1 + B2.
-  - Added new Celery task `analyzer.reviewer_attention_daily` (`qb_site/analyzer/tasks/reviewer_attention.py`).
-  - Added settings/feature flags:
-    - `ANALYZER_REVIEWER_ATTENTION_ENABLED`
-    - `ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED`
-    - `ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`
-  - Added beat schedule wiring for `reviewer_attention_daily`.
-  - Implemented dry-run execution that computes per-repo and total counts from `build_reviewer_attention_reports(...)` and logs run summaries.
-  - Confirmed task is read-only for now (no Zulip sends, no GitHub unassign mutations).
-  - Added task tests for feature-disabled behavior, dry-run summary aggregation, and repo-filter skip behavior.
-- **2026-02-27 scheduling adjustment:**
-  - Added optional fixed UTC daily clock scheduling for reviewer-attention beat:
-    - `ANALYZER_REVIEWER_ATTENTION_UTC_HOUR`
-    - `ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE`
-  - If either UTC clock setting is present, it overrides interval schedule (`ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`).
-- **2026-02-27 policy adjustment (new-assignment trigger):**
-  - Added a third notification trigger: newly assigned PRs within a configurable window.
-  - Implemented as an additional flag in policy output (`needs_new_assignment_ping`) reusing existing assignment timeline data (no extra per-PR query path).
-- **2026-02-27 window-derivation adjustment:**
-  - Removed separate "new assignment window" setting.
-  - The newly-assigned window is now derived from reviewer-attention sweep scheduling:
-    - fixed UTC clock mode (`ANALYZER_REVIEWER_ATTENTION_UTC_HOUR` / `..._MINUTE`) => 24h window,
-    - interval mode (`ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`) => interval-sized window.
-- **Completed:** Chunk C1.
-  - Added optional Zulip summary delivery in `analyzer.reviewer_attention_daily` behind `ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED`.
-  - Sends one DM per reviewer per run (aggregated across repositories) when reviewer has events of interest and notifications enabled.
-  - Message includes category-grouped PR lists:
-    - newly assigned,
-    - needs nudge,
-    - auto-unassign candidates.
-  - Added structured delivery outcomes in task result payload (attempted/sent/failed/skipped plus per-reviewer statuses).
-  - Retry-safety/observability note (superseded by A3): this chunk initially recorded outcomes only in task result/logs before run-state tables were added.
-- **2026-02-27 message/UX tuning:**
-  - Refined reviewer DM content for compact actionable summaries:
-    - "Newly assigned" now includes assignment timestamp (`since <time:...>`) and relative age.
-    - "Needs nudge" copy updated to compactly state consecutive queue days since assignment.
-    - Auto-unassign section wording now distinguishes threshold vs actual unassignment based on enforcement mode.
-    - Added explicit per-repo policy thresholds in-message (`X` nudge days and `Y` auto-unassign days).
-    - Softened headline copy ("may need your attention") and clarified tips wording for settings scope.
-    - Removed redundant "queue age at threshold" detail lines in favor of threshold-policy wording plus assignment timestamp.
-    - Follow-up copy tweak: changed "Policy" label to "Settings" and moved `Y` threshold mention to auto-unassign section headers (not repeated per PR row).
-    - Follow-up wording tweak: updated auto-unassign section headers to clearer "after at least Y consecutive days" phrasing.
-    - Follow-up wording tweak: aligned nudge section phrasing with threshold-style headers and added per-PR total queue days in both nudge and auto-unassign sections.
-    - Follow-up wording tweak: removed per-PR consecutive-days restatement in nudge item rows to mirror unassign-item row density.
-    - Follow-up consistency tweak: restored consecutive queue-age lines in nudge/unassign item rows and aligned formatting with `assigned_prs` by reusing shared queue-age formatting helpers.
-    - Follow-up terminology tweak: renamed "Consecutive queue age since assignment" to "Consecutive time on queue since latest assignment" across daily DM and `assigned_prs`.
-    - Follow-up maintainability tweak: centralized queue-age/total-time line wording helpers in `reviewer_attention_format` and reused them in both daily DM and `assigned_prs`.
-    - Follow-up cleanup: removed temporary `_format_duration` compatibility shim from `assigned_prs`; tests now use shared `reviewer_attention_format` duration formatter directly.
-    - Follow-up test-hardening tweak: relaxed message-content assertions in reviewer-attention and `assigned_prs` tests to focus more on structure/signals and less on exact prose wording.
-    - Follow-up readability tweak: changed notification categories to level-4 markdown subheaders with explanatory text lines before PR bullet lists.
-    - Follow-up `assigned_prs` UX tweak: replaced raw `Flags: ...` output with human-readable status messages for nudge/auto-unassign conditions, and suppress status line when no condition applies.
-  - Added actionable reminders in DM footer:
-    - `unassign` command syntax example,
-    - `prefs` command hint for notification setting changes.
-  - Factored shared formatting/sorting helpers for reviewer attention views so daily DM and `assigned_prs` stay aligned on ordering and "assigned X ago" rendering.
-- **Completed:** Chunk C2.
-  - Added enforcement execution in `analyzer.reviewer_attention_daily` behind `ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED`.
-  - For `needs_auto_unassign` items, task now attempts GitHub unassign via operation-token path (`unassign_pr`) before DM delivery.
-  - Added structured enforcement outcomes in task results (candidates/attempted/unassigned/failed/skipped_no_token).
-  - Updated reviewer DM section to reflect actual outcomes:
-    - successfully unassigned items shown under "Auto-unassigned in this run",
-    - non-successful enforcement items remain under "At auto-unassign threshold".
-  - Added task tests covering:
-    - successful unassign-before-delivery path,
-    - no-token skip path.
-- **2026-02-27 C2 hardening follow-up completed:**
-  - Deduped same-run auto-unassign candidates by `(repo_id, reviewer_user_id, pr_number)` to avoid duplicate unassign mutation attempts when duplicate rows are present.
-  - Added enforcement test coverage for partial failures (mixed success + failure in one run) and resulting DM rendering split between:
-    - "Auto-unassigned in this run",
-    - "At auto-unassign threshold".
-  - Added enforcement test coverage proving duplicate candidate rows collapse to one unassign attempt.
-- **2026-02-27 manual execution tooling completed:**
-  - Added a ReviewerPreference admin tool ("Run reviewer nudges") to manually trigger `analyzer.reviewer_attention_daily`.
-  - Added run options for testing:
-    - explicit auto-unassign enforcement toggle (unchecked is read-only),
-    - optional Zulip delivery toggle,
-    - optional reviewer-delivery allowlist via checkbox list of reviewer GitHub usernames,
-    - optional repository scoping and async-vs-inline execution.
-  - Added runtime task overrides so manual runs can:
-    - bypass global feature-flag disables (`reports_enabled_override=True`),
-    - control delivery/enforcement per run,
-    - restrict delivery to selected reviewer user ids.
-  - Added explicit admin UI warning that auto-unassign enforcement applies even when reviewer notifications are disabled.
-- **2026-02-27 policy-start floor added:**
-  - Added env setting `ANALYZER_REVIEWER_ATTENTION_POLICY_START_AT` (date or ISO datetime, UTC) to delay policy counting start.
-  - Policy floor affects eligibility/counting only:
-    - nudge and auto-unassign age are computed from `max(last_assigned_at, active_queue_window_start, policy_start_at)`,
-    - newly-assigned ping gating also respects the floor.
-  - Displayed assignment timestamps remain unchanged.
-  - Added service/task tests for floor behavior and parsing.
-- **2026-02-27 dedupe policy adjustment (once per consecutive queue window):**
-  - Updated notification dedupe semantics from per-day to per-cycle keys.
-  - Notification idempotency key now uses `(repository, reviewer, pr_number, category, cycle_anchor_at)` where:
-    - `cycle_anchor_at = queue_anchor_at` for on-queue items (resets on queue re-entry),
-    - fallback `cycle_anchor_at = last_assigned_at` when queue anchor is unavailable.
-  - Resulting behavior:
-    - no repeated daily pings for the same category within one consecutive queue window,
-    - reassignment or queue re-entry creates a new cycle anchor and allows a new notification.
-  - Added task test coverage proving cross-day dedupe still suppresses sends within the same cycle anchor.
-- **2026-02-28 scenario coverage hardening:**
-  - Added explicit reviewer-attention task tests for transition scenarios:
-    - reassigned after prior notification (new assignment anchor) sends again,
-    - queue re-entry after prior notification (new queue anchor) sends again,
-    - threshold changes do not cause repeated nudge sends within same queue window,
-    - category transition (`new_assignment` -> `nudge`) still allows one send per category in same window.
-- **2026-02-28 cleanup job added for reviewer-attention run-state:**
-  - Added periodic task `analyzer.reviewer_attention_cleanup` to prune stale run-state rows.
-  - Added retention settings and beat schedule entry:
-    - `ANALYZER_REVIEWER_ATTENTION_CLEANUP_DAY_OF_WEEK`,
-    - `ANALYZER_REVIEWER_ATTENTION_CLEANUP_UTC_HOUR`,
-    - `ANALYZER_REVIEWER_ATTENTION_CLEANUP_UTC_MINUTE`,
-    - `ANALYZER_REVIEWER_ATTENTION_NOTIFICATION_RETENTION_DAYS`,
-    - `ANALYZER_REVIEWER_ATTENTION_AUTO_UNASSIGN_RETENTION_DAYS`,
-    - `ANALYZER_REVIEWER_ATTENTION_RUN_RETENTION_DAYS`.
-  - Notification-row cleanup is conservative:
-    - deletes only aged rows where PR is no longer open, or reviewer is no longer assigned.
-    - keeps rows for open+assigned cases to preserve once-per-cycle dedupe guarantees.
-  - Added task tests for safe-delete behavior and retention cleanup.
-- **2026-02-28 cleanup schedule adjustment:**
-  - Switched reviewer-attention cleanup beat scheduling from interval-seconds to UTC crontab-style scheduling.
-  - Default schedule is weekly on Sunday at 03:00 UTC, with day/hour/minute env overrides.
-- **2026-02-28 admin visibility update:**
-  - Added read-only analyzer admin registrations for reviewer-attention run-state models:
-    - `ReviewerAttentionDailyRun`,
-    - `ReviewerAttentionNotificationRecord`,
-    - `ReviewerAttentionAutoUnassignRecord`.
-  - Added list filters/search/date hierarchy to support operational debugging of dedupe and enforcement outcomes.
+### Cleanup Retention
+- `ANALYZER_REVIEWER_ATTENTION_NOTIFICATION_RETENTION_DAYS` (default `30`)
+- `ANALYZER_REVIEWER_ATTENTION_AUTO_UNASSIGN_RETENTION_DAYS` (default `90`)
+- `ANALYZER_REVIEWER_ATTENTION_RUN_RETENTION_DAYS` (default `30`)
 
 ## Operational Notes
-- Suggested schedule relationship:
-  - assignment run (GitHub Action) first,
-  - then sync ingestion,
-  - then daily nudge task after a buffer to reduce stale-read risk.
-- For initial rollout:
-  - run with `auto-unassign` disabled,
-  - compare "would unassign" outputs against maintainer expectations,
-  - then enable enforcement.
-- Keep runbook entries for:
-  - reverting an unintended unassignment,
-  - temporarily disabling enforcement globally,
-  - replaying one reviewer/day report generation.
+- Recommended execution order for freshness:
+  1. assignment producer run,
+  2. sync ingestion,
+  3. reviewer attention sweep after buffer.
+- Rollout sequence:
+  1. reports enabled, delivery off, enforcement off,
+  2. delivery on,
+  3. enforcement on.
+- Enforcement and messaging can be independently toggled globally and per manual run.
+- On Heroku/ephemeral filesystems, cron-style schedules are preferred over long fixed intervals for reliability across restarts.
+
+## Testing Strategy
+- Service tests (`analyzer/tests/services/test_reviewer_attention.py`) cover:
+  - threshold transitions,
+  - queue re-entry reset,
+  - missing assignment fallback,
+  - policy-floor behavior.
+- Task tests (`analyzer/tests/tasks/test_reviewer_attention_task.py`) cover:
+  - feature toggles,
+  - delivery and enforcement paths,
+  - partial failures,
+  - dedupe and retry semantics,
+  - reassignment/queue-reentry/settings-change category transitions.
+- Cleanup tests (`analyzer/tests/tasks/test_reviewer_attention_cleanup_task.py`) cover:
+  - safe deletion for closed/unassigned cases,
+  - retention pruning for run and enforcement records,
+  - preservation of still-needed dedupe rows.
 
 ## Consequences
 - Pros:
-  - ships core reviewer nudge value quickly,
-  - uses existing Django data and infrastructure,
-  - avoids heavy event-system upfront complexity,
-  - preserves a clean migration path for assignment execution later.
+  - queue-health nudges and enforcement shipped without migrating assignment producer,
+  - robust retry/idempotency behavior with explicit run-state,
+  - operational visibility and manual controls in admin,
+  - cleanup lifecycle avoids unbounded growth while preserving active-cycle dedupe.
 - Trade-offs:
-  - daily summaries are less immediate than live pings,
-  - correctness depends on freshness of timeline/queue data at run time,
-  - run-state persistence improves retry/idempotency behavior, but overlapping-run race conditions can still require operational monitoring and occasional cleanup.
+  - policy quality depends on sync and queue-window freshness,
+  - per-cycle dedupe still requires retained rows for open+assigned PRs,
+  - daily sweep is less immediate than event-driven notifications.
 
 ## Alternatives Considered
-- Build notifications directly in GitHub Actions.
-  - Rejected: poor fit for DB-backed policy logic, weak retry/audit ergonomics, duplicates Django logic.
-- Build full event schema/event bus first.
-  - Deferred: strong long-term architecture, but too much initial complexity for V1 goals.
-- Trigger immediate reassignment when unassigning at `Y`.
-  - Deferred: creates coupling with assignment producer while assignment still runs outside Django.
+- Implement nudges/enforcement in GitHub Actions.
+  - Rejected: poorer DB-backed policy evaluation and operational observability.
+- Introduce generalized event bus/event ledger first.
+  - Rejected for this phase: unnecessary scope before delivering policy value.
+- Couple unassign task to immediate reassignment.
+  - Deferred: intentionally kept assignment production decoupled.
 
 ## Open Questions
-- Whether per-repository overrides are needed in `notification_settings` or global per reviewer is sufficient.
+- Whether to add per-repository threshold overrides in `notification_settings` beyond current per-reviewer global thresholds.
 
 ## References
 - `.github/workflows/auto_assign_reviewers.yaml`
 - `scripts/assign_reviewers.py`
 - `qb_site/core/models/reviewer_preference.py`
+- `qb_site/core/services/reviewer_notification_settings.py`
+- `qb_site/core/services/github_assignment.py`
+- `qb_site/analyzer/services/reviewer_attention.py`
+- `qb_site/analyzer/services/reviewer_attention_format.py`
+- `qb_site/analyzer/tasks/reviewer_attention.py`
+- `qb_site/analyzer/tasks/reviewer_attention_cleanup.py`
+- `qb_site/analyzer/models/reviewer_attention_run_state.py`
+- `qb_site/analyzer/admin.py`
 - `qb_site/syncer/models/pull_request.py`
 - `qb_site/syncer/models/pr_timeline_event.py`
 - `qb_site/analyzer/models/queue_window.py`
-- `qb_site/analyzer/models/reviewer_attention_run_state.py`
-- `qb_site/core/services/github_assignment.py`
 - `qb_site/zulip_bot/services/zulip_client.py`
