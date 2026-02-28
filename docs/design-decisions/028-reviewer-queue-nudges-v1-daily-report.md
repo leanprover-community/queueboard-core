@@ -311,6 +311,7 @@
     - Follow-up cleanup: removed temporary `_format_duration` compatibility shim from `assigned_prs`; tests now use shared `reviewer_attention_format` duration formatter directly.
     - Follow-up test-hardening tweak: relaxed message-content assertions in reviewer-attention and `assigned_prs` tests to focus more on structure/signals and less on exact prose wording.
     - Follow-up readability tweak: changed notification categories to level-4 markdown subheaders with explanatory text lines before PR bullet lists.
+    - Follow-up `assigned_prs` UX tweak: replaced raw `Flags: ...` output with human-readable status messages for nudge/auto-unassign conditions, and suppress status line when no condition applies.
   - Added actionable reminders in DM footer:
     - `unassign` command syntax example,
     - `prefs` command hint for notification setting changes.

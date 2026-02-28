@@ -124,6 +124,11 @@ class TestAssignedPrsCommand(TestCase):
             r"Consecutive time on queue since latest assignment: [0-9]+d(?: [0-9]+h)?",
         )
         self.assertRegex(kwargs["content"], r"Total queue time: [0-9]+d(?: [0-9]+h)?")
+        self.assertIn(
+            "This PR has been on the queue for >= 14 consecutive days since you were assigned.",
+            kwargs["content"],
+        )
+        self.assertNotIn("Flags:", kwargs["content"])
         self.assertNotIn("On queue now", kwargs["content"])
         self.assertNotIn("seconds)", kwargs["content"])
 
@@ -197,6 +202,76 @@ class TestAssignedPrsCommand(TestCase):
         self.assertIn("```spoiler On Queue (0)", kwargs["content"])
         self.assertIn("```spoiler Maintainer Merged (1)", kwargs["content"])
         self.assertIn("PR #124", kwargs["content"])
+
+    def test_shows_human_friendly_auto_unassign_status(self) -> None:
+        user = User.objects.create(github_login="alice", zulip_user_id=101)
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        ReviewerPreference.objects.create(
+            user=user,
+            repository=repo,
+            notifications_enabled=True,
+            notification_settings={"stale_nudge_days": 14, "auto_unassign_days": 21},
+        )
+        rules = QueueRuleSet.objects.create(
+            repository=repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+            is_active=True,
+        )
+        now_ts = _dt(2026, 2, 23, 12)
+        pr = PullRequest.objects.create(
+            repository=repo,
+            number=125,
+            author=None,
+            state="open",
+            is_draft=False,
+            gh_created_at=now_ts - timedelta(days=40),
+            gh_updated_at=now_ts,
+            base_ref_name="master",
+            head_ref_name="branch3",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="mathlib4",
+            title="Auto-unassign candidate",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+            assignees=["alice"],
+            approvals=[],
+            commenters=[],
+            files=[],
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.ASSIGNED,
+            occurred_at=now_ts - timedelta(days=30),
+            assignee_login="alice",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rules,
+            from_ts=now_ts - timedelta(days=30),
+            to_ts=None,
+            cycle_index=0,
+            duration_seconds_closed=0,
+            cumulative_seconds_closed=0,
+            window_count=1,
+            first_on_queue_ts=now_ts - timedelta(days=30),
+        )
+
+        with patch("zulip_bot.commands.assigned_prs.ZulipClient.send_direct_message") as mock_send:
+            result = assigned_prs_command(self._context(), "")
+
+        self.assertTrue(result.response_not_required)
+        kwargs = mock_send.call_args.kwargs
+        self.assertIn(
+            "This PR has been on the queue for >= 21 consecutive days and you will be automatically unassigned soon.",
+            kwargs["content"],
+        )
 
 
 class TestSplitMessageChunks(TestCase):
