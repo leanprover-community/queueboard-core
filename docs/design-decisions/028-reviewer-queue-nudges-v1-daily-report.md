@@ -74,7 +74,7 @@
 
 ### 5) Persistence (minimal V1 state)
 - Add a compact run-state model (or models) for:
-  - dedupe of repeated notifications for the same `(repo, pr, reviewer, day, category)`,
+  - dedupe of repeated notifications for the same `(repo, pr, reviewer, category, cycle-anchor)`,
   - tracking attempted/succeeded auto-unassign operations,
   - run metadata (`started_at`, `completed_at`, counts, errors).
 - Keep storage narrow and purpose-built; do not generalize into an all-events ledger in V1.
@@ -157,8 +157,8 @@
 3. Validate and normalize `notification_settings` values (`X >= 1`, `Y > X`) in form/service path.
 4. Add form tests for valid/invalid submissions and persistence.
 
-#### Chunk A3: Run-state persistence models (**deferred**)
-1. Add minimal model(s) for run metadata and per-day dedupe records.
+#### Chunk A3: Run-state persistence models (**completed**)
+1. Add minimal model(s) for run metadata and dedupe records.
 2. Add model indexes/constraints for idempotency keys.
 3. Add tests for dedupe semantics and retry-safe writes.
 
@@ -234,10 +234,21 @@
   - Updated defaults to `X=14`, `Y=21`.
   - Added hard max validation/cap for `Y<=21`.
   - Confirmed intended policy: notification opt-out does not disable stale auto-unassign enforcement.
-- **Deferred:** Chunk A3.
-  - We are intentionally shipping V1 without run-state/dedupe tables.
-  - Near-term tradeoff is lower reliability under retries/overlapping runs and weaker post-hoc observability.
-  - We keep A3 as a future hardening step if duplicate/missed notification behavior becomes operationally problematic.
+- **Completed:** Chunk A3.
+  - Added run-state persistence models:
+    - `analyzer.ReviewerAttentionDailyRun` (run metadata, summaries, errors),
+    - `analyzer.ReviewerAttentionNotificationRecord` (per-cycle notification dedupe + send outcome),
+    - `analyzer.ReviewerAttentionAutoUnassignRecord` (per-day unassign execution outcome).
+  - Added migration `analyzer.0021_reviewerattentiondailyrun_and_more` with unique constraints and indexes for idempotency keys.
+  - Wired `analyzer.reviewer_attention_daily` to:
+    - persist run start/completion metadata and summaries,
+    - claim notification keys before delivery and dedupe same-day repeat sends,
+    - record notification send success/failure for retry-safe behavior,
+    - dedupe same-day auto-unassign attempts via persisted keys.
+  - Added task tests covering:
+    - same-day delivery dedupe across retry runs,
+    - retry of failed delivery record on subsequent run,
+    - same-day auto-unassign dedupe across retry runs.
 - **Completed:** Chunk A4.
   - Added read-only policy service `build_reviewer_attention_reports(...)` that returns:
     - full per-reviewer status rows for on-demand reporting,
@@ -292,7 +303,7 @@
     - needs nudge,
     - auto-unassign candidates.
   - Added structured delivery outcomes in task result payload (attempted/sent/failed/skipped plus per-reviewer statuses).
-  - Current retry-safety/observability note: outcomes are recorded in task result/logs, but no dedicated run-state tables yet (A3 remains deferred).
+  - Retry-safety/observability note (superseded by A3): this chunk initially recorded outcomes only in task result/logs before run-state tables were added.
 - **2026-02-27 message/UX tuning:**
   - Refined reviewer DM content for compact actionable summaries:
     - "Newly assigned" now includes assignment timestamp (`since <time:...>`) and relative age.
@@ -351,6 +362,21 @@
     - newly-assigned ping gating also respects the floor.
   - Displayed assignment timestamps remain unchanged.
   - Added service/task tests for floor behavior and parsing.
+- **2026-02-27 dedupe policy adjustment (once per consecutive queue window):**
+  - Updated notification dedupe semantics from per-day to per-cycle keys.
+  - Notification idempotency key now uses `(repository, reviewer, pr_number, category, cycle_anchor_at)` where:
+    - `cycle_anchor_at = queue_anchor_at` for on-queue items (resets on queue re-entry),
+    - fallback `cycle_anchor_at = last_assigned_at` when queue anchor is unavailable.
+  - Resulting behavior:
+    - no repeated daily pings for the same category within one consecutive queue window,
+    - reassignment or queue re-entry creates a new cycle anchor and allows a new notification.
+  - Added task test coverage proving cross-day dedupe still suppresses sends within the same cycle anchor.
+- **2026-02-28 scenario coverage hardening:**
+  - Added explicit reviewer-attention task tests for transition scenarios:
+    - reassigned after prior notification (new assignment anchor) sends again,
+    - queue re-entry after prior notification (new queue anchor) sends again,
+    - threshold changes do not cause repeated nudge sends within same queue window,
+    - category transition (`new_assignment` -> `nudge`) still allows one send per category in same window.
 
 ## Operational Notes
 - Suggested schedule relationship:
@@ -375,7 +401,7 @@
 - Trade-offs:
   - daily summaries are less immediate than live pings,
   - correctness depends on freshness of timeline/queue data at run time,
-  - without run-state persistence in V1, retries/overlapping runs can produce duplicate or missing daily notifications.
+  - run-state persistence improves retry/idempotency behavior, but overlapping-run race conditions can still require operational monitoring and occasional cleanup.
 
 ## Alternatives Considered
 - Build notifications directly in GitHub Actions.
@@ -395,5 +421,6 @@
 - `qb_site/syncer/models/pull_request.py`
 - `qb_site/syncer/models/pr_timeline_event.py`
 - `qb_site/analyzer/models/queue_window.py`
+- `qb_site/analyzer/models/reviewer_attention_run_state.py`
 - `qb_site/core/services/github_assignment.py`
 - `qb_site/zulip_bot/services/zulip_client.py`

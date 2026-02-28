@@ -5,11 +5,14 @@ from datetime import timezone as dt_timezone
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
+from analyzer.models import ReviewerAttentionAutoUnassignRecord, ReviewerAttentionNotificationRecord
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
 from analyzer.tasks.reviewer_attention import reviewer_attention_daily_task
 from core.models import Repository, User
 from core.services.github_assignment import AssignmentMutationError
+from zulip_bot.services.zulip_client import ZulipApiError
 
 
 class ReviewerAttentionDailyTaskTests(TestCase):
@@ -577,3 +580,410 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
         kwargs = mock_client_cls.return_value.send_direct_message.call_args.kwargs
         self.assertEqual(kwargs["to"], [self.user.zulip_user_id])
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_deduplicates_notifications_across_retry_runs(self, mock_client_cls, mock_build_reports) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(hours=3)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=assigned_at,
+                        days_on_queue_since_assignment=1,
+                        total_queue_seconds=1 * 24 * 60 * 60,
+                        total_queue_days=1,
+                        needs_new_assignment_ping=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        first = reviewer_attention_daily_task.apply().get()
+        second = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
+        self.assertEqual(first["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(second["delivery"]["stats"]["skipped_already_sent"], 1)
+        self.assertEqual(
+            ReviewerAttentionNotificationRecord.objects.filter(
+                run_date=first["run_date"],
+                repository=self.repo,
+                reviewer=self.user,
+                pr_number=101,
+                category=ReviewerAttentionNotificationRecord.CATEGORY_NEW_ASSIGNMENT,
+                status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+            ).count(),
+            1,
+        )
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_retries_failed_notification_record(self, mock_client_cls, mock_build_reports) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(hours=3)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=assigned_at,
+                        days_on_queue_since_assignment=1,
+                        total_queue_seconds=1 * 24 * 60 * 60,
+                        total_queue_days=1,
+                        needs_new_assignment_ping=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        mock_client = mock_client_cls.return_value
+        mock_client.send_direct_message.side_effect = [ZulipApiError("temporary"), {"result": "success"}]
+
+        first = reviewer_attention_daily_task.apply().get()
+        second = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(first["delivery"]["stats"]["failed"], 1)
+        self.assertEqual(second["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(mock_client.send_direct_message.call_count, 2)
+        record = ReviewerAttentionNotificationRecord.objects.get(
+            run_date=first["run_date"],
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+            category=ReviewerAttentionNotificationRecord.CATEGORY_NEW_ASSIGNMENT,
+        )
+        self.assertEqual(record.status, ReviewerAttentionNotificationRecord.STATUS_SENT)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_dedupe_is_once_per_queue_window_across_days(self, mock_client_cls, mock_build_reports) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=10)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=7,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=assigned_at,
+                        days_on_queue_since_assignment=10,
+                        total_queue_seconds=10 * 24 * 60 * 60,
+                        total_queue_days=10,
+                        needs_nudge=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+        ReviewerAttentionNotificationRecord.objects.create(
+            run_date=(timezone.now() - timedelta(days=1)).date(),
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+            category=ReviewerAttentionNotificationRecord.CATEGORY_NUDGE,
+            cycle_anchor_at=assigned_at,
+            status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+        )
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 0)
+        self.assertEqual(res["delivery"]["stats"]["skipped_already_sent"], 1)
+        mock_client_cls.return_value.send_direct_message.assert_not_called()
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=False,
+    )
+    @patch("analyzer.tasks.reviewer_attention.resolve_github_app_operation_token", return_value="tok")
+    @patch("analyzer.tasks.reviewer_attention.GitHubAssignmentClient")
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    def test_enforcement_deduplicates_auto_unassign_across_retry_runs(
+        self,
+        mock_build_reports,
+        mock_assignment_client_cls,
+        _mock_resolve_token,
+    ) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=30)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=assigned_at,
+                        days_on_queue_since_assignment=30,
+                        total_queue_seconds=30 * 24 * 60 * 60,
+                        total_queue_days=30,
+                        needs_auto_unassign=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        first = reviewer_attention_daily_task.apply().get()
+        second = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(mock_assignment_client_cls.return_value.unassign.call_count, 1)
+        self.assertEqual(first["enforcement"]["stats"]["unassigned"], 1)
+        self.assertEqual(second["enforcement"]["stats"]["skipped_already_recorded"], 1)
+        record = ReviewerAttentionAutoUnassignRecord.objects.get(
+            run_date=first["run_date"],
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+        )
+        self.assertEqual(record.status, ReviewerAttentionAutoUnassignRecord.STATUS_UNASSIGNED)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_sends_again_when_reassigned_with_new_assignment_anchor(self, mock_client_cls, mock_build_reports) -> None:
+        old_assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=6)
+        new_assigned_at = datetime.now(dt_timezone.utc) - timedelta(hours=2)
+        ReviewerAttentionNotificationRecord.objects.create(
+            run_date=(timezone.now() - timedelta(days=1)).date(),
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+            category=ReviewerAttentionNotificationRecord.CATEGORY_NEW_ASSIGNMENT,
+            cycle_anchor_at=old_assigned_at,
+            status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+        )
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=new_assigned_at,
+                        queue_anchor_at=new_assigned_at,
+                        days_on_queue_since_assignment=0,
+                        total_queue_seconds=0,
+                        total_queue_days=0,
+                        needs_new_assignment_ping=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_sends_again_when_pr_reenters_queue_with_new_queue_anchor(self, mock_client_cls, mock_build_reports) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=20)
+        old_queue_anchor = datetime.now(dt_timezone.utc) - timedelta(days=12)
+        new_queue_anchor = datetime.now(dt_timezone.utc) - timedelta(days=8)
+        ReviewerAttentionNotificationRecord.objects.create(
+            run_date=(timezone.now() - timedelta(days=3)).date(),
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+            category=ReviewerAttentionNotificationRecord.CATEGORY_NUDGE,
+            cycle_anchor_at=old_queue_anchor,
+            status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+        )
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=7,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=new_queue_anchor,
+                        days_on_queue_since_assignment=8,
+                        total_queue_seconds=8 * 24 * 60 * 60,
+                        total_queue_days=8,
+                        needs_nudge=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_does_not_resend_nudge_in_same_queue_window_after_threshold_change(
+        self, mock_client_cls, mock_build_reports
+    ) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=20)
+        queue_anchor = datetime.now(dt_timezone.utc) - timedelta(days=12)
+        ReviewerAttentionNotificationRecord.objects.create(
+            run_date=(timezone.now() - timedelta(days=2)).date(),
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+            category=ReviewerAttentionNotificationRecord.CATEGORY_NUDGE,
+            cycle_anchor_at=queue_anchor,
+            status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+        )
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=10,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=queue_anchor,
+                        days_on_queue_since_assignment=12,
+                        total_queue_seconds=12 * 24 * 60 * 60,
+                        total_queue_days=12,
+                        needs_nudge=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 0)
+        self.assertEqual(res["delivery"]["stats"]["skipped_already_sent"], 1)
+        mock_client_cls.return_value.send_direct_message.assert_not_called()
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_sends_new_category_in_same_queue_window(self, mock_client_cls, mock_build_reports) -> None:
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(days=2)
+        queue_anchor = assigned_at
+        ReviewerAttentionNotificationRecord.objects.create(
+            run_date=(timezone.now() - timedelta(days=1)).date(),
+            repository=self.repo,
+            reviewer=self.user,
+            pr_number=101,
+            category=ReviewerAttentionNotificationRecord.CATEGORY_NEW_ASSIGNMENT,
+            cycle_anchor_at=queue_anchor,
+            status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+        )
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=1,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=queue_anchor,
+                        days_on_queue_since_assignment=2,
+                        total_queue_seconds=2 * 24 * 60 * 60,
+                        total_queue_days=2,
+                        needs_nudge=True,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
