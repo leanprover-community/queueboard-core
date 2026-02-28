@@ -21,6 +21,7 @@ from analyzer.tasks.rebuild_revisions_sweep import rebuild_revisions_sweep_task
 from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from analyzer.tasks.reviewer_attention import reviewer_attention_daily_task
+from analyzer.tasks.reviewer_attention_cleanup import reviewer_attention_cleanup_task
 from analyzer.tasks.reviewer_assignment import (
     build_reviewer_assignment,
     refresh_reviewer_assignments_task,
@@ -141,6 +142,7 @@ __all__ = [
     "rebuild_pr_dependencies_task",
     "rebuild_dependencies_sweep_task",
     "reviewer_attention_daily_task",
+    "reviewer_attention_cleanup_task",
     "build_reviewer_assignment",
     "refresh_reviewer_assignments_task",
     "build_area_stats",
