@@ -114,7 +114,14 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
 
         any_assigned = True
         maintainer_merge_pr_numbers = _maintainer_merge_pr_numbers(report=report)
-        lines.extend(_render_items(items=report.items, maintainer_merge_pr_numbers=maintainer_merge_pr_numbers))
+        lines.extend(
+            _render_items(
+                items=report.items,
+                maintainer_merge_pr_numbers=maintainer_merge_pr_numbers,
+                stale_nudge_days=report.stale_nudge_days,
+                auto_unassign_days=report.auto_unassign_days,
+            )
+        )
 
     if not any_assigned:
         lines.append("")
@@ -123,7 +130,13 @@ def _render_assigned_prs_report(*, reviewer_login: str, reports: list[tuple[str,
     return "\n".join(lines)
 
 
-def _render_items(*, items: tuple[ReviewerAttentionItem, ...], maintainer_merge_pr_numbers: set[int]) -> list[str]:
+def _render_items(
+    *,
+    items: tuple[ReviewerAttentionItem, ...],
+    maintainer_merge_pr_numbers: set[int],
+    stale_nudge_days: int,
+    auto_unassign_days: int,
+) -> list[str]:
     lines: list[str] = []
     maintainer_merged_items = tuple(
         sort_by_queue_age([item for item in items if item.is_on_queue and int(item.pr_number) in maintainer_merge_pr_numbers])
@@ -133,21 +146,44 @@ def _render_items(*, items: tuple[ReviewerAttentionItem, ...], maintainer_merge_
     )
     off_queue_items = tuple(sort_by_assignment_recency([item for item in items if not item.is_on_queue]))
 
-    lines.extend(_render_item_group(title=f"On Queue ({len(on_queue_items)})", items=on_queue_items, include_consecutive=True))
+    lines.extend(
+        _render_item_group(
+            title=f"On Queue ({len(on_queue_items)})",
+            items=on_queue_items,
+            include_consecutive=True,
+            stale_nudge_days=stale_nudge_days,
+            auto_unassign_days=auto_unassign_days,
+        )
+    )
     lines.extend(
         _render_item_group(
             title=f"Maintainer Merged ({len(maintainer_merged_items)})",
             items=maintainer_merged_items,
             include_consecutive=True,
+            stale_nudge_days=stale_nudge_days,
+            auto_unassign_days=auto_unassign_days,
         )
     )
     lines.extend(
-        _render_item_group(title=f"Not On Queue ({len(off_queue_items)})", items=off_queue_items, include_consecutive=False)
+        _render_item_group(
+            title=f"Not On Queue ({len(off_queue_items)})",
+            items=off_queue_items,
+            include_consecutive=False,
+            stale_nudge_days=stale_nudge_days,
+            auto_unassign_days=auto_unassign_days,
+        )
     )
     return lines
 
 
-def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], include_consecutive: bool) -> list[str]:
+def _render_item_group(
+    *,
+    title: str,
+    items: tuple[ReviewerAttentionItem, ...],
+    include_consecutive: bool,
+    stale_nudge_days: int,
+    auto_unassign_days: int,
+) -> list[str]:
     lines: list[str] = [f"```spoiler {title}"]
     if not items:
         lines.append("- None.")
@@ -162,16 +198,31 @@ def _render_item_group(*, title: str, items: tuple[ReviewerAttentionItem, ...], 
         lines.append(f"  - {render_total_queue_time_line(item)}")
         if item.missing_assignment_timestamp:
             lines.append("  - Note: missing assignment timestamp; policy flags suppressed")
-        flags: list[str] = []
-        if item.needs_new_assignment_ping:
-            flags.append("newly_assigned")
-        if item.needs_nudge:
-            flags.append("needs_nudge")
-        if item.needs_auto_unassign:
-            flags.append("needs_auto_unassign")
-        lines.append(f"  - Flags: {', '.join(flags) if flags else 'none'}")
+        friendly_status = _friendly_status_line(
+            item=item,
+            stale_nudge_days=stale_nudge_days,
+            auto_unassign_days=auto_unassign_days,
+        )
+        if friendly_status is not None:
+            lines.append(f"  - {friendly_status}")
     lines.append("```")
     return lines
+
+
+def _friendly_status_line(
+    *,
+    item: ReviewerAttentionItem,
+    stale_nudge_days: int,
+    auto_unassign_days: int,
+) -> str | None:
+    if item.needs_auto_unassign:
+        return (
+            "This PR has been on the queue for >= "
+            f"{auto_unassign_days} consecutive days and you will be automatically unassigned soon."
+        )
+    if item.needs_nudge:
+        return f"This PR has been on the queue for >= {stale_nudge_days} consecutive days since you were assigned."
+    return None
 
 
 def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
