@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, time, timezone
 from typing import Any
 
 from celery import shared_task
 from django.conf import settings
+from django.utils import timezone as dj_timezone
 
+from analyzer.models import (
+    ReviewerAttentionAutoUnassignRecord,
+    ReviewerAttentionDailyRun,
+    ReviewerAttentionNotificationRecord,
+)
 from analyzer.services import build_reviewer_attention_reports
+from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
 from analyzer.services.reviewer_attention_format import (
     format_since_timestamp,
     render_consecutive_queue_time_since_assignment_line,
@@ -15,7 +23,6 @@ from analyzer.services.reviewer_attention_format import (
     sort_by_assignment_recency,
     sort_by_queue_age,
 )
-from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_operation_tokens import resolve_github_app_operation_token
 from core.models import Repository, User
@@ -24,6 +31,172 @@ from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 log = logging.getLogger(__name__)
 MAX_MESSAGE_CHARS = 9000
+
+
+def _iter_item_notification_categories(item: ReviewerAttentionItem) -> list[str]:
+    categories: list[str] = []
+    if item.needs_new_assignment_ping:
+        categories.append(ReviewerAttentionNotificationRecord.CATEGORY_NEW_ASSIGNMENT)
+    if item.needs_nudge:
+        categories.append(ReviewerAttentionNotificationRecord.CATEGORY_NUDGE)
+    if item.needs_auto_unassign:
+        categories.append(ReviewerAttentionNotificationRecord.CATEGORY_AUTO_UNASSIGN)
+    return categories
+
+
+def _notification_cycle_anchor(item: ReviewerAttentionItem) -> datetime | None:
+    if item.queue_anchor_at is not None:
+        return item.queue_anchor_at
+    return item.last_assigned_at
+
+
+def _claim_notification_categories(
+    *,
+    run: ReviewerAttentionDailyRun,
+    run_date,
+    reviewer_id: int,
+    report: ReviewerAttentionReport,
+    now_ts: datetime,
+) -> set[tuple[int, int, int, str, datetime]]:
+    claimed: set[tuple[int, int, int, str, datetime]] = set()
+    for item in report.items:
+        pr_number = int(item.pr_number)
+        cycle_anchor_at = _notification_cycle_anchor(item)
+        if cycle_anchor_at is None:
+            continue
+        for category in _iter_item_notification_categories(item):
+            record, created = ReviewerAttentionNotificationRecord.objects.get_or_create(
+                repository_id=int(report.repository_id),
+                reviewer_id=reviewer_id,
+                pr_number=pr_number,
+                category=category,
+                cycle_anchor_at=cycle_anchor_at,
+                defaults={
+                    "run_date": run_date,
+                    "status": ReviewerAttentionNotificationRecord.STATUS_PENDING,
+                    "run": run,
+                },
+            )
+            if created:
+                claimed.add((int(report.repository_id), reviewer_id, pr_number, category, cycle_anchor_at))
+                continue
+            if record.status == ReviewerAttentionNotificationRecord.STATUS_FAILED:
+                record.status = ReviewerAttentionNotificationRecord.STATUS_PENDING
+                record.error = ""
+                record.delivered_at = None
+                record.run = run
+                record.save(update_fields=["status", "error", "delivered_at", "run", "updated_at"])
+                claimed.add((int(report.repository_id), reviewer_id, pr_number, category, cycle_anchor_at))
+                continue
+            if record.status == ReviewerAttentionNotificationRecord.STATUS_PENDING:
+                # Consider stale pending records claimable to avoid permanent lockouts from crashed runs.
+                if (now_ts - record.updated_at).total_seconds() >= 2 * 60 * 60:
+                    record.run = run
+                    record.save(update_fields=["run", "updated_at"])
+                    claimed.add((int(report.repository_id), reviewer_id, pr_number, category, cycle_anchor_at))
+                continue
+    return claimed
+
+
+def _filter_report_for_claimed_categories(
+    *,
+    report: ReviewerAttentionReport,
+    reviewer_id: int,
+    claimed_keys: set[tuple[int, int, int, str, datetime]],
+) -> ReviewerAttentionReport:
+    filtered_items: list[ReviewerAttentionItem] = []
+    for item in report.items:
+        pr_number = int(item.pr_number)
+        cycle_anchor_at = _notification_cycle_anchor(item)
+        new_assignment = (
+            item.needs_new_assignment_ping
+            and cycle_anchor_at is not None
+            and (
+                int(report.repository_id),
+                reviewer_id,
+                pr_number,
+                ReviewerAttentionNotificationRecord.CATEGORY_NEW_ASSIGNMENT,
+                cycle_anchor_at,
+            )
+            in claimed_keys
+        )
+        needs_nudge = (
+            item.needs_nudge
+            and cycle_anchor_at is not None
+            and (
+                int(report.repository_id),
+                reviewer_id,
+                pr_number,
+                ReviewerAttentionNotificationRecord.CATEGORY_NUDGE,
+                cycle_anchor_at,
+            )
+            in claimed_keys
+        )
+        needs_auto_unassign = (
+            item.needs_auto_unassign
+            and cycle_anchor_at is not None
+            and (
+                int(report.repository_id),
+                reviewer_id,
+                pr_number,
+                ReviewerAttentionNotificationRecord.CATEGORY_AUTO_UNASSIGN,
+                cycle_anchor_at,
+            )
+            in claimed_keys
+        )
+        if not (new_assignment or needs_nudge or needs_auto_unassign):
+            continue
+        filtered_items.append(
+            replace(
+                item,
+                needs_new_assignment_ping=new_assignment,
+                needs_nudge=needs_nudge,
+                needs_auto_unassign=needs_auto_unassign,
+            )
+        )
+    return replace(report, items=tuple(filtered_items))
+
+
+def _mark_notification_records_sent(
+    *,
+    run: ReviewerAttentionDailyRun,
+    claimed_keys: set[tuple[int, int, int, str, datetime]],
+    now_ts: datetime,
+) -> None:
+    for repository_id, reviewer_id, pr_number, category, cycle_anchor_at in claimed_keys:
+        ReviewerAttentionNotificationRecord.objects.filter(
+            repository_id=repository_id,
+            reviewer_id=reviewer_id,
+            pr_number=pr_number,
+            category=category,
+            cycle_anchor_at=cycle_anchor_at,
+        ).update(
+            status=ReviewerAttentionNotificationRecord.STATUS_SENT,
+            delivered_at=now_ts,
+            error="",
+            run=run,
+        )
+
+
+def _mark_notification_records_failed(
+    *,
+    run: ReviewerAttentionDailyRun,
+    claimed_keys: set[tuple[int, int, int, str, datetime]],
+    error: str,
+) -> None:
+    for repository_id, reviewer_id, pr_number, category, cycle_anchor_at in claimed_keys:
+        ReviewerAttentionNotificationRecord.objects.filter(
+            repository_id=repository_id,
+            reviewer_id=reviewer_id,
+            pr_number=pr_number,
+            category=category,
+            cycle_anchor_at=cycle_anchor_at,
+        ).update(
+            status=ReviewerAttentionNotificationRecord.STATUS_FAILED,
+            delivered_at=None,
+            error=error[:2000],
+            run=run,
+        )
 
 
 def _derive_new_assignment_ping_window_seconds() -> tuple[int, str]:
@@ -262,6 +435,19 @@ def reviewer_attention_daily_task(
             "enforcement_enabled": enforcement_enabled,
         }
 
+    now_ts = dj_timezone.now()
+    run_date = now_ts.date()
+    run_repository = repos[0] if repository_id is not None and len(repos) == 1 else None
+    daily_run = ReviewerAttentionDailyRun.objects.create(
+        run_date=run_date,
+        started_at=now_ts,
+        status="started",
+        reports_enabled=reports_enabled,
+        enforcement_enabled=enforcement_enabled,
+        delivery_enabled=delivery_enabled,
+        repository=run_repository,
+    )
+
     repos_summary: list[dict[str, Any]] = []
     reports_by_reviewer: dict[int, dict[str, Any]] = {}
     totals = {
@@ -359,6 +545,7 @@ def reviewer_attention_daily_task(
         "failed": 0,
         "skipped_disabled": 0,
         "skipped_no_token": 0,
+        "skipped_already_recorded": 0,
     }
     unassign_outcomes: dict[tuple[int, int, int], str] = {}
     if enforcement_enabled:
@@ -369,10 +556,31 @@ def reviewer_attention_daily_task(
             reviewer_login = str(candidate["reviewer_login"])
             owner = str(candidate["owner"])
             repo_name = str(candidate["repo"])
+            reviewer_user_id = int(candidate["reviewer_user_id"])
+            candidate_key = (repo_id, reviewer_user_id, pr_number)
+            record, created = ReviewerAttentionAutoUnassignRecord.objects.get_or_create(
+                run_date=run_date,
+                repository_id=repo_id,
+                reviewer_id=reviewer_user_id,
+                pr_number=pr_number,
+                defaults={
+                    "status": ReviewerAttentionAutoUnassignRecord.STATUS_PENDING,
+                    "run": daily_run,
+                },
+            )
+            if not created:
+                enforcement_stats["skipped_already_recorded"] += 1
+                unassign_outcomes[candidate_key] = record.status
+                continue
             token = resolve_github_app_operation_token(operation="unassign_pr", owner=owner, repo=repo_name)
             if not token:
                 enforcement_stats["skipped_no_token"] += 1
-                unassign_outcomes[(repo_id, int(candidate["reviewer_user_id"]), pr_number)] = "skipped_no_token"
+                unassign_outcomes[candidate_key] = ReviewerAttentionAutoUnassignRecord.STATUS_SKIPPED_NO_TOKEN
+                record.status = ReviewerAttentionAutoUnassignRecord.STATUS_SKIPPED_NO_TOKEN
+                record.completed_at = dj_timezone.now()
+                record.error = ""
+                record.run = daily_run
+                record.save(update_fields=["status", "completed_at", "error", "run", "updated_at"])
                 continue
             client = assignment_clients_by_repo.get(repo_id)
             if client is None:
@@ -382,10 +590,20 @@ def reviewer_attention_daily_task(
             try:
                 client.unassign(owner=owner, repo=repo_name, number=pr_number, github_login=reviewer_login)
                 enforcement_stats["unassigned"] += 1
-                unassign_outcomes[(repo_id, int(candidate["reviewer_user_id"]), pr_number)] = "unassigned"
-            except AssignmentMutationError:
+                unassign_outcomes[candidate_key] = ReviewerAttentionAutoUnassignRecord.STATUS_UNASSIGNED
+                record.status = ReviewerAttentionAutoUnassignRecord.STATUS_UNASSIGNED
+                record.completed_at = dj_timezone.now()
+                record.error = ""
+                record.run = daily_run
+                record.save(update_fields=["status", "completed_at", "error", "run", "updated_at"])
+            except AssignmentMutationError as exc:
                 enforcement_stats["failed"] += 1
-                unassign_outcomes[(repo_id, int(candidate["reviewer_user_id"]), pr_number)] = "failed"
+                unassign_outcomes[candidate_key] = ReviewerAttentionAutoUnassignRecord.STATUS_FAILED
+                record.status = ReviewerAttentionAutoUnassignRecord.STATUS_FAILED
+                record.completed_at = dj_timezone.now()
+                record.error = str(exc)[:2000]
+                record.run = daily_run
+                record.save(update_fields=["status", "completed_at", "error", "run", "updated_at"])
     else:
         enforcement_stats["skipped_disabled"] = len(auto_unassign_candidates)
         for candidate in auto_unassign_candidates:
@@ -417,6 +635,7 @@ def reviewer_attention_daily_task(
         "skipped_no_zulip_user_id": 0,
         "skipped_delivery_disabled": 0,
         "skipped_by_reviewer_filter": skipped_by_reviewer_filter,
+        "skipped_already_sent": 0,
     }
 
     client: ZulipClient | None = None
@@ -473,9 +692,41 @@ def reviewer_attention_daily_task(
             )
             continue
 
+        reviewer_claimed_notification_keys: set[tuple[int, int, int, str, datetime]] = set()
+        filtered_repo_reports: list[tuple[str, ReviewerAttentionReport]] = []
+        for repo_label, report in list(payload["repo_reports"]):
+            claimed = _claim_notification_categories(
+                run=daily_run,
+                run_date=run_date,
+                reviewer_id=reviewer_user_id,
+                report=report,
+                now_ts=now_ts,
+            )
+            if not claimed:
+                continue
+            reviewer_claimed_notification_keys.update(claimed)
+            filtered_report = _filter_report_for_claimed_categories(
+                report=report,
+                reviewer_id=reviewer_user_id,
+                claimed_keys=reviewer_claimed_notification_keys,
+            )
+            if filtered_report.has_notifications_to_send:
+                filtered_repo_reports.append((repo_label, filtered_report))
+
+        if not filtered_repo_reports or not reviewer_claimed_notification_keys:
+            delivery_stats["skipped_already_sent"] += 1
+            deliveries.append(
+                {
+                    "reviewer_user_id": reviewer_user_id,
+                    "reviewer_login": reviewer_login,
+                    "status": "skipped_already_sent",
+                }
+            )
+            continue
+
         message = _render_reviewer_message(
             reviewer_login=reviewer_login,
-            repo_reports=list(payload["repo_reports"]),
+            repo_reports=filtered_repo_reports,
             enforcement_enabled=enforcement_enabled,
             unassign_outcomes=unassign_outcomes,
         )
@@ -484,6 +735,11 @@ def reviewer_attention_daily_task(
         try:
             for chunk in chunks:
                 client.send_direct_message(to=[int(user.zulip_user_id)], content=chunk)
+            _mark_notification_records_sent(
+                run=daily_run,
+                claimed_keys=reviewer_claimed_notification_keys,
+                now_ts=dj_timezone.now(),
+            )
             delivery_stats["sent"] += 1
             deliveries.append(
                 {
@@ -494,6 +750,11 @@ def reviewer_attention_daily_task(
                 }
             )
         except ZulipApiError as exc:
+            _mark_notification_records_failed(
+                run=daily_run,
+                claimed_keys=reviewer_claimed_notification_keys,
+                error=str(exc),
+            )
             delivery_stats["failed"] += 1
             deliveries.append(
                 {
@@ -516,6 +777,8 @@ def reviewer_attention_daily_task(
         "policy_start_at": policy_start_at.isoformat() if policy_start_at is not None else None,
         "repos": len(repos),
         "repository_id": int(repository_id) if repository_id is not None else None,
+        "run_id": int(daily_run.id),
+        "run_date": str(run_date.isoformat()),
         "totals": totals,
         "per_repo": repos_summary,
         "delivery": {
@@ -526,6 +789,17 @@ def reviewer_attention_daily_task(
             "stats": enforcement_stats,
         },
     }
+
+    daily_run.status = "completed"
+    daily_run.completed_at = dj_timezone.now()
+    daily_run.summary = {
+        "repos": result["repos"],
+        "totals": totals,
+        "delivery": delivery_stats,
+        "enforcement": enforcement_stats,
+    }
+    daily_run.errors = []
+    daily_run.save(update_fields=["status", "completed_at", "summary", "errors", "updated_at"])
 
     log.info(
         "analyzer.reviewer_attention_daily: dry-run summary repos=%s new_assignment=%s nudge=%s auto_unassign=%s notify=%s enforcement=%s",
