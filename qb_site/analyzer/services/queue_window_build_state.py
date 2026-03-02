@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
+from typing import Callable, Iterable
 
 from django.db import transaction
 
@@ -102,6 +102,8 @@ def backfill_queue_window_build_states_for_repo(
     repository: Repository,
     pr_numbers: list[int] | None = None,
     dry_run: bool = True,
+    progress_every: int = 500,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> QueueWindowBuildStateBackfillResult:
     """Backfill per-ruleset queue-window build state from legacy PR-level fields."""
     rulesets = list(QueueRuleSet.objects.filter(repository=repository, is_active=True).order_by("id"))
@@ -136,7 +138,8 @@ def backfill_queue_window_build_states_for_repo(
 
     to_create: list[PRQueueWindowBuildState] = []
     to_update: list[PRQueueWindowBuildState] = []
-    for pr in prs:
+    total_prs = len(prs)
+    for idx, pr in enumerate(prs, start=1):
         state = getattr(pr, "revision_build_state", None)
         revision_version_built = None
         windows_built_at = None
@@ -175,6 +178,9 @@ def backfill_queue_window_build_states_for_repo(
                 changed = True
             if changed:
                 to_update.append(row)
+
+        if progress_cb and progress_every > 0 and (idx % progress_every == 0 or idx == total_prs):
+            progress_cb(idx, total_prs)
 
     created = len(to_create)
     updated = len(to_update)

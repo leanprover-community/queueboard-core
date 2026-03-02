@@ -26,11 +26,18 @@ class Command(BaseCommand):
             default=False,
             help="Persist changes. Without this flag, command is dry-run only.",
         )
+        parser.add_argument(
+            "--progress-every",
+            type=int,
+            default=500,
+            help="Emit progress every N PRs processed (default: 500, use 0 to disable).",
+        )
 
     def handle(self, *args, **options):  # type: ignore[override]
         repo_str: str = options["repo"]
         pr_numbers: Optional[List[int]] = options["pr"]
         write: bool = bool(options["write"])
+        progress_every: int = int(options["progress_every"] or 0)
 
         if "/" not in repo_str:
             raise CommandError("--repo must be in 'owner/name' format")
@@ -39,10 +46,15 @@ class Command(BaseCommand):
         if not repo:
             raise CommandError(f"Repository not found: {owner}/{name}")
 
+        def _progress(processed: int, total: int) -> None:
+            self.stdout.write(f" - progress: processed {processed}/{total} PRs")
+
         result = backfill_queue_window_build_states_for_repo(
             repository=repo,
             pr_numbers=pr_numbers,
             dry_run=not write,
+            progress_every=progress_every,
+            progress_cb=_progress if progress_every > 0 else None,
         )
         self.stdout.write(self.style.MIGRATE_HEADING(f"Backfill queue-window build state for {owner}/{name}"))
         self.stdout.write(f" - prs_considered: {result.prs_considered}")

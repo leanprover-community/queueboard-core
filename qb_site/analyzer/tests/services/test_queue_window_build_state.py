@@ -88,3 +88,27 @@ class TestQueueWindowBuildStateBackfillService(TestCase):
         self.assertEqual(row.windows_built_at, built_at)
         self.assertEqual(row.last_status, "backfilled")
         self.assertEqual(row.last_reason, "legacy_pr_build_state")
+
+    def test_reports_progress_via_callback(self) -> None:
+        pr1 = self._mk_pr(3)
+        pr2 = self._mk_pr(4)
+        for pr in (pr1, pr2):
+            PRRevisionBuildState.objects.create(
+                pull_request=pr,
+                revision_version=1,
+                windows_built_revision_version=1,
+                windows_built_at=timezone.now(),
+            )
+
+        seen: list[tuple[int, int]] = []
+
+        def _progress(processed: int, total: int) -> None:
+            seen.append((processed, total))
+
+        backfill_queue_window_build_states_for_repo(
+            repository=self.repo,
+            dry_run=True,
+            progress_every=1,
+            progress_cb=_progress,
+        )
+        self.assertEqual(seen[-1], (2, 2))
