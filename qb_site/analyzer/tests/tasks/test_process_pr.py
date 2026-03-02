@@ -7,6 +7,7 @@ from unittest.mock import patch
 from core.models import Repository
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevisionBuildState, QueueRuleSet
 from analyzer.tasks.process_pr import process_pr
+from syncer.services.sub.ci_sync import sync_check_runs
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType, CheckRun
 
 
@@ -180,3 +181,59 @@ class TestProcessPRTask(TestCase):
         self.assertIsNotNone(qwin)
         self.assertGreaterEqual(qwin.window_count, 1)
         self.assertIsNotNone(qwin.first_on_queue_ts)
+
+    def test_process_pr_two_identical_cycles_do_not_churn_revision_version(self) -> None:
+        pr = self._mk_pr(5)
+        t_fp = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t_fp,
+            before_sha="h0",
+            after_sha="h1",
+        )
+
+        class _StubTask:
+            def delay(self, **kwargs):
+                return type("Res", (), {"id": "task123"})
+
+        head_sha = "h1"
+        old_started = t_fp - timezone.timedelta(hours=2)
+        old_completed = old_started + timezone.timedelta(minutes=10)
+        new_started = t_fp + timezone.timedelta(hours=1)
+        new_completed = new_started + timezone.timedelta(minutes=10)
+        contexts = [
+            {
+                "id": "CR_BUILD_OLD",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": old_started.isoformat(),
+                "completedAt": old_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+            {
+                "id": "CR_BUILD_NEW",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": new_started.isoformat(),
+                "completedAt": new_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+        ]
+
+        sync_check_runs(pr, contexts, head_sha)
+        res1 = process_pr(pr, client=self._StubClient(), harvest_task=_StubTask())
+        self.assertEqual(res1["status"], "ok")
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        version_after_first = state.revision_version
+        self.assertGreaterEqual(version_after_first, 1)
+
+        sync_check_runs(pr, contexts, head_sha)
+        res2 = process_pr(pr, client=self._StubClient(), harvest_task=_StubTask())
+        self.assertEqual(res2["status"], "ok")
+        state.refresh_from_db()
+        self.assertEqual(state.revision_version, version_after_first)

@@ -178,6 +178,135 @@ class TestCISync(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=self.pr)
         self.assertIsNone(state.dirty_from_ts)
 
+    def test_checkrun_old_snapshot_in_payload_does_not_dirty(self) -> None:
+        head_sha = "abc1234"
+        built_through = timezone.now()
+        old_started = built_through - timezone.timedelta(days=2)
+        old_completed = old_started + timezone.timedelta(minutes=10)
+        new_started = built_through + timezone.timedelta(minutes=5)
+        new_completed = new_started + timezone.timedelta(minutes=10)
+        PRRevisionBuildState.objects.update_or_create(
+            pull_request=self.pr,
+            defaults={
+                "built_through_ts": built_through,
+                "dirty_from_ts": None,
+            },
+        )
+        ctxs = [
+            {
+                "id": "CR_OLD",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": old_started.isoformat(),
+                "completedAt": old_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+            {
+                "id": "CR_NEW",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": new_started.isoformat(),
+                "completedAt": new_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+        ]
+
+        sync_check_runs(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertIsNone(state.dirty_from_ts)
+
+    def test_status_old_snapshot_in_payload_does_not_dirty(self) -> None:
+        head_sha = "abc1234"
+        built_through = timezone.now()
+        old_created = built_through - timezone.timedelta(days=2)
+        new_created = built_through + timezone.timedelta(minutes=5)
+        PRRevisionBuildState.objects.update_or_create(
+            pull_request=self.pr,
+            defaults={
+                "built_through_ts": built_through,
+                "dirty_from_ts": None,
+            },
+        )
+        ctxs = [
+            {
+                "id": "SC_OLD",
+                "context": "bors",
+                "state": "SUCCESS",
+                "targetUrl": None,
+                "description": "",
+                "createdAt": old_created.isoformat(),
+            },
+            {
+                "id": "SC_NEW",
+                "context": "bors",
+                "state": "SUCCESS",
+                "targetUrl": None,
+                "description": "",
+                "createdAt": new_created.isoformat(),
+            },
+        ]
+
+        sync_status_contexts(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertIsNone(state.dirty_from_ts)
+
+    def test_checkrun_mixed_names_dirty_from_latest_per_name_only(self) -> None:
+        head_sha = "abc1234"
+        built_through = timezone.now().replace(microsecond=0)
+        build_old_started = built_through - timezone.timedelta(days=2)
+        build_old_completed = build_old_started + timezone.timedelta(minutes=10)
+        build_new_started = built_through + timezone.timedelta(minutes=30)
+        build_new_completed = build_new_started + timezone.timedelta(minutes=10)
+        lint_started = built_through - timezone.timedelta(hours=2)
+        lint_completed = lint_started + timezone.timedelta(minutes=5)
+        PRRevisionBuildState.objects.update_or_create(
+            pull_request=self.pr,
+            defaults={
+                "built_through_ts": built_through,
+                "dirty_from_ts": None,
+            },
+        )
+        ctxs = [
+            {
+                "id": "CR_BUILD_OLD",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": build_old_started.isoformat(),
+                "completedAt": build_old_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+            {
+                "id": "CR_BUILD_NEW",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": build_new_started.isoformat(),
+                "completedAt": build_new_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+            {
+                "id": "CR_LINT_OLD",
+                "name": "lint",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": lint_started.isoformat(),
+                "completedAt": lint_completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            },
+        ]
+
+        sync_check_runs(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertEqual(state.dirty_from_ts, lint_started)
+
     def test_prunes_older_snapshot_status_contexts(self) -> None:
         head_sha = "abc1234"
         ctxs_old = [

@@ -159,6 +159,8 @@
   - Related stability fix (outside direct 024 scope, but relevant to observed churn):
     - Updated CI sync dirty-marking so unchanged CI snapshot re-observations do not repeatedly
       set `PRRevisionBuildState.dirty_from_ts`.
+    - Refined CI dirty-marking to ignore stale historical rows when a payload contains multiple
+      contexts for the same CI name; only the newest row per name contributes to dirtying.
     - Files:
       - `qb_site/syncer/services/sub/ci_sync.py`
       - `qb_site/syncer/tests/subsystems/test_ci_sync.py`
