@@ -3,9 +3,9 @@ from __future__ import annotations
 from django.db import transaction
 
 from analyzer.services.revisions import rebuild_pr_revisions
+from analyzer.services.queue_window_build_state import record_queue_window_build_states
 from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
 from analyzer.models import QueueRuleSet
-from analyzer.services.ci_backfill import enqueue_ci_by_shas
 from syncer.services.github_client import GitHubClient
 from syncer.models import PullRequest
 from syncer.tasks.commit_history_tasks import harvest_commit_history_task
@@ -66,7 +66,6 @@ def process_pr(
             if after_sha and occurred_at:
                 segment_jobs.append((after_sha, occurred_at.isoformat()))
             prev_ts = occurred_at or prev_ts
-        harvested: set[str] = set()
         task_fn = harvest_task or harvest_commit_history_task
         for sha, cutoff in segment_jobs:
             task_fn.delay(
@@ -83,9 +82,18 @@ def process_pr(
 
     # Mark windows built at current revision_version after queue windows are rebuilt.
     state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+    built_at = timezone.now()
     state.windows_built_revision_version = state.revision_version
-    state.windows_built_at = timezone.now()
+    state.windows_built_at = built_at
     state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
+    if queue_results:
+        record_queue_window_build_states(
+            pr=pr,
+            rule_sets=rulesets,
+            per_ruleset=queue_results,
+            revision_version=int(state.revision_version),
+            built_at=built_at,
+        )
 
     return {
         "status": "ok",

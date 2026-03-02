@@ -6,6 +6,7 @@ from django.utils import timezone
 from django.db.models import Exists, F, OuterRef, Q
 
 from analyzer.models import PRQueueWindow, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.services.queue_window_build_state import record_queue_window_build_states
 from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
@@ -157,6 +158,13 @@ def rebuild_queue_windows_sweep_task(
             state.windows_built_revision_version = state.revision_version
             state.windows_built_at = now_ts
             state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
+            record_queue_window_build_states(
+                pr=pr,
+                rule_sets=rulesets,
+                per_ruleset=per_ruleset,
+                revision_version=int(state.revision_version),
+                built_at=now_ts,
+            )
             if rebuilt_any:
                 repo_rebuilt += 1
 

@@ -12,6 +12,7 @@ from analyzer.models import (
     PRRevisionBuildState,
     QueueRuleSet,
     PRQueueWindow,
+    PRQueueWindowBuildState,
     AnalyzerConvergenceSnapshot,
     PRDependency,
     PRDependencyState,
@@ -186,6 +187,37 @@ class PRQueueWindowAdmin(ReadOnlyAdmin):
     date_hierarchy = "from_ts"
     raw_id_fields = ("pull_request", "rule_set")
     readonly_fields = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
+
+
+@admin.register(PRQueueWindowBuildState)
+class PRQueueWindowBuildStateAdmin(ReadOnlyAdmin):
+    list_display = (
+        "pull_request",
+        "rule_set",
+        "revision_version_built",
+        "windows_built_at",
+        "last_status",
+        "last_reason",
+        "updated_at",
+    )
+    list_filter = ("rule_set", "pull_request__repository", "last_status")
+    search_fields = (
+        "pull_request__number",
+        "rule_set__version",
+        "pull_request__repository__owner",
+        "pull_request__repository__name",
+    )
+    raw_id_fields = ("pull_request", "rule_set")
+    readonly_fields = (
+        "pull_request",
+        "rule_set",
+        "revision_version_built",
+        "windows_built_at",
+        "last_status",
+        "last_reason",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(PRDependency)

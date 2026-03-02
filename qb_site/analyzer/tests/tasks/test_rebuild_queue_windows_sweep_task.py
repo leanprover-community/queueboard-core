@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.utils import timezone
 
-from analyzer.models import PRRevision, PRRevisionBuildState, QueueRuleSet, PRQueueWindow
+from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
 from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
 from core.models import Repository
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
@@ -66,6 +66,10 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         state.refresh_from_db()
         self.assertEqual(state.windows_built_revision_version, state.revision_version)
         self.assertIsNotNone(state.windows_built_at)
+        rs_state = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=self.rule_set)
+        self.assertEqual(rs_state.revision_version_built, state.revision_version)
+        self.assertIsNotNone(rs_state.windows_built_at)
+        self.assertEqual(rs_state.last_status, "rebuilt")
 
     def test_skips_when_windows_already_built_for_version(self) -> None:
         pr = self._mk_pr(2)

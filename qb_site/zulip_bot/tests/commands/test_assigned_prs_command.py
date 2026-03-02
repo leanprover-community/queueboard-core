@@ -64,7 +64,7 @@ class TestAssignedPrsCommand(TestCase):
             forbidden_label_names=[],
             is_active=True,
         )
-        now_ts = _dt(2026, 2, 23, 12)
+        now_ts = datetime.now(dt_timezone.utc)
         pr = PullRequest.objects.create(
             repository=repo,
             number=123,
