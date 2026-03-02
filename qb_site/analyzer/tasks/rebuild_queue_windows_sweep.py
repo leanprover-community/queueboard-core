@@ -3,13 +3,48 @@ from __future__ import annotations
 from celery import shared_task
 from django.utils import timezone
 
-from django.db.models import Exists, F, OuterRef, Q
+from django.db.models import Count, Exists, F, OuterRef, Q
 
-from analyzer.models import PRQueueWindow, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.queue_window_build_state import record_queue_window_build_states
-from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
+from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
+
+
+def _is_ruleset_stale_for_pr(
+    *,
+    pr: PullRequest,
+    rule_set: QueueRuleSet,
+    state: PRRevisionBuildState,
+    rs_state: PRQueueWindowBuildState | None,
+) -> bool:
+    """Return whether queue windows are stale for a specific (PR, ruleset) pair."""
+    if queue_windows_need_rollup_backfill(pr=pr, rule_set=rule_set):
+        return True
+
+    # Transition fallback: if per-ruleset state is missing, honor legacy PR-level
+    # freshness markers to avoid changing behavior during rollout.
+    if rs_state is None:
+        if state.windows_built_revision_version is None:
+            return True
+        if state.windows_built_revision_version != state.revision_version:
+            return True
+        if state.windows_built_at is None:
+            return True
+        if rule_set.updated_at and state.windows_built_at < rule_set.updated_at:
+            return True
+        return False
+
+    if rs_state.revision_version_built is None:
+        return True
+    if rs_state.revision_version_built < state.revision_version:
+        return True
+    if rs_state.windows_built_at is None:
+        return True
+    if rule_set.updated_at and rs_state.windows_built_at < rule_set.updated_at:
+        return True
+    return False
 
 
 @shared_task(name="analyzer.rebuild_queue_windows_sweep")
@@ -60,6 +95,13 @@ def rebuild_queue_windows_sweep_task(
             has_revisions=Exists(has_revisions),
             has_rollup_backfill=Exists(rollup_backfill),
         ).filter(has_revisions=True)
+        pr_qs = pr_qs.annotate(
+            active_ruleset_state_count=Count(
+                "queue_window_build_states",
+                filter=Q(queue_window_build_states__rule_set_id__in=rule_set_ids),
+                distinct=True,
+            )
+        )
 
         needs_rebuild = (
             Q(revision_build_state__isnull=True)
@@ -67,8 +109,11 @@ def rebuild_queue_windows_sweep_task(
             | ~Q(revision_build_state__windows_built_revision_version=F("revision_build_state__revision_version"))
             | Q(revision_build_state__windows_built_at__isnull=True)
             | Q(has_rollup_backfill=True)
+            | Q(active_ruleset_state_count__lt=len(rule_set_ids))
         )
         if max_ruleset_updated_at is not None:
+            # Coarse candidate filter: if any active ruleset was updated after the
+            # legacy PR-level window build timestamp, inspect this PR.
             needs_rebuild |= Q(revision_build_state__windows_built_at__lt=max_ruleset_updated_at)
         pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
 
@@ -108,24 +153,31 @@ def rebuild_queue_windows_sweep_task(
                 state = pr.revision_build_state
             except PRRevisionBuildState.DoesNotExist:
                 state = PRRevisionBuildState.objects.create(pull_request=pr)
-            # Skip if windows already built for current revision_version and not stale vs ruleset updates.
-            stale_ruleset = bool(getattr(pr, "has_rollup_backfill", False)) or state.windows_built_at is None
-            if not stale_ruleset:
-                for rs in rulesets:
-                    if state.windows_built_at and rs.updated_at and state.windows_built_at < rs.updated_at:
-                        stale_ruleset = True
-                        break
+            existing_rs_states = {
+                row.rule_set_id: row
+                for row in PRQueueWindowBuildState.objects.filter(
+                    pull_request=pr,
+                    rule_set_id__in=rule_set_ids,
+                )
+            }
+            stale_rule_sets = [
+                rs
+                for rs in rulesets
+                if _is_ruleset_stale_for_pr(
+                    pr=pr,
+                    rule_set=rs,
+                    state=state,
+                    rs_state=existing_rs_states.get(int(rs.id)),
+                )
+            ]
+            stale_ruleset = bool(stale_rule_sets)
             if stale_ruleset:
                 pr_num = int(pr.number)
                 if pr_num not in repo_prs_stale_ruleset_seen:
                     repo_prs_stale_ruleset_seen.add(pr_num)
-                    if len(repo_prs_stale_ruleset) < max_pr_list:
-                        repo_prs_stale_ruleset.append(pr_num)
-            if (
-                state.windows_built_revision_version is not None
-                and state.windows_built_revision_version == state.revision_version
-                and not stale_ruleset
-            ):
+                if len(repo_prs_stale_ruleset) < max_pr_list:
+                    repo_prs_stale_ruleset.append(pr_num)
+            if not stale_ruleset:
                 pr_num = int(pr.number)
                 if pr_num not in repo_prs_skipped_up_to_date_seen:
                     repo_prs_skipped_up_to_date_seen.add(pr_num)
@@ -133,7 +185,7 @@ def rebuild_queue_windows_sweep_task(
                         repo_prs_skipped_up_to_date.append(pr_num)
                 continue
 
-            summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=rulesets)
+            summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=stale_rule_sets)
             per_ruleset = summary.get("per_ruleset", {}) or {}
             pr_num = int(pr.number)
             if any(
@@ -160,7 +212,7 @@ def rebuild_queue_windows_sweep_task(
             state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
             record_queue_window_build_states(
                 pr=pr,
-                rule_sets=rulesets,
+                rule_sets=stale_rule_sets,
                 per_ruleset=per_ruleset,
                 revision_version=int(state.revision_version),
                 built_at=now_ts,

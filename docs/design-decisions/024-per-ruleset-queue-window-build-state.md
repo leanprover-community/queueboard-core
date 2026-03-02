@@ -119,6 +119,16 @@
     - Validation status:
       - Targeted `ruff check` on changed files passed.
       - Django test execution in this environment is currently blocked by missing Postgres.
+  - Chunk 2 implementation started:
+    - Updated sweep task to compute stale rulesets per PR and rebuild only stale subsets:
+      - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
+    - Added transitional fallback behavior when per-ruleset state rows are missing:
+      - uses legacy `PRRevisionBuildState.windows_built_*` checks until per-ruleset rows exist.
+    - Expanded sweep tests to cover per-ruleset selective rebuild behavior:
+      - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
+    - Validation status:
+      - Targeted `ruff check` on changed files passed.
+      - Django test execution in this environment is currently blocked by missing Postgres.
 
 ## Finalization Notes
 - After implementation stabilizes, condense this file into a concise final decision
