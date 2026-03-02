@@ -107,7 +107,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
             "gh_started_at": _parse_iso(ctx.get("startedAt")),
             "gh_completed_at": _parse_iso(ctx.get("completedAt")),
         }
-        obj, was_created, was_updated, _ = upsert_if_changed(
+        obj, was_created, was_updated, updated_fields = upsert_if_changed(
             CheckRun,
             {"github_node_id": gid},
             values,
@@ -118,12 +118,15 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
 
-        # Track earliest timestamp seen in this batch to flag potential revision dirtiness.
-        for ts in (values["gh_started_at"], values["gh_completed_at"]):
-            if ts is None:
-                continue
-            if earliest_ts is None or ts < earliest_ts:
-                earliest_ts = ts
+        # Only treat CI as a revision-boundary signal when evidence changed:
+        # newly-seen rows or updates that affect head/timestamps.
+        touches_revision_signal = was_created or bool({"head_sha", "gh_started_at", "gh_completed_at"} & set(updated_fields))
+        if touches_revision_signal:
+            for ts in (values["gh_started_at"], values["gh_completed_at"]):
+                if ts is None:
+                    continue
+                if earliest_ts is None or ts < earliest_ts:
+                    earliest_ts = ts
         ts = values["gh_completed_at"] or values["gh_started_at"]
         name_key = (values["name"] or "").strip().lower()
         if name_key and ts is not None:
@@ -189,7 +192,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
             "description": ctx.get("description") or None,
             "gh_created_at": _parse_iso(ctx.get("createdAt")) or timezone.now(),
         }
-        obj, was_created, was_updated, _ = upsert_if_changed(
+        obj, was_created, was_updated, updated_fields = upsert_if_changed(
             StatusContext,
             {"github_node_id": gid},
             values,
@@ -199,7 +202,8 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         updated += 1 if was_updated else 0
 
         ts = values["gh_created_at"]
-        if ts is not None and (earliest_ts is None or ts < earliest_ts):
+        touches_revision_signal = was_created or bool({"head_sha", "gh_created_at"} & set(updated_fields))
+        if touches_revision_signal and ts is not None and (earliest_ts is None or ts < earliest_ts):
             earliest_ts = ts
         name_key = (values["name"] or "").strip().lower()
         if name_key and ts is not None:
