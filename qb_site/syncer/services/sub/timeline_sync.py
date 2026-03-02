@@ -10,6 +10,10 @@ from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.pr_timeline_event import PRTimelineEvent, PRTimelineEventType
 from syncer.models.pull_request import PullRequest
 
+REVISION_DIRTY_EVENT_TYPES = {
+    PRTimelineEventType.HEAD_FORCE_PUSHED,
+}
+
 
 @dataclass
 class TimelineSyncResult:
@@ -101,7 +105,7 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         )
         if was_created:
             created += 1
-            if earliest_new_ts is None or occurred_at < earliest_new_ts:
+            if ev_type in REVISION_DIRTY_EVENT_TYPES and (earliest_new_ts is None or occurred_at < earliest_new_ts):
                 earliest_new_ts = occurred_at
             if ev_type == PRTimelineEventType.HEAD_FORCE_PUSHED:
                 reset_commits_backfill = True

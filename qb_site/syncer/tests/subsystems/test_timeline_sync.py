@@ -3,8 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.utils import timezone
 
-from core.models.repository import Repository
-from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
+from syncer.models import PRTimelineEvent, PRTimelineEventType
 from syncer.services.sub.timeline_sync import sync_timeline_events
 from syncer.tests.factories import make_repo, make_pr
 from analyzer.models import PRRevisionBuildState
@@ -43,7 +42,7 @@ class TestTimelineSync(TestCase):
         self.assertEqual(ev.before_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         self.assertEqual(ev.after_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
-    def test_marks_revision_dirty_for_earlier_event(self) -> None:
+    def test_marks_revision_dirty_for_earlier_force_push_event(self) -> None:
         # Seed build state as if revisions were built through a later timestamp.
         built_through = timezone.now()
         state = PRRevisionBuildState.objects.create(
@@ -54,14 +53,55 @@ class TestTimelineSync(TestCase):
         earlier = (built_through - timezone.timedelta(hours=2)).replace(microsecond=0)
         nodes = [
             {
-                "__typename": "ReadyForReviewEvent",
+                "__typename": "HeadRefForcePushedEvent",
                 "id": "E4",
                 "createdAt": earlier.isoformat(),
+                "beforeCommit": {"oid": "a" * 40},
+                "afterCommit": {"oid": "b" * 40},
             }
         ]
         sync_timeline_events(self.pr, nodes)
         state.refresh_from_db()
         self.assertEqual(state.dirty_from_ts, earlier)
+
+    def test_does_not_mark_revision_dirty_for_non_revision_event(self) -> None:
+        built_through = timezone.now()
+        state = PRRevisionBuildState.objects.create(
+            pull_request=self.pr,
+            built_through_ts=built_through,
+            dirty_from_ts=None,
+        )
+        earlier = (built_through - timezone.timedelta(hours=2)).replace(microsecond=0)
+        nodes = [
+            {
+                "__typename": "ReadyForReviewEvent",
+                "id": "E_NON_REV",
+                "createdAt": earlier.isoformat(),
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        state.refresh_from_db()
+        self.assertIsNone(state.dirty_from_ts)
+
+    def test_non_revision_event_does_not_move_existing_dirty_marker(self) -> None:
+        built_through = timezone.now().replace(microsecond=0)
+        existing_dirty = built_through - timezone.timedelta(hours=1)
+        state = PRRevisionBuildState.objects.create(
+            pull_request=self.pr,
+            built_through_ts=built_through,
+            dirty_from_ts=existing_dirty,
+        )
+        older_non_revision = built_through - timezone.timedelta(hours=2)
+        nodes = [
+            {
+                "__typename": "ReadyForReviewEvent",
+                "id": "E_NON_REV_OLDER",
+                "createdAt": older_non_revision.isoformat(),
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        state.refresh_from_db()
+        self.assertEqual(state.dirty_from_ts, existing_dirty)
 
     def test_updates_missing_actor_and_assignee(self) -> None:
         existing = PRTimelineEvent.objects.create(

@@ -25,6 +25,13 @@ class CISyncResult:
     deleted: int = 0
 
 
+@dataclass
+class _RevisionSignal:
+    name_key: str
+    row_ts: timezone.datetime
+    signal_ts: timezone.datetime
+
+
 def _parse_iso(val: str | None):
     if not val:
         return None
@@ -81,6 +88,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     now = timezone.now()
     earliest_ts = None
     latest_by_name: dict[str, timezone.datetime] = {}
+    revision_signals: list[_RevisionSignal] = []
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -121,18 +129,26 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         # Only treat CI as a revision-boundary signal when evidence changed:
         # newly-seen rows or updates that affect head/timestamps.
         touches_revision_signal = was_created or bool({"head_sha", "gh_started_at", "gh_completed_at"} & set(updated_fields))
-        if touches_revision_signal:
-            for ts in (values["gh_started_at"], values["gh_completed_at"]):
-                if ts is None:
-                    continue
-                if earliest_ts is None or ts < earliest_ts:
-                    earliest_ts = ts
         ts = values["gh_completed_at"] or values["gh_started_at"]
         name_key = (values["name"] or "").strip().lower()
+        row_ts = values["gh_completed_at"] or values["gh_started_at"]
+        signal_ts = values["gh_started_at"] or values["gh_completed_at"]
+        if touches_revision_signal and name_key and signal_ts is not None and row_ts is not None:
+            revision_signals.append(_RevisionSignal(name_key=name_key, row_ts=row_ts, signal_ts=signal_ts))
         if name_key and ts is not None:
             current_latest = latest_by_name.get(name_key)
             if current_latest is None or ts > current_latest:
                 latest_by_name[name_key] = ts
+
+    # Only use revision signals from the newest snapshot per context name.
+    # The GraphQL rollup can include older rows that we prune below; those
+    # should not repeatedly dirty revision state.
+    for signal in revision_signals:
+        latest_for_name = latest_by_name.get(signal.name_key)
+        if latest_for_name is None or signal.row_ts != latest_for_name:
+            continue
+        if earliest_ts is None or signal.signal_ts < earliest_ts:
+            earliest_ts = signal.signal_ts
 
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
@@ -171,6 +187,7 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     now = timezone.now()
     earliest_ts = None
     latest_by_name: dict[str, timezone.datetime] = {}
+    revision_signals: list[_RevisionSignal] = []
     for ctx in contexts:
         if not isinstance(ctx, dict):
             continue
@@ -202,14 +219,24 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         updated += 1 if was_updated else 0
 
         ts = values["gh_created_at"]
-        touches_revision_signal = was_created or bool({"head_sha", "gh_created_at"} & set(updated_fields))
-        if touches_revision_signal and ts is not None and (earliest_ts is None or ts < earliest_ts):
-            earliest_ts = ts
         name_key = (values["name"] or "").strip().lower()
+        touches_revision_signal = was_created or bool({"head_sha", "gh_created_at"} & set(updated_fields))
+        if touches_revision_signal and name_key and ts is not None:
+            revision_signals.append(_RevisionSignal(name_key=name_key, row_ts=ts, signal_ts=ts))
         if name_key and ts is not None:
             current_latest = latest_by_name.get(name_key)
             if current_latest is None or ts > current_latest:
                 latest_by_name[name_key] = ts
+
+    # Only use revision signals from the newest snapshot per context name.
+    # The GraphQL rollup can include older rows that we prune below; those
+    # should not repeatedly dirty revision state.
+    for signal in revision_signals:
+        latest_for_name = latest_by_name.get(signal.name_key)
+        if latest_for_name is None or signal.signal_ts != latest_for_name:
+            continue
+        if earliest_ts is None or signal.signal_ts < earliest_ts:
+            earliest_ts = signal.signal_ts
 
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
