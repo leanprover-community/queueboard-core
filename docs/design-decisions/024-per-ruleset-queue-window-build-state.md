@@ -1,75 +1,125 @@
-# Per-Ruleset Queue Window Build State
+# Per-Ruleset Queue Window Build State (Living Plan)
 
 ## Context
-- Queue windows are stored per `(pull_request, rule_set)` in `analyzer.PRQueueWindow`, but build progress metadata is currently tracked only once per PR in `analyzer.PRRevisionBuildState`:
+- Queue windows are already materialized per `(pull_request, rule_set)` in `analyzer.PRQueueWindow`.
+- Build freshness is currently tracked only once per PR in `analyzer.PRRevisionBuildState`:
   - `windows_built_revision_version`
   - `windows_built_at`
-- Sweep rebuild logic currently treats staleness as a PR-level boolean:
-  - if any active ruleset appears stale, it rebuilds queue windows for all active rulesets for that PR.
-- This causes avoidable work when:
-  - a new ruleset is added, or
-  - one existing ruleset is edited.
-- Relevant implementation paths:
-  - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
-  - `qb_site/analyzer/services/queue_windows.py`
-  - `qb_site/analyzer/tasks/collect_convergence.py`
+- Current rebuild and convergence logic are PR-level:
+  - Sweep (`qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`) rebuilds all active
+    rulesets for a PR when any ruleset appears stale.
+  - Convergence (`qb_site/analyzer/tasks/collect_convergence.py`) computes `windows_stale`
+    against PR-level window build fields plus max ruleset `updated_at`.
+- This produces avoidable recomputation when only one ruleset changed or was added.
 
-## Decision
-- Introduce per-(PR, ruleset) queue-window build state and use it as the source of truth for staleness and convergence.
-- Add a new Analyzer model (name provisional): `PRQueueWindowBuildState` with:
-  - `pull_request` (FK)
-  - `rule_set` (FK)
+## Goals / Non-Goals
+- Goals
+  - Track queue-window build freshness per `(PR, ruleset)`.
+  - Rebuild only stale rulesets for each PR during sweeps.
+  - Make convergence reporting match per-ruleset freshness reality.
+  - Preserve behavior during rollout with safe fallback.
+- Non-goals
+  - Changing queue window semantics or CI gating semantics in this decision.
+  - Removing `PRRevisionBuildState.windows_built_*` immediately.
+  - Reworking CI storage architecture (covered by `019` Part 2).
+
+## Proposed Design
+- Add model `analyzer.PRQueueWindowBuildState`:
+  - `pull_request` (FK to `syncer.PullRequest`)
+  - `rule_set` (FK to `analyzer.QueueRuleSet`)
   - `revision_version_built` (int, nullable)
   - `windows_built_at` (datetime, nullable)
-  - optional metadata for diagnostics (`last_status`, `last_reason`)
+  - `last_status` (string, nullable; diagnostic)
+  - `last_reason` (string, nullable; diagnostic)
   - unique constraint on `(pull_request, rule_set)`
-- Change queue-window sweep to:
-  - compute stale rulesets per PR,
-  - rebuild only stale rulesets for that PR,
-  - update state rows only for rebuilt rulesets.
-- Keep `PRRevisionBuildState` focused on revision/CI planning state, not per-ruleset queue-window freshness.
+- Introduce per-ruleset stale check logic used by sweep and convergence:
+  - Missing row => stale
+  - `revision_version_built` missing or `< PRRevisionBuildState.revision_version` => stale
+  - `windows_built_at` missing or `< QueueRuleSet.updated_at` => stale
+  - `queue_windows_need_rollup_backfill(pr, rule_set)` => stale
+- Sweep behavior update:
+  - For each PR, compute stale rulesets.
+  - Rebuild only stale rulesets via `rebuild_queue_windows_for_pr(pr, rule_sets=stale_rulesets)`.
+  - Upsert/update `PRQueueWindowBuildState` rows for rebuilt/stale-attempted rulesets.
+- Convergence behavior update:
+  - Move `windows_stale` accounting to stale `(PR, ruleset)` pairs.
+  - Keep `AnalyzerConvergenceSnapshot.windows_stale` field name for compatibility,
+    but document new meaning.
+- Rollout fallback:
+  - During transition, if per-ruleset state missing, continue to honor existing
+    PR-level fields to avoid regressions.
 
-## Consequences
-- Pros
-  - Adding a new ruleset rebuilds only that ruleset, not all existing ones.
-  - Editing one ruleset invalidates only that ruleset’s build state.
-  - Better observability: explicit build state per ruleset aligns with how windows are stored.
-  - Better foundation for future ruleset semantics changes (including CI mode variants).
-- Cons
-  - Additional table and migration complexity.
-  - Sweep and convergence logic become more complex.
-  - Transitional period requires dual-read/fallback logic while existing rows are backfilled.
+## Subtleties / Invariants
+- Invariant: `PRQueueWindow` remains the source of materialized windows; build-state
+  rows are metadata only.
+- Invariant: per-ruleset state updates should happen even when rebuild is a no-op,
+  mirroring current `windows_built_at` behavior that prevents endless rechecks.
+- Invariant: staleness checks only consider active rulesets for sweep decisions.
+- Invariant: effective-from/effective-to out-of-bounds handling stays in window builder;
+  build-state records may still be updated with a skip reason.
 
-## Operational Notes
-- Staleness criteria for a `(pr, rule_set)` pair:
-  - no `PRQueueWindowBuildState` row exists, or
-  - `revision_version_built` is null or `< PRRevisionBuildState.revision_version`, or
-  - `windows_built_at` is null or `< QueueRuleSet.updated_at`, or
-  - `queue_windows_need_rollup_backfill(pr, rule_set)` is true.
-- Sweep behavior:
-  - For each PR, build `stale_rule_sets`.
-  - If empty, skip PR.
-  - If non-empty, call `rebuild_queue_windows_for_pr(pr, rule_sets=stale_rule_sets)`.
-  - Update `PRQueueWindowBuildState` rows for those stale rulesets after rebuild attempt.
-- Convergence behavior:
-  - Replace global `ruleset_updated_at` + PR-level window staleness checks with per-ruleset state aggregation.
-  - Report stale counts in terms of missing/stale `(pr, rule_set)` build-state rows.
-- Backward compatibility and rollout:
-  - Phase 1: add new model and write path.
-  - Phase 2: read both old and new state, preferring new state when present.
-  - Phase 3: backfill new state for existing `(pr, rule_set)` pairs.
-  - Phase 4: remove PR-level window staleness dependence from sweep/convergence; keep old fields optional/legacy.
+## Implementation Plan (Chunks)
+1. Schema + write path bootstrap
+   - Add `PRQueueWindowBuildState` model + migration.
+   - Export/admin registration and basic indexes/constraints.
+   - Add helper(s) to upsert per-ruleset state rows.
+2. Sweep read/write migration
+   - Update `rebuild_queue_windows_sweep_task` to compute stale rulesets per PR.
+   - Rebuild only stale subsets.
+   - Continue updating PR-level `windows_built_*` during transition.
+3. process_pr alignment
+   - Update `analyzer.tasks.process_pr` to write per-ruleset build state after rebuild.
+   - Keep existing PR-level writes for compatibility during rollout.
+4. Convergence migration
+   - Update `collect_analyzer_convergence_task` to compute stale window counts from
+     per-ruleset state (with transitional fallback).
+5. Backfill + cleanup
+   - Add a targeted backfill path for existing `(PR, active_ruleset)` pairs.
+   - After stability, reduce/remove PR-level `windows_built_*` dependence in sweep/convergence.
 
-## Sequencing
-- This decision should be implemented before introducing additional queue-rule semantics (for example, `no_required_failures` CI gating mode from `023-ci-gating-no-required-failures.md`).
-- Rationale:
-  - semantics experiments will likely involve adding/editing rulesets,
-  - per-ruleset build state prevents those changes from repeatedly triggering unnecessary full-rule-set recomputation.
+## Validation Plan
+- Tests to add/update:
+  - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
+    - only stale rulesets are rebuilt
+    - non-stale rulesets are skipped
+    - no-op rebuild still updates per-ruleset build state
+  - `qb_site/analyzer/tests/tasks/test_process_pr.py`
+    - per-ruleset state written during rebuild path
+  - `qb_site/analyzer/tests/tasks/test_collect_convergence_task.py`
+    - stale window counts reflect stale `(pr, ruleset)` pairs
+- Commands:
+  - `uv run ruff format qb_site`
+  - `uv run ruff check qb_site`
+  - `uv run python qb_site/manage.py test analyzer.tests.tasks.test_rebuild_queue_windows_sweep_task`
+  - `uv run python qb_site/manage.py test analyzer.tests.tasks.test_process_pr`
+  - `uv run python qb_site/manage.py test analyzer.tests.tasks.test_collect_convergence_task`
 
-## Alternatives (Optional)
-- Keep current PR-level build fields and accept extra recomputation
-  - Rejected: unnecessary compute and poor observability as rulesets evolve.
-- Extend `PRRevisionBuildState` with JSON per ruleset
-  - Rejected: weak relational integrity, harder querying/indexing, and more brittle migrations.
-- Track only per-repo ruleset freshness
-  - Rejected: misses per-PR revision-version coupling; too coarse to be correct.
+## Progress Notes
+- 2026-03-02:
+  - Re-validated current implementation:
+    - `019` Part 1 is implemented (`CIShaFetchState` + backoff policy/settings + task integration).
+    - `019` Part 2 is not implemented yet.
+    - `023` is not implemented yet (still boolean `require_ci_success` semantics).
+  - Confirmed `024` is still pending and should be implemented before `023`.
+  - Converted this document into a living plan and began chunked implementation.
+  - Chunk 1 implementation started:
+    - Added `PRQueueWindowBuildState` model and migration:
+      - `qb_site/analyzer/models/pr_queue_window_build_state.py`
+      - `qb_site/analyzer/migrations/0022_prqueuewindowbuildstate.py`
+    - Added write-path helper:
+      - `qb_site/analyzer/services/queue_window_build_state.py`
+    - Hooked writes from current rebuild paths:
+      - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
+      - `qb_site/analyzer/tasks/process_pr.py`
+    - Added admin visibility:
+      - `qb_site/analyzer/admin.py`
+    - Added/updated targeted tests for state row creation:
+      - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
+      - `qb_site/analyzer/tests/tasks/test_process_pr.py`
+    - Validation status:
+      - Targeted `ruff check` on changed files passed.
+      - Django test execution in this environment is currently blocked by missing Postgres.
+
+## Finalization Notes
+- After implementation stabilizes, condense this file into a concise final decision
+  record and document final semantics/metrics references.

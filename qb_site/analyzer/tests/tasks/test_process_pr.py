@@ -5,7 +5,7 @@ from django.utils import timezone
 from unittest.mock import patch
 
 from core.models import Repository
-from analyzer.models import QueueRuleSet, PRQueueWindow, PRRevisionBuildState
+from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevisionBuildState, QueueRuleSet
 from analyzer.tasks.process_pr import process_pr
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType, CheckRun
 
@@ -101,6 +101,10 @@ class TestProcessPRTask(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         self.assertEqual(state.windows_built_revision_version, state.revision_version)
         self.assertIsNotNone(state.windows_built_at)
+        rs_state = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=self.rule_set)
+        self.assertEqual(rs_state.revision_version_built, state.revision_version)
+        self.assertIsNotNone(rs_state.windows_built_at)
+        self.assertEqual(rs_state.last_status, "rebuilt")
 
     def test_harvest_tasks_include_cutoffs_and_missing_ci(self) -> None:
         pr = self._mk_pr(3)
@@ -134,8 +138,7 @@ class TestProcessPRTask(TestCase):
                 return type("Res", (), {"id": "task123"})
 
         stub_task = _StubTask()
-        with patch("analyzer.tasks.process_pr.enqueue_ci_by_shas", return_value="task123") as mock_enqueue:
-            res = process_pr(pr, client=self._StubClient(), harvest_task=stub_task)
+        res = process_pr(pr, client=self._StubClient(), harvest_task=stub_task)
         self.assertEqual(res["status"], "ok")
         # Two tasks: before_sha with cutoff = created_at, after_sha with cutoff = occurred_at.
         self.assertEqual(len(stub_task.calls), 2)
