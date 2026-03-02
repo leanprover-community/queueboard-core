@@ -228,6 +228,29 @@ class TestPRRevisions(TestCase):
         self.assertEqual(len(revs), 1)
         self.assertEqual(revs[0].head_sha, "seed123")
 
+    def test_rebuild_no_signal_no_seed_does_not_churn_revision_version(self) -> None:
+        pr = self._mk_pr(141)
+        t1 = pr.gh_created_at + timezone.timedelta(hours=1)
+        state = PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=t1,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+            revision_version=7,
+        )
+
+        first = rebuild_pr_revisions(pr, latest_signal_ts=t1)
+        self.assertEqual(first.strategy, "noop")
+        state.refresh_from_db()
+        self.assertEqual(state.revision_version, 7)
+        self.assertEqual(PRRevision.objects.filter(pull_request=pr).count(), 0)
+
+        second = rebuild_pr_revisions(pr, latest_signal_ts=t1)
+        self.assertEqual(second.strategy, "noop")
+        state.refresh_from_db()
+        self.assertEqual(state.revision_version, 7)
+        self.assertEqual(PRRevision.objects.filter(pull_request=pr).count(), 0)
+
     def test_rebuild_append_strategy_when_clean_and_new_signal(self) -> None:
         pr = self._mk_pr(15)
         # Initial rebuild seeds state with one window
@@ -263,6 +286,8 @@ class TestPRRevisions(TestCase):
 
     def test_revision_version_increments_and_resets_ci_marker(self) -> None:
         pr = self._mk_pr(115)
+        pr.head_sha = "seed115"
+        pr.save(update_fields=["head_sha"])
         # Initial rebuild seeds version 1
         first = rebuild_pr_revisions(pr)
         self.assertEqual(first.strategy, "full")
@@ -284,8 +309,7 @@ class TestPRRevisions(TestCase):
             after_sha="h_new",
         )
         res = rebuild_pr_revisions(pr, latest_signal_ts=t_fp)
-        # With no existing revisions we fall back to a full rebuild even though the state was clean.
-        self.assertEqual(res.strategy, "full")
+        self.assertEqual(res.strategy, "append")
 
         state.refresh_from_db()
         self.assertEqual(state.revision_version, 2)
