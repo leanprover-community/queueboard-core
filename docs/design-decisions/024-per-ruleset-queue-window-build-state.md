@@ -160,3 +160,32 @@
 ## Finalization Notes
 - After implementation stabilizes, condense this file into a concise final decision
   record and document final semantics/metrics references.
+
+## Operational Notes (Deploy + Backfill)
+- Recommended rollout order:
+  1. Deploy application code + migrations (includes `PRQueueWindowBuildState` table).
+  2. Run a dry-run backfill on one repository.
+  3. Run write-mode backfill on one repository.
+  4. Run queue-window sweep for that repository cohort and check convergence/admin output.
+  5. Expand to remaining repositories.
+- Backfill command:
+  - Dry-run:
+    - `uv run python qb_site/manage.py backfill_queue_window_build_states --repo <owner>/<name>`
+  - Write mode:
+    - `uv run python qb_site/manage.py backfill_queue_window_build_states --repo <owner>/<name> --write`
+  - Scoped run for specific PRs:
+    - `uv run python qb_site/manage.py backfill_queue_window_build_states --repo <owner>/<name> --pr 123 456 --write`
+- Suggested execution pattern:
+  - First pass: dry-run all active repositories and record `prs_considered`, `rows_created`, `rows_updated`.
+  - Second pass: run `--write` for the same set.
+  - Third pass: trigger queue-window sweep to refresh stale subsets after state row creation.
+- Validation checks after each repository:
+  - `analyzer.PRQueueWindowBuildState` row count should approach:
+    - open/timeline-complete PR count × active ruleset count (allowing temporary lag).
+  - `analyzer.rebuild_queue_windows_sweep` task summaries should show selective stale-ruleset rebuilds.
+  - `analyzer.collect_convergence` should continue to run; note `windows_stale` now reflects stale
+    `(PR, ruleset)` pairs (not only PR-level staleness).
+- Safety/rollback notes:
+  - This rollout is additive; legacy `PRRevisionBuildState.windows_built_*` fallback remains active.
+  - If issues occur, pause backfill/sweeps and investigate; existing PR-level fallback paths keep behavior conservative.
+  - No destructive data migration is required for this phase.
