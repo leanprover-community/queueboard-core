@@ -1,5 +1,15 @@
 # CI Gating Mode: No Required Context Failures
 
+## Implementation Status (as of 2026-03-02)
+- Not yet implemented.
+- Current gating model remains boolean `require_ci_success` on `QueueRuleSet`
+  (`qb_site/analyzer/models/queue_rule.py`), with strict required-context semantics
+  in analyzer queue-window/snapshot logic.
+- `019` Part 1 (CI-by-SHA ledger/backoff) is already implemented and can be reused.
+- `019` Part 2 (SHA-keyed CI tables) is not a prerequisite for initial rollout.
+- `024` (per-ruleset queue-window build state) should be implemented first to avoid
+  unnecessary full-ruleset recomputation as ruleset semantics evolve.
+
 ## Context
 - Today, CI-gated queue rules use a strict interpretation: required CI contexts must be observed and successful before a PR is considered on-queue.
 - That strict interpretation is intentional and conservative, and is documented in:

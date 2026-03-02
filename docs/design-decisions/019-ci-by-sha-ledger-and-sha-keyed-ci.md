@@ -1,5 +1,27 @@
 # CI by SHA backoff ledger and SHA-keyed CI migration
 
+## Implementation Status (as of 2026-03-02)
+- Part 1 (CI-by-SHA backoff ledger) is implemented.
+  - Model: `syncer.CIShaFetchState` (`qb_site/syncer/models/ci_sha_fetch_state.py`)
+  - Policy/service: `qb_site/syncer/services/ci_backoff.py`
+  - Task integration points include:
+    - `qb_site/syncer/tasks/sync_tasks.py`
+    - `qb_site/syncer/tasks/commit_history_tasks.py`
+    - `qb_site/analyzer/tasks/plan_missing_ci.py`
+  - Settings are present in `qb_site/qb_site/settings/base.py`:
+    - `SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS`
+    - `SYNCER_CI_SHA_BACKOFF_ERROR_SECONDS`
+    - `SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS`
+    - `SYNCER_CI_SHA_HARD_CAP_DAYS`
+    - `SYNCER_CI_SHA_MIN_ATTEMPTS_TERMINAL`
+- Part 2 (SHA-keyed CI storage migration) is not implemented yet.
+  - No SHA-keyed CI tables (e.g., commit-scoped check/context tables) currently exist.
+  - Analyzer queue/snapshot CI reads remain PR-keyed today.
+- Practical sequencing implication:
+  - `024` (per-ruleset queue-window build state) and `023` (no-required-failures CI mode)
+    are not blocked on Part 2.
+  - Part 2 remains a correctness/efficiency follow-up for CI storage/read architecture.
+
 ## Context
 - CI contexts are fetched per commit SHA (GraphQL statusCheckRollup), but we currently store them per PR in `syncer.CheckRun` and `syncer.StatusContext`.
 - Some PRs can end up with `head_ci_state=SUCCESS` while the required contexts for the head SHA are missing in the DB.
