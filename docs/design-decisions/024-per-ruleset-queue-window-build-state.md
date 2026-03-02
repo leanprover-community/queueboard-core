@@ -102,43 +102,60 @@
     - `023` is not implemented yet (still boolean `require_ci_success` semantics).
   - Confirmed `024` is still pending and should be implemented before `023`.
   - Converted this document into a living plan and began chunked implementation.
-  - Chunk 1 implementation started:
+  - Chunk 1 implementation completed:
     - Added `PRQueueWindowBuildState` model and migration:
       - `qb_site/analyzer/models/pr_queue_window_build_state.py`
       - `qb_site/analyzer/migrations/0022_prqueuewindowbuildstate.py`
     - Added write-path helper:
       - `qb_site/analyzer/services/queue_window_build_state.py`
-    - Hooked writes from current rebuild paths:
+    - Hooked write path in sweep:
       - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
-      - `qb_site/analyzer/tasks/process_pr.py`
     - Added admin visibility:
       - `qb_site/analyzer/admin.py`
-    - Added/updated targeted tests for state row creation:
+    - Added targeted test coverage for state-row writes:
       - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
-      - `qb_site/analyzer/tests/tasks/test_process_pr.py`
     - Validation status:
       - Targeted `ruff check` on changed files passed.
       - Django test execution in this environment is currently blocked by missing Postgres.
-  - Chunk 2 implementation started:
+  - Chunk 2 implementation completed:
     - Updated sweep task to compute stale rulesets per PR and rebuild only stale subsets:
       - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
     - Added transitional fallback behavior when per-ruleset state rows are missing:
       - uses legacy `PRRevisionBuildState.windows_built_*` checks until per-ruleset rows exist.
-    - Expanded sweep tests to cover per-ruleset selective rebuild behavior:
+    - Expanded sweep tests for selective rebuild and edge cases:
       - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
     - Validation status:
       - Targeted `ruff check` on changed files passed.
       - Django test execution in this environment is currently blocked by missing Postgres.
-  - Chunk 3 implementation started:
+  - Chunk 3 implementation completed:
+    - Process-PR per-ruleset state write alignment (landed during early scaffolding, tracked here by ownership):
+      - `qb_site/analyzer/tasks/process_pr.py`
+    - Added/updated process-PR test coverage for per-ruleset state writes:
+      - `qb_site/analyzer/tests/tasks/test_process_pr.py`
+    - Validation status:
+      - Targeted `ruff check` on changed files passed.
+      - Django test execution in this environment is currently blocked by missing Postgres.
+  - Chunk 4 implementation completed:
     - Convergence migration to per-(PR, ruleset) stale accounting with transitional fallback:
       - `qb_site/analyzer/tasks/collect_convergence.py`
     - Added convergence test coverage for per-ruleset stale pair counting:
       - `qb_site/analyzer/tests/tasks/test_collect_convergence_task.py`
-    - Process-PR per-ruleset state write alignment remains in place from chunk 1:
-      - `qb_site/analyzer/tasks/process_pr.py`
     - Validation status:
       - Targeted `ruff check` on changed files passed.
       - Django test execution in this environment is currently blocked by missing Postgres.
+  - Chunk 5 implementation completed:
+    - Added a targeted backfill path for per-ruleset build state:
+      - Service helper: `qb_site/analyzer/services/queue_window_build_state.py`
+      - Management command: `qb_site/analyzer/management/commands/backfill_queue_window_build_states.py`
+    - Added tests for service and command behavior:
+      - `qb_site/analyzer/tests/services/test_queue_window_build_state.py`
+      - `qb_site/analyzer/tests/management/test_backfill_queue_window_build_states_cmd.py`
+    - Validation status:
+      - `uv run ruff format qb_site` executed.
+      - Targeted `ruff check` on changed files passed.
+      - Django test execution in this environment is currently blocked by missing Postgres.
+  - Post-implementation verification from user run:
+    - DB-backed tests for touched analyzer paths were run by user and reported green.
 
 ## Finalization Notes
 - After implementation stabilizes, condense this file into a concise final decision

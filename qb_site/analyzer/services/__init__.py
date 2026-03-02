@@ -25,7 +25,11 @@ from .queue_windows import (
     total_queue_time_for_pr,
     who_was_on_queue_at,
 )
-from .queue_window_build_state import record_queue_window_build_states
+from .queue_window_build_state import (
+    QueueWindowBuildStateBackfillResult,
+    backfill_queue_window_build_states_for_repo,
+    record_queue_window_build_states,
+)
 
 __all__ = [
     "PlanItem",
@@ -53,6 +57,8 @@ __all__ = [
     "QueueWindow",
     "queue_windows_for_pr",
     "rebuild_queue_windows_for_pr",
+    "QueueWindowBuildStateBackfillResult",
+    "backfill_queue_window_build_states_for_repo",
     "record_queue_window_build_states",
     "total_queue_time_for_pr",
     "is_on_queue_at",
