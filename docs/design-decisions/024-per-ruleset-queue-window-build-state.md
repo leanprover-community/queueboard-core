@@ -129,6 +129,16 @@
     - Validation status:
       - Targeted `ruff check` on changed files passed.
       - Django test execution in this environment is currently blocked by missing Postgres.
+  - Chunk 3 implementation started:
+    - Convergence migration to per-(PR, ruleset) stale accounting with transitional fallback:
+      - `qb_site/analyzer/tasks/collect_convergence.py`
+    - Added convergence test coverage for per-ruleset stale pair counting:
+      - `qb_site/analyzer/tests/tasks/test_collect_convergence_task.py`
+    - Process-PR per-ruleset state write alignment remains in place from chunk 1:
+      - `qb_site/analyzer/tasks/process_pr.py`
+    - Validation status:
+      - Targeted `ruff check` on changed files passed.
+      - Django test execution in this environment is currently blocked by missing Postgres.
 
 ## Finalization Notes
 - After implementation stabilizes, condense this file into a concise final decision

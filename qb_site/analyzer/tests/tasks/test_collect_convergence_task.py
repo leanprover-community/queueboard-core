@@ -3,7 +3,14 @@ from __future__ import annotations
 from django.test import TestCase
 from django.utils import timezone
 
-from analyzer.models import AnalyzerConvergenceSnapshot, PRQueueWindow, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.models import (
+    AnalyzerConvergenceSnapshot,
+    PRQueueWindow,
+    PRQueueWindowBuildState,
+    PRRevision,
+    PRRevisionBuildState,
+    QueueRuleSet,
+)
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from core.models import Repository
 from syncer.models import CheckRun, CIShaFetchState, PullRequest
@@ -99,7 +106,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             first_on_queue_ts=pr5.gh_created_at,
         )
         # PR missing timeline/commits backfill
-        pr3 = self._mk_pr(3, timeline_done=False)
+        self._mk_pr(3, timeline_done=False)
         PRQueueWindow.objects.create(
             pull_request=pr2,
             rule_set=self.rule_set,
@@ -161,3 +168,62 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertIsNotNone(snap_after)
         self.assertEqual(snap_after.windows_stale, 0)
         self.assertEqual(res_after["rows_created"], 1)
+
+    def test_windows_stale_counts_per_ruleset_pairs(self) -> None:
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        pr = self._mk_pr(11)
+        PRRevision.objects.create(pull_request=pr, head_sha="z1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now() - timezone.timedelta(days=2)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=timezone.now())
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        # Exactly one stale (pr, ruleset) pair: (pr, rs_two).
+        self.assertEqual(snap.windows_stale, 1)
