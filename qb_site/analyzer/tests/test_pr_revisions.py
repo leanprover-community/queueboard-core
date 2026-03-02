@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import Repository
@@ -680,6 +680,29 @@ class TestPRRevisions(TestCase):
             target_url=None,
             description=None,
             gh_created_at=pr.gh_created_at + timezone.timedelta(minutes=10),
+        )
+
+        shas = next_revision_backfill_shas(pr, limit=2)
+        self.assertEqual(shas, [])
+
+    @override_settings(ANALYZER_PENDING_STATUS_STALE_NON_OPEN_HOURS=8)
+    def test_pending_status_not_selected_for_stale_non_open_pr(self) -> None:
+        pr = self._mk_pr(32)
+        pr.state = "merged"
+        pr.merged_at = timezone.now() - timezone.timedelta(days=365)
+        pr.gh_updated_at = pr.merged_at
+        pr.save(update_fields=["state", "merged_at", "gh_updated_at", "updated_at"])
+        PRRevision.objects.create(pull_request=pr, head_sha="stale_pending", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC_pending_stale",
+            rest_id=None,
+            head_sha="stale_pending",
+            name="bors",
+            state="PENDING",
+            target_url=None,
+            description=None,
+            gh_created_at=pr.gh_created_at + timezone.timedelta(minutes=5),
         )
 
         shas = next_revision_backfill_shas(pr, limit=2)
