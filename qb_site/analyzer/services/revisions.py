@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from django.db import transaction
 from django.db.models import Max
@@ -444,7 +444,10 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         "last_built_at",
         "updated_at",
     ]
-    force_rebuild = not has_existing and strategy == "full"
+    # Avoid synthetic version churn for PRs where we still cannot derive any
+    # revision windows (no timeline/CI/head seed). In that case we only want
+    # a forced version bump when a full rebuild actually has computed windows.
+    force_rebuild = not has_existing and strategy == "full" and bool(expected)
     if windows_changed or builder_version_changed or dirty_was_set or force_rebuild:
         state.revision_version = (state.revision_version or 0) + 1
         state.ci_checked_revision_version = None
