@@ -230,3 +230,299 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         res2 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
         self.assertEqual(res2["prs_checked"], 0)
         self.assertEqual(res2["windows_rebuilt"], 0)
+
+    def test_rebuilds_only_stale_rulesets_for_pr(self) -> None:
+        pr = self._mk_pr(8)
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+
+        built_at = timezone.now() - timezone.timedelta(days=2)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        state_one = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        state_two = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        # Align ruleset timestamps with built_at so only the explicit bump below
+        # marks one ruleset as stale.
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        # Only rs_two should be stale.
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=timezone.now())
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 1)
+        state_one.refresh_from_db()
+        state_two.refresh_from_db()
+        self.assertEqual(state_one.windows_built_at, built_at)
+        self.assertGreater(state_two.windows_built_at, built_at)
+
+    def test_missing_ruleset_state_uses_legacy_fallback_when_up_to_date(self) -> None:
+        pr = self._mk_pr(9)
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now()
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertFalse(PRQueueWindowBuildState.objects.filter(pull_request=pr, rule_set=rs_two).exists())
+
+    def test_missing_ruleset_state_is_created_when_only_missing_ruleset_is_stale(self) -> None:
+        pr = self._mk_pr(10)
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now() - timezone.timedelta(days=2)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at + timezone.timedelta(hours=1))
+        existing = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 1)
+        existing.refresh_from_db()
+        self.assertEqual(existing.windows_built_at, built_at)
+        created = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=rs_two)
+        self.assertGreater(created.windows_built_at, built_at)
+        self.assertEqual(created.last_status, "rebuilt")
+
+    def test_rollup_backfill_marks_only_target_ruleset_stale(self) -> None:
+        pr = self._mk_pr(11)
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now()
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        state_one = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        state_two = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=0,
+            first_on_queue_ts=None,
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 1)
+        state_one.refresh_from_db()
+        state_two.refresh_from_db()
+        self.assertEqual(state_one.windows_built_at, built_at)
+        self.assertGreater(state_two.windows_built_at, built_at)
+
+    def test_revision_bump_marks_all_rulesets_stale(self) -> None:
+        pr = self._mk_pr(12)
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now() - timezone.timedelta(days=1)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=2,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        state_one = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        state_two = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 1)
+        state_one.refresh_from_db()
+        state_two.refresh_from_db()
+        self.assertEqual(state_one.revision_version_built, 2)
+        self.assertEqual(state_two.revision_version_built, 2)
+        self.assertGreater(state_one.windows_built_at, built_at)
+        self.assertGreater(state_two.windows_built_at, built_at)
