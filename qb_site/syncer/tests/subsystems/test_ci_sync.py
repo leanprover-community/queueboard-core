@@ -3,8 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.utils import timezone
 
-from core.models.repository import Repository
-from syncer.models import PullRequest, CheckRun, StatusContext
+from syncer.models import CheckRun, StatusContext
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.tests.factories import make_repo, make_pr
 from analyzer.models import PRRevisionBuildState
@@ -123,6 +122,61 @@ class TestCISync(TestCase):
         sync_status_contexts(self.pr, ctxs, head_sha)
         state = PRRevisionBuildState.objects.get(pull_request=self.pr)
         self.assertEqual(state.dirty_from_ts, earlier)
+
+    def test_no_dirty_mark_when_checkrun_snapshot_is_unchanged(self) -> None:
+        head_sha = "abc1234"
+        started = timezone.now() - timezone.timedelta(hours=2)
+        completed = started + timezone.timedelta(minutes=10)
+        ctxs = [
+            {
+                "id": "CR_STABLE",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": started.isoformat(),
+                "completedAt": completed.isoformat(),
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        PRRevisionBuildState.objects.update_or_create(
+            pull_request=self.pr,
+            defaults={
+                "built_through_ts": timezone.now(),
+                "dirty_from_ts": None,
+            },
+        )
+
+        sync_check_runs(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertIsNone(state.dirty_from_ts)
+
+    def test_no_dirty_mark_when_status_snapshot_is_unchanged(self) -> None:
+        head_sha = "abc1234"
+        created_at = timezone.now() - timezone.timedelta(hours=2)
+        ctxs = [
+            {
+                "id": "SC_STABLE",
+                "context": "bors",
+                "state": "SUCCESS",
+                "targetUrl": None,
+                "description": "",
+                "createdAt": created_at.isoformat(),
+            }
+        ]
+        sync_status_contexts(self.pr, ctxs, head_sha)
+        PRRevisionBuildState.objects.update_or_create(
+            pull_request=self.pr,
+            defaults={
+                "built_through_ts": timezone.now(),
+                "dirty_from_ts": None,
+            },
+        )
+
+        sync_status_contexts(self.pr, ctxs, head_sha)
+        state = PRRevisionBuildState.objects.get(pull_request=self.pr)
+        self.assertIsNone(state.dirty_from_ts)
 
     def test_prunes_older_snapshot_status_contexts(self) -> None:
         head_sha = "abc1234"

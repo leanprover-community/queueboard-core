@@ -156,6 +156,12 @@
       - Django test execution in this environment is currently blocked by missing Postgres.
   - Post-implementation verification from user run:
     - DB-backed tests for touched analyzer paths were run by user and reported green.
+  - Related stability fix (outside direct 024 scope, but relevant to observed churn):
+    - Updated CI sync dirty-marking so unchanged CI snapshot re-observations do not repeatedly
+      set `PRRevisionBuildState.dirty_from_ts`.
+    - Files:
+      - `qb_site/syncer/services/sub/ci_sync.py`
+      - `qb_site/syncer/tests/subsystems/test_ci_sync.py`
 
 ## Finalization Notes
 - After implementation stabilizes, condense this file into a concise final decision

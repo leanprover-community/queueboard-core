@@ -29,6 +29,10 @@
 
 ## Operational Notes
 - Ingestion hooks (timeline/CI writes) update build-state: if a signal timestamp < `built_through_ts`, set `dirty_from_ts` (earliest seen); otherwise no-op. This avoids repeated data scans.
+- Update (2026-03-02): CI ingestion now applies a stability guard before setting dirty:
+  - `sync_check_runs` / `sync_status_contexts` only treat CI as a dirtying signal when a snapshot row is newly created or when revision-relevant evidence changed (head SHA or CI timestamps).
+  - Re-observing unchanged historical CI snapshots should not repeatedly set `dirty_from_ts`.
+  - Rationale: preserve correctness for genuinely new earlier evidence while preventing revision-version churn from idempotent re-syncs.
 - Use per-PR advisory locks for the orchestrator to prevent overlap. Timeline not backfilled → defer rather than churn.
 - Queue windows: full revision rebuild → full queue window rebuild for the PR/ruleset; tail append → rebuild only the tail windows.
 - Keep `seq` derived; identity remains `(pull_request, from_ts)`. If mid-history changes are needed, rely on dirty/full recompute rather than trying to insert in-place.
