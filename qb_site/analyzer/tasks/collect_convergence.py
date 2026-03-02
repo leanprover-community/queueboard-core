@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from celery import shared_task
 from django.utils import timezone
-from django.db.models import Exists, OuterRef, F, Max, Q
+from django.db.models import Exists, OuterRef, F, Q
 
-from analyzer.models import AnalyzerConvergenceSnapshot, PRRevision, PRQueueWindow, QueueRuleSet
+from analyzer.models import AnalyzerConvergenceSnapshot, PRQueueWindow, PRQueueWindowBuildState, PRRevision, QueueRuleSet
 from analyzer.services.dependencies import PR_DEPENDENCY_BUILDER_VERSION
 from core.models import Repository
 from syncer.models import CheckRun, CIShaFetchState, PullRequest, StatusContext
@@ -19,7 +19,7 @@ def collect_analyzer_convergence_task() -> dict:
     per_repo: list[dict] = []
     for repo in repos:
         rulesets = list(QueueRuleSet.objects.filter(repository=repo))
-        ruleset_updated_at = QueueRuleSet.objects.filter(repository=repo).aggregate(m=Max("updated_at")).get("m")
+        active_rulesets = [rs for rs in rulesets if rs.is_active]
         base_prs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
 
         pr_no_revisions = (
@@ -28,20 +28,71 @@ def collect_analyzer_convergence_task() -> dict:
             .count()
         )
 
-        windows_stale = (
+        prs_with_rev = list(
             base_prs.annotate(
                 rev_version=F("revision_build_state__revision_version"),
                 windows_rev=F("revision_build_state__windows_built_revision_version"),
                 windows_at=F("revision_build_state__windows_built_at"),
             )
             .filter(rev_version__isnull=False)
-            .filter(
-                Q(windows_rev__isnull=True)
-                | Q(windows_rev__lt=F("rev_version"))
-                | (Q(windows_at__lt=ruleset_updated_at) if ruleset_updated_at else Q(pk__isnull=False))
-            )
-            .count()
+            .values("id", "rev_version", "windows_rev", "windows_at")
         )
+        windows_stale = 0
+        if active_rulesets and prs_with_rev:
+            pr_ids = [int(pr["id"]) for pr in prs_with_rev]
+            rule_set_ids = [int(rs.id) for rs in active_rulesets]
+            rs_state_rows = PRQueueWindowBuildState.objects.filter(
+                pull_request_id__in=pr_ids,
+                rule_set_id__in=rule_set_ids,
+            ).values("pull_request_id", "rule_set_id", "revision_version_built", "windows_built_at")
+            rs_state_map = {(int(row["pull_request_id"]), int(row["rule_set_id"])): row for row in rs_state_rows}
+            rollup_stale_pairs = set(
+                (
+                    int(row["pull_request_id"]),
+                    int(row["rule_set_id"]),
+                )
+                for row in PRQueueWindow.objects.filter(
+                    pull_request_id__in=pr_ids,
+                    rule_set_id__in=rule_set_ids,
+                )
+                .filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+                .values("pull_request_id", "rule_set_id")
+                .distinct()
+            )
+
+            for pr_row in prs_with_rev:
+                pr_id = int(pr_row["id"])
+                rev_version = int(pr_row["rev_version"])
+                legacy_windows_rev = pr_row["windows_rev"]
+                legacy_windows_at = pr_row["windows_at"]
+                for rs in active_rulesets:
+                    rs_id = int(rs.id)
+                    if (pr_id, rs_id) in rollup_stale_pairs:
+                        windows_stale += 1
+                        continue
+                    rs_state = rs_state_map.get((pr_id, rs_id))
+                    if rs_state is not None:
+                        rs_rev = rs_state["revision_version_built"]
+                        rs_built_at = rs_state["windows_built_at"]
+                        stale = (
+                            rs_rev is None
+                            or int(rs_rev) < rev_version
+                            or rs_built_at is None
+                            or (bool(rs.updated_at) and bool(rs_built_at) and rs_built_at < rs.updated_at)
+                        )
+                        if stale:
+                            windows_stale += 1
+                        continue
+
+                    # Transitional fallback when per-ruleset state is missing.
+                    legacy_stale = (
+                        legacy_windows_rev is None
+                        or int(legacy_windows_rev) < rev_version
+                        or legacy_windows_at is None
+                        or (bool(rs.updated_at) and bool(legacy_windows_at) and legacy_windows_at < rs.updated_at)
+                    )
+                    if legacy_stale:
+                        windows_stale += 1
 
         # Count revision heads whose CI has not been checked:
         # - no CI rows for this PR/head_sha
@@ -61,7 +112,7 @@ def collect_analyzer_convergence_task() -> dict:
         )
 
         ci_gated_missing_windows = 0
-        ci_rulesets = [rs for rs in rulesets if rs.require_ci_success]
+        ci_rulesets = [rs for rs in active_rulesets if rs.require_ci_success]
         if ci_rulesets:
             prs_with_rev = base_prs.annotate(has_rev=Exists(PRRevision.objects.filter(pull_request=OuterRef("pk")))).filter(
                 has_rev=True
