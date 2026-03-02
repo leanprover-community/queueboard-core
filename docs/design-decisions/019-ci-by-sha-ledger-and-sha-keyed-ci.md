@@ -91,6 +91,13 @@ This decision has two parts:
   - `analyzer.plan_missing_ci` (revision-based backfill),
   - `syncer.harvest_commit_history_task` (commit-history missing/pending),
   - admin or manual enqueue tools if they go through shared helpers.
+- `analyzer.process_pr_task` should skip per-PR CI planning when
+  `PRRevisionBuildState.ci_checked_revision_version == revision_version`,
+  so unchanged revisions do not repeatedly re-enqueue the same SHA set.
+- Analyzer pending-status stale guard:
+  - `ANALYZER_PENDING_STATUS_STALE_NON_OPEN_HOURS` (default 8) suppresses
+    pending-only StatusContext re-planning for non-open PRs older than the
+    configured horizon.
 - Expose counts in task results:
   - `shas_skipped_backoff`, `prs_skipped_backoff` (refresh task)
   - `ci_shas_skipped_backoff` (commit history task)

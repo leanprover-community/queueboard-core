@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
@@ -516,6 +517,17 @@ def next_revision_backfill_shas(
         return []
     candidates = candidates_override if candidates_override is not None else revision_candidate_shas(pr)
     skip = skip_shas or set()
+    now_ts = timezone.now()
+    stale_non_open_hours = int(getattr(settings, "ANALYZER_PENDING_STATUS_STALE_NON_OPEN_HOURS", 8))
+    stale_non_open_pr = False
+    if stale_non_open_hours > 0:
+        pr_state = str(getattr(pr, "state", "") or "").lower()
+        if pr_state != "open":
+            last_activity = getattr(pr, "gh_updated_at", None) or getattr(pr, "merged_at", None) or getattr(pr, "closed_at", None)
+            if last_activity is not None:
+                if timezone.is_naive(last_activity):
+                    last_activity = timezone.make_aware(last_activity)
+                stale_non_open_pr = (now_ts - last_activity) >= timedelta(hours=stale_non_open_hours)
 
     # Snapshot CI presence up-front to avoid repeated queries per candidate.
     status_ctx_rows = latest_status_contexts_for_pr(pr).values_list("head_sha", "state")
@@ -548,6 +560,8 @@ def next_revision_backfill_shas(
         has_cr = sha in cr_any
         has_sc = sha in sc_any
         pending_status_only = sha in sc_pending and sha not in sc_completed
+        if stale_non_open_pr and pending_status_only:
+            pending_status_only = False
         pending_check_run = sha in cr_pending
         missing_ci = not (has_cr or has_sc)
         if missing_ci or pending_status_only or pending_check_run:
