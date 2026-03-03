@@ -174,6 +174,12 @@
     - `CommitCheckRun` has conditional uniqueness on `github_node_id` and on
       `(repository, head_sha, name, external_id)` when `external_id` is present.
     - `CommitStatusContext` has conditional uniqueness on `github_node_id` and `rest_id`.
+  - Implemented initial `S2` dual-write wiring:
+    - Added setting `SYNCER_CI_SHA_STORAGE_DUAL_WRITE` (default `False`).
+    - Added commit-scoped upserts inside shared CI ingest helpers in
+      `qb_site/syncer/services/sub/ci_sync.py`, so both PR-bundle ingest and
+      CI-by-SHA ingest paths dual-write when enabled.
+    - Added `syncer` subsystem tests covering dual-write disabled/enabled paths.
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`

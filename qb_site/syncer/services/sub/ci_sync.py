@@ -10,6 +10,8 @@ from django.db.models.functions import Coalesce
 
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.check_run import CheckRun
+from syncer.models.commit_check_run import CommitCheckRun
+from syncer.models.commit_status_context import CommitStatusContext
 from syncer.models.pull_request import PullRequest
 from syncer.models.status_context import StatusContext
 from core.utils.db import upsert_if_changed
@@ -70,6 +72,48 @@ def _effective_allowlist_for_status(pr: PullRequest) -> List[str]:
     return []
 
 
+def _sha_storage_dual_write_enabled() -> bool:
+    return bool(getattr(settings, "SYNCER_CI_SHA_STORAGE_DUAL_WRITE", False))
+
+
+def _upsert_commit_check_run(pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime) -> None:
+    commit_values = {
+        "repository": pr.repository,
+        "head_sha": values["head_sha"],
+        "name": values["name"],
+        "status": values["status"],
+        "conclusion": values["conclusion"],
+        "details_url": values["details_url"],
+        "external_id": values["external_id"],
+        "gh_started_at": values["gh_started_at"],
+        "gh_completed_at": values["gh_completed_at"],
+    }
+    commit_obj, _, _, _ = upsert_if_changed(
+        CommitCheckRun,
+        {"github_node_id": gid},
+        commit_values,
+    )
+    CommitCheckRun.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
+
+
+def _upsert_commit_status_context(pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime) -> None:
+    commit_values = {
+        "repository": pr.repository,
+        "head_sha": values["head_sha"],
+        "name": values["name"],
+        "state": values["state"],
+        "target_url": values["target_url"],
+        "description": values["description"],
+        "gh_created_at": values["gh_created_at"],
+    }
+    commit_obj, _, _, _ = upsert_if_changed(
+        CommitStatusContext,
+        {"github_node_id": gid},
+        commit_values,
+    )
+    CommitStatusContext.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
+
+
 def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sha: str) -> CISyncResult:
     """Upsert snapshot CheckRun rows from a commit's status.contexts entries.
 
@@ -123,6 +167,8 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         # Always record when we last heard about this CheckRun from GitHub,
         # even if the status snapshot itself did not change.
         CheckRun.objects.filter(pk=obj.pk).update(last_synced_at=now)
+        if _sha_storage_dual_write_enabled():
+            _upsert_commit_check_run(pr, values, gid, now)
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
 
@@ -215,6 +261,8 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
             values,
         )
         StatusContext.objects.filter(pk=obj.pk).update(last_synced_at=now)
+        if _sha_storage_dual_write_enabled():
+            _upsert_commit_status_context(pr, values, gid, now)
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
 

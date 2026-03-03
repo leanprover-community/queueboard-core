@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from syncer.models import CheckRun, StatusContext
+from syncer.models import CheckRun, CommitCheckRun, CommitStatusContext, StatusContext
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.tests.factories import make_repo, make_pr
 from analyzer.models import PRRevisionBuildState
@@ -374,3 +374,85 @@ class TestCISync(TestCase):
         rows = CheckRun.objects.filter(pull_request=self.pr, head_sha=head_sha, name="build")
         self.assertEqual(rows.count(), 1)
         self.assertEqual(rows.first().github_node_id, "CR_NEW")
+
+    def test_sha_storage_dual_write_disabled_by_default(self) -> None:
+        head_sha = "abc1234"
+        sync_check_runs(
+            self.pr,
+            [
+                {
+                    "id": "CR_DUAL_OFF",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2025-10-20T00:10:00Z",
+                    "completedAt": "2025-10-20T00:20:00Z",
+                    "detailsUrl": None,
+                    "externalId": None,
+                }
+            ],
+            head_sha,
+        )
+        sync_status_contexts(
+            self.pr,
+            [
+                {
+                    "id": "SC_DUAL_OFF",
+                    "context": "bors",
+                    "state": "SUCCESS",
+                    "targetUrl": None,
+                    "description": "",
+                    "createdAt": "2025-10-20T00:21:00Z",
+                }
+            ],
+            head_sha,
+        )
+
+        self.assertEqual(CommitCheckRun.objects.count(), 0)
+        self.assertEqual(CommitStatusContext.objects.count(), 0)
+
+    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=True)
+    def test_sha_storage_dual_write_writes_commit_scoped_rows(self) -> None:
+        head_sha = "abc1234"
+        before = timezone.now()
+        sync_check_runs(
+            self.pr,
+            [
+                {
+                    "id": "CR_DUAL_ON",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2025-10-20T00:10:00Z",
+                    "completedAt": "2025-10-20T00:20:00Z",
+                    "detailsUrl": None,
+                    "externalId": None,
+                }
+            ],
+            head_sha,
+        )
+        sync_status_contexts(
+            self.pr,
+            [
+                {
+                    "id": "SC_DUAL_ON",
+                    "context": "bors",
+                    "state": "SUCCESS",
+                    "targetUrl": None,
+                    "description": "",
+                    "createdAt": "2025-10-20T00:21:00Z",
+                }
+            ],
+            head_sha,
+        )
+
+        ckr = CommitCheckRun.objects.get(github_node_id="CR_DUAL_ON")
+        csc = CommitStatusContext.objects.get(github_node_id="SC_DUAL_ON")
+        self.assertEqual(ckr.repository, self.repo)
+        self.assertEqual(ckr.head_sha, head_sha)
+        self.assertEqual(csc.repository, self.repo)
+        self.assertEqual(csc.head_sha, head_sha)
+        self.assertIsNotNone(ckr.last_synced_at)
+        self.assertIsNotNone(csc.last_synced_at)
+        self.assertGreaterEqual(ckr.last_synced_at, before)
+        self.assertGreaterEqual(csc.last_synced_at, before)
