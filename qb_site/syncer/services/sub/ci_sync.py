@@ -6,6 +6,8 @@ from typing import Any, Dict, Iterable, List
 from dateutil import parser as dtparser
 from django.utils import timezone
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import IntegrityError
 from django.db.models.functions import Coalesce
 
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
@@ -14,7 +16,7 @@ from syncer.models.commit_check_run import CommitCheckRun
 from syncer.models.commit_status_context import CommitStatusContext
 from syncer.models.pull_request import PullRequest
 from syncer.models.status_context import StatusContext
-from core.utils.db import upsert_if_changed
+from core.utils.db import update_if_changed, upsert_if_changed
 import logging
 
 log = logging.getLogger(__name__)
@@ -79,6 +81,7 @@ def _sha_storage_dual_write_enabled() -> bool:
 def _upsert_commit_check_run(pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime) -> None:
     commit_values = {
         "repository": pr.repository,
+        "github_node_id": gid,
         "head_sha": values["head_sha"],
         "name": values["name"],
         "status": values["status"],
@@ -88,17 +91,52 @@ def _upsert_commit_check_run(pr: PullRequest, values: dict[str, Any], gid: str, 
         "gh_started_at": values["gh_started_at"],
         "gh_completed_at": values["gh_completed_at"],
     }
-    commit_obj, _, _, _ = upsert_if_changed(
-        CommitCheckRun,
-        {"github_node_id": gid},
-        commit_values,
-    )
+    try:
+        commit_obj, _, _, _ = upsert_if_changed(
+            CommitCheckRun,
+            {"github_node_id": gid},
+            commit_values,
+        )
+    except (IntegrityError, ObjectDoesNotExist):
+        fallback_obj = None
+        ext_id = values.get("external_id")
+        if ext_id:
+            fallback_obj = CommitCheckRun.objects.filter(
+                repository=pr.repository,
+                head_sha=values["head_sha"],
+                name=values["name"],
+                external_id=ext_id,
+            ).first()
+        if fallback_obj is None:
+            log.warning(
+                "CommitCheckRun dual-write conflict without fallback row for %s sha=%s gid=%s name=%s external_id=%s",
+                pr.repository,
+                values.get("head_sha"),
+                gid,
+                values.get("name"),
+                ext_id,
+            )
+            return
+        try:
+            update_if_changed(fallback_obj, commit_values)
+            commit_obj = fallback_obj
+        except IntegrityError:
+            log.warning(
+                "CommitCheckRun fallback update conflict for %s sha=%s gid=%s name=%s external_id=%s",
+                pr.repository,
+                values.get("head_sha"),
+                gid,
+                values.get("name"),
+                ext_id,
+            )
+            return
     CommitCheckRun.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
 
 
 def _upsert_commit_status_context(pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime) -> None:
     commit_values = {
         "repository": pr.repository,
+        "github_node_id": gid,
         "head_sha": values["head_sha"],
         "name": values["name"],
         "state": values["state"],
@@ -106,11 +144,35 @@ def _upsert_commit_status_context(pr: PullRequest, values: dict[str, Any], gid: 
         "description": values["description"],
         "gh_created_at": values["gh_created_at"],
     }
-    commit_obj, _, _, _ = upsert_if_changed(
-        CommitStatusContext,
-        {"github_node_id": gid},
-        commit_values,
-    )
+    try:
+        commit_obj, _, _, _ = upsert_if_changed(
+            CommitStatusContext,
+            {"github_node_id": gid},
+            commit_values,
+        )
+    except (IntegrityError, ObjectDoesNotExist):
+        fallback_obj = CommitStatusContext.objects.filter(github_node_id=gid).first()
+        if fallback_obj is None:
+            log.warning(
+                "CommitStatusContext dual-write conflict without fallback row for %s sha=%s gid=%s name=%s",
+                pr.repository,
+                values.get("head_sha"),
+                gid,
+                values.get("name"),
+            )
+            return
+        try:
+            update_if_changed(fallback_obj, commit_values)
+            commit_obj = fallback_obj
+        except IntegrityError:
+            log.warning(
+                "CommitStatusContext fallback update conflict for %s sha=%s gid=%s name=%s",
+                pr.repository,
+                values.get("head_sha"),
+                gid,
+                values.get("name"),
+            )
+            return
     CommitStatusContext.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
 
 

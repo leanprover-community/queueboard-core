@@ -259,6 +259,12 @@
     - Added tests covering SHA-primary and fallback behavior:
       - `qb_site/analyzer/tests/services/test_queue_windows_prrevision.py`
       - `qb_site/analyzer/tests/test_queueboard_snapshot.py`
+  - Production hardening follow-up:
+    - Fixed dual-write ingest conflict handling in `qb_site/syncer/services/sub/ci_sync.py`
+      so `syncer.sync_pr` does not fail when `github_node_id` upsert collides with
+      existing `(repository, head_sha, name, external_id)` uniqueness.
+    - Added regression coverage in
+      `qb_site/syncer/tests/subsystems/test_ci_sync.py`.
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`

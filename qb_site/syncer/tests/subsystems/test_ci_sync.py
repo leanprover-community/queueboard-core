@@ -456,3 +456,38 @@ class TestCISync(TestCase):
         self.assertIsNotNone(csc.last_synced_at)
         self.assertGreaterEqual(ckr.last_synced_at, before)
         self.assertGreaterEqual(csc.last_synced_at, before)
+
+    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=True)
+    def test_sha_storage_dual_write_checkrun_external_id_conflict_does_not_crash(self) -> None:
+        head_sha = "abc1234"
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CR_EXISTING",
+            head_sha=head_sha,
+            name="Lint style",
+            status="IN_PROGRESS",
+            conclusion=None,
+            external_id="ext-conflict",
+            gh_started_at=timezone.now() - timezone.timedelta(minutes=5),
+        )
+
+        sync_check_runs(
+            self.pr,
+            [
+                {
+                    "id": "CR_NEW",
+                    "name": "Lint style",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2025-10-20T00:10:00Z",
+                    "completedAt": "2025-10-20T00:20:00Z",
+                    "detailsUrl": None,
+                    "externalId": "ext-conflict",
+                }
+            ],
+            head_sha,
+        )
+
+        row = CommitCheckRun.objects.get(external_id="ext-conflict")
+        self.assertEqual(row.status, "COMPLETED")
+        self.assertEqual(row.conclusion, "SUCCESS")
