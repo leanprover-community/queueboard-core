@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import json
 
 from django.core.management.base import BaseCommand, CommandError
@@ -83,7 +84,8 @@ class Command(BaseCommand):
             status_contexts=BackfillModelStats(next_start_id=status_start_id),
         )
 
-        with transaction.atomic():
+        tx_ctx = transaction.atomic() if dry_run else nullcontext()
+        with tx_ctx:
             while remaining_cr > 0 or remaining_sc > 0:
                 run_cr = min(batch_size, remaining_cr)
                 run_sc = min(batch_size, remaining_sc)
@@ -120,7 +122,12 @@ class Command(BaseCommand):
 
                 processed = cumulative.check_runs.scanned + cumulative.status_contexts.scanned
                 while processed >= next_progress_mark:
-                    self.stdout.write(f"Progress: {processed}/{planned_total} rows processed")
+                    self.stdout.write(
+                        "Progress: "
+                        f"total={next_progress_mark}/{planned_total} "
+                        f"check_runs={cumulative.check_runs.scanned}/{planned_checkruns} "
+                        f"status_contexts={cumulative.status_contexts.scanned}/{planned_status}"
+                    )
                     next_progress_mark += progress_step
 
                 if chunk.check_runs.scanned == 0 and chunk.status_contexts.scanned == 0:
