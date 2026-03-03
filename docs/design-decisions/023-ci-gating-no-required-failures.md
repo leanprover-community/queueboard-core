@@ -1,113 +1,130 @@
-# CI Gating Mode: No Required Context Failures
-
-## Implementation Status (as of 2026-03-02)
-- Not yet implemented.
-- Current gating model remains boolean `require_ci_success` on `QueueRuleSet`
-  (`qb_site/analyzer/models/queue_rule.py`), with strict required-context semantics
-  in analyzer queue-window/snapshot logic.
-- `019` Part 1 (CI-by-SHA ledger/backoff) is already implemented and can be reused.
-- `019` Part 2 (SHA-keyed CI tables) is not a prerequisite for initial rollout.
-- `024` (per-ruleset queue-window build state) should be implemented first to avoid
-  unnecessary full-ruleset recomputation as ruleset semantics evolve.
+# CI Gating Mode: No Required Context Failures (Living Plan)
 
 ## Context
-- Today, CI-gated queue rules use a strict interpretation: required CI contexts must be observed and successful before a PR is considered on-queue.
-- That strict interpretation is intentional and conservative, and is documented in:
-  - `docs/design-decisions/011-ci-gating-and-legacy-prs.md`
-  - `docs/design-decisions/004-ci-status-sources.md`
-- Current implementation touchpoints:
-  - Queue window CI gating in `qb_site/analyzer/services/queue_windows.py`
-  - Snapshot CI rollup and queue inclusion in `qb_site/analyzer/services/queueboard_snapshot.py`
-  - Ruleset model in `qb_site/analyzer/models/queue_rule.py`
-  - CI backfill candidate selection in `qb_site/analyzer/services/revisions.py` (`next_revision_backfill_shas`)
-- We now have a real operational need where some required jobs are intentionally not triggered for certain SHAs (for efficiency), for example when a workflow determines that the change cannot affect that job's scope.
-- In those cases, strict "must observe success for every required context" semantics can incorrectly keep PRs off-queue forever, even though this is an expected and safe CI behavior.
+- Current ruleset CI gating is a boolean (`QueueRuleSet.require_ci_success`) with strict required-context semantics.
+- Strict semantics are implemented in:
+  - `qb_site/analyzer/services/queue_windows.py`
+  - `qb_site/analyzer/services/queueboard_snapshot.py`
+- Current ruleset model surface is in `qb_site/analyzer/models/queue_rule.py`.
+- Backfill planning currently does not guarantee complete required-context observation per SHA (`qb_site/analyzer/services/revisions.py`).
+- Operationally, some required jobs are intentionally not triggered for unaffected changes; strict semantics can keep those PRs off-queue forever.
 
-## Decision
-- Introduce explicit CI gating modes on `QueueRuleSet` so behavior is not implicit:
-  - `all_required_success` (existing behavior, default)
+## Problem Statement
+- We need queue gating semantics that allow intentionally skipped/not-triggered required jobs without silently weakening existing strict behavior for other repositories.
+- The implementation must keep queue-window materialization and snapshot inclusion semantics aligned.
+
+## Goals / Non-Goals
+- Goals:
+  - Introduce explicit per-ruleset CI gating modes.
+  - Preserve existing strict behavior as default.
+  - Support a mode where missing/untriggered required contexts do not block queue eligibility.
+  - Keep ruleset semantics explicit/auditable and versionable via existing ruleset lifecycle.
+- Non-goals:
+  - Replacing CI-by-SHA ingestion architecture from `019`.
+  - Requiring full required-context coverage convergence in backfill planning for v1 rollout.
+  - Removing required-context lists from rulesets.
+
+## Proposed Design
+
+### Ruleset Model Semantics
+- Add explicit `ci_gating_mode` enum on `QueueRuleSet`:
+  - `all_required_success` (default; current strict behavior)
   - `no_required_failures` (new behavior)
-- Semantics by mode:
-  - `all_required_success`
-    - Required context must be observed and successful for the relevant head SHA/time.
-    - Missing/unobserved/running contexts are not sufficient.
-  - `no_required_failures`
-    - A PR is CI-eligible if none of the required contexts are observed in a failing state for the relevant head SHA/time.
-    - Missing/unobserved/not-triggered contexts do not block queue eligibility.
-    - Observed running/pending contexts do not block queue eligibility unless they later report failure.
-- Keep mode selection explicit per ruleset row (no silent fallback based on PR age or data availability).
-- Continue to scope rule behavior via `effective_from`/`effective_to` and versioning.
+- Transitional compatibility:
+  - Keep `require_ci_success` during migration.
+  - Normalize call sites onto the new mode helper, then retire direct boolean checks in logic paths.
 
-## Clarification: Backfill Convergence Concern
-- Earlier concern: planner/backfill convergence is currently keyed to "has some CI for SHA" or "terminal SHA fetch outcome", not "has observed every required context for SHA".
-- Concretely, `next_revision_backfill_shas` in `qb_site/analyzer/services/revisions.py` plans more CI fetches mainly when:
-  - no CheckRun/StatusContext exists for a SHA, or
-  - only pending status contexts exist, or
-  - check runs are still queued/in-progress.
-- It does not currently inspect the active ruleset's required context list and ask "have all required contexts been observed?"
-- Why that mattered under strict mode:
-  - Under `all_required_success`, a missing required context blocks queue entry.
-  - If backfill stops after seeing some CI for a SHA, but misses one required context forever, strict mode can remain blocked due to incomplete context coverage.
-- Why this is less problematic under the new mode:
-  - Under `no_required_failures`, missing or never-triggered required contexts are acceptable.
-  - Therefore, planner convergence that does not guarantee complete required-context coverage is compatible with semantics, as long as observed failures are ingested reliably.
-- New operational emphasis under `no_required_failures`:
-  - Prioritize reliable ingestion of failures for observed required contexts.
-  - Complete observation of every required context is no longer required for eligibility.
+### Mode Semantics
+- `all_required_success`:
+  - Each required context must be observed and in a passing terminal state for the relevant head SHA/time.
+  - Missing/unobserved/running contexts are not sufficient.
+- `no_required_failures`:
+  - Queue-eligible when no required context is observed failing for the relevant head SHA/time.
+  - Missing/unobserved/not-triggered contexts are non-blocking.
+  - Running/pending contexts are non-blocking unless they later fail.
 
-## Consequences
-- Pros
-  - Matches real CI behavior where jobs may be intentionally skipped/not-triggered for unaffected SHAs.
-  - Prevents "perma-off-queue" outcomes caused by expected non-execution of contexts.
-  - Keeps semantics explicit and auditable through a ruleset field, not hidden heuristics.
-- Cons
-  - Less conservative than strict mode: unknown/missing contexts no longer imply "off-queue."
-  - Requires careful messaging in docs and admin because "CI-gated" now has two meanings.
-  - Queue windows and snapshot CI status logic need coordinated updates to avoid divergence.
+### Queue Windows + Snapshot Alignment
+- Queue windows:
+  - Replace binary CI-ok helper usage with mode-aware CI state evaluation (`pass`/`fail`/`running`/`missing`).
+  - Apply eligibility mapping by mode at boundary evaluation time.
+- Snapshot:
+  - Preserve coarse CI rollup surface (`pass`, `fail`, `running`, `missing`, `fail-inessential`).
+  - Derive queue inclusion using the same mode mapping as queue windows.
+  - Revisit "no windows => missing" shortcuts where no-fail semantics can legitimately have sparse windows.
 
-## Operational Notes
-- Schema/model
-  - Add a CI mode field on `QueueRuleSet` (string enum), defaulting to strict mode.
-  - Keep `require_ci_success` for backward compatibility during rollout, then simplify once callers are migrated.
-- Queue windows (`qb_site/analyzer/services/queue_windows.py`)
-  - Replace binary CI helper with a richer CI state evaluation to distinguish:
-    - fail
-    - running/pending
-    - missing/unobserved
-    - pass
-  - Apply mode-specific gating:
-    - strict: only pass is eligible
-    - no-fail: pass/running/missing are eligible; fail is ineligible
-  - Ensure boundary generation still captures transitions that can flip membership.
-- Snapshot (`qb_site/analyzer/services/queueboard_snapshot.py`)
-  - Use the same mode semantics for queue inclusion as queue windows.
-  - Keep coarse CI status (`pass`, `fail`, `running`, `missing`, `fail-inessential`) but derive queue eligibility from mode.
-  - Revisit `_queue_data_status` so "no windows" is not auto-labeled `missing` in cases where no-fail semantics legitimately yield sparse windows.
-- CI ingestion/backfill
-  - No mandatory redesign required for first rollout of no-fail mode.
-  - Continue CI-by-SHA/backoff strategy from `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`.
-  - Monitor false negatives for failures (the critical risk under no-fail mode) rather than completeness of non-failing contexts.
-- Tests
-  - Add queue-window tests for no-fail mode:
-    - missing required context -> eligible
-    - pending/running required context -> eligible
-    - observed required failure -> ineligible
-  - Add snapshot tests asserting mode-consistent queue inclusion for the same CI states.
-  - Keep strict-mode tests unchanged to preserve backwards-compatible behavior.
-- Documentation
-  - Update `docs/design-decisions/011-ci-gating-and-legacy-prs.md` to reference this decision and clarify that strict semantics remain available.
-  - Update `docs/queueboard_api_contract.md` to document that queue eligibility depends on ruleset CI mode.
+### Backfill / Convergence Implications
+- Under `no_required_failures`, complete required-context observation is not required for correctness.
+- Critical risk shifts to failure ingestion misses; monitoring should emphasize false negatives for required failures.
+- No mandatory planner redesign is needed in the first implementation chunk.
 
-## Rollout Plan
-- Phase 1: add mode field with strict default; keep all behavior effectively unchanged.
-- Phase 2: implement dual-mode evaluators in queue windows and snapshot, plus tests.
-- Phase 3: enable no-fail mode for selected repositories/rulesets where skipped/not-triggered jobs are expected.
-- Phase 4: evaluate metrics and convergence dashboards; expand usage if results are stable.
+## Subtleties / Invariants
+- Mode must be explicit per ruleset row; no time-based or heuristic fallback.
+- Effective bounds/versioning remain the mechanism for semantics changes over time.
+- Queue-window membership semantics and snapshot membership semantics must remain equivalent for a given `(PR, ruleset, time)`.
+- Strict mode behavior must remain backwards compatible.
+- `024` per-ruleset build-state freshness is now available and should be relied on for rollouts that touch ruleset semantics.
 
-## Alternatives (Optional)
-- Keep strict mode only and encode every intentional skip as explicit pass
-  - Rejected: often impractical when jobs are not triggered and no explicit success is emitted.
-- Remove required context list entirely and gate on overall rollup only
-  - Rejected: loses ability to constrain queue semantics to essential contexts.
-- Silent heuristic ("if context missing for long enough, treat as pass")
-  - Rejected: hidden behavior, hard to reason about, and difficult to audit.
+## Implementation Plan (Chunks)
+1. Schema + model surface
+- Add `ci_gating_mode` to `QueueRuleSet` with strict default.
+- Add shared mode helper(s) so callers do not open-code boolean + enum fallback logic.
+- Add migration/tests for defaulting and backwards compatibility.
+
+2. Queue-window mode-aware gating
+- Refactor CI evaluation path to expose explicit state, then map eligibility by mode.
+- Keep strict behavior identical to current output for unchanged rulesets.
+- Add focused tests for:
+  - strict + missing required context => ineligible,
+  - no-fail + missing required context => eligible,
+  - no-fail + running required context => eligible,
+  - no-fail + observed required failure => ineligible.
+
+3. Snapshot mode-aware gating parity
+- Apply same mode mapping in snapshot queue inclusion logic.
+- Ensure coarse CI status remains stable, while queue-inclusion decisions change by mode.
+- Add parity tests to validate queue windows and snapshot agree for equivalent fixtures.
+
+4. Admin/API/docs surface
+- Expose mode in admin list/detail and serializer surfaces where ruleset config is shown.
+- Document dual-mode semantics in:
+  - `docs/design-decisions/011-ci-gating-and-legacy-prs.md`
+  - `docs/queueboard_api_contract.md`
+
+5. Rollout + cleanup
+- Enable `no_required_failures` on selected rulesets/repositories.
+- Monitor queue inclusion deltas and failure-miss signals.
+- Remove legacy direct boolean checks once mode migration is complete.
+
+## Validation Plan
+- Tests:
+  - analyzer queue-window CI mode matrix tests (strict vs no-fail).
+  - analyzer snapshot inclusion parity tests against queue-window outcomes.
+  - migration/model tests for mode defaults and compatibility.
+- Manual checks:
+  - For a target repo/ruleset, compare pre/post mode switch queue inclusion for PRs with intentionally skipped jobs.
+  - Verify PRs with observed required failures remain excluded in both windows and snapshots.
+- Operational checks:
+  - Track convergence trends and queue-size changes around rollout.
+  - Sample CI ingestion for known failing contexts to validate failure visibility.
+
+## Progress Notes
+- 2026-03-02:
+  - Dependency `024-per-ruleset-queue-window-build-state` is complete.
+  - `023` converted to living-plan format to begin implementation.
+  - Current code still uses strict boolean `require_ci_success` behavior.
+
+## Finalization Notes
+- After implementation stabilizes, collapse this living plan into a concise final decision record that captures:
+  - final ruleset schema/API shape,
+  - final queue-window/snapshot invariants,
+  - rollout outcomes and any follow-up operational guardrails.
+
+## References
+- `docs/design-decisions/004-ci-status-sources.md`
+- `docs/design-decisions/011-ci-gating-and-legacy-prs.md`
+- `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`
+- `docs/design-decisions/024-per-ruleset-queue-window-build-state.md`
+- `qb_site/analyzer/models/queue_rule.py`
+- `qb_site/analyzer/services/queue_windows.py`
+- `qb_site/analyzer/services/queueboard_snapshot.py`
+- `qb_site/analyzer/services/revisions.py`
