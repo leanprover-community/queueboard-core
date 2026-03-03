@@ -232,6 +232,17 @@ def _required_contexts_status(
     return CIStatus.Pass
 
 
+def _ci_status_is_queue_eligible(*, rule_set: QueueRuleSet | None, required_status: CIStatus) -> bool:
+    if rule_set is None:
+        return True
+    mode = rule_set.effective_ci_gating_mode()
+    if mode is None:
+        return True
+    if mode == QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES:
+        return required_status != CIStatus.Fail
+    return required_status == CIStatus.Pass
+
+
 def _ci_status_for_pr(
     *,
     pr_id: int,
@@ -244,7 +255,7 @@ def _ci_status_for_pr(
 ) -> tuple[CIStatus, bool]:
     """CI rollup aligned with queue rule set semantics."""
 
-    if not rule_set or not rule_set.require_ci_success:
+    if not rule_set or rule_set.effective_ci_gating_mode() is None:
         return (CIStatus.Pass, True)
 
     required = [
@@ -266,11 +277,12 @@ def _ci_status_for_pr(
         status_contexts=status_contexts,
         head_sha=head_sha,
     )
+    ci_ok = _ci_status_is_queue_eligible(rule_set=rule_set, required_status=required_status)
     if required_status == CIStatus.Pass:
         if (head_state or "").upper() in ("FAILURE", "ERROR"):
-            return (CIStatus.FailInessential, True)
-        return (CIStatus.Pass, True)
-    return (required_status, False)
+            return (CIStatus.FailInessential, ci_ok)
+        return (CIStatus.Pass, ci_ok)
+    return (required_status, ci_ok)
 
 
 def _forbidden_queue_labels(default_branch: str) -> set[str]:
@@ -682,7 +694,12 @@ class QueueboardSnapshotBuilder:
     def _queue_data_status(self, pr: PullRequest, has_windows: bool, rule_set: QueueRuleSet | None) -> DataStatus:
         if not getattr(pr, "timeline_backfill_done", False):
             return "missing"
-        if rule_set and rule_set.require_ci_success and (rule_set.required_ci_contexts or []) and not has_windows:
+        if (
+            rule_set
+            and rule_set.effective_ci_gating_mode() == QueueRuleSet.CIGatingMode.ALL_REQUIRED_SUCCESS
+            and (rule_set.required_ci_contexts or [])
+            and not has_windows
+        ):
             return "missing"
         return "valid"
 
@@ -864,7 +881,7 @@ class QueueboardSnapshotBuilder:
         return {pr_id: (head_sha or "").strip() for pr_id, head_sha in qs.iterator()}
 
     def _required_contexts(self, rule_set: QueueRuleSet | None) -> list[str]:
-        if not rule_set or not rule_set.require_ci_success:
+        if not rule_set or rule_set.effective_ci_gating_mode() is None:
             return []
         required = rule_set.required_ci_contexts or []
         return [ctx.strip() for ctx in required if isinstance(ctx, str) and ctx.strip()]
