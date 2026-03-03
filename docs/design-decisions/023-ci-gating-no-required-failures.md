@@ -121,6 +121,9 @@
   - Chunk 2 started.
   - Queue windows now evaluate explicit CI states (`pass`/`fail`/`running`/`missing`) and map eligibility by CI mode.
   - Added queue-window tests covering `no_required_failures` behavior for missing/running/failure transitions.
+  - Chunk 3 started.
+  - Snapshot queue inclusion now uses the same CI mode eligibility mapping as queue windows.
+  - Added snapshot tests for `no_required_failures` (missing/running allowed; observed failure blocked).
 
 ## Finalization Notes
 - After implementation stabilizes, collapse this living plan into a concise final decision record that captures:

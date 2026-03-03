@@ -435,6 +435,50 @@ class QueueboardSnapshotBuilderTests(TestCase):
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
         self.assertNotIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
 
+    def test_no_required_failures_allows_missing_context_on_queue(self):
+        pr = self._make_pr(57, author=self.user, labels=("t-analysis",))
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_ci_success=True,
+            ci_gating_mode=QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES,
+            required_ci_contexts=["lint"],
+        )
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "missing")
+        self.assertIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
+
+    def test_no_required_failures_allows_running_context_on_queue(self):
+        pr = self._make_pr(58, author=self.user, labels=("t-analysis",))
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_ci_success=True,
+            ci_gating_mode=QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES,
+            required_ci_contexts=["lint"],
+        )
+        self._add_ci(pr, status=CheckRunStatus.IN_PROGRESS)
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "running")
+        self.assertIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
+
+    def test_no_required_failures_still_blocks_observed_failure(self):
+        pr = self._make_pr(59, author=self.user, labels=("t-analysis",))
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_ci_success=True,
+            ci_gating_mode=QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES,
+            required_ci_contexts=["lint"],
+        )
+        self._add_ci(pr, conclusion=CheckRunConclusion.FAILURE)
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "fail")
+        self.assertNotIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
+
     def test_queue_includes_fail_inessential_when_required_contexts_pass(self):
         pr = self._make_pr(56, author=self.user, labels=("t-analysis",))
         rule_set = QueueRuleSet.objects.create(
