@@ -17,7 +17,11 @@ We now emit a single `snapshot.json` used by the dashboard renderer (dependency 
     "schema_version": "v1-draft",
     "generated_at": "<datetime>",
     "repository": "owner/name",
-    "rule_set_id": "<ruleset-id-or-name>"
+    "rule_set_id": "<ruleset-id-or-name>",
+    "rule_set_version": "<int|null>",
+    "require_ci_success": true|false,
+    "ci_gating_mode": "all_required_success|no_required_failures|null",
+    "required_ci_contexts": ["<context-fragment>", ...]
   },
   "prs": {
     "<pr_number>": {
@@ -70,7 +74,7 @@ Notes:
 - `prs_to_list` is now computed from our aggregate data by default; `queue.json` (GitHub search) is only used for an optional parity check when present.
 - Dependency graph, area stats, and automatic assignments stay separate for now.
 
-Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`). `ci_status` is rule-set aware: required CI contexts gate queue membership; missing required contexts yield `missing`; `fail-inessential` indicates the required contexts pass but the head rollup reports a failure.
+Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`). `ci_status` is rule-set aware: required CI contexts gate queue membership; missing required contexts yield `missing`; `fail-inessential` indicates the required contexts pass but the head rollup reports a failure. Queue eligibility follows `meta.ci_gating_mode`: strict mode (`all_required_success`) requires required-context pass; no-fail mode (`no_required_failures`) blocks only observed required-context failures.
 
 ## Current filesystem artifacts (post-refactor)
 - Snapshot is the normalized contract; everything else is compatibility scaffolding for the legacy renderer.

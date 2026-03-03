@@ -124,6 +124,9 @@
   - Chunk 3 started.
   - Snapshot queue inclusion now uses the same CI mode eligibility mapping as queue windows.
   - Added snapshot tests for `no_required_failures` (missing/running allowed; observed failure blocked).
+  - Chunk 4 started.
+  - Snapshot API metadata now exposes ruleset CI mode/config (`ci_gating_mode`, `require_ci_success`, `required_ci_contexts`, `rule_set_version`).
+  - Updated CI-gating decision/API-contract docs to describe dual-mode semantics and API surface.
 
 ## Finalization Notes
 - After implementation stabilizes, collapse this living plan into a concise final decision record that captures:

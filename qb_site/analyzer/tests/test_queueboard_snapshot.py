@@ -106,6 +106,11 @@ class QueueboardSnapshotBuilderTests(TestCase):
 
         self.assertEqual(snapshot["meta"]["repository"], "leanprover-community/mathlib4")
         self.assertEqual(snapshot["meta"]["schema_version"], "v1-draft")
+        self.assertEqual(snapshot["meta"]["rule_set_id"], rule_set.id)
+        self.assertEqual(snapshot["meta"]["rule_set_version"], rule_set.version)
+        self.assertTrue(snapshot["meta"]["require_ci_success"])
+        self.assertEqual(snapshot["meta"]["ci_gating_mode"], QueueRuleSet.CIGatingMode.ALL_REQUIRED_SUCCESS)
+        self.assertEqual(snapshot["meta"]["required_ci_contexts"], ["lint"])
 
         prs = snapshot["prs"]
         self.assertIn(1, prs)
