@@ -34,19 +34,19 @@ class BackfillStats:
 
 
 def _check_run_freshness(row: CheckRun) -> datetime | None:
-    return row.gh_completed_at or row.gh_started_at or row.last_synced_at or row.updated_at
+    return row.gh_completed_at or row.gh_started_at or row.last_synced_at
 
 
 def _commit_check_run_freshness(row: CommitCheckRun) -> datetime | None:
-    return row.gh_completed_at or row.gh_started_at or row.last_synced_at or row.updated_at
+    return row.gh_completed_at or row.gh_started_at or row.last_synced_at
 
 
 def _status_context_freshness(row: StatusContext) -> datetime | None:
-    return row.gh_created_at or row.last_synced_at or row.updated_at
+    return row.gh_created_at or row.last_synced_at
 
 
 def _commit_status_context_freshness(row: CommitStatusContext) -> datetime | None:
-    return row.gh_created_at or row.last_synced_at or row.updated_at
+    return row.gh_created_at or row.last_synced_at
 
 
 def _is_stale(source_ts: datetime | None, target_ts: datetime | None) -> bool:
