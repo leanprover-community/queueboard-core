@@ -156,6 +156,36 @@
   - If regressions appear after read cutover, keep dual-write on and re-enable PR fallback immediately.
   - If ingest regressions appear, disable dual-write flag while keeping schema in place.
 
+### S3 Backfill Runbook
+- Command:
+  - `uv run python qb_site/manage.py backfill_sha_keyed_ci [options]`
+- Recommended order:
+  1. Run a dry-run first to confirm planned scope and output format.
+  2. Run apply mode in bounded chunks using `--max-checkruns` and `--max-status-contexts`.
+  3. Resume with returned `next_start_id` cursors until both models are fully scanned.
+- Suggested first run:
+  - `uv run python qb_site/manage.py backfill_sha_keyed_ci --dry-run --batch-size 1000 --max-checkruns 50000 --max-status-contexts 50000`
+- Suggested apply run:
+  - `uv run python qb_site/manage.py backfill_sha_keyed_ci --batch-size 1000 --max-checkruns 50000 --max-status-contexts 50000`
+- Resume example:
+  - If summary shows `"next_start_id": 123456` for `check_runs` and `234567` for `status_contexts`, continue with:
+    - `uv run python qb_site/manage.py backfill_sha_keyed_ci --checkrun-start-id 123456 --status-start-id 234567 --batch-size 1000 --max-checkruns 50000 --max-status-contexts 50000`
+- Progress behavior:
+  - The command prints planned totals before writing:
+    - `Planned rows: total=... (check_runs=..., status_contexts=...)`
+  - It prints progress every 1000 processed rows:
+    - `Progress: 1000/N rows processed`
+- Interpreting summary counters:
+  - `inserted`: new commit-scoped rows created.
+  - `updated`: existing commit-scoped rows changed to match source.
+  - `skipped_duplicate`: source row already represented with identical values.
+  - `skipped_invalid`: source row missing required keys (e.g., missing provider ids or sha).
+  - `skipped_conflict`: uniqueness conflict during upsert; investigate if non-trivial.
+- Safety notes:
+  - Backfill is idempotent and safe to re-run.
+  - `--dry-run` executes logic and rolls back writes in one transaction.
+  - Prefer running during lower write load for easier monitoring, though the operation is online-safe.
+
 ## Open Questions
 - Exact identity constraints for SHA-keyed rows when provider IDs are absent/inconsistent.
 - Whether to include a lightweight per-SHA CI completeness marker separate from `CIShaFetchState`.
@@ -180,6 +210,20 @@
       `qb_site/syncer/services/sub/ci_sync.py`, so both PR-bundle ingest and
       CI-by-SHA ingest paths dual-write when enabled.
     - Added `syncer` subsystem tests covering dual-write disabled/enabled paths.
+  - Implemented `S3` backfill command/service:
+    - Added backfill service `qb_site/syncer/services/ci_storage_backfill.py`
+      with idempotent upsert counters for inserted/updated/skipped outcomes.
+    - Added command `qb_site/manage.py backfill_sha_keyed_ci` with:
+      - dry-run transaction rollback,
+      - resumable cursors (`--checkrun-start-id`, `--status-start-id`),
+      - bounded runs (`--max-checkruns`, `--max-status-contexts`, `--batch-size`),
+      - optional repo scoping (`--repo owner/name`).
+    - Added tests for backfill logic and command behavior:
+      - `qb_site/syncer/tests/services/test_ci_storage_backfill.py`
+      - `qb_site/syncer/tests/management/test_backfill_sha_keyed_ci_cmd.py`
+    - Command UX improvement:
+      - prints planned total rows before processing,
+      - prints progress every 1000 processed rows by default.
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`
