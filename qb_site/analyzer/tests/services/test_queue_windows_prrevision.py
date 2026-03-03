@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone as dt_timezone
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet, PRRevision
-from syncer.models import PullRequest, CheckRun
+from syncer.models import PullRequest, CheckRun, CommitCheckRun
 from analyzer.services.queue_windows import is_on_queue_at
 
 
@@ -146,3 +146,49 @@ class TestQueueWindowsPRRevision(TestCase):
         # Once we're inside the revision window and CI is green for that head, the
         # PR should be on the queue.
         self.assertTrue(is_on_queue_at(pr, at=after))
+
+    @override_settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False)
+    def test_sha_primary_reads_commit_checkrun_rows(self) -> None:
+        pr = self._mk_pr(3)
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="shaC",
+            from_ts=_dt(2024, 9, 1),
+            to_ts=None,
+            seq=0,
+        )
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CCR1",
+            head_sha="shaC",
+            name="lint",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            gh_started_at=_dt(2024, 9, 4),
+            gh_completed_at=_dt(2024, 9, 4),
+        )
+        self.assertTrue(is_on_queue_at(pr, at=_dt(2024, 9, 5)))
+
+    @override_settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False)
+    def test_sha_primary_without_fallback_ignores_pr_ci_rows(self) -> None:
+        pr = self._mk_pr(4)
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="shaD",
+            from_ts=_dt(2024, 9, 1),
+            to_ts=None,
+            seq=0,
+        )
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CRD",
+            head_sha="shaD",
+            name="lint",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 4),
+            gh_completed_at=_dt(2024, 9, 4),
+        )
+        self.assertFalse(is_on_queue_at(pr, at=_dt(2024, 9, 5)))
