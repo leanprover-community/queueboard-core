@@ -231,6 +231,17 @@
     - Freshness fix:
       - backfill updates are now freshness-aware (timestamp-based), so older
         source rows encountered later do not overwrite newer commit-scoped CI data.
+  - Implemented initial `S4` analyzer dual-read wiring:
+    - Added settings flags:
+      - `ANALYZER_CI_SHA_READ_PRIMARY` (default `False`)
+      - `ANALYZER_CI_SHA_READ_FALLBACK_PR` (default `True`)
+    - Updated analyzer CI reads to prefer commit-scoped tables when enabled:
+      - `queue_windows`: `_latest_ci_statuses_for_fragment` and CI-gated queue-window builder path.
+      - `queueboard_snapshot`: `_ci_inputs_for_repo` now sources SHA-keyed CI rows by
+        `(repository, head_sha)` and maps them to PRs by resolved head SHA.
+    - Added tests covering SHA-primary and fallback behavior:
+      - `qb_site/analyzer/tests/services/test_queue_windows_prrevision.py`
+      - `qb_site/analyzer/tests/test_queueboard_snapshot.py`
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`

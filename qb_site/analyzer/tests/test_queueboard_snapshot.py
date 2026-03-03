@@ -3,15 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet
+from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, PRRevision
 from analyzer.models.queue_snapshot import QueueSnapshot
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository, User
 from syncer.models import LabelDef, PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
+from syncer.models.commit_check_run import CommitCheckRun
 
 
 class QueueboardSnapshotBuilderTests(TestCase):
@@ -397,6 +398,73 @@ class QueueboardSnapshotBuilderTests(TestCase):
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
         prs = snapshot["prs"]
         self.assertEqual(prs[52]["ci_status"], "running")
+
+    @override_settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False)
+    def test_ci_status_sha_primary_reads_commit_rows(self):
+        pr = self._make_pr(520, author=self.user, labels=("t-analysis",))
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=10,
+            require_ci_success=True,
+            required_ci_contexts=["lint"],
+        )
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha520",
+            from_ts=self.now,
+            to_ts=None,
+            seq=0,
+        )
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CCR-520",
+            head_sha="sha520",
+            name="lint",
+            status=CheckRunStatus.COMPLETED,
+            conclusion=CheckRunConclusion.SUCCESS,
+            gh_started_at=self.now,
+            gh_completed_at=self.now,
+        )
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        self.assertEqual(snapshot["prs"][520]["ci_status"], "pass")
+        self.assertIn(520, snapshot["lists"]["dashboards"]["Queue"])
+
+    def test_ci_status_sha_primary_fallback_toggle(self):
+        pr = self._make_pr(521, author=self.user, labels=("t-analysis",))
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=11,
+            require_ci_success=True,
+            required_ci_contexts=["lint"],
+        )
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha521",
+            from_ts=self.now,
+            to_ts=None,
+            seq=0,
+        )
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR-521",
+            head_sha="sha521",
+            name="lint",
+            status=CheckRunStatus.COMPLETED,
+            conclusion=CheckRunConclusion.SUCCESS,
+            gh_started_at=self.now,
+            gh_completed_at=self.now,
+        )
+
+        with self.settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False):
+            snap_no_fallback = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        with self.settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=True):
+            snap_fallback = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+
+        self.assertEqual(snap_no_fallback["prs"][521]["ci_status"], "missing")
+        self.assertNotIn(521, snap_no_fallback["lists"]["dashboards"]["Queue"])
+        self.assertEqual(snap_fallback["prs"][521]["ci_status"], "pass")
+        self.assertIn(521, snap_fallback["lists"]["dashboards"]["Queue"])
 
     def test_ci_status_ignores_head_rollup_pending_when_required_pass(self):
         pr = self._make_pr(53, author=self.user, labels=("t-analysis",))

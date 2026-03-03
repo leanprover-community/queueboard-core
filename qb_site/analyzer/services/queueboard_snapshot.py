@@ -8,6 +8,7 @@ import json
 from typing import Dict, Iterable, List, Sequence
 
 from dateutil import relativedelta
+from django.conf import settings
 from django.db.models import F, Q, QuerySet, Window
 from django.db.models.functions import RowNumber
 
@@ -17,6 +18,8 @@ from core.models import Repository
 from syncer.models import PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
+from syncer.models.commit_check_run import CommitCheckRun
+from syncer.models.commit_status_context import CommitStatusContext
 from syncer.models.status_context import StatusContext, StatusContextState
 from queueboard.classify_pr_state import determine_PR_status, label_categorisation_rules, PRState
 from queueboard.ci_status import CIStatus
@@ -382,11 +385,16 @@ class QueueboardSnapshotBuilder:
             head_shas = {sha for sha in head_sha_map.values() if sha}
             head_shas.update(revision_heads.values())
             missing_head_pr_ids = {pr_id for pr_id in missing_head_pr_ids if pr_id not in revision_heads}
+            resolved_head_map = {pr_id: sha for pr_id, sha in head_sha_map.items() if sha}
+            for pr_id, sha in revision_heads.items():
+                if sha:
+                    resolved_head_map[pr_id] = sha
             ci_checks, ci_statuses = self._ci_inputs_for_repo(
                 repository,
                 head_shas=head_shas,
                 required_contexts=required_contexts,
                 missing_head_pr_ids=missing_head_pr_ids,
+                resolved_head_map=resolved_head_map,
             )
         else:
             ci_checks = {}
@@ -793,49 +801,114 @@ class QueueboardSnapshotBuilder:
         head_shas: set[str],
         required_contexts: Sequence[str],
         missing_head_pr_ids: set[int],
+        resolved_head_map: Dict[int, str] | None = None,
     ):
-        base_checks_qs = CheckRun.objects.filter(
-            pull_request__repository=repository,
-            pull_request__state=PullRequestState.OPEN,
-        )
-        base_statuses_qs = StatusContext.objects.filter(
-            pull_request__repository=repository,
-            pull_request__state=PullRequestState.OPEN,
-        )
-
         check_map: Dict[int, List[dict]] = defaultdict(list)
         status_map: Dict[int, List[dict]] = defaultdict(list)
+        sha_primary = bool(getattr(settings, "ANALYZER_CI_SHA_READ_PRIMARY", False))
+        allow_pr_fallback = bool(getattr(settings, "ANALYZER_CI_SHA_READ_FALLBACK_PR", True))
+        resolved_head_map = resolved_head_map or {}
+        head_to_pr_ids: Dict[str, list[int]] = defaultdict(list)
+        for pr_id, sha in resolved_head_map.items():
+            if sha:
+                head_to_pr_ids[sha].append(pr_id)
 
         name_filter = Q()
         for ctx in required_contexts:
             name_filter |= Q(name__icontains=ctx)
 
-        checks_head_qs = base_checks_qs.none()
-        if head_shas:
-            checks_head_qs = base_checks_qs.filter(head_sha__in=head_shas)
+        used_sha_rows = False
+        if sha_primary and head_shas:
+            checks_head_qs = CommitCheckRun.objects.filter(
+                repository=repository,
+                head_sha__in=head_shas,
+            )
+            statuses_head_qs = CommitStatusContext.objects.filter(
+                repository=repository,
+                head_sha__in=head_shas,
+            )
             if required_contexts:
                 checks_head_qs = checks_head_qs.filter(name_filter)
-        checks_missing_qs = base_checks_qs.filter(pull_request_id__in=missing_head_pr_ids) if missing_head_pr_ids else None
-
-        statuses_head_qs = base_statuses_qs.none()
-        if head_shas:
-            statuses_head_qs = base_statuses_qs.filter(head_sha__in=head_shas)
-            if required_contexts:
                 statuses_head_qs = statuses_head_qs.filter(name_filter)
-        statuses_missing_qs = base_statuses_qs.filter(pull_request_id__in=missing_head_pr_ids) if missing_head_pr_ids else None
+            else:
+                checks_head_qs = checks_head_qs.none()
+                statuses_head_qs = statuses_head_qs.none()
 
-        for cr in checks_head_qs.values(
-            "pull_request_id",
-            "name",
-            "status",
-            "conclusion",
-            "head_sha",
-            "gh_started_at",
-            "gh_completed_at",
-        ).iterator():
-            check_map[cr["pull_request_id"]].append(cr)
-        if checks_missing_qs is not None:
-            for cr in checks_missing_qs.values(
+            for cr in checks_head_qs.values(
+                "name",
+                "status",
+                "conclusion",
+                "head_sha",
+                "gh_started_at",
+                "gh_completed_at",
+            ).iterator():
+                sha = (cr.get("head_sha") or "").strip()
+                pr_ids = head_to_pr_ids.get(sha, [])
+                for pr_id in pr_ids:
+                    check_map[pr_id].append(
+                        {
+                            "pull_request_id": pr_id,
+                            "name": cr["name"],
+                            "status": cr["status"],
+                            "conclusion": cr["conclusion"],
+                            "head_sha": cr["head_sha"],
+                            "gh_started_at": cr["gh_started_at"],
+                            "gh_completed_at": cr["gh_completed_at"],
+                        }
+                    )
+                    used_sha_rows = True
+
+            for sc in statuses_head_qs.values(
+                "name",
+                "state",
+                "head_sha",
+                "gh_created_at",
+            ).iterator():
+                sha = (sc.get("head_sha") or "").strip()
+                pr_ids = head_to_pr_ids.get(sha, [])
+                for pr_id in pr_ids:
+                    status_map[pr_id].append(
+                        {
+                            "pull_request_id": pr_id,
+                            "name": sc["name"],
+                            "state": sc["state"],
+                            "head_sha": sc["head_sha"],
+                            "gh_created_at": sc["gh_created_at"],
+                        }
+                    )
+                    used_sha_rows = True
+
+        if not sha_primary or allow_pr_fallback:
+            base_checks_qs = CheckRun.objects.filter(
+                pull_request__repository=repository,
+                pull_request__state=PullRequestState.OPEN,
+            )
+            base_statuses_qs = StatusContext.objects.filter(
+                pull_request__repository=repository,
+                pull_request__state=PullRequestState.OPEN,
+            )
+            if sha_primary and used_sha_rows and allow_pr_fallback:
+                # Only fill gaps for PRs still missing SHA-keyed rows.
+                fallback_pr_ids = {
+                    pr_id
+                    for pr_id in set(resolved_head_map.keys()) | set(missing_head_pr_ids)
+                    if not check_map.get(pr_id) and not status_map.get(pr_id)
+                }
+            else:
+                fallback_pr_ids = set(resolved_head_map.keys()) | set(missing_head_pr_ids)
+
+            checks_qs = base_checks_qs.filter(pull_request_id__in=fallback_pr_ids) if fallback_pr_ids else base_checks_qs.none()
+            statuses_qs = (
+                base_statuses_qs.filter(pull_request_id__in=fallback_pr_ids) if fallback_pr_ids else base_statuses_qs.none()
+            )
+            if required_contexts:
+                checks_qs = checks_qs.filter(name_filter)
+                statuses_qs = statuses_qs.filter(name_filter)
+            else:
+                checks_qs = checks_qs.none()
+                statuses_qs = statuses_qs.none()
+
+            for cr in checks_qs.values(
                 "pull_request_id",
                 "name",
                 "status",
@@ -845,17 +918,7 @@ class QueueboardSnapshotBuilder:
                 "gh_completed_at",
             ).iterator():
                 check_map[cr["pull_request_id"]].append(cr)
-
-        for sc in statuses_head_qs.values(
-            "pull_request_id",
-            "name",
-            "state",
-            "head_sha",
-            "gh_created_at",
-        ).iterator():
-            status_map[sc["pull_request_id"]].append(sc)
-        if statuses_missing_qs is not None:
-            for sc in statuses_missing_qs.values(
+            for sc in statuses_qs.values(
                 "pull_request_id",
                 "name",
                 "state",
