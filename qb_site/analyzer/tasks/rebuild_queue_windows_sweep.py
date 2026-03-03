@@ -3,7 +3,7 @@ from __future__ import annotations
 from celery import shared_task
 from django.utils import timezone
 
-from django.db.models import Count, Exists, F, OuterRef, Q
+from django.db.models import Count, Exists, F, Min, OuterRef, Q
 
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.queue_window_build_state import record_queue_window_build_states
@@ -58,6 +58,7 @@ def rebuild_queue_windows_sweep_task(
 
     for repo in repos:
         rulesets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
+        max_ruleset_updated_at = max((rs.updated_at for rs in rulesets if rs.updated_at is not None), default=None)
         rule_set_ids = [int(rs.id) for rs in rulesets]
 
         has_revisions = PRRevision.objects.filter(pull_request=OuterRef("pk"))
@@ -87,25 +88,39 @@ def rebuild_queue_windows_sweep_task(
                 "queue_window_build_states",
                 filter=Q(queue_window_build_states__rule_set_id__in=rule_set_ids),
                 distinct=True,
-            )
+            ),
+            null_ruleset_state_revision_count=Count(
+                "queue_window_build_states",
+                filter=Q(queue_window_build_states__rule_set_id__in=rule_set_ids)
+                & Q(queue_window_build_states__revision_version_built__isnull=True),
+                distinct=True,
+            ),
+            null_ruleset_state_windows_built_at_count=Count(
+                "queue_window_build_states",
+                filter=Q(queue_window_build_states__rule_set_id__in=rule_set_ids)
+                & Q(queue_window_build_states__windows_built_at__isnull=True),
+                distinct=True,
+            ),
+            min_ruleset_state_revision_built=Min(
+                "queue_window_build_states__revision_version_built",
+                filter=Q(queue_window_build_states__rule_set_id__in=rule_set_ids),
+            ),
+            min_ruleset_state_windows_built_at=Min(
+                "queue_window_build_states__windows_built_at",
+                filter=Q(queue_window_build_states__rule_set_id__in=rule_set_ids),
+            ),
         )
-        stale_ruleset_state = PRQueueWindowBuildState.objects.filter(
-            pull_request=OuterRef("pk"),
-            rule_set_id__in=rule_set_ids,
-        ).filter(
-            Q(revision_version_built__isnull=True)
-            | Q(revision_version_built__lt=OuterRef("revision_build_state__revision_version"))
-            | Q(windows_built_at__isnull=True)
-            | Q(windows_built_at__lt=F("rule_set__updated_at"))
-        )
-        pr_qs = pr_qs.annotate(has_stale_ruleset_state=Exists(stale_ruleset_state))
 
         needs_rebuild = (
             Q(revision_build_state__isnull=True)
             | Q(has_rollup_backfill=True)
             | Q(active_ruleset_state_count__lt=len(rule_set_ids))
-            | Q(has_stale_ruleset_state=True)
+            | Q(null_ruleset_state_revision_count__gt=0)
+            | Q(min_ruleset_state_revision_built__lt=F("revision_build_state__revision_version"))
+            | Q(null_ruleset_state_windows_built_at_count__gt=0)
         )
+        if max_ruleset_updated_at is not None:
+            needs_rebuild |= Q(min_ruleset_state_windows_built_at__lt=max_ruleset_updated_at)
         pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
 
         repo_rebuilt = 0
