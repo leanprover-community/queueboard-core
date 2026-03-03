@@ -23,18 +23,8 @@ def _is_ruleset_stale_for_pr(
     if queue_windows_need_rollup_backfill(pr=pr, rule_set=rule_set):
         return True
 
-    # Transition fallback: if per-ruleset state is missing, honor legacy PR-level
-    # freshness markers to avoid changing behavior during rollout.
     if rs_state is None:
-        if state.windows_built_revision_version is None:
-            return True
-        if state.windows_built_revision_version != state.revision_version:
-            return True
-        if state.windows_built_at is None:
-            return True
-        if rule_set.updated_at and state.windows_built_at < rule_set.updated_at:
-            return True
-        return False
+        return True
 
     if rs_state.revision_version_built is None:
         return True
@@ -68,7 +58,6 @@ def rebuild_queue_windows_sweep_task(
 
     for repo in repos:
         rulesets = list(QueueRuleSet.objects.filter(repository=repo, is_active=True))
-        max_ruleset_updated_at = max((rs.updated_at for rs in rulesets if rs.updated_at is not None), default=None)
         rule_set_ids = [int(rs.id) for rs in rulesets]
 
         has_revisions = PRRevision.objects.filter(pull_request=OuterRef("pk"))
@@ -88,8 +77,6 @@ def rebuild_queue_windows_sweep_task(
             "timeline_backfill_done",
             "commits_backfill_done",
             "revision_build_state__revision_version",
-            "revision_build_state__windows_built_revision_version",
-            "revision_build_state__windows_built_at",
         )
         pr_qs = pr_qs.annotate(
             has_revisions=Exists(has_revisions),
@@ -102,19 +89,23 @@ def rebuild_queue_windows_sweep_task(
                 distinct=True,
             )
         )
+        stale_ruleset_state = PRQueueWindowBuildState.objects.filter(
+            pull_request=OuterRef("pk"),
+            rule_set_id__in=rule_set_ids,
+        ).filter(
+            Q(revision_version_built__isnull=True)
+            | Q(revision_version_built__lt=OuterRef("revision_build_state__revision_version"))
+            | Q(windows_built_at__isnull=True)
+            | Q(windows_built_at__lt=F("rule_set__updated_at"))
+        )
+        pr_qs = pr_qs.annotate(has_stale_ruleset_state=Exists(stale_ruleset_state))
 
         needs_rebuild = (
             Q(revision_build_state__isnull=True)
-            | Q(revision_build_state__windows_built_revision_version__isnull=True)
-            | ~Q(revision_build_state__windows_built_revision_version=F("revision_build_state__revision_version"))
-            | Q(revision_build_state__windows_built_at__isnull=True)
             | Q(has_rollup_backfill=True)
             | Q(active_ruleset_state_count__lt=len(rule_set_ids))
+            | Q(has_stale_ruleset_state=True)
         )
-        if max_ruleset_updated_at is not None:
-            # Coarse candidate filter: if any active ruleset was updated after the
-            # legacy PR-level window build timestamp, inspect this PR.
-            needs_rebuild |= Q(revision_build_state__windows_built_at__lt=max_ruleset_updated_at)
         pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
 
         repo_rebuilt = 0

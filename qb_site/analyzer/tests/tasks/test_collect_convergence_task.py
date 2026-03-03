@@ -227,3 +227,55 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertIsNotNone(snap)
         # Exactly one stale (pr, ruleset) pair: (pr, rs_two).
         self.assertEqual(snap.windows_stale, 1)
+
+    def test_windows_stale_counts_missing_per_ruleset_state_pair(self) -> None:
+        rs_two = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=3,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            is_active=True,
+        )
+        pr = self._mk_pr(12)
+        PRRevision.objects.create(pull_request=pr, head_sha="z2", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now()
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=rs_two,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        # Missing state row for rs_two counts as stale regardless of legacy PR-level fields.
+        self.assertEqual(snap.windows_stale, 1)

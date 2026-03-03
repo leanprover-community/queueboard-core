@@ -74,11 +74,19 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
     def test_skips_when_windows_already_built_for_version(self) -> None:
         pr = self._mk_pr(2)
         PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        built_at = timezone.now()
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
             windows_built_revision_version=2,
-            windows_built_at=timezone.now(),
+            windows_built_at=built_at,
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=2,
+            windows_built_at=built_at,
+            last_status="rebuilt",
         )
 
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
@@ -155,6 +163,13 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             windows_built_revision_version=3,
             windows_built_at=built_at,
         )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=3,
+            windows_built_at=built_at,
+            last_status="rebuilt",
+        )
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
@@ -199,6 +214,13 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             revision_version=4,
             windows_built_revision_version=4,
             windows_built_at=built_at,
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=4,
+            windows_built_at=built_at,
+            last_status="rebuilt",
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
 
@@ -297,7 +319,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertEqual(state_one.windows_built_at, built_at)
         self.assertGreater(state_two.windows_built_at, built_at)
 
-    def test_missing_ruleset_state_uses_legacy_fallback_when_up_to_date(self) -> None:
+    def test_missing_ruleset_state_is_stale_even_when_legacy_state_is_up_to_date(self) -> None:
         pr = self._mk_pr(9)
         rs_two = QueueRuleSet.objects.create(
             repository=self.repo,
@@ -345,8 +367,8 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
 
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
 
-        self.assertEqual(res["prs_checked"], 0)
-        self.assertFalse(PRQueueWindowBuildState.objects.filter(pull_request=pr, rule_set=rs_two).exists())
+        self.assertEqual(res["prs_checked"], 1)
+        self.assertTrue(PRQueueWindowBuildState.objects.filter(pull_request=pr, rule_set=rs_two).exists())
 
     def test_missing_ruleset_state_is_created_when_only_missing_ruleset_is_stale(self) -> None:
         pr = self._mk_pr(10)
