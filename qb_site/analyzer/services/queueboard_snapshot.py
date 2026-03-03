@@ -589,6 +589,10 @@ class QueueboardSnapshotBuilder:
             "generated_at": _isoformat(generated_at),
             "repository": f"{repository.owner}/{repository.name}",
             "rule_set_id": effective_rule_set.id if effective_rule_set else "default",
+            "rule_set_version": effective_rule_set.version if effective_rule_set else None,
+            "require_ci_success": bool(effective_rule_set and effective_rule_set.effective_ci_gating_mode() is not None),
+            "ci_gating_mode": effective_rule_set.effective_ci_gating_mode() if effective_rule_set else None,
+            "required_ci_contexts": required_contexts,
         }
 
         lists = {"draft_prs": draft_prs, "nondraft_prs": nondraft_prs, "dashboards": dashboards}

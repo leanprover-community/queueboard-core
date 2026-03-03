@@ -11,13 +11,16 @@
 - Analyzer’s current queue window logic:
   - For CI-gated rulesets (`require_ci_success=True`), uses `PRRevision` + CI snapshots per head SHA to decide when a PR is "on the queue".
   - For label-only rulesets (`require_ci_success=False`), uses labels/open/draft only.
+- CI gating now has explicit mode semantics (see `023`):
+  - `all_required_success` (strict, default for CI-enabled rulesets),
+  - `no_required_failures` (missing/running required contexts are non-blocking; observed required failures block).
 - We want queue windows to be:
   - Correct: never claim CI-gated "on-queue" time when CI is actually unknown.
   - Stable: once persisted, windows should not need to be invalidated when backfills complete.
   - Useful for legacy history: older PRs should still have usable queue windows, even when CI is unrecoverable.
 
 ## Decision
-- Keep CI-gated rulesets strict and explicit:
+- Keep CI-gated rulesets explicit and mode-driven:
   - For rulesets with `require_ci_success=True`, treat missing or unrecoverable CI as "CI unknown" and **do not** mark the PR as on-queue under that ruleset.
   - Persist CI-gated queue windows (`PRQueueWindow`) only when:
     - `timeline_backfill_done` is true for the PR, and
@@ -31,6 +34,9 @@
 - Never silently fall back from CI-gated semantics to label-only semantics inside a single ruleset:
   - If `require_ci_success=True` and CI is missing or revisions are absent, CI-gated windows remain empty for that ruleset/PR.
   - Legacy label-only rulesets are separate rows with their own `version` and effective window.
+- Mode clarification:
+  - For legacy strict CI-gated rulesets, use `ci_gating_mode=all_required_success`.
+  - For repositories that intentionally skip required jobs on unaffected SHAs, use `ci_gating_mode=no_required_failures`.
 
 ## Consequences
 - Pros
@@ -70,4 +76,3 @@
 - **Separate "CI availability" flags per PR**
   - Pros: more granular control; some PRs could be flagged as "CI complete" even within older ranges.
   - Cons: extra schema and operational complexity; the effective window mechanism on `QueueRuleSet` already solves the common cases with less machinery.
-
