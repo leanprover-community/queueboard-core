@@ -156,6 +156,23 @@
   - If regressions appear after read cutover, keep dual-write on and re-enable PR fallback immediately.
   - If ingest regressions appear, disable dual-write flag while keeping schema in place.
 
+### S4/S5 Flag Rollout
+- Recommended flag sequence:
+  1. `SYNCER_CI_SHA_STORAGE_DUAL_WRITE=1`
+  2. Soak for at least one sync cycle and confirm commit-scoped row growth.
+  3. `ANALYZER_CI_SHA_READ_PRIMARY=1` with `ANALYZER_CI_SHA_READ_FALLBACK_PR=1`
+  4. Soak and validate queue/snapshot outputs against expected behavior.
+  5. `ANALYZER_CI_SHA_READ_FALLBACK_PR=0` after confidence.
+- Suggested checks during soak:
+  - queueboard snapshot sanity (queue size and key dashboard lists stable vs expected),
+  - queue-window rebuild spot checks on PRs with recent force-pushes,
+  - no sustained growth in CI-mismatch/debug counters,
+  - no backfill command conflicts (`skipped_conflict`) in follow-up runs.
+- Fast rollback levers:
+  - read regressions: set `ANALYZER_CI_SHA_READ_FALLBACK_PR=1` immediately,
+  - broader read instability: set `ANALYZER_CI_SHA_READ_PRIMARY=0`,
+  - ingest instability: set `SYNCER_CI_SHA_STORAGE_DUAL_WRITE=0`.
+
 ### S3 Backfill Runbook
 - Command:
   - `uv run python qb_site/manage.py backfill_sha_keyed_ci [options]`
