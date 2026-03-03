@@ -57,7 +57,7 @@ class QueueRules:
                 return False
 
         if self.require_ci_success:
-            # Until CI-at-time is implemented, treat unknown CI as not ok when required.
+            # CI eligibility is mode-dependent and pre-evaluated by callers.
             if ci_ok is not True:
                 return False
 
