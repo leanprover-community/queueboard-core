@@ -136,3 +136,34 @@ class TestCIStorageBackfill(TestCase):
         self.assertEqual(stats.check_runs.inserted, 1)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
         self.assertEqual(CommitCheckRun.objects.filter(repository=other_repo).count(), 0)
+
+    def test_checkrun_external_id_conflict_falls_back_without_crash(self) -> None:
+        now = timezone.now()
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CR_EXISTING",
+            head_sha="a" * 40,
+            name="Lint style",
+            status="IN_PROGRESS",
+            conclusion=None,
+            external_id="ext-conflict",
+            gh_started_at=now,
+        )
+        CheckRun.objects.create(
+            pull_request=self.pr,
+            github_node_id="CR_NEW",
+            head_sha="a" * 40,
+            name="Lint style",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            external_id="ext-conflict",
+            gh_completed_at=now,
+        )
+
+        stats = backfill_commit_ci_rows(batch_size=10)
+        self.assertEqual(stats.check_runs.scanned, 1)
+        self.assertEqual(stats.check_runs.skipped_conflict, 0)
+        self.assertEqual(stats.check_runs.updated, 1)
+        row = CommitCheckRun.objects.get(external_id="ext-conflict")
+        self.assertEqual(row.status, "COMPLETED")
+        self.assertEqual(row.conclusion, "SUCCESS")

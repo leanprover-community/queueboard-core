@@ -223,7 +223,11 @@
       - `qb_site/syncer/tests/management/test_backfill_sha_keyed_ci_cmd.py`
     - Command UX improvement:
       - prints planned total rows before processing,
-      - prints progress every 1000 processed rows by default.
+      - prints progress every 1000 processed rows by default, including
+        total + per-model counters (`check_runs`, `status_contexts`).
+    - Robustness fix:
+      - backfill now handles provider-identity uniqueness conflicts without
+        aborting the whole run (falls back to alternate unique identities).
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`

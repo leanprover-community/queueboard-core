@@ -105,4 +105,6 @@ class TestBackfillShaKeyedCiCommand(TestCase):
         )
         text = out.getvalue()
         self.assertIn("Planned rows: total=1001", text)
-        self.assertIn("Progress: 1000/1001 rows processed", text)
+        self.assertIn("Progress: total=1000/1001", text)
+        self.assertIn("check_runs=1000/1001", text)
+        self.assertIn("status_contexts=0/0", text)

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
 
-from core.utils.db import upsert_if_changed
+from core.utils.db import update_if_changed, upsert_if_changed
 from syncer.models import CheckRun, CommitCheckRun, CommitStatusContext, StatusContext
 
 
@@ -51,8 +52,29 @@ def _process_check_run_row(row: CheckRun, stats: BackfillModelStats) -> None:
     }
     try:
         _, created, updated, _ = upsert_if_changed(CommitCheckRun, {"github_node_id": row.github_node_id}, values)
-    except IntegrityError:
-        stats.skipped_conflict += 1
+    except (IntegrityError, ObjectDoesNotExist):
+        # If github_node_id lookup races/conflicts with the external-id composite
+        # uniqueness, fall back to the composite identity row.
+        fallback_obj = None
+        if row.external_id:
+            fallback_obj = CommitCheckRun.objects.filter(
+                repository=row.pull_request.repository,
+                head_sha=row.head_sha,
+                name=row.name,
+                external_id=row.external_id,
+            ).first()
+        if fallback_obj is None:
+            stats.skipped_conflict += 1
+            return
+        try:
+            updated, _ = update_if_changed(fallback_obj, values)
+        except IntegrityError:
+            stats.skipped_conflict += 1
+            return
+        if updated:
+            stats.updated += 1
+        else:
+            stats.skipped_duplicate += 1
         return
     if created:
         stats.inserted += 1
@@ -90,8 +112,25 @@ def _process_status_context_row(row: StatusContext, stats: BackfillModelStats) -
     }
     try:
         _, created, updated, _ = upsert_if_changed(CommitStatusContext, lookup, values)
-    except IntegrityError:
-        stats.skipped_conflict += 1
+    except (IntegrityError, ObjectDoesNotExist):
+        # Handle conflicts across alternate provider identities (github_node_id/rest_id).
+        fallback_obj = None
+        if row.rest_id is not None:
+            fallback_obj = CommitStatusContext.objects.filter(rest_id=row.rest_id).first()
+        if fallback_obj is None and row.github_node_id:
+            fallback_obj = CommitStatusContext.objects.filter(github_node_id=row.github_node_id).first()
+        if fallback_obj is None:
+            stats.skipped_conflict += 1
+            return
+        try:
+            updated, _ = update_if_changed(fallback_obj, values)
+        except IntegrityError:
+            stats.skipped_conflict += 1
+            return
+        if updated:
+            stats.updated += 1
+        else:
+            stats.skipped_duplicate += 1
         return
     if created:
         stats.inserted += 1
