@@ -23,6 +23,8 @@ from .models import (
     RepoDiscoveryState,
     CommitHistoryHarvest,
     CIShaFetchState,
+    CommitCheckRun,
+    CommitStatusContext,
 )
 from analyzer.models import PRRevision, PRDependency, PRDependencyState, PRQueueWindow, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.revisions import rebuild_pr_revisions
@@ -1139,6 +1141,84 @@ class CIShaFetchStateAdmin(ReadOnlyAdmin):
         "last_attempted_at",
         "last_success_at",
         "attempts",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(CommitCheckRun)
+class CommitCheckRunAdmin(ReadOnlyAdmin):
+    def short_sha(self, obj: CommitCheckRun) -> str:  # pragma: no cover - simple formatting
+        return obj.head_sha[:7]
+
+    short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
+
+    list_display = (
+        "repository",
+        "name",
+        "status",
+        "conclusion",
+        "short_sha",
+        "gh_completed_at",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = ("repository", "status", "conclusion")
+    search_fields = ("repository__owner", "repository__name", "head_sha", "name")
+    date_hierarchy = "gh_completed_at"
+    ordering = ("-gh_completed_at", "-id")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "github_node_id",
+        "head_sha",
+        "name",
+        "status",
+        "conclusion",
+        "details_url",
+        "external_id",
+        "gh_started_at",
+        "gh_completed_at",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(CommitStatusContext)
+class CommitStatusContextAdmin(ReadOnlyAdmin):
+    def short_sha(self, obj: CommitStatusContext) -> str:  # pragma: no cover - simple formatting
+        return obj.head_sha[:7]
+
+    short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
+
+    list_display = (
+        "repository",
+        "name",
+        "state",
+        "short_sha",
+        "gh_created_at",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = ("repository", "state")
+    search_fields = ("repository__owner", "repository__name", "head_sha", "name")
+    date_hierarchy = "gh_created_at"
+    ordering = ("-gh_created_at", "-id")
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "github_node_id",
+        "rest_id",
+        "head_sha",
+        "name",
+        "state",
+        "target_url",
+        "description",
+        "gh_created_at",
+        "last_synced_at",
         "created_at",
         "updated_at",
     )

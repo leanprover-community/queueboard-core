@@ -165,6 +165,15 @@
 - 2026-03-03:
   - Created this living plan to break Part 2 of decision `019` into executable phases.
   - No migration code implemented yet.
+  - Implemented `S1` schema/model scaffolding:
+    - Added `syncer.CommitCheckRun` and `syncer.CommitStatusContext`.
+    - Added migration `syncer/0030_commitcheckrun_commitstatuscontext.py`.
+    - Added read-only admin views and initial model tests in `qb_site/syncer/tests/models/test_commit_ci_models.py`.
+  - Current `S1` schema details:
+    - Both models index `(repository, head_sha)` for SHA-scoped lookup.
+    - `CommitCheckRun` has conditional uniqueness on `github_node_id` and on
+      `(repository, head_sha, name, external_id)` when `external_id` is present.
+    - `CommitStatusContext` has conditional uniqueness on `github_node_id` and `rest_id`.
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`
