@@ -121,6 +121,13 @@ class Command(BaseCommand):
                 remaining_sc -= chunk.status_contexts.scanned
 
                 processed = cumulative.check_runs.scanned + cumulative.status_contexts.scanned
+                if chunk.check_runs.scanned > 0 or chunk.status_contexts.scanned > 0:
+                    self.stdout.write(
+                        "Checkpoint: "
+                        f"processed={processed}/{planned_total} "
+                        f"checkrun_start_id={cr_cursor} "
+                        f"status_start_id={sc_cursor}"
+                    )
                 while processed >= next_progress_mark:
                     self.stdout.write(
                         "Progress: "
