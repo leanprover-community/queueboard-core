@@ -80,13 +80,9 @@ def process_pr(
         # Nothing to enqueue yet without harvest results.
         harvest = {"harvested_shas": [], "tasks": len(segment_jobs)}
 
-    # Mark windows built at current revision_version after queue windows are rebuilt.
-    state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
-    built_at = timezone.now()
-    state.windows_built_revision_version = state.revision_version
-    state.windows_built_at = built_at
-    state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
     if queue_results:
+        state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+        built_at = timezone.now()
         record_queue_window_build_states(
             pr=pr,
             rule_sets=rulesets,

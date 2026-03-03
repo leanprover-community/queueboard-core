@@ -211,11 +211,6 @@ def rebuild_queue_windows_sweep_task(
                     repo_prs_rebuilt_stale_ruleset_seen.add(pr_num)
                     if len(repo_prs_rebuilt_stale_ruleset) < max_pr_list:
                         repo_prs_rebuilt_stale_ruleset.append(pr_num)
-            # Mark windows as rebuilt for the current revision even if the rebuild is a no-op.
-            # This prevents endless rechecks after ruleset timestamp bumps.
-            state.windows_built_revision_version = state.revision_version
-            state.windows_built_at = now_ts
-            state.save(update_fields=["windows_built_revision_version", "windows_built_at", "updated_at"])
             record_queue_window_build_states(
                 pr=pr,
                 rule_sets=stale_rule_sets,
