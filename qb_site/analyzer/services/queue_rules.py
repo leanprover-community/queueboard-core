@@ -8,6 +8,7 @@ from django.db import models
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet
+from analyzer.models.queue_rule import resolve_ci_gating_mode
 
 
 def _normalize_label(name: str) -> str:
@@ -21,6 +22,7 @@ class QueueRules:
     require_open: bool = True
     require_not_draft: bool = True
     require_ci_success: bool = False
+    ci_gating_mode: str | None = None
     # All of these labels must be present (AND semantics).
     required_labels: Set[str] | None = None
     # None of these labels may be present.
@@ -43,7 +45,7 @@ class QueueRules:
         if self.require_not_draft and is_draft:
             return False
 
-        label_set = {_normalize_label(l) for l in labels}
+        label_set = {_normalize_label(label_name) for label_name in labels}
 
         if self.required_labels:
             # Require every configured label to be present.
@@ -66,10 +68,12 @@ def rules_for_rule_set(obj: QueueRuleSet) -> QueueRules:
     required = {_normalize_label(n) for n in (obj.required_label_names or []) if isinstance(n, str) and n.strip()}
     forbidden = {_normalize_label(n) for n in (obj.forbidden_label_names or []) if isinstance(n, str) and n.strip()}
     required_ci = {_normalize_label(n) for n in (obj.required_ci_contexts or []) if isinstance(n, str) and n.strip()}
+    ci_mode = resolve_ci_gating_mode(require_ci_success=obj.require_ci_success, ci_gating_mode=obj.ci_gating_mode)
     return QueueRules(
         require_open=obj.require_open,
         require_not_draft=obj.require_not_draft,
-        require_ci_success=obj.require_ci_success,
+        require_ci_success=ci_mode is not None,
+        ci_gating_mode=ci_mode,
         required_labels=required or None,
         forbidden_labels=forbidden or None,
         required_ci_contexts=required_ci or None,

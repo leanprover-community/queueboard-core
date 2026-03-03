@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet
-from syncer.models import PullRequest, StatusContext
+from syncer.models import CheckRun, PullRequest, StatusContext
 from analyzer.services.queue_windows import is_on_queue_at
 
 
@@ -159,3 +159,64 @@ class TestQueueWindowsCI(TestCase):
             gh_created_at=_dt(2024, 9, 5),
         )
         self.assertTrue(is_on_queue_at(pr, at=at))
+
+    def test_no_required_failures_mode(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            ci_gating_mode=QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES,
+            required_label_names=[],
+            forbidden_label_names=[],
+            required_ci_contexts=["lint"],
+        )
+        pr = self._mk_pr(4)
+        at = _dt(2024, 9, 5)
+
+        # Missing required context is non-blocking in no-fail mode.
+        self.assertTrue(is_on_queue_at(pr, at=at))
+
+        # Running required context is also non-blocking.
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC7",
+            rest_id=None,
+            head_sha="h1",
+            name="lint",
+            state="PENDING",
+            target_url=None,
+            description=None,
+            gh_created_at=_dt(2024, 9, 4),
+        )
+        self.assertTrue(is_on_queue_at(pr, at=at))
+
+        # Observed required failure blocks queue eligibility.
+        StatusContext.objects.create(
+            pull_request=pr,
+            github_node_id="SC8",
+            rest_id=None,
+            head_sha="h1",
+            name="lint",
+            state="FAILURE",
+            target_url=None,
+            description=None,
+            gh_created_at=_dt(2024, 9, 6),
+        )
+        self.assertFalse(is_on_queue_at(pr, at=_dt(2024, 9, 7)))
+
+        # A newer running check run makes the required context non-failing again.
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_RUNNING",
+            head_sha="h1",
+            name="lint",
+            status="IN_PROGRESS",
+            conclusion=None,
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 8),
+            gh_completed_at=None,
+        )
+        self.assertTrue(is_on_queue_at(pr, at=_dt(2024, 9, 9)))

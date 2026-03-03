@@ -14,6 +14,7 @@ from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEven
 
 
 QueueWindow = Tuple[datetime, Optional[datetime]]
+CIState = str  # "pass" | "fail" | "running" | "missing"
 
 
 @dataclass
@@ -39,11 +40,11 @@ def _normalize_label(name: str | None) -> str:
 
 
 def _merge_latest_ci_status(
-    latest: dict[str, tuple[datetime, bool]],
+    latest: dict[str, tuple[datetime, CIState]],
     *,
     name: str | None,
     ts: datetime | None,
-    ok: bool,
+    ci_state: CIState,
 ) -> None:
     if not name or ts is None:
         return
@@ -52,7 +53,7 @@ def _merge_latest_ci_status(
         return
     current = latest.get(key)
     if current is None or ts > current[0]:
-        latest[key] = (ts, ok)
+        latest[key] = (ts, ci_state)
 
 
 def _latest_ci_statuses_for_fragment(
@@ -61,26 +62,28 @@ def _latest_ci_statuses_for_fragment(
     required_fragment: str,
     at: datetime,
     head_sha: str | None,
-) -> dict[str, bool]:
+) -> dict[str, CIState]:
     required_fragment = (required_fragment or "").strip().lower()
     if not required_fragment:
         return {}
-    latest: dict[str, tuple[datetime, bool]] = {}
+    latest: dict[str, tuple[datetime, CIState]] = {}
 
-    cr_qs = CheckRun.objects.filter(pull_request=pr, name__icontains=required_fragment, gh_completed_at__lte=at)
+    cr_qs = CheckRun.objects.filter(pull_request=pr, name__icontains=required_fragment).filter(
+        models.Q(gh_completed_at__lte=at) | (models.Q(gh_completed_at__isnull=True) & models.Q(gh_started_at__lte=at))
+    )
     if head_sha:
         cr_qs = cr_qs.filter(head_sha=head_sha)
     for cr in cr_qs:
         ts = cr.gh_completed_at or cr.gh_started_at
-        _merge_latest_ci_status(latest, name=cr.name, ts=ts, ok=_check_run_ok(cr))
+        _merge_latest_ci_status(latest, name=cr.name, ts=ts, ci_state=_check_run_state(cr))
 
     sc_qs = StatusContext.objects.filter(pull_request=pr, name__icontains=required_fragment, gh_created_at__lte=at)
     if head_sha:
         sc_qs = sc_qs.filter(head_sha=head_sha)
     for sc in sc_qs:
-        _merge_latest_ci_status(latest, name=sc.name, ts=sc.gh_created_at, ok=_status_context_ok(sc))
+        _merge_latest_ci_status(latest, name=sc.name, ts=sc.gh_created_at, ci_state=_status_context_state(sc))
 
-    return {name: status for name, (_, status) in latest.items()}
+    return {name: ci_state for name, (_, ci_state) in latest.items()}
 
 
 @dataclass
@@ -166,21 +169,34 @@ def _state_at_time(pr: PullRequest, *, at: datetime) -> _State:
     return state
 
 
-def _check_run_ok(cr: CheckRun) -> bool:
-    """Return True if a CheckRun snapshot counts as successful for queue gating."""
-    # Only COMPLETED runs are considered final; others keep the PR off the queue.
+def _check_run_state(cr: CheckRun) -> CIState:
+    """Classify CheckRun state for queue gating."""
+    if cr.status in ("QUEUED", "IN_PROGRESS", "PENDING"):
+        return "running"
     if cr.status != "COMPLETED":
-        return False
-    # Treat SUCCESS / NEUTRAL / SKIPPED as acceptable; failures and infrastructure issues block.
+        return "running"
     if cr.conclusion in ("SUCCESS", "NEUTRAL", "SKIPPED"):
+        return "pass"
+    return "fail"
+
+
+def _status_context_state(sc: StatusContext) -> CIState:
+    """Classify StatusContext state for queue gating."""
+    if sc.state == "SUCCESS":
+        return "pass"
+    if sc.state == "PENDING":
+        return "running"
+    if sc.state in ("FAILURE", "ERROR"):
+        return "fail"
+    return "running"
+
+
+def _ci_state_is_eligible(rules: QueueRules, ci_state: CIState) -> bool:
+    if not rules.require_ci_success:
         return True
-    return False
-
-
-def _status_context_ok(sc: StatusContext) -> bool:
-    """Return True if a StatusContext snapshot counts as successful for queue gating."""
-    # SUCCESS is ok; FAILURE/ERROR/PENDING keep the PR off the queue.
-    return sc.state == "SUCCESS"
+    if rules.ci_gating_mode == QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES:
+        return ci_state != "fail"
+    return ci_state == "pass"
 
 
 def _head_sha_at_time(pr: PullRequest, *, at: datetime) -> tuple[Optional[str], bool]:
@@ -203,11 +219,11 @@ def _head_sha_at_time(pr: PullRequest, *, at: datetime) -> tuple[Optional[str], 
     return (rev.head_sha or None, True)
 
 
-def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -> bool:
-    """Return True iff CI satisfies rules.required_ci_contexts for this PR.
+def _ci_required_contexts_state(pr: PullRequest, rules: QueueRules, at: datetime) -> CIState:
+    """Return CI state for rules.required_ci_contexts on this PR.
 
     Semantics
-    - If CI is not required (`require_ci_success` is False), CI always counts as ok.
+    - If CI is not required (`require_ci_success` is False), state is pass.
     - If `required_ci_contexts` is empty, CI gating is treated as disabled for now.
     - If PRRevision rows exist for this PR, we use the head SHA at time ``at`` and
       look only at CI snapshots for that SHA.
@@ -217,8 +233,9 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
       at or before ``at`` (CheckRun or StatusContext, case-insensitive substring
       match on name, and matching head SHA when available) and require it to be in
       a successful state.
-    - Missing or non-successful snapshots for any required context cause CI to be
-      treated as not ok.
+    - Missing snapshots produce missing state.
+    - Running snapshots without failures produce running state.
+    - Any observed failure produces fail state.
 
     Notes
     - When PRRevision exists, this function is head- and time-aware: CI snapshots
@@ -227,29 +244,35 @@ def _ci_required_contexts_ok(pr: PullRequest, rules: QueueRules, at: datetime) -
       context at or before ``at``.
     """
     if not rules.require_ci_success:
-        return True
+        return "pass"
 
     required = rules.required_ci_contexts or set()
     if not required:
         # No explicit contexts configured; treat CI gating as disabled.
-        return True
+        return "pass"
 
     head_sha, has_revisions = _head_sha_at_time(pr, at=at)
     # If we have revisions but cannot resolve a head at this time, treat CI as unknown.
     if has_revisions and not head_sha:
-        return False
+        return "missing"
 
-    ok = True
+    any_missing = False
+    any_running = False
     for ctx_name in required:
         ctx_norm = _normalize_label(ctx_name)
         latest_statuses = _latest_ci_statuses_for_fragment(pr, required_fragment=ctx_norm, at=at, head_sha=head_sha)
         if not latest_statuses:
-            ok = False
-            break
-        if not all(latest_statuses.values()):
-            return False
-
-    return ok
+            any_missing = True
+            continue
+        if any(ci_state == "fail" for ci_state in latest_statuses.values()):
+            return "fail"
+        if any(ci_state == "running" for ci_state in latest_statuses.values()):
+            any_running = True
+    if any_missing:
+        return "missing"
+    if any_running:
+        return "running"
+    return "pass"
 
 
 def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: datetime) -> List[QueueWindow]:
@@ -316,12 +339,14 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
     revisions = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id"))
     has_revisions = bool(revisions)
 
-    check_run_qs = CheckRun.objects.filter(
-        pull_request=pr,
-        gh_completed_at__isnull=False,
-        gh_completed_at__gte=t0,
-        gh_completed_at__lte=as_of,
-    ).only("id", "name", "head_sha", "status", "conclusion", "gh_completed_at", "gh_started_at")
+    check_run_qs = (
+        CheckRun.objects.filter(pull_request=pr)
+        .filter(
+            models.Q(gh_completed_at__isnull=False, gh_completed_at__gte=t0, gh_completed_at__lte=as_of)
+            | models.Q(gh_completed_at__isnull=True, gh_started_at__isnull=False, gh_started_at__gte=t0, gh_started_at__lte=as_of)
+        )
+        .only("id", "name", "head_sha", "status", "conclusion", "gh_completed_at", "gh_started_at")
+    )
     status_qs = StatusContext.objects.filter(
         pull_request=pr,
         gh_created_at__gte=t0,
@@ -338,7 +363,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
         check_run_qs = check_run_qs.none()
         status_qs = status_qs.none()
 
-    check_runs = list(check_run_qs.order_by("gh_completed_at", "id"))
+    check_runs = list(check_run_qs.order_by("gh_completed_at", "gh_started_at", "id"))
     statuses = list(status_qs.order_by("gh_created_at", "id"))
 
     # Collect boundary times where queue membership may change.
@@ -350,8 +375,9 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
         if rev.from_ts >= t0 and rev.from_ts <= as_of:
             boundary_times.add(rev.from_ts)
     for cr in check_runs:
-        if cr.gh_completed_at is not None:
-            boundary_times.add(cr.gh_completed_at)
+        cr_ts = cr.gh_completed_at or cr.gh_started_at
+        if cr_ts is not None:
+            boundary_times.add(cr_ts)
     for sc in statuses:
         boundary_times.add(sc.gh_created_at)
     if closed_ts is not None and closed_ts >= t0 and closed_ts <= as_of:
@@ -362,28 +388,35 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
     # Latest CI status maps:
     # - global: when revisions are absent (legacy fallback).
     # - per-head: when revisions are present (head-aware evaluation).
-    global_ctx_latest: dict[str, dict[str, tuple[datetime, bool, str]]] = {ctx: {} for ctx in required_ci}
-    head_ctx_latest: dict[str, dict[str, dict[str, tuple[datetime, bool, str]]]] = {}
+    global_ctx_latest: dict[str, dict[str, tuple[datetime, CIState, str]]] = {ctx: {} for ctx in required_ci}
+    head_ctx_latest: dict[str, dict[str, dict[str, tuple[datetime, CIState, str]]]] = {}
 
     def _merge_latest_for_ctx(
-        latest: dict[str, tuple[datetime, bool, str]],
+        latest: dict[str, tuple[datetime, CIState, str]],
         *,
         name: str,
         ts: datetime,
-        ok: bool,
+        ci_state: CIState,
         source: str,
     ) -> None:
         # Match existing behavior from _latest_ci_statuses_for_fragment:
         # latest timestamp wins; if tied, prefer CheckRun over StatusContext.
         cur = latest.get(name)
         if cur is None:
-            latest[name] = (ts, ok, source)
+            latest[name] = (ts, ci_state, source)
             return
         cur_ts, _, cur_source = cur
         if ts > cur_ts or (ts == cur_ts and source == "check_run" and cur_source == "status_context"):
-            latest[name] = (ts, ok, source)
+            latest[name] = (ts, ci_state, source)
 
-    def _apply_ci_snapshot(*, name: str | None, ts: datetime | None, head_sha: str | None, ok: bool, source: str) -> None:
+    def _apply_ci_snapshot(
+        *,
+        name: str | None,
+        ts: datetime | None,
+        head_sha: str | None,
+        ci_state: CIState,
+        source: str,
+    ) -> None:
         if ts is None:
             return
         name_norm = _normalize_label(name)
@@ -393,11 +426,11 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
         if not matched:
             return
         for ctx in matched:
-            _merge_latest_for_ctx(global_ctx_latest[ctx], name=name_norm, ts=ts, ok=ok, source=source)
+            _merge_latest_for_ctx(global_ctx_latest[ctx], name=name_norm, ts=ts, ci_state=ci_state, source=source)
         if head_sha:
             per_head = head_ctx_latest.setdefault(head_sha, {ctx: {} for ctx in required_ci})
             for ctx in matched:
-                _merge_latest_for_ctx(per_head[ctx], name=name_norm, ts=ts, ok=ok, source=source)
+                _merge_latest_for_ctx(per_head[ctx], name=name_norm, ts=ts, ci_state=ci_state, source=source)
 
     windows: List[QueueWindow] = []
     event_idx = 0
@@ -435,8 +468,8 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
 
         while (
             cr_idx < len(check_runs)
-            and check_runs[cr_idx].gh_completed_at is not None
-            and check_runs[cr_idx].gh_completed_at <= t
+            and (check_runs[cr_idx].gh_completed_at or check_runs[cr_idx].gh_started_at) is not None
+            and (check_runs[cr_idx].gh_completed_at or check_runs[cr_idx].gh_started_at) <= t
         ):
             cr = check_runs[cr_idx]
             cr_idx += 1
@@ -444,7 +477,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 name=cr.name,
                 ts=cr.gh_completed_at or cr.gh_started_at,
                 head_sha=cr.head_sha,
-                ok=_check_run_ok(cr),
+                ci_state=_check_run_state(cr),
                 source="check_run",
             )
 
@@ -455,7 +488,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 name=sc.name,
                 ts=sc.gh_created_at,
                 head_sha=sc.head_sha,
-                ok=_status_context_ok(sc),
+                ci_state=_status_context_state(sc),
                 source="status_context",
             )
 
@@ -463,15 +496,20 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             state.is_open = False
 
         if not required_ci:
-            ci_ok = True
+            ci_state = "pass"
         else:
             head_sha: str | None = None
             if has_revisions:
                 if current_rev is not None and (current_rev.to_ts is None or t < current_rev.to_ts):
                     head_sha = current_rev.head_sha or None
                 if not head_sha:
-                    ci_ok = False
-                    new_on = rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=ci_ok)
+                    ci_state = "missing"
+                    new_on = rules.is_on_queue(
+                        is_open=state.is_open,
+                        is_draft=state.is_draft,
+                        labels=state.labels,
+                        ci_ok=_ci_state_is_eligible(rules, ci_state),
+                    )
                     if current_on is None:
                         current_on = new_on
                         if new_on:
@@ -486,20 +524,34 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                     current_on = new_on
                     continue
 
-            ci_ok = True
+            any_missing = False
+            any_running = False
+            ci_state = "pass"
             for ctx in required_ci:
                 if has_revisions:
                     statuses_for_ctx = (head_ctx_latest.get(head_sha or "", {}) or {}).get(ctx, {})
                 else:
                     statuses_for_ctx = global_ctx_latest.get(ctx, {})
                 if not statuses_for_ctx:
-                    ci_ok = False
+                    any_missing = True
+                    continue
+                if any(status == "fail" for _, status, _ in statuses_for_ctx.values()):
+                    ci_state = "fail"
                     break
-                if not all(ok for _, ok, _ in statuses_for_ctx.values()):
-                    ci_ok = False
-                    break
+                if any(status == "running" for _, status, _ in statuses_for_ctx.values()):
+                    any_running = True
+            if ci_state != "fail":
+                if any_missing:
+                    ci_state = "missing"
+                elif any_running:
+                    ci_state = "running"
 
-        new_on = rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=ci_ok)
+        new_on = rules.is_on_queue(
+            is_open=state.is_open,
+            is_draft=state.is_draft,
+            labels=state.labels,
+            ci_ok=_ci_state_is_eligible(rules, ci_state),
+        )
 
         if current_on is None:
             current_on = new_on
@@ -551,8 +603,13 @@ def is_on_queue_at(pr: PullRequest, *, at: datetime) -> bool:
     """Return True if ``pr`` was on the queue at instant ``at``."""
     rules = load_rules_for_repo(pr.repository, at=at)
     state = _state_at_time(pr, at=at)
-    ci_ok = _ci_required_contexts_ok(pr, rules, at)
-    return rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=ci_ok)
+    ci_state = _ci_required_contexts_state(pr, rules, at)
+    return rules.is_on_queue(
+        is_open=state.is_open,
+        is_draft=state.is_draft,
+        labels=state.labels,
+        ci_ok=_ci_state_is_eligible(rules, ci_state),
+    )
 
 
 def who_was_on_queue_at(*, repo: Repository, at: datetime, prs: Optional[Iterable[PullRequest]] = None) -> List[PullRequest]:
@@ -603,7 +660,7 @@ def rebuild_queue_windows_for_ruleset(
             reason="timeline_backfill_incomplete",
         )
 
-    if rule_set.require_ci_success:
+    if rule_set.effective_ci_gating_mode() is not None:
         has_revisions = PRRevision.objects.filter(pull_request=pr).exists()
         if not has_revisions:
             PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set).delete()

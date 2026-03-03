@@ -137,11 +137,12 @@ class QueueRuleSetAdmin(admin.ModelAdmin):
         "require_open",
         "require_not_draft",
         "require_ci_success",
+        "ci_gating_mode",
         "is_active",
         "effective_from",
         "effective_to",
     )
-    list_filter = ("repository", "require_ci_success", "is_active")
+    list_filter = ("repository", "require_ci_success", "ci_gating_mode", "is_active")
     search_fields = ("repository__owner", "repository__name", "version", "description")
     raw_id_fields = ("repository",)
     readonly_fields = ("created_at", "updated_at")
