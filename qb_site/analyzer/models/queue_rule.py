@@ -22,14 +22,14 @@ def resolve_ci_gating_mode(*, require_ci_success: bool, ci_gating_mode: str | No
 class QueueRuleSet(TimestampedModel):
     """Per-repository queue rules with simple label and CI gating.
 
-    Semantics (v1)
+    Semantics
     - A PR is considered eligible for the queue when:
       - ``require_open`` is True and the PR is open at time T.
       - ``require_not_draft`` is True and the PR is not draft at time T.
       - Every label in ``required_label_names`` (if any) is present on the PR at time T.
       - No label from ``forbidden_label_names`` is present on the PR at time T.
-      - ``require_ci_success`` is False, or CI is known to be successful at time T
-        (CI integration is a later addition; for now this flag is expected to remain False).
+      - Effective CI gating mode (derived from ``require_ci_success`` and ``ci_gating_mode``)
+        marks CI as eligible at time T.
     - Label names are compared case-insensitively; rules are stored as plain strings
       to avoid hard-coupling to the Syncer label catalog.
     - Effective bounds:
