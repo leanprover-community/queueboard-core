@@ -31,11 +31,9 @@ def collect_analyzer_convergence_task() -> dict:
         prs_with_rev = list(
             base_prs.annotate(
                 rev_version=F("revision_build_state__revision_version"),
-                windows_rev=F("revision_build_state__windows_built_revision_version"),
-                windows_at=F("revision_build_state__windows_built_at"),
             )
             .filter(rev_version__isnull=False)
-            .values("id", "rev_version", "windows_rev", "windows_at")
+            .values("id", "rev_version")
         )
         windows_stale = 0
         if active_rulesets and prs_with_rev:
@@ -63,8 +61,6 @@ def collect_analyzer_convergence_task() -> dict:
             for pr_row in prs_with_rev:
                 pr_id = int(pr_row["id"])
                 rev_version = int(pr_row["rev_version"])
-                legacy_windows_rev = pr_row["windows_rev"]
-                legacy_windows_at = pr_row["windows_at"]
                 for rs in active_rulesets:
                     rs_id = int(rs.id)
                     if (pr_id, rs_id) in rollup_stale_pairs:
@@ -84,15 +80,7 @@ def collect_analyzer_convergence_task() -> dict:
                             windows_stale += 1
                         continue
 
-                    # Transitional fallback when per-ruleset state is missing.
-                    legacy_stale = (
-                        legacy_windows_rev is None
-                        or int(legacy_windows_rev) < rev_version
-                        or legacy_windows_at is None
-                        or (bool(rs.updated_at) and bool(legacy_windows_at) and legacy_windows_at < rs.updated_at)
-                    )
-                    if legacy_stale:
-                        windows_stale += 1
+                    windows_stale += 1
 
         # Count revision heads whose CI has not been checked:
         # - no CI rows for this PR/head_sha
