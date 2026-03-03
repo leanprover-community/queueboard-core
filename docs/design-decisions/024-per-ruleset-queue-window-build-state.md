@@ -2,10 +2,10 @@
 
 ## Context
 - Queue windows are already materialized per `(pull_request, rule_set)` in `analyzer.PRQueueWindow`.
-- Build freshness is currently tracked only once per PR in `analyzer.PRRevisionBuildState`:
+- At plan start, build freshness was tracked only once per PR in `analyzer.PRRevisionBuildState`:
   - `windows_built_revision_version`
   - `windows_built_at`
-- Current rebuild and convergence logic are PR-level:
+- At plan start, rebuild and convergence logic were PR-level:
   - Sweep (`qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`) rebuilds all active
     rulesets for a PR when any ruleset appears stale.
   - Convergence (`qb_site/analyzer/tasks/collect_convergence.py`) computes `windows_stale`
@@ -17,10 +17,10 @@
   - Track queue-window build freshness per `(PR, ruleset)`.
   - Rebuild only stale rulesets for each PR during sweeps.
   - Make convergence reporting match per-ruleset freshness reality.
-  - Preserve behavior during rollout with safe fallback.
+  - Preserve behavior during rollout with safe fallback, then remove fallback after validation.
 - Non-goals
   - Changing queue window semantics or CI gating semantics in this decision.
-  - Removing `PRRevisionBuildState.windows_built_*` immediately.
+  - Dropping `PRRevisionBuildState.windows_built_*` schema in this phase.
   - Reworking CI storage architecture (covered by `019` Part 2).
 
 ## Proposed Design
@@ -45,9 +45,9 @@
   - Move `windows_stale` accounting to stale `(PR, ruleset)` pairs.
   - Keep `AnalyzerConvergenceSnapshot.windows_stale` field name for compatibility,
     but document new meaning.
-- Rollout fallback:
-  - During transition, if per-ruleset state missing, continue to honor existing
-    PR-level fields to avoid regressions.
+- Rollout fallback (transitional, now removed):
+  - During transition, per-ruleset-missing state used legacy PR-level fields.
+  - After post-deploy validation, fallback reads were removed in sweep/convergence.
 
 ## Subtleties / Invariants
 - Invariant: `PRQueueWindow` remains the source of materialized windows; build-state
@@ -76,6 +76,10 @@
 5. Backfill + cleanup
    - Add a targeted backfill path for existing `(PR, active_ruleset)` pairs.
    - After stability, reduce/remove PR-level `windows_built_*` dependence in sweep/convergence.
+6. Post-rollout hardening
+   - Validate sweep prefilter soundness against convergence stale semantics.
+   - Add regression tests for prefilter false-negative classes.
+   - Remove PR-level `windows_built_*` writes from sweep/process_pr.
 
 ## Validation Plan
 - Tests to add/update:
@@ -164,10 +168,52 @@
     - Files:
       - `qb_site/syncer/services/sub/ci_sync.py`
       - `qb_site/syncer/tests/subsystems/test_ci_sync.py`
+- 2026-03-03:
+  - Production verification for fallback removal readiness:
+    - Backfill dry-run on active repo showed `rows_created=0` (coverage complete).
+    - Coverage check for `(timeline_backfill_done + has revisions) × active rulesets` reported `missing=0`.
+  - Removed transitional fallback reads:
+    - Sweep no longer uses PR-level `windows_built_*` fallback when per-ruleset row is missing.
+    - Convergence no longer uses PR-level fallback for missing per-ruleset rows.
+    - Files:
+      - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
+      - `qb_site/analyzer/tasks/collect_convergence.py`
+  - Investigated stuck stale pair report (`windows_stale` remained at 2 while sweep summaries showed `prs_checked=0`):
+    - Identified stale pairs on one PR/ruleset pair set in production.
+    - Manual one-off rebuild cleared the stale pairs (`windows_stale` dropped to 0).
+    - Hypothesis: prefilter selection mismatch risk under correlated `Exists(...)` shape.
+  - Prefilter hardening and regression coverage:
+    - Replaced correlated stale-state prefilter with aggregate-based candidate signals (`Count/Min`) plus explicit null-state counts.
+    - Added regression tests to cover:
+      - stale subset selected by prefilter,
+      - one-ruleset null `revision_version_built`,
+      - one-ruleset null `windows_built_at`.
+    - Files:
+      - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
+      - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
+  - Performance validation (production EXPLAIN ANALYZE, same dataset):
+    - Old prefilter: ~1.44s execution, ~995k shared buffer hits.
+    - New prefilter: ~0.33s execution, ~255k shared buffer hits.
+    - Conclusion: new prefilter is materially faster and lower-IO while avoiding prior false-negative risk class.
+  - Removed PR-level `windows_built_*` writes from queue-window paths:
+    - Sweep no longer writes PR-level window freshness fields.
+    - `process_pr` no longer writes PR-level window freshness fields.
+    - Per-ruleset writes via `PRQueueWindowBuildState` remain the source of freshness truth.
+    - Files:
+      - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
+      - `qb_site/analyzer/tasks/process_pr.py`
+      - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
+      - `qb_site/analyzer/tests/tasks/test_process_pr.py`
+  - Validation status:
+    - `ruff check`/`ruff format` clean on touched files.
+    - DB-backed targeted tests for updated analyzer task modules reported green by user.
 
 ## Finalization Notes
 - After implementation stabilizes, condense this file into a concise final decision
   record and document final semantics/metrics references.
+- Current status:
+  - Core implementation is complete through post-rollout hardening.
+  - Remaining follow-up is optional schema cleanup/deprecation of PR-level fields in a future decision.
 
 ## Operational Notes (Deploy + Backfill)
 - Recommended rollout order:
@@ -194,6 +240,5 @@
   - `analyzer.collect_convergence` should continue to run; note `windows_stale` now reflects stale
     `(PR, ruleset)` pairs (not only PR-level staleness).
 - Safety/rollback notes:
-  - This rollout is additive; legacy `PRRevisionBuildState.windows_built_*` fallback remains active.
-  - If issues occur, pause backfill/sweeps and investigate; existing PR-level fallback paths keep behavior conservative.
+  - If issues occur, pause backfill/sweeps and investigate; targeted per-PR rebuild + per-ruleset state inspection remains the primary recovery path.
   - No destructive data migration is required for this phase.

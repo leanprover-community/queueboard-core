@@ -64,8 +64,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             1,
         )
         state.refresh_from_db()
-        self.assertEqual(state.windows_built_revision_version, state.revision_version)
-        self.assertIsNotNone(state.windows_built_at)
         rs_state = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=self.rule_set)
         self.assertEqual(rs_state.revision_version_built, state.revision_version)
         self.assertIsNotNone(rs_state.windows_built_at)
@@ -121,16 +119,23 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertGreaterEqual(qwin.window_count, 1)
         self.assertIsNotNone(qwin.first_on_queue_ts)
 
-    def test_marks_built_at_even_when_rebuild_noop_after_ruleset_bump(self) -> None:
+    def test_updates_ruleset_build_state_even_when_rebuild_noop_after_ruleset_bump(self) -> None:
         pr = self._mk_pr(4)
         # Ensure windows exist and are already up-to-date for the current revision version.
         PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
         old_built_at = timezone.now() - timezone.timedelta(days=2)
-        state = PRRevisionBuildState.objects.create(
+        PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
             windows_built_revision_version=1,
             windows_built_at=old_built_at,
+        )
+        rs_state = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=old_built_at,
+            last_status="rebuilt",
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -148,16 +153,16 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
 
         self.assertEqual(res["windows_rebuilt"], 0)
-        state.refresh_from_db()
-        self.assertEqual(state.windows_built_revision_version, state.revision_version)
-        self.assertIsNotNone(state.windows_built_at)
-        self.assertGreater(state.windows_built_at, old_built_at)
+        rs_state.refresh_from_db()
+        self.assertEqual(rs_state.revision_version_built, 1)
+        self.assertIsNotNone(rs_state.windows_built_at)
+        self.assertGreater(rs_state.windows_built_at, old_built_at)
 
     def test_rollup_backfill_on_inactive_ruleset_does_not_trigger_rebuild(self) -> None:
         pr = self._mk_pr(5)
         PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
         built_at = timezone.now()
-        state = PRRevisionBuildState.objects.create(
+        PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=3,
             windows_built_revision_version=3,
@@ -201,9 +206,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
 
         self.assertEqual(res["prs_checked"], 0)
         self.assertEqual(res["windows_rebuilt"], 0)
-        state.refresh_from_db()
-        self.assertEqual(state.windows_built_revision_version, 3)
-        self.assertEqual(state.windows_built_at, built_at)
 
     def test_windows_built_at_equal_ruleset_updated_at_is_not_stale(self) -> None:
         pr = self._mk_pr(6)
@@ -245,9 +247,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         res1 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
 
         self.assertEqual(res1["prs_checked"], 1)
-        state = PRRevisionBuildState.objects.get(pull_request=pr)
-        self.assertEqual(state.windows_built_revision_version, state.revision_version)
-        self.assertIsNotNone(state.windows_built_at)
+        self.assertTrue(PRQueueWindowBuildState.objects.filter(pull_request=pr, rule_set=self.rule_set).exists())
 
         res2 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
         self.assertEqual(res2["prs_checked"], 0)

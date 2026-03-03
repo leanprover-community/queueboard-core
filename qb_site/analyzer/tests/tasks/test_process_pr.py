@@ -100,8 +100,6 @@ class TestProcessPRTask(TestCase):
         # Queue windows should be built for the ruleset
         self.assertGreaterEqual(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).count(), 1)
         state = PRRevisionBuildState.objects.get(pull_request=pr)
-        self.assertEqual(state.windows_built_revision_version, state.revision_version)
-        self.assertIsNotNone(state.windows_built_at)
         rs_state = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=self.rule_set)
         self.assertEqual(rs_state.revision_version_built, state.revision_version)
         self.assertIsNotNone(rs_state.windows_built_at)
