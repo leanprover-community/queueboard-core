@@ -6,6 +6,19 @@ from core.models.base import TimestampedModel
 from core.models.repository import Repository
 
 
+def resolve_ci_gating_mode(*, require_ci_success: bool, ci_gating_mode: str | None) -> str | None:
+    """Return the effective CI gating mode for transitional ruleset rows.
+
+    During migration, ``require_ci_success=False`` keeps CI gating disabled,
+    regardless of any mode value.
+    """
+    if not require_ci_success:
+        return None
+    if ci_gating_mode == QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES:
+        return QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES
+    return QueueRuleSet.CIGatingMode.ALL_REQUIRED_SUCCESS
+
+
 class QueueRuleSet(TimestampedModel):
     """Per-repository queue rules with simple label and CI gating.
 
@@ -26,6 +39,10 @@ class QueueRuleSet(TimestampedModel):
         history strictly before that timestamp (i.e., [effective_from, effective_to)).
     """
 
+    class CIGatingMode(models.TextChoices):
+        ALL_REQUIRED_SUCCESS = "all_required_success", "All required contexts must succeed"
+        NO_REQUIRED_FAILURES = "no_required_failures", "Only required-context failures block queue entry"
+
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="queue_rule_sets")
     version = models.PositiveIntegerField(default=1)
     description = models.TextField(blank=True)
@@ -41,6 +58,11 @@ class QueueRuleSet(TimestampedModel):
     require_open = models.BooleanField(default=True)
     require_not_draft = models.BooleanField(default=True)
     require_ci_success = models.BooleanField(default=False)
+    ci_gating_mode = models.CharField(
+        max_length=64,
+        choices=CIGatingMode.choices,
+        default=CIGatingMode.ALL_REQUIRED_SUCCESS,
+    )
 
     required_label_names = models.JSONField(default=list, blank=True)
     forbidden_label_names = models.JSONField(default=list, blank=True)
@@ -57,6 +79,9 @@ class QueueRuleSet(TimestampedModel):
             ),
         ]
         ordering = ["repository", "-version", "id"]
+
+    def effective_ci_gating_mode(self) -> str | None:
+        return resolve_ci_gating_mode(require_ci_success=self.require_ci_success, ci_gating_mode=self.ci_gating_mode)
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return f"QueueRuleSet(repo={self.repository}, v={self.version})"

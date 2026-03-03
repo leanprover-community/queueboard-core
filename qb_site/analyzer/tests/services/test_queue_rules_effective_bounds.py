@@ -19,7 +19,7 @@ class TestQueueRulesEffectiveBounds(TestCase):
 
     def test_load_ruleset_with_effective_bounds(self) -> None:
         # Legacy label-only ruleset for history before 2024-01-01
-        legacy = QueueRuleSet.objects.create(
+        QueueRuleSet.objects.create(
             repository=self.repo,
             version=1,
             require_open=True,
@@ -31,7 +31,7 @@ class TestQueueRulesEffectiveBounds(TestCase):
             effective_to=_dt(2024, 1, 1),
         )
         # CI-gated ruleset for history from 2024-01-01 onward
-        ci_rules = QueueRuleSet.objects.create(
+        QueueRuleSet.objects.create(
             repository=self.repo,
             version=2,
             require_open=True,
@@ -50,9 +50,27 @@ class TestQueueRulesEffectiveBounds(TestCase):
 
         rules_before = load_rules_for_repo(self.repo, at=before)
         self.assertFalse(rules_before.require_ci_success)
+        self.assertIsNone(rules_before.ci_gating_mode)
 
         rules_at_cutoff = load_rules_for_repo(self.repo, at=at_cutoff)
         self.assertTrue(rules_at_cutoff.require_ci_success)
+        self.assertEqual(rules_at_cutoff.ci_gating_mode, QueueRuleSet.CIGatingMode.ALL_REQUIRED_SUCCESS)
 
         rules_after = load_rules_for_repo(self.repo, at=after)
         self.assertTrue(rules_after.require_ci_success)
+        self.assertEqual(rules_after.ci_gating_mode, QueueRuleSet.CIGatingMode.ALL_REQUIRED_SUCCESS)
+
+    def test_no_required_failures_mode_exposed_in_loaded_rules(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            ci_gating_mode=QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES,
+            required_ci_contexts=["lint"],
+        )
+
+        rules = load_rules_for_repo(self.repo, at=_dt(2025, 1, 1))
+        self.assertTrue(rules.require_ci_success)
+        self.assertEqual(rules.ci_gating_mode, QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES)

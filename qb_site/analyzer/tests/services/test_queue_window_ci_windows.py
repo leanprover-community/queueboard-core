@@ -233,6 +233,56 @@ class TestQueueWindowCIWindows(TestCase):
         # persist any windows for this PR.
         self.assertEqual(len(windows), 0)
 
+    def test_no_required_failures_mode_windows_allow_missing_and_running(self) -> None:
+        rules_no_fail = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=2,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            ci_gating_mode=QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES,
+            required_label_names=[],
+            forbidden_label_names=[],
+            required_ci_contexts=["lint"],
+        )
+        pr = self._mk_pr(33)
+        self._add_revision(pr, "shaN", _dt(2024, 9, 1), None, 0)
+
+        # Failure closes the initially-open no-fail window.
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_NOFAIL_FAIL",
+            head_sha="shaN",
+            name="lint",
+            status="COMPLETED",
+            conclusion="FAILURE",
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 4),
+            gh_completed_at=_dt(2024, 9, 4),
+        )
+        # A newer running check run re-opens eligibility in no-fail mode.
+        CheckRun.objects.create(
+            pull_request=pr,
+            github_node_id="CR_NOFAIL_RUNNING",
+            head_sha="shaN",
+            name="lint",
+            status="IN_PROGRESS",
+            conclusion=None,
+            details_url=None,
+            external_id=None,
+            gh_started_at=_dt(2024, 9, 6),
+            gh_completed_at=None,
+        )
+
+        rebuild_queue_windows_for_ruleset(pr=pr, rule_set=rules_no_fail, as_of=_dt(2024, 9, 8))
+        windows = list(PRQueueWindow.objects.filter(pull_request=pr, rule_set=rules_no_fail).order_by("from_ts"))
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0].from_ts, _dt(2024, 9, 1))
+        self.assertEqual(windows[0].to_ts, _dt(2024, 9, 4))
+        self.assertEqual(windows[1].from_ts, _dt(2024, 9, 6))
+        self.assertIsNone(windows[1].to_ts)
+
     def test_end_to_end_revisions_and_ci_windows_with_head_change(self) -> None:
         pr = self._mk_pr(4)
 

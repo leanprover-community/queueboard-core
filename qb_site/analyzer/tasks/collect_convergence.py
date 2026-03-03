@@ -100,7 +100,7 @@ def collect_analyzer_convergence_task() -> dict:
         )
 
         ci_gated_missing_windows = 0
-        ci_rulesets = [rs for rs in active_rulesets if rs.require_ci_success]
+        ci_rulesets = [rs for rs in active_rulesets if rs.effective_ci_gating_mode() is not None]
         if ci_rulesets:
             prs_with_rev = base_prs.annotate(has_rev=Exists(PRRevision.objects.filter(pull_request=OuterRef("pk")))).filter(
                 has_rev=True

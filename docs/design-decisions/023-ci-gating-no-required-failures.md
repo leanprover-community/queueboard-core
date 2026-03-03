@@ -112,6 +112,15 @@
   - Dependency `024-per-ruleset-queue-window-build-state` is complete.
   - `023` converted to living-plan format to begin implementation.
   - Current code still uses strict boolean `require_ci_success` behavior.
+- 2026-03-03:
+  - Chunk 1 started.
+  - Added `QueueRuleSet.ci_gating_mode` with strict default and migration `analyzer/0023`.
+  - Added transitional resolver helper so `require_ci_success=False` still disables CI gating during migration.
+  - Updated `queue_rules`/convergence call sites to use the mode resolver surface.
+  - Added initial tests for mode resolution and rules loading surface.
+  - Chunk 2 started.
+  - Queue windows now evaluate explicit CI states (`pass`/`fail`/`running`/`missing`) and map eligibility by CI mode.
+  - Added queue-window tests covering `no_required_failures` behavior for missing/running/failure transitions.
 
 ## Finalization Notes
 - After implementation stabilizes, collapse this living plan into a concise final decision record that captures:
