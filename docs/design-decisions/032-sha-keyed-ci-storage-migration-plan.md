@@ -228,6 +228,9 @@
     - Robustness fix:
       - backfill now handles provider-identity uniqueness conflicts without
         aborting the whole run (falls back to alternate unique identities).
+    - Freshness fix:
+      - backfill updates are now freshness-aware (timestamp-based), so older
+        source rows encountered later do not overwrite newer commit-scoped CI data.
 
 ## References
 - `docs/design-decisions/019-ci-by-sha-ledger-and-sha-keyed-ci.md`

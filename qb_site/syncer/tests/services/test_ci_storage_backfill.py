@@ -167,3 +167,36 @@ class TestCIStorageBackfill(TestCase):
         row = CommitCheckRun.objects.get(external_id="ext-conflict")
         self.assertEqual(row.status, "COMPLETED")
         self.assertEqual(row.conclusion, "SUCCESS")
+
+    def test_checkrun_backfill_keeps_newer_data_when_older_row_visited_later(self) -> None:
+        newer = timezone.now()
+        older = newer - timezone.timedelta(hours=2)
+
+        # Newer source row gets lower id by being inserted first.
+        CheckRun.objects.create(
+            pull_request=self.pr,
+            github_node_id="CR_ORDER_NEW",
+            head_sha="a" * 40,
+            name="Lint style",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            external_id="ext-order",
+            gh_completed_at=newer,
+        )
+        # Older source row gets higher id and would previously overwrite newer data.
+        CheckRun.objects.create(
+            pull_request=self.pr,
+            github_node_id="CR_ORDER_OLD",
+            head_sha="a" * 40,
+            name="Lint style",
+            status="IN_PROGRESS",
+            conclusion=None,
+            external_id="ext-order",
+            gh_started_at=older,
+        )
+
+        stats = backfill_commit_ci_rows(batch_size=10)
+        self.assertEqual(stats.check_runs.scanned, 2)
+        row = CommitCheckRun.objects.get(external_id="ext-order")
+        self.assertEqual(row.status, "COMPLETED")
+        self.assertEqual(row.conclusion, "SUCCESS")

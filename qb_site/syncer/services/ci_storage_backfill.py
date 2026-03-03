@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
@@ -32,6 +33,26 @@ class BackfillStats:
         }
 
 
+def _check_run_freshness(row: CheckRun) -> datetime | None:
+    return row.gh_completed_at or row.gh_started_at or row.last_synced_at or row.updated_at
+
+
+def _commit_check_run_freshness(row: CommitCheckRun) -> datetime | None:
+    return row.gh_completed_at or row.gh_started_at or row.last_synced_at or row.updated_at
+
+
+def _status_context_freshness(row: StatusContext) -> datetime | None:
+    return row.gh_created_at or row.last_synced_at or row.updated_at
+
+
+def _commit_status_context_freshness(row: CommitStatusContext) -> datetime | None:
+    return row.gh_created_at or row.last_synced_at or row.updated_at
+
+
+def _is_stale(source_ts: datetime | None, target_ts: datetime | None) -> bool:
+    return source_ts is not None and target_ts is not None and source_ts < target_ts
+
+
 def _process_check_run_row(row: CheckRun, stats: BackfillModelStats) -> None:
     stats.scanned += 1
     stats.next_start_id = row.id
@@ -50,6 +71,18 @@ def _process_check_run_row(row: CheckRun, stats: BackfillModelStats) -> None:
         "gh_completed_at": row.gh_completed_at,
         "last_synced_at": row.last_synced_at,
     }
+    source_ts = _check_run_freshness(row)
+    existing = CommitCheckRun.objects.filter(github_node_id=row.github_node_id).first()
+    if existing is not None:
+        if _is_stale(source_ts, _commit_check_run_freshness(existing)):
+            stats.skipped_duplicate += 1
+            return
+        updated, _ = update_if_changed(existing, values)
+        if updated:
+            stats.updated += 1
+        else:
+            stats.skipped_duplicate += 1
+        return
     try:
         _, created, updated, _ = upsert_if_changed(CommitCheckRun, {"github_node_id": row.github_node_id}, values)
     except (IntegrityError, ObjectDoesNotExist):
@@ -65,6 +98,9 @@ def _process_check_run_row(row: CheckRun, stats: BackfillModelStats) -> None:
             ).first()
         if fallback_obj is None:
             stats.skipped_conflict += 1
+            return
+        if _is_stale(source_ts, _commit_check_run_freshness(fallback_obj)):
+            stats.skipped_duplicate += 1
             return
         try:
             updated, _ = update_if_changed(fallback_obj, values)
@@ -110,6 +146,18 @@ def _process_status_context_row(row: StatusContext, stats: BackfillModelStats) -
         "gh_created_at": row.gh_created_at,
         "last_synced_at": row.last_synced_at,
     }
+    source_ts = _status_context_freshness(row)
+    existing = CommitStatusContext.objects.filter(**lookup).first()
+    if existing is not None:
+        if _is_stale(source_ts, _commit_status_context_freshness(existing)):
+            stats.skipped_duplicate += 1
+            return
+        updated, _ = update_if_changed(existing, values)
+        if updated:
+            stats.updated += 1
+        else:
+            stats.skipped_duplicate += 1
+        return
     try:
         _, created, updated, _ = upsert_if_changed(CommitStatusContext, lookup, values)
     except (IntegrityError, ObjectDoesNotExist):
@@ -121,6 +169,9 @@ def _process_status_context_row(row: StatusContext, stats: BackfillModelStats) -
             fallback_obj = CommitStatusContext.objects.filter(github_node_id=row.github_node_id).first()
         if fallback_obj is None:
             stats.skipped_conflict += 1
+            return
+        if _is_stale(source_ts, _commit_status_context_freshness(fallback_obj)):
+            stats.skipped_duplicate += 1
             return
         try:
             updated, _ = update_if_changed(fallback_obj, values)
