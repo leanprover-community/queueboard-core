@@ -330,7 +330,6 @@ class TestRefreshPendingCITask(TestCase):
         self.assertTrue(items[0]["task_id"])
         mock_sync_ci_for_shas.delay.assert_called_once()
 
-    @override_settings(SYNCER_CI_PR_STORAGE_WRITE=False)
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_enqueues_for_recent_pending_commit_ci_when_pr_rows_absent(self, mock_sync_ci_for_shas) -> None:
         self.pr.head_sha = "shaC"
@@ -350,7 +349,6 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(items[0]["shas"], ["shaC"])
         mock_sync_ci_for_shas.delay.assert_called_once()
 
-    @override_settings(SYNCER_CI_PR_STORAGE_WRITE=False)
     def test_skips_missing_head_when_commit_context_exists(self) -> None:
         self.pr.head_sha = "sha_head"
         self.pr.save(update_fields=["head_sha", "updated_at"])

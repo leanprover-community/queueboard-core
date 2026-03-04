@@ -2,23 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from django.db import models
 from django.utils import timezone
-from django.conf import settings
 
 from core.models import Repository
 from analyzer.models import PRQueueWindow, QueueRuleSet, PRRevision
 from analyzer.services.queue_rules import QueueRules, load_rules_for_repo, rules_for_rule_set
 from syncer.models import (
-    CheckRun,
     CommitCheckRun,
     CommitStatusContext,
     PullRequest,
     PRTimelineEvent,
     PRTimelineEventType,
-    StatusContext,
 )
 
 
@@ -73,48 +70,25 @@ def _latest_ci_statuses_for_fragment(
     head_sha: str | None,
 ) -> dict[str, CIState]:
     required_fragment = (required_fragment or "").strip().lower()
-    if not required_fragment:
+    head_sha = head_sha or pr.head_sha
+    if not required_fragment or not head_sha:
         return {}
     latest: dict[str, tuple[datetime, CIState]] = {}
-    sha_primary = bool(getattr(settings, "ANALYZER_CI_SHA_READ_PRIMARY", False))
-    allow_pr_fallback = bool(getattr(settings, "ANALYZER_CI_SHA_READ_FALLBACK_PR", True))
-
-    used_sha_rows = False
-    if sha_primary and head_sha:
-        ccr_qs = CommitCheckRun.objects.filter(
-            repository=pr.repository,
-            head_sha=head_sha,
-            name__icontains=required_fragment,
-        ).filter(models.Q(gh_completed_at__lte=at) | (models.Q(gh_completed_at__isnull=True) & models.Q(gh_started_at__lte=at)))
-        csc_qs = CommitStatusContext.objects.filter(
-            repository=pr.repository,
-            head_sha=head_sha,
-            name__icontains=required_fragment,
-            gh_created_at__lte=at,
-        )
-        for cr in ccr_qs:
-            ts = cr.gh_completed_at or cr.gh_started_at
-            _merge_latest_ci_status(latest, name=cr.name, ts=ts, ci_state=_check_run_state(cr))
-            used_sha_rows = True
-        for sc in csc_qs:
-            _merge_latest_ci_status(latest, name=sc.name, ts=sc.gh_created_at, ci_state=_status_context_state(sc))
-            used_sha_rows = True
-        if used_sha_rows or not allow_pr_fallback:
-            return {name: ci_state for name, (_, ci_state) in latest.items()}
-
-    cr_qs = CheckRun.objects.filter(pull_request=pr, name__icontains=required_fragment).filter(
-        models.Q(gh_completed_at__lte=at) | (models.Q(gh_completed_at__isnull=True) & models.Q(gh_started_at__lte=at))
+    ccr_qs = CommitCheckRun.objects.filter(
+        repository=pr.repository,
+        head_sha=head_sha,
+        name__icontains=required_fragment,
+    ).filter(models.Q(gh_completed_at__lte=at) | (models.Q(gh_completed_at__isnull=True) & models.Q(gh_started_at__lte=at)))
+    csc_qs = CommitStatusContext.objects.filter(
+        repository=pr.repository,
+        head_sha=head_sha,
+        name__icontains=required_fragment,
+        gh_created_at__lte=at,
     )
-    if head_sha:
-        cr_qs = cr_qs.filter(head_sha=head_sha)
-    for cr in cr_qs:
+    for cr in ccr_qs:
         ts = cr.gh_completed_at or cr.gh_started_at
         _merge_latest_ci_status(latest, name=cr.name, ts=ts, ci_state=_check_run_state(cr))
-
-    sc_qs = StatusContext.objects.filter(pull_request=pr, name__icontains=required_fragment, gh_created_at__lte=at)
-    if head_sha:
-        sc_qs = sc_qs.filter(head_sha=head_sha)
-    for sc in sc_qs:
+    for sc in csc_qs:
         _merge_latest_ci_status(latest, name=sc.name, ts=sc.gh_created_at, ci_state=_status_context_state(sc))
 
     return {name: ci_state for name, (_, ci_state) in latest.items()}
@@ -203,7 +177,7 @@ def _state_at_time(pr: PullRequest, *, at: datetime) -> _State:
     return state
 
 
-def _check_run_state(cr: CheckRun) -> CIState:
+def _check_run_state(cr: Any) -> CIState:
     """Classify CheckRun state for queue gating."""
     if cr.status in ("QUEUED", "IN_PROGRESS", "PENDING"):
         return "running"
@@ -214,7 +188,7 @@ def _check_run_state(cr: CheckRun) -> CIState:
     return "fail"
 
 
-def _status_context_state(sc: StatusContext) -> CIState:
+def _status_context_state(sc: Any) -> CIState:
     """Classify StatusContext state for queue gating."""
     if sc.state == "SUCCESS":
         return "pass"
@@ -286,6 +260,8 @@ def _ci_required_contexts_state(pr: PullRequest, rules: QueueRules, at: datetime
         return "pass"
 
     head_sha, has_revisions = _head_sha_at_time(pr, at=at)
+    if not has_revisions and not head_sha:
+        head_sha = pr.head_sha or None
     # If we have revisions but cannot resolve a head at this time, treat CI as unknown.
     if has_revisions and not head_sha:
         return "missing"
@@ -373,16 +349,13 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
     revisions = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id"))
     has_revisions = bool(revisions)
 
-    sha_primary = bool(getattr(settings, "ANALYZER_CI_SHA_READ_PRIMARY", False))
-    allow_pr_fallback = bool(getattr(settings, "ANALYZER_CI_SHA_READ_FALLBACK_PR", True))
     candidate_shas = {rev.head_sha for rev in revisions if rev.head_sha}
     if pr.head_sha:
         candidate_shas.add(pr.head_sha)
 
-    use_pr_ci = True
     check_runs: list = []
     statuses: list = []
-    if sha_primary and candidate_shas:
+    if candidate_shas:
         ccr_qs = (
             CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas)
             .filter(
@@ -415,40 +388,6 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
 
         check_runs = list(ccr_qs.order_by("gh_completed_at", "gh_started_at", "id"))
         statuses = list(csc_qs.order_by("gh_created_at", "id"))
-        use_pr_ci = not check_runs and not statuses and allow_pr_fallback
-
-    if use_pr_ci:
-        check_run_qs = (
-            CheckRun.objects.filter(pull_request=pr)
-            .filter(
-                models.Q(gh_completed_at__isnull=False, gh_completed_at__gte=t0, gh_completed_at__lte=as_of)
-                | models.Q(
-                    gh_completed_at__isnull=True,
-                    gh_started_at__isnull=False,
-                    gh_started_at__gte=t0,
-                    gh_started_at__lte=as_of,
-                )
-            )
-            .only("id", "name", "head_sha", "status", "conclusion", "gh_completed_at", "gh_started_at")
-        )
-        status_qs = StatusContext.objects.filter(
-            pull_request=pr,
-            gh_created_at__gte=t0,
-            gh_created_at__lte=as_of,
-        ).only("id", "name", "head_sha", "state", "gh_created_at")
-
-        if required_ci:
-            ctx_q = models.Q()
-            for ctx in required_ci:
-                ctx_q |= models.Q(name__icontains=ctx)
-            check_run_qs = check_run_qs.filter(ctx_q)
-            status_qs = status_qs.filter(ctx_q)
-        else:
-            check_run_qs = check_run_qs.none()
-            status_qs = status_qs.none()
-
-        check_runs = list(check_run_qs.order_by("gh_completed_at", "gh_started_at", "id"))
-        statuses = list(status_qs.order_by("gh_created_at", "id"))
 
     # Collect boundary times where queue membership may change.
     boundary_times: set[datetime] = {t0, as_of}

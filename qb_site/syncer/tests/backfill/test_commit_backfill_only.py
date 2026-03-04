@@ -6,9 +6,9 @@ from django.test import TestCase
 from django.utils import timezone
 from django.conf import settings
 
-from core.models import Repository
-from syncer.models import PullRequest
 from syncer.models.check_run import CheckRun
+from syncer.models.commit_check_run import CommitCheckRun
+from syncer.models.commit_status_context import CommitStatusContext
 from syncer.models.status_context import StatusContext
 from syncer.tasks.sync_tasks import sync_pr_task
 from syncer.tests.factories import make_repo, make_pr
@@ -117,9 +117,11 @@ class TestCommitBackfillOnly(TestCase):
 
         self.assertFalse(res.get("skipped"))
         self.assertEqual(res.get("status"), "backfill_only")
-        # CI rows should be created for the PR
-        self.assertGreaterEqual(CheckRun.objects.filter(pull_request=pr, head_sha="abc123").count(), 1)
-        self.assertGreaterEqual(StatusContext.objects.filter(pull_request=pr, head_sha="abc123").count(), 1)
+        # CI rows should be created for the commit SHA
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr, head_sha="abc123").count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr, head_sha="abc123").count(), 0)
+        self.assertGreaterEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha="abc123").count(), 1)
+        self.assertGreaterEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha="abc123").count(), 1)
         # PR backfill admin fields updated
         pr.refresh_from_db()
         self.assertTrue(pr.commits_backfill_cursor)

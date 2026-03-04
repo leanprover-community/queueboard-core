@@ -12,6 +12,8 @@ from syncer.models import (
     PRLabel,
     PRTimelineEvent,
     CheckRun,
+    CommitCheckRun,
+    CommitStatusContext,
     StatusContext,
 )
 from syncer.services.pr_sync_service import PRSyncService
@@ -112,9 +114,11 @@ class TestPRSyncIntegration(TestCase):
         # Timeline events created (3 nodes)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 3)
 
-        # CI snapshots created (1 check run + 1 status context)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
+        # CI snapshots created in SHA-keyed storage
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
         # Return dict includes created counts consistent with rows
         self.assertEqual(res["prlabels_created"], 2)
@@ -159,8 +163,10 @@ class TestPRSyncIntegration(TestCase):
         pr = PullRequest.objects.get(repository=self.repo, number=1)
         self.assertEqual(PRLabel.objects.filter(pull_request=pr).count(), 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 3)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
         # Second run is idempotent
         res2 = svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
@@ -175,8 +181,10 @@ class TestPRSyncIntegration(TestCase):
         # DB counts unchanged
         self.assertEqual(PRLabel.objects.filter(pull_request=pr).count(), 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 3)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
     def test_engagement_fields_ingest(self) -> None:
         svc = PRSyncService()
@@ -409,7 +417,7 @@ class TestPRSyncIntegration(TestCase):
 
         svc = PRSyncService()
         fc = FakeClient()
-        res = svc.sync_pull_request(
+        svc.sync_pull_request(
             self.repo,
             number=5,
             client=fc,  # type: ignore[arg-type]
@@ -538,7 +546,7 @@ class TestPRSyncIntegration(TestCase):
 
         svc = PRSyncService()
         fc = FakeClient()
-        res = svc.sync_pull_request(
+        svc.sync_pull_request(
             self.repo,
             number=7,
             client=fc,  # type: ignore[arg-type]
@@ -550,8 +558,8 @@ class TestPRSyncIntegration(TestCase):
 
         # We fetched one extra commits page and upserted both CR (bundle) and SC (page)
         self.assertTrue(fc.commits_page_calls)
-        self.assertEqual(CheckRun.objects.filter(pull_request__repository=self.repo, pull_request__number=7).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request__repository=self.repo, pull_request__number=7).count(), 1)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
     def test_force_push_event_ingest(self) -> None:
         svc = PRSyncService()
@@ -586,7 +594,7 @@ class TestPRSyncIntegration(TestCase):
             "commits": {"nodes": []},
         }
 
-        res = svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
+        svc.sync_pull_request_bundle(self.repo, bundle, dry_run=False)
         pr = PullRequest.objects.get(repository=self.repo, number=2)
         events = PRTimelineEvent.objects.filter(pull_request=pr)
         self.assertEqual(events.count(), 1)
@@ -651,8 +659,10 @@ class TestPRSyncIntegration(TestCase):
         }
         res1 = svc.sync_pull_request_bundle(self.repo, bundle1, dry_run=False)
         pr = PullRequest.objects.get(repository=self.repo, number=3)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha="h1").count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha="h1").count(), 1)
         self.assertEqual(res1["checkruns_upserted"], 1)
         self.assertEqual(res1["statusctx_upserted"], 1)
 
@@ -696,10 +706,10 @@ class TestPRSyncIntegration(TestCase):
         self.assertEqual(res2["checkruns_upserted"], 1)  # updated
         self.assertEqual(res2["statusctx_upserted"], 1)  # updated
         # Verify DB reflects new states
-        cr = CheckRun.objects.get(pull_request=pr, github_node_id="CR2")
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR2")
         self.assertEqual(cr.status, "COMPLETED")
         self.assertEqual(cr.conclusion, "SUCCESS")
-        sc = StatusContext.objects.get(pull_request=pr, github_node_id="SC2")
+        sc = CommitStatusContext.objects.get(repository=self.repo, github_node_id="SC2")
         self.assertEqual(sc.state, "SUCCESS")
 
     def test_real_bundle_timeline_paging_smoke(self) -> None:

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from django.core.management import call_command
 from django.test import TestCase
 
-from core.models.repository import Repository
-from syncer.models import PullRequest, LabelDef, PRLabel, PRTimelineEvent, CheckRun, StatusContext
+from syncer.models import (
+    PullRequest,
+    LabelDef,
+    PRLabel,
+    PRTimelineEvent,
+    CheckRun,
+    CommitCheckRun,
+    CommitStatusContext,
+    StatusContext,
+)
 from syncer.tests.factories import make_repo
 from syncer.tests.helpers import fixtures_dir
 
@@ -56,8 +62,10 @@ class TestSyncFromFileCommand(TestCase):
         # Timeline
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 4)
         # CI snapshots
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
         # Idempotent second run
         call_command(
@@ -69,5 +77,7 @@ class TestSyncFromFileCommand(TestCase):
         )
         self.assertEqual(PRLabel.objects.filter(pull_request=pr).count(), 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 4)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 1)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 1)
+        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)

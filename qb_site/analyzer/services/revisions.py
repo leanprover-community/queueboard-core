@@ -148,10 +148,14 @@ def _collect_ci_first_seen(pr: PullRequest) -> tuple[dict[str, datetime], Option
 
     candidate_shas = _candidate_head_shas_for_pr(pr)
 
-    for cr in CheckRun.objects.filter(pull_request=pr).exclude(head_sha="").only(
-        "head_sha",
-        "gh_started_at",
-        "gh_completed_at",
+    for cr in (
+        CheckRun.objects.filter(pull_request=pr)
+        .exclude(head_sha="")
+        .only(
+            "head_sha",
+            "gh_started_at",
+            "gh_completed_at",
+        )
     ):
         start_ts = cr.gh_started_at
         end_ts = cr.gh_completed_at
@@ -592,9 +596,9 @@ def next_revision_backfill_shas(
     # Snapshot CI presence up-front to avoid repeated queries per candidate.
     candidate_set = set(candidates)
     status_ctx_rows = StatusContext.objects.filter(pull_request=pr, head_sha__in=candidate_set).values_list("head_sha", "state")
-    commit_status_ctx_rows = CommitStatusContext.objects.filter(
-        repository=pr.repository, head_sha__in=candidate_set
-    ).values_list("head_sha", "state")
+    commit_status_ctx_rows = CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_set).values_list(
+        "head_sha", "state"
+    )
     sc_any: set[str] = set()
     sc_pending: set[str] = set()
     sc_completed: set[str] = set()
