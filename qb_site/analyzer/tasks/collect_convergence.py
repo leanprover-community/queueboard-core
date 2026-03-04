@@ -7,7 +7,7 @@ from django.db.models import Exists, OuterRef, F, Q
 from analyzer.models import AnalyzerConvergenceSnapshot, PRQueueWindow, PRQueueWindowBuildState, PRRevision, QueueRuleSet
 from analyzer.services.dependencies import PR_DEPENDENCY_BUILDER_VERSION
 from core.models import Repository
-from syncer.models import CheckRun, CIShaFetchState, CommitCheckRun, CommitStatusContext, PullRequest, StatusContext
+from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext, PullRequest
 
 
 @shared_task(name="analyzer.collect_convergence")
@@ -83,27 +83,23 @@ def collect_analyzer_convergence_task() -> dict:
                     windows_stale += 1
 
         # Count revision heads whose CI has not been checked:
-        # - no CI rows for this PR/head_sha
+        # - no commit-scoped CI rows for repo/head_sha
         # - and no CIShaFetchState for the repo/head_sha
         rev_qs = (
             PRRevision.objects.filter(pull_request__repository=repo, pull_request__timeline_backfill_done=True)
             .exclude(head_sha__isnull=True)
             .exclude(head_sha="")
         )
-        head_cr = CheckRun.objects.filter(pull_request=OuterRef("pull_request_id"), head_sha=OuterRef("head_sha"))
-        head_sc = StatusContext.objects.filter(pull_request=OuterRef("pull_request_id"), head_sha=OuterRef("head_sha"))
         head_ccr = CommitCheckRun.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
         head_csc = CommitStatusContext.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
         head_fetch = CIShaFetchState.objects.filter(repository=repo, sha=OuterRef("head_sha"))
         ci_not_checked = (
             rev_qs.annotate(
-                has_cr=Exists(head_cr),
-                has_sc=Exists(head_sc),
                 has_ccr=Exists(head_ccr),
                 has_csc=Exists(head_csc),
                 has_fetch=Exists(head_fetch),
             )
-            .filter(has_cr=False, has_sc=False, has_ccr=False, has_csc=False, has_fetch=False)
+            .filter(has_ccr=False, has_csc=False, has_fetch=False)
             .count()
         )
 

@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext, PullRequest, CheckRun, StatusContext
+from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext, PullRequest
 from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.factories import make_repo, make_pr
@@ -29,16 +29,16 @@ class TestRefreshPendingCITask(TestCase):
         head_sha: str | None = "sha1",
         started_at_delta_hours: int = 1,
         last_synced_at_delta_hours: int | None = None,
-    ) -> CheckRun:
+    ) -> CommitCheckRun:
         now = timezone.now()
         if pr is None:
             pr = self.pr
         if node_id is None:
             node_id = f"CR{next(self._id_counter)}"
-        cr = CheckRun.objects.create(
-            pull_request=pr,
+        cr = CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id=node_id,
-            head_sha=head_sha,
+            head_sha=head_sha or pr.head_sha or "",
             name="ci/test",
             status=status,
             conclusion=None,
@@ -61,17 +61,17 @@ class TestRefreshPendingCITask(TestCase):
         head_sha: str | None = "sha1",
         created_delta_hours: int = 1,
         last_synced_at_delta_hours: int | None = None,
-    ) -> StatusContext:
+    ) -> CommitStatusContext:
         now = timezone.now()
         if pr is None:
             pr = self.pr
         if node_id is None:
             node_id = f"SC{next(self._id_counter)}"
-        sc = StatusContext.objects.create(
-            pull_request=pr,
+        sc = CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id=node_id,
             rest_id=None,
-            head_sha=head_sha,
+            head_sha=head_sha or pr.head_sha or "",
             name="bors",
             state=state,
             target_url=None,
@@ -496,13 +496,13 @@ class TestRefreshPendingCITask(TestCase):
         mock_sync_ci_for_shas.delay.return_value.id = "task-mixed"
 
         res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
-        self.assertEqual(res.get("prs_enqueued"), 1)
-        self.assertEqual(res.get("shas_enqueued"), 1)
+        # In commit-scoped-only mode, pending selection is constrained to head_sha.
+        # With head_sha backoff-blocked and no other eligible head SHA, nothing enqueues.
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+        self.assertEqual(res.get("prs_skipped_backoff"), 1)
         self.assertEqual(res.get("shas_skipped_backoff"), 1)
-        items = res.get("items") or []
-        self.assertEqual(items[0]["reason"], "missing_head_ci")
-        self.assertEqual(items[0]["shas"], ["sha_ok"])
-        mock_sync_ci_for_shas.delay.assert_called_once()
+        mock_sync_ci_for_shas.delay.assert_not_called()
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_mixed_missing_head_and_pending_reasons(self, mock_sync_ci_for_shas) -> None:

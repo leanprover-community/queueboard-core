@@ -126,10 +126,10 @@ def plan_missing_ci_backfill_task(
                 shas = [sha for sha in candidate_shas if sha in error_shas][: int(shas_per_pr)]
             actionable_shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.plan_missing_ci")]
             backoff_shas = [sha for sha in shas if sha not in actionable_shas]
-            if shas:
+            if actionable_shas:
                 task_id = enqueue_ci_by_shas(
                     pr=pr,
-                    shas=shas,
+                    shas=actionable_shas,
                     pages_per_sha=int(pages_per_sha)
                     if pages_per_sha is not None
                     else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
@@ -141,7 +141,12 @@ def plan_missing_ci_backfill_task(
                     repo_prs_skipped_backoff_count += 1
                     if len(repo_prs_skipped_backoff) < max_pr_list:
                         repo_prs_skipped_backoff.append(int(pr.number))
-            # Mark the revision version as checked only when there are no actionable SHAs.
+            elif shas:
+                repo_prs_skipped_backoff_count += 1
+                if len(repo_prs_skipped_backoff) < max_pr_list:
+                    repo_prs_skipped_backoff.append(int(pr.number))
+            # Mark checked only when there are no planned SHAs at all; backoff-blocked SHAs
+            # should retry in a later sweep.
             if not shas:
                 state.ci_checked_revision_version = state.revision_version
             state.ci_checked_at = now_ts
@@ -221,10 +226,10 @@ def plan_missing_ci_backfill_task(
                 shas = [sha for sha in candidate_shas if sha in error_shas][: int(shas_per_pr)]
             actionable_shas = [sha for sha in shas if should_enqueue_ci_sha(pr=pr, sha=sha, reason="analyzer.plan_missing_ci")]
             backoff_shas = [sha for sha in shas if sha not in actionable_shas]
-            if shas:
+            if actionable_shas:
                 task_id = enqueue_ci_by_shas(
                     pr=pr,
-                    shas=shas,
+                    shas=actionable_shas,
                     pages_per_sha=int(pages_per_sha)
                     if pages_per_sha is not None
                     else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1)),
@@ -236,7 +241,12 @@ def plan_missing_ci_backfill_task(
                     repo_prs_skipped_backoff_count += 1
                     if len(repo_prs_skipped_backoff) < max_pr_list:
                         repo_prs_skipped_backoff.append(int(pr.number))
-            # Mark the revision version as checked only when there are no actionable SHAs.
+            elif shas:
+                repo_prs_skipped_backoff_count += 1
+                if len(repo_prs_skipped_backoff) < max_pr_list:
+                    repo_prs_skipped_backoff.append(int(pr.number))
+            # Mark checked only when there are no planned SHAs at all; backoff-blocked SHAs
+            # should retry in a later sweep.
             if not shas:
                 state.ci_checked_revision_version = state.revision_version
             state.ci_checked_at = now_ts

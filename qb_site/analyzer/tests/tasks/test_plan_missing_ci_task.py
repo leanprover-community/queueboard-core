@@ -8,7 +8,7 @@ from django.utils import timezone
 from analyzer.models import PRRevision, PRRevisionBuildState
 from analyzer.tasks.plan_missing_ci import plan_missing_ci_backfill_task
 from core.models import Repository
-from syncer.models import CIShaFetchState, CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType
+from syncer.models import CIShaFetchState, CommitCheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType
 
 
 class TestPlanMissingCITask(TestCase):
@@ -38,7 +38,7 @@ class TestPlanMissingCITask(TestCase):
             commits_backfill_done=True,
         )
         PRRevision.objects.create(pull_request=pr, head_sha=head_sha, from_ts=pr.gh_created_at, to_ts=None, seq=0)
-        state = PRRevisionBuildState.objects.create(pull_request=pr, revision_version=1)
+        PRRevisionBuildState.objects.create(pull_request=pr, revision_version=1)
         return pr
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
@@ -74,8 +74,8 @@ class TestPlanMissingCITask(TestCase):
     def test_marks_checked_even_without_missing_ci(self, mock_enqueue) -> None:
         pr = self._mk_pr_with_revision(3, "sha-ci")
         # Seed CI so no missing shas are planned.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR1",
             head_sha="sha-ci",
             name="ci",
@@ -109,7 +109,7 @@ class TestPlanMissingCITask(TestCase):
         CIShaFetchState.objects.create(
             repository=self.repo,
             sha="sha-error",
-            last_attempted_at=timezone.now(),
+            last_attempted_at=timezone.now() - timezone.timedelta(minutes=10),
             last_success_at=None,
             last_result="error",
             attempts=1,
@@ -125,7 +125,7 @@ class TestPlanMissingCITask(TestCase):
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
     def test_prioritizes_error_prs_across_repo_limit(self, mock_enqueue) -> None:
         older = self._mk_pr_with_revision(10, "sha-old-error")
-        newer = self._mk_pr_with_revision(11, "sha-new")
+        self._mk_pr_with_revision(11, "sha-new")
         older.gh_updated_at = older.gh_updated_at - timezone.timedelta(days=1)
         older.save(update_fields=["gh_updated_at", "updated_at"])
         CIShaFetchState.objects.create(
@@ -144,17 +144,17 @@ class TestPlanMissingCITask(TestCase):
 
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
     def test_plans_error_shas_even_when_ci_exists(self, mock_enqueue) -> None:
-        pr = self._mk_pr_with_revision(12, "sha-error")
+        self._mk_pr_with_revision(12, "sha-error")
         CIShaFetchState.objects.create(
             repository=self.repo,
             sha="sha-error",
-            last_attempted_at=timezone.now(),
+            last_attempted_at=timezone.now() - timezone.timedelta(minutes=10),
             last_success_at=None,
             last_result="error",
             attempts=1,
         )
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR-err",
             head_sha="sha-error",
             name="ci",
@@ -172,6 +172,34 @@ class TestPlanMissingCITask(TestCase):
         _, call_kwargs = mock_enqueue.call_args
         shas = call_kwargs.get("shas") or []
         self.assertEqual(shas, ["sha-error"])
+
+    @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
+    def test_enqueues_only_actionable_shas_when_some_planned_are_backoff_blocked(self, mock_enqueue) -> None:
+        pr = self._mk_pr_with_revision(15, "sha-open")
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha="sha-blocked",
+            from_ts=pr.gh_created_at + timezone.timedelta(hours=1),
+            to_ts=None,
+            seq=1,
+        )
+        # Force prioritize blocked SHA first; it should still be filtered out at enqueue time.
+        CIShaFetchState.objects.create(
+            repository=self.repo,
+            sha="sha-blocked",
+            last_attempted_at=timezone.now(),
+            last_success_at=None,
+            last_result="error",
+            attempts=1,
+        )
+
+        res = plan_missing_ci_backfill_task.apply(kwargs={"max_prs_per_repo": 5, "shas_per_pr": 2, "pages_per_sha": 1}).get()
+
+        mock_enqueue.assert_called_once()
+        _, call_kwargs = mock_enqueue.call_args
+        self.assertEqual(call_kwargs.get("shas"), ["sha-open"])
+        self.assertEqual(res["prs_checked"], 1)
+        self.assertEqual(res["ci_tasks"], 1)
 
     def test_skips_when_backoff_blocks_enqueue(self) -> None:
         pr = self._mk_pr_with_revision(4, "sha-blocked")
@@ -331,8 +359,8 @@ class TestPlanMissingCITask(TestCase):
     @patch("analyzer.tasks.plan_missing_ci.enqueue_ci_by_shas")
     def test_skips_no_actionable_shas_in_repo_limit(self, mock_enqueue) -> None:
         pr_done = self._mk_pr_with_revision(13, "sha-ci")
-        CheckRun.objects.create(
-            pull_request=pr_done,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_done",
             head_sha="sha-ci",
             name="ci",

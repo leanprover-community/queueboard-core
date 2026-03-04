@@ -13,7 +13,7 @@ from analyzer.models import (
 )
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from core.models import Repository
-from syncer.models import CheckRun, CIShaFetchState, CommitCheckRun, PullRequest
+from syncer.models import CIShaFetchState, CommitCheckRun, PullRequest
 
 
 class TestCollectAnalyzerConvergenceTask(TestCase):
@@ -88,8 +88,8 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         # PR with revisions and existing CI rows (should not count as "not checked").
         pr5 = self._mk_pr(5)
         PRRevision.objects.create(pull_request=pr5, head_sha="c1", from_ts=pr5.gh_created_at, to_ts=None, seq=0)
-        CheckRun.objects.create(
-            pull_request=pr5,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="cr-1",
             head_sha="c1",
             name="ci",

@@ -5,7 +5,7 @@ from unittest import mock
 from django.test import TestCase
 
 from core.models import Repository
-from syncer.models import PullRequest, StatusContext
+from syncer.models import CommitStatusContext, PullRequest
 from analyzer.models import PRRevision
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 
@@ -37,8 +37,8 @@ class TestCIBakfillService(TestCase):
         )
         PRRevision.objects.create(pull_request=self.pr, head_sha="b2", from_ts="2024-01-01T01:00:00Z", to_ts=None, seq=1)
         # Provide CI for b2 only
-        StatusContext.objects.create(
-            pull_request=self.pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC2",
             rest_id=None,
             head_sha="b2",
