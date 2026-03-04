@@ -37,6 +37,24 @@ This directory captures versioned architecture/design records that affect runtim
   - Progress notes / deltas discovered during implementation.
   - Final cleanup section (or follow-up pass) to converge on durable architecture docs.
 
+## Converting a Living Plan to a Final Decision
+- Convert once implementation is complete (or close enough that major architecture choices are settled).
+- Keep the same file and numeric prefix unless there is a strong reason to split scope.
+- Rewrite into concise ADR shape:
+  - `Context` (what problem/constraints mattered),
+  - `Decision` (what is now true in architecture/runtime),
+  - `Consequences` (trade-offs),
+  - `Operational Notes` (current status + remaining follow-ups),
+  - optional `Alternatives`.
+- Remove or collapse:
+  - chunk-by-chunk rollout instructions,
+  - stale feature-flag sequencing,
+  - long progress logs that are no longer needed for current operation.
+- Preserve:
+  - final invariants,
+  - important migration outcomes,
+  - explicitly deferred follow-up work.
+
 ## Style
 - Prefer bullets and short sentences over long prose.
 - One main theme per file; link related decisions/plans rather than combining unrelated topics.
