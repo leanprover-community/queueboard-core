@@ -251,6 +251,14 @@
       (`CommitCheckRun`/`CommitStatusContext`) keyed by
       `(repository, candidate_head_shas)` so revision rebuild and missing-CI
       planning continue to work after PR-keyed writes are turned off.
+    - Updated pending-CI refresh task path in `qb_site/syncer/tasks/sync_tasks.py`
+      to include commit-scoped CI rows for:
+      - actionable pending detection on head SHA,
+      - missing-head-CI detection,
+      so `syncer.refresh_pending_ci_for_repo` remains effective with
+      `SYNCER_CI_PR_STORAGE_WRITE=0`.
+    - Added `syncer` task tests for commit-scoped-only pending/head-context
+      behavior in `qb_site/syncer/tests/tasks/test_refresh_pending_ci_task.py`.
     - Added syncer coverage for PR-write-disabled mode in
       `qb_site/syncer/tests/subsystems/test_ci_sync.py`.
 - 2026-03-03:

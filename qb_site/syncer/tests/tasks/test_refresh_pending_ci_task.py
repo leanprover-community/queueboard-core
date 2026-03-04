@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import CIShaFetchState, PullRequest, CheckRun, StatusContext
+from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext, PullRequest, CheckRun, StatusContext
 from syncer.tasks.sync_tasks import refresh_pending_ci_for_repo_task
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.factories import make_repo, make_pr
@@ -82,6 +82,55 @@ class TestRefreshPendingCITask(TestCase):
             ),
         )
         return sc
+
+    def _make_commit_checkrun(
+        self,
+        *,
+        head_sha: str = "sha1",
+        status: str = "IN_PROGRESS",
+        started_at_delta_hours: int = 1,
+        last_synced_at_delta_hours: int | None = None,
+    ) -> CommitCheckRun:
+        now = timezone.now()
+        return CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id=f"CCR{next(self._id_counter)}",
+            head_sha=head_sha,
+            name="ci/test",
+            status=status,
+            conclusion=None,
+            details_url=None,
+            external_id=None,
+            gh_started_at=now - timedelta(hours=started_at_delta_hours),
+            gh_completed_at=None,
+            last_synced_at=(
+                now - timedelta(hours=last_synced_at_delta_hours) if last_synced_at_delta_hours is not None else None
+            ),
+        )
+
+    def _make_commit_status(
+        self,
+        *,
+        head_sha: str = "sha1",
+        state: str = "PENDING",
+        created_delta_hours: int = 1,
+        last_synced_at_delta_hours: int | None = None,
+    ) -> CommitStatusContext:
+        now = timezone.now()
+        return CommitStatusContext.objects.create(
+            repository=self.repo,
+            github_node_id=f"CSC{next(self._id_counter)}",
+            rest_id=None,
+            head_sha=head_sha,
+            name="bors",
+            state=state,
+            target_url=None,
+            description="",
+            gh_created_at=now - timedelta(hours=created_delta_hours),
+            last_synced_at=(
+                now - timedelta(hours=last_synced_at_delta_hours) if last_synced_at_delta_hours is not None else None
+            ),
+        )
 
     def test_skips_when_no_pending_ci(self) -> None:
         # No CheckRuns/StatusContexts at all and no head SHA: nothing to enqueue.
@@ -280,6 +329,36 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(items[0]["shas"], ["shaA"])
         self.assertTrue(items[0]["task_id"])
         mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @override_settings(SYNCER_CI_PR_STORAGE_WRITE=False)
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_enqueues_for_recent_pending_commit_ci_when_pr_rows_absent(self, mock_sync_ci_for_shas) -> None:
+        self.pr.head_sha = "shaC"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        self._make_commit_checkrun(
+            head_sha="shaC",
+            status="IN_PROGRESS",
+            started_at_delta_hours=1,
+            last_synced_at_delta_hours=None,
+        )
+
+        mock_sync_ci_for_shas.delay.return_value.id = "task-commit-pending"
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 1)
+        self.assertEqual(res.get("shas_enqueued"), 1)
+        items = res.get("items") or []
+        self.assertEqual(items[0]["shas"], ["shaC"])
+        mock_sync_ci_for_shas.delay.assert_called_once()
+
+    @override_settings(SYNCER_CI_PR_STORAGE_WRITE=False)
+    def test_skips_missing_head_when_commit_context_exists(self) -> None:
+        self.pr.head_sha = "sha_head"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        self._make_commit_status(head_sha="sha_head", state="SUCCESS", created_delta_hours=1)
+
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
 
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_timeout_excludes_old_pending_ci(self, mock_sync_ci_for_shas) -> None:
