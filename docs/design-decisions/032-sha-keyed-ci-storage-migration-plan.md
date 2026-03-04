@@ -92,6 +92,9 @@
 - Subtlety: multiple PRs can reference one SHA; SHA-keyed writes must not retain PR-specific metadata that changes semantics.
 - Subtlety: provider IDs are not always complete for all context types, so dedupe identity must support provider-ID-present and provider-ID-absent cases.
 - Subtlety: old SHAs may have no CI on GitHub due to retention; this remains handled by `CIShaFetchState` policy and is orthogonal to storage migration.
+- Subtlety: commit-scoped tables may accumulate historical snapshot rows per
+  context name unless we add explicit pruning/compaction; read logic currently
+  enforces latest-wins semantics, but storage compaction should be planned.
 
 ## Phase Plan (Chunked)
 1. `S1` Schema + model scaffolding.
@@ -117,6 +120,10 @@
    - Keep legacy tables read-only during a deprecation window.
 7. `S7` Cleanup migration.
    - Remove transitional flags and dead code.
+   - Add commit-scoped snapshot pruning/compaction command(s):
+     - keep latest row per `(repository, head_sha, normalized context name)` for
+       GraphQL snapshot identities,
+     - keep any required history rows only when explicitly needed by analytics.
    - Optionally drop old PR-keyed CI tables in a separate safety-reviewed change.
 
 ## Validation Plan
@@ -135,6 +142,10 @@
 - Backfill tests:
   - idempotent rerun behavior.
   - resume behavior from partial progress.
+- Cleanup/pruning tests:
+  - latest-row retention per `(repository, head_sha, name)` for commit-scoped
+    tables,
+  - no regression in analyzer CI outcomes before vs after compaction.
 - Local checks:
   - `uv run ruff check qb_site`
   - `uv run ruff format qb_site`
@@ -172,6 +183,14 @@
   - read regressions: set `ANALYZER_CI_SHA_READ_FALLBACK_PR=1` immediately,
   - broader read instability: set `ANALYZER_CI_SHA_READ_PRIMARY=0`,
   - ingest instability: set `SYNCER_CI_SHA_STORAGE_DUAL_WRITE=0`.
+- Default updates as phases complete:
+  - once dual-write is stable, change default for `SYNCER_CI_SHA_STORAGE_DUAL_WRITE`
+    from `0` to `1` in settings/docs.
+  - once SHA-primary reads with fallback are stable, change default for
+    `ANALYZER_CI_SHA_READ_PRIMARY` from `0` to `1`.
+  - once fallback-off is stable, change default for
+    `ANALYZER_CI_SHA_READ_FALLBACK_PR` from `1` to `0`.
+  - remove transitional flags entirely in `S7` after deprecation window.
 
 ### S3 Backfill Runbook
 - Command:
