@@ -4,7 +4,14 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import PullRequest, CommitHistoryHarvest, RepoBackfillCursor, RepoDiscoveryState, SyncerConvergenceSnapshot
+from syncer.models import (
+    PullRequest,
+    CommitCheckRun,
+    CommitHistoryHarvest,
+    RepoBackfillCursor,
+    RepoDiscoveryState,
+    SyncerConvergenceSnapshot,
+)
 from syncer.tasks.collect_convergence import collect_syncer_convergence_task
 
 
@@ -105,6 +112,7 @@ class TestCollectConvergenceTask(TestCase):
         self.assertEqual(snap.prs_engagement_incomplete, 1)
         self.assertEqual(snap.prs_missing_head_ci_state, 2)
         self.assertEqual(snap.prs_missing_head_sha, 1)
+        self.assertEqual(snap.prs_missing_head_ci_contexts, 2)
         self.assertEqual(res["per_repo"][0]["discovery_continuation_active"], True)
         self.assertIsNotNone(res["per_repo"][0]["discovery_lag_seconds"])
         self.assertEqual(res["rows_created"], 1)
@@ -140,3 +148,59 @@ class TestCollectConvergenceTask(TestCase):
         assert newer.discovery_lag_seconds is not None
         assert older.discovery_lag_seconds is not None
         self.assertLess(newer.discovery_lag_seconds, older.discovery_lag_seconds)
+
+    def test_head_contexts_include_commit_scoped_rows(self) -> None:
+        now = timezone.now()
+        pr_with_commit_ci = PullRequest.objects.create(
+            repository=self.repo,
+            number=100,
+            timeline_backfill_done=True,
+            commits_backfill_done=True,
+            head_sha="sha_commit",
+            state="open",
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="o",
+            head_repo_name="r",
+            title="t100",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+        )
+        PullRequest.objects.create(
+            repository=self.repo,
+            number=101,
+            timeline_backfill_done=True,
+            commits_backfill_done=True,
+            head_sha="sha_missing",
+            state="open",
+            gh_created_at=now,
+            gh_updated_at=now,
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="o",
+            head_repo_name="r",
+            title="t101",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+        )
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CCR_HEAD",
+            head_sha=pr_with_commit_ci.head_sha,
+            name="ci/test",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            gh_started_at=now,
+            gh_completed_at=now,
+        )
+
+        collect_syncer_convergence_task.apply().get()
+        snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.prs_missing_head_ci_contexts, 1)

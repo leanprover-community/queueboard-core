@@ -12,6 +12,8 @@ from syncer.models import (
     RepoDiscoveryState,
     SyncerConvergenceSnapshot,
     CheckRun,
+    CommitCheckRun,
+    CommitStatusContext,
     StatusContext,
 )
 from core.models import Repository
@@ -76,12 +78,19 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
         missing_head_sha = qs.filter(Q(head_sha__isnull=True) | Q(head_sha="")).count()
         head_cr = CheckRun.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
         head_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
+        head_ccr = CommitCheckRun.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
+        head_csc = CommitStatusContext.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
         missing_head_contexts = (
             qs.filter(state="open")
             .filter(head_sha__isnull=False)
             .exclude(head_sha="")
-            .annotate(has_head_cr=Exists(head_cr), has_head_sc=Exists(head_sc))
-            .filter(has_head_cr=False, has_head_sc=False)
+            .annotate(
+                has_head_cr=Exists(head_cr),
+                has_head_sc=Exists(head_sc),
+                has_head_ccr=Exists(head_ccr),
+                has_head_csc=Exists(head_csc),
+            )
+            .filter(has_head_cr=False, has_head_sc=False, has_head_ccr=False, has_head_csc=False)
             .count()
         )
 

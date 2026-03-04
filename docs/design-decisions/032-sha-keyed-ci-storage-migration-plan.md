@@ -257,6 +257,14 @@
       - missing-head-CI detection,
       so `syncer.refresh_pending_ci_for_repo` remains effective with
       `SYNCER_CI_PR_STORAGE_WRITE=0`.
+    - Updated convergence collectors to count head-CI presence from commit-scoped
+      rows as well as PR-scoped rows:
+      - `qb_site/syncer/tasks/collect_convergence.py`
+      - `qb_site/analyzer/tasks/collect_convergence.py`
+      so CI convergence metrics remain meaningful after PR-keyed write retirement.
+    - Added convergence task coverage for commit-scoped-only CI presence in:
+      - `qb_site/syncer/tests/tasks/test_collect_convergence_task.py`
+      - `qb_site/analyzer/tests/tasks/test_collect_convergence_task.py`
     - Added `syncer` task tests for commit-scoped-only pending/head-context
       behavior in `qb_site/syncer/tests/tasks/test_refresh_pending_ci_task.py`.
     - Added syncer coverage for PR-write-disabled mode in
