@@ -13,7 +13,7 @@ from analyzer.models import (
 )
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from core.models import Repository
-from syncer.models import CheckRun, CIShaFetchState, PullRequest
+from syncer.models import CheckRun, CIShaFetchState, CommitCheckRun, PullRequest
 
 
 class TestCollectAnalyzerConvergenceTask(TestCase):
@@ -279,3 +279,37 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertIsNotNone(snap)
         # Missing state row for rs_two counts as stale regardless of legacy PR-level fields.
         self.assertEqual(snap.windows_stale, 1)
+
+    def test_ci_not_checked_uses_commit_scoped_ci_rows(self) -> None:
+        pr_missing = self._mk_pr(60)
+        PRRevision.objects.create(
+            pull_request=pr_missing,
+            head_sha="sha_missing",
+            from_ts=pr_missing.gh_created_at,
+            to_ts=None,
+            seq=0,
+        )
+
+        pr_commit_ci = self._mk_pr(61)
+        PRRevision.objects.create(
+            pull_request=pr_commit_ci,
+            head_sha="sha_commit",
+            from_ts=pr_commit_ci.gh_created_at,
+            to_ts=None,
+            seq=0,
+        )
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CCR61",
+            head_sha="sha_commit",
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            gh_started_at=timezone.now(),
+            gh_completed_at=timezone.now(),
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.ci_not_checked, 1)
