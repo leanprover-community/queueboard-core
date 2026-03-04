@@ -19,7 +19,7 @@ from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import record_ci_sha_fetch, should_enqueue_ci_sha_with_state
-from syncer.models import CIShaFetchState, CheckRun, CommitCheckRun, CommitStatusContext, StatusContext
+from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext
 from core.celery_signals import enqueue_with_parent
 
 
@@ -939,16 +939,16 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     """Refresh CI for SHAs whose CheckRuns/StatusContexts are stuck pending.
 
     Selection
-    - Consider PRs in the given repo that currently have any non-terminal CI:
-      - CheckRun.status != COMPLETED
-      - or StatusContext.state == PENDING
+    - Consider PRs in the given repo that currently have any non-terminal commit-scoped CI:
+      - CommitCheckRun.status != COMPLETED
+      - or CommitStatusContext.state == PENDING
     - For each such PR, collect head_shas for "eligible" pending CI rows:
       - If last_synced_at is NULL: always eligible (never refreshed explicitly).
       - Else, compute how long GitHub has been reporting this row as pending:
         pending_duration = last_synced_at - origin
         where origin is:
-          - CheckRun: gh_started_at or gh_completed_at or created_at
-          - StatusContext: gh_created_at
+          - CommitCheckRun: gh_started_at or gh_completed_at or created_at
+          - CommitStatusContext: gh_created_at
         Only include rows where pending_duration < max_pending_hours.
     - From those rows, take up to `max_shas_per_pr` distinct SHAs and enqueue a
       `sync_ci_for_shas_task` to refresh CI for that PR.
@@ -977,12 +977,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     max_age = timedelta(hours=max_pending_hours)
 
     # Identify PRs that currently have any pending CI.
-    cr_origin = Coalesce("gh_started_at", "gh_completed_at", "created_at")
-    sc_origin = Coalesce("gh_created_at", "created_at")
     ccr_origin = Coalesce("gh_started_at", "gh_completed_at", "created_at")
     csc_origin = Coalesce("gh_created_at", "created_at")
-    pending_cr = CheckRun.objects.filter(pull_request=OuterRef("pk")).exclude(status="COMPLETED")
-    pending_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), state="PENDING")
     pending_ccr = CommitCheckRun.objects.filter(
         repository=repo,
         head_sha=OuterRef("head_sha"),
@@ -991,28 +987,6 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         repository=repo,
         head_sha=OuterRef("head_sha"),
         state="PENDING",
-    )
-    eligible_pending_cr = pending_cr.filter(
-        models.Q(last_synced_at__isnull=True)
-        | models.Q(
-            last_synced_at__lt=(
-                models.ExpressionWrapper(
-                    cr_origin + models.Value(max_age),
-                    output_field=models.DateTimeField(),
-                )
-            )
-        )
-    )
-    eligible_pending_sc = pending_sc.filter(
-        models.Q(last_synced_at__isnull=True)
-        | models.Q(
-            last_synced_at__lt=(
-                models.ExpressionWrapper(
-                    sc_origin + models.Value(max_age),
-                    output_field=models.DateTimeField(),
-                )
-            )
-        )
     )
     eligible_pending_ccr = pending_ccr.filter(
         models.Q(last_synced_at__isnull=True)
@@ -1036,20 +1010,14 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             )
         )
     )
-    # Identify PRs whose head SHA has no CI contexts stored at all.
-    head_cr = CheckRun.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
-    head_sc = StatusContext.objects.filter(pull_request=OuterRef("pk"), head_sha=OuterRef("head_sha"))
+    # Identify PRs whose head SHA has no commit-scoped CI contexts stored at all.
     head_ccr = CommitCheckRun.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
     head_csc = CommitStatusContext.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
 
-    has_recent_pending_ci = (
-        Exists(eligible_pending_cr) | Exists(eligible_pending_sc) | Exists(eligible_pending_ccr) | Exists(eligible_pending_csc)
-    )
+    has_recent_pending_ci = Exists(eligible_pending_ccr) | Exists(eligible_pending_csc)
     prs_qs = (
         PullRequest.objects.filter(repository=repo)
         .annotate(
-            has_head_cr=Exists(head_cr),
-            has_head_sc=Exists(head_sc),
             has_head_ccr=Exists(head_ccr),
             has_head_csc=Exists(head_csc),
         )
@@ -1058,8 +1026,6 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             | (
                 Q(head_sha__isnull=False)
                 & ~Q(head_sha="")
-                & Q(has_head_cr=False)
-                & Q(has_head_sc=False)
                 & Q(has_head_ccr=False)
                 & Q(has_head_csc=False)
                 & ~Q(head_ci_state__iexact="UNAVAILABLE")
@@ -1092,45 +1058,21 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         prs_seen_pending_or_missing_head += 1
         missing_head_ci = (
             bool(getattr(pr, "head_sha", None))
-            and not bool(getattr(pr, "has_head_cr", False))
-            and not bool(getattr(pr, "has_head_sc", False))
             and not bool(getattr(pr, "has_head_ccr", False))
             and not bool(getattr(pr, "has_head_csc", False))
             and str(getattr(pr, "head_ci_state", "")).upper() != "UNAVAILABLE"
         )
         if (
             bool(getattr(pr, "head_sha", None))
-            and not bool(getattr(pr, "has_head_cr", False))
-            and not bool(getattr(pr, "has_head_sc", False))
             and not bool(getattr(pr, "has_head_ccr", False))
             and not bool(getattr(pr, "has_head_csc", False))
             and str(getattr(pr, "head_ci_state", "")).upper() == "UNAVAILABLE"
         ):
             skipped_unavailable_head_ci += 1
 
-        # Pending CheckRuns with acceptable "pending duration".
-        cr_qs = (
-            CheckRun.objects.filter(pull_request=pr)
-            .order_by(
-                "head_sha",
-                "name",
-                Coalesce("gh_completed_at", "gh_started_at").desc(),
-                "-id",
-            )
-            .distinct("head_sha", "name")
-        )
+        # Pending commit-scoped CheckRuns with acceptable "pending duration".
         eligible_cr_shas: set[str] = set()
         has_recent_pending = False
-        for cr in cr_qs:
-            if cr.status == "COMPLETED":
-                continue
-            origin = cr.gh_started_at or cr.gh_completed_at or cr.created_at
-            if origin is None:
-                origin = now
-            if cr.last_synced_at is None or (cr.last_synced_at - origin) < max_age:
-                has_recent_pending = True
-                # head_sha should always be present for ingested CI rows.
-                eligible_cr_shas.add(cr.head_sha)
         if pr.head_sha:
             commit_cr_qs = (
                 CommitCheckRun.objects.filter(repository=pr.repository, head_sha=pr.head_sha)
@@ -1152,23 +1094,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
                     has_recent_pending = True
                     eligible_cr_shas.add(cr.head_sha)
 
-        # Pending StatusContexts with acceptable "pending duration".
-        sc_qs = (
-            StatusContext.objects.filter(pull_request=pr)
-            .order_by("head_sha", "name", "-gh_created_at", "-id")
-            .distinct("head_sha", "name")
-        )
+        # Pending commit-scoped StatusContexts with acceptable "pending duration".
         eligible_sc_shas: set[str] = set()
-        for sc in sc_qs:
-            if sc.state != "PENDING":
-                continue
-            origin_sc = sc.gh_created_at or sc.created_at
-            if origin_sc is None:
-                origin_sc = now
-            if sc.last_synced_at is None or (sc.last_synced_at - origin_sc) < max_age:
-                has_recent_pending = True
-                # head_sha should always be present for ingested CI rows.
-                eligible_sc_shas.add(sc.head_sha)
         if pr.head_sha:
             commit_sc_qs = (
                 CommitStatusContext.objects.filter(repository=pr.repository, head_sha=pr.head_sha)

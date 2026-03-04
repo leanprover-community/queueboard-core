@@ -10,13 +10,11 @@ from django.db.models import Max
 from django.utils import timezone
 
 from syncer.models import (
-    CheckRun,
     CommitCheckRun,
     CommitStatusContext,
     PullRequest,
     PRTimelineEvent,
     PRTimelineEventType,
-    StatusContext,
 )
 from syncer.models.check_run import CheckRunStatus
 from syncer.models.status_context import StatusContextState
@@ -61,24 +59,12 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
     """Infer a seed head SHA when no force-push events exist.
 
     Heuristics (best-effort):
-    - Prefer the most recent CheckRun.head_sha for the PR.
-    - Otherwise prefer the most recent StatusContext.head_sha for the PR.
-    - Otherwise fall back to PullRequest.head_sha when present.
+    - Prefer PullRequest.head_sha when present.
+    - Otherwise prefer the most recent commit-scoped CI head for candidate SHAs.
     - Return None if none exists.
     """
     if getattr(pr, "head_sha", None):
         return pr.head_sha
-    cr = (
-        CheckRun.objects.filter(pull_request=pr)
-        .exclude(head_sha="")
-        .order_by("-gh_completed_at", "-gh_started_at", "-id")
-        .first()
-    )
-    if cr and cr.head_sha:
-        return cr.head_sha
-    sc = StatusContext.objects.filter(pull_request=pr).exclude(head_sha="").order_by("-gh_created_at", "-id").first()
-    if sc and sc.head_sha:
-        return sc.head_sha
     candidate_shas = _candidate_head_shas_for_pr(pr)
     if not candidate_shas:
         return None
@@ -147,26 +133,6 @@ def _collect_ci_first_seen(pr: PullRequest) -> tuple[dict[str, datetime], Option
             latest_ts = ts
 
     candidate_shas = _candidate_head_shas_for_pr(pr)
-
-    for cr in (
-        CheckRun.objects.filter(pull_request=pr)
-        .exclude(head_sha="")
-        .only(
-            "head_sha",
-            "gh_started_at",
-            "gh_completed_at",
-        )
-    ):
-        start_ts = cr.gh_started_at
-        end_ts = cr.gh_completed_at
-        ts = start_ts or end_ts
-        _update_first(cr.head_sha, ts)
-        _update_latest(start_ts)
-        _update_latest(end_ts)
-
-    for sc in StatusContext.objects.filter(pull_request=pr).exclude(head_sha="").only("head_sha", "gh_created_at"):
-        _update_first(sc.head_sha, sc.gh_created_at)
-        _update_latest(sc.gh_created_at)
 
     if candidate_shas:
         for ccr in CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas).only(
@@ -330,12 +296,6 @@ def _latest_signal_ts(pr: PullRequest) -> Optional[datetime]:
     if tl_latest:
         candidates.append(tl_latest)
     candidate_shas = _candidate_head_shas_for_pr(pr)
-    cr_latest = CheckRun.objects.filter(pull_request=pr).aggregate(m=Max("gh_completed_at")).get("m")  # type: ignore[arg-type]
-    if cr_latest:
-        candidates.append(cr_latest)
-    sc_latest = StatusContext.objects.filter(pull_request=pr).aggregate(m=Max("gh_created_at")).get("m")  # type: ignore[arg-type]
-    if sc_latest:
-        candidates.append(sc_latest)
     if candidate_shas:
         ccr_latest = (
             CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas)
@@ -569,9 +529,9 @@ def next_revision_backfill_shas(
     """Return up to `limit` head SHAs whose CI appears missing or still pending.
 
     Heuristic: select candidate head SHAs (older first) where:
-      - neither any CheckRun nor any StatusContext exists for that SHA, or
-      - only pending StatusContexts exist (no completed states), or
-      - any CheckRun is still queued or in-progress.
+      - neither any commit-scoped CheckRun nor any commit-scoped StatusContext exists for that SHA, or
+      - only pending commit-scoped StatusContexts exist (no completed states), or
+      - any commit-scoped CheckRun is still queued or in-progress.
     Candidates include:
       - before/after SHAs from HEAD_FORCE_PUSHED timeline events
       - existing PRRevision heads
@@ -595,14 +555,13 @@ def next_revision_backfill_shas(
 
     # Snapshot CI presence up-front to avoid repeated queries per candidate.
     candidate_set = set(candidates)
-    status_ctx_rows = StatusContext.objects.filter(pull_request=pr, head_sha__in=candidate_set).values_list("head_sha", "state")
-    commit_status_ctx_rows = CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_set).values_list(
+    status_ctx_rows = CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_set).values_list(
         "head_sha", "state"
     )
     sc_any: set[str] = set()
     sc_pending: set[str] = set()
     sc_completed: set[str] = set()
-    for head_sha, state in list(status_ctx_rows) + list(commit_status_ctx_rows):
+    for head_sha, state in status_ctx_rows:
         if not head_sha:
             continue
         sc_any.add(head_sha)
@@ -611,13 +570,12 @@ def next_revision_backfill_shas(
         else:
             sc_completed.add(head_sha)
 
-    check_run_rows = CheckRun.objects.filter(pull_request=pr, head_sha__in=candidate_set).values_list("head_sha", "status")
-    commit_check_run_rows = CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_set).values_list(
+    check_run_rows = CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_set).values_list(
         "head_sha", "status"
     )
     cr_any: set[str] = set()
     cr_pending: set[str] = set()
-    for head_sha, status in list(check_run_rows) + list(commit_check_run_rows):
+    for head_sha, status in check_run_rows:
         if not head_sha:
             continue
         cr_any.add(head_sha)

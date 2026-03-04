@@ -227,6 +227,28 @@
 
 ## Progress Notes
 - 2026-03-04:
+  - `S7` cleanup completion (runtime):
+    - Removed remaining transitional SHA/PR CI storage flags/settings wiring
+      from active runtime code paths.
+    - Runtime CI behavior is now commit-scoped (SHA-keyed) only for:
+      - ingest writes,
+      - analyzer queue/snapshot/revision CI reads,
+      - pending-CI refresh selection,
+      - convergence CI presence counting.
+    - PR-keyed CI rows remain only as legacy data for manual/debug fallback; no
+      active production logic depends on PR-keyed CI reads.
+  - Missing-CI planner correctness fix:
+    - Updated `analyzer.plan_missing_ci` enqueue path to submit only
+      `actionable_shas` (after backoff gating), rather than all planned SHAs.
+    - Kept revision-version marking semantics so backoff-blocked planned SHAs do
+      not get marked permanently checked and remain retryable on later sweeps.
+  - Test realignment and regression coverage:
+    - Updated analyzer/syncer CI tests to assert commit-scoped rows by default
+      and removed residual assumptions that PR-keyed rows are primary.
+    - Added task-level regression coverage for mixed planned SHAs where a subset
+      is backoff-blocked, asserting enqueue receives only actionable SHAs.
+    - Updated error-SHA planner tests to use deterministic backoff timing
+      fixtures (older `last_attempted_at`) so expectations are stable.
   - `S5` soak outcome (operational):
     - SHA-primary reads have been running with PR fallback disabled for multiple
       hours in production without observed queue/snapshot regressions.
@@ -274,6 +296,11 @@
       - analyzer queue-window/snapshot CI reads are now hardwired to
         commit-scoped rows,
       - syncer CI ingest is now hardwired to commit-scoped writes.
+    - Removed remaining PR-keyed CI read dependencies in active runtime paths:
+      - analyzer revision rebuild/planning now consults commit-scoped CI only,
+      - syncer pending-CI refresh task now consults commit-scoped CI only,
+      - syncer/analyzer convergence collectors now evaluate head-CI presence from
+        commit-scoped CI only.
     - Removed analyzer/syncer test reliance on transitional SHA/PR toggle
       settings; tests now exercise storage/read-path behavior directly.
 - 2026-03-03:
