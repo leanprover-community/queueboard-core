@@ -246,6 +246,11 @@
     - Updated CI ingest (`sync_check_runs`/`sync_status_contexts`) so when
       PR-keyed writes are disabled, commit-scoped writes are still forced on
       even if dual-write is toggled off, preventing dropped CI data.
+    - Updated analyzer revision CI consumers in
+      `qb_site/analyzer/services/revisions.py` to include commit-scoped CI rows
+      (`CommitCheckRun`/`CommitStatusContext`) keyed by
+      `(repository, candidate_head_shas)` so revision rebuild and missing-CI
+      planning continue to work after PR-keyed writes are turned off.
     - Added syncer coverage for PR-write-disabled mode in
       `qb_site/syncer/tests/subsystems/test_ci_sync.py`.
 - 2026-03-03:

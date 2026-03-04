@@ -9,9 +9,15 @@ from django.db import transaction
 from django.db.models import Max
 from django.utils import timezone
 
-from syncer.models import CheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType, StatusContext
-from syncer.services.check_runs import latest_check_runs_for_pr
-from syncer.services.status_contexts import latest_status_contexts_for_pr
+from syncer.models import (
+    CheckRun,
+    CommitCheckRun,
+    CommitStatusContext,
+    PullRequest,
+    PRTimelineEvent,
+    PRTimelineEventType,
+    StatusContext,
+)
 from syncer.models.check_run import CheckRunStatus
 from syncer.models.status_context import StatusContextState
 from analyzer.models import PRRevision, PRRevisionBuildState
@@ -60,6 +66,8 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
     - Otherwise fall back to PullRequest.head_sha when present.
     - Return None if none exists.
     """
+    if getattr(pr, "head_sha", None):
+        return pr.head_sha
     cr = (
         CheckRun.objects.filter(pull_request=pr)
         .exclude(head_sha="")
@@ -71,9 +79,42 @@ def _infer_seed_sha(pr: PullRequest) -> str | None:
     sc = StatusContext.objects.filter(pull_request=pr).exclude(head_sha="").order_by("-gh_created_at", "-id").first()
     if sc and sc.head_sha:
         return sc.head_sha
-    if getattr(pr, "head_sha", None):
-        return pr.head_sha
+    candidate_shas = _candidate_head_shas_for_pr(pr)
+    if not candidate_shas:
+        return None
+    ccr = (
+        CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas)
+        .exclude(head_sha="")
+        .order_by("-gh_completed_at", "-gh_started_at", "-id")
+        .first()
+    )
+    if ccr and ccr.head_sha:
+        return ccr.head_sha
+    csc = (
+        CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_shas)
+        .exclude(head_sha="")
+        .order_by("-gh_created_at", "-id")
+        .first()
+    )
+    if csc and csc.head_sha:
+        return csc.head_sha
     return None
+
+
+def _candidate_head_shas_for_pr(pr: PullRequest) -> set[str]:
+    candidates: set[str] = set()
+    if getattr(pr, "head_sha", None):
+        candidates.add(pr.head_sha)
+    for ev in PRTimelineEvent.objects.filter(pull_request=pr, type=PRTimelineEventType.HEAD_FORCE_PUSHED).only(
+        "before_sha", "after_sha"
+    ):
+        if ev.before_sha:
+            candidates.add(ev.before_sha)
+        if ev.after_sha:
+            candidates.add(ev.after_sha)
+    for rev in PRRevision.objects.filter(pull_request=pr).exclude(head_sha__isnull=True).exclude(head_sha="").only("head_sha"):
+        candidates.add(rev.head_sha)
+    return candidates
 
 
 def _collect_ci_first_seen(pr: PullRequest) -> tuple[dict[str, datetime], Optional[datetime]]:
@@ -105,14 +146,12 @@ def _collect_ci_first_seen(pr: PullRequest) -> tuple[dict[str, datetime], Option
         if latest_ts is None or ts > latest_ts:
             latest_ts = ts
 
-    for cr in (
-        CheckRun.objects.filter(pull_request=pr)
-        .exclude(head_sha="")
-        .only(
-            "head_sha",
-            "gh_started_at",
-            "gh_completed_at",
-        )
+    candidate_shas = _candidate_head_shas_for_pr(pr)
+
+    for cr in CheckRun.objects.filter(pull_request=pr).exclude(head_sha="").only(
+        "head_sha",
+        "gh_started_at",
+        "gh_completed_at",
     ):
         start_ts = cr.gh_started_at
         end_ts = cr.gh_completed_at
@@ -121,16 +160,29 @@ def _collect_ci_first_seen(pr: PullRequest) -> tuple[dict[str, datetime], Option
         _update_latest(start_ts)
         _update_latest(end_ts)
 
-    for sc in (
-        StatusContext.objects.filter(pull_request=pr)
-        .exclude(head_sha="")
-        .only(
-            "head_sha",
-            "gh_created_at",
-        )
-    ):
+    for sc in StatusContext.objects.filter(pull_request=pr).exclude(head_sha="").only("head_sha", "gh_created_at"):
         _update_first(sc.head_sha, sc.gh_created_at)
         _update_latest(sc.gh_created_at)
+
+    if candidate_shas:
+        for ccr in CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas).only(
+            "head_sha",
+            "gh_started_at",
+            "gh_completed_at",
+        ):
+            start_ts = ccr.gh_started_at
+            end_ts = ccr.gh_completed_at
+            ts = start_ts or end_ts
+            _update_first(ccr.head_sha, ts)
+            _update_latest(start_ts)
+            _update_latest(end_ts)
+
+        for csc in CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_shas).only(
+            "head_sha",
+            "gh_created_at",
+        ):
+            _update_first(csc.head_sha, csc.gh_created_at)
+            _update_latest(csc.gh_created_at)
 
     return first_seen, latest_ts
 
@@ -273,20 +325,28 @@ def _latest_signal_ts(pr: PullRequest) -> Optional[datetime]:
     )
     if tl_latest:
         candidates.append(tl_latest)
-    cr_latest = (
-        CheckRun.objects.filter(pull_request=pr)
-        .aggregate(m=Max("gh_completed_at"))  # type: ignore[arg-type]
-        .get("m")
-    )
+    candidate_shas = _candidate_head_shas_for_pr(pr)
+    cr_latest = CheckRun.objects.filter(pull_request=pr).aggregate(m=Max("gh_completed_at")).get("m")  # type: ignore[arg-type]
     if cr_latest:
         candidates.append(cr_latest)
-    sc_latest = (
-        StatusContext.objects.filter(pull_request=pr)
-        .aggregate(m=Max("gh_created_at"))  # type: ignore[arg-type]
-        .get("m")
-    )
+    sc_latest = StatusContext.objects.filter(pull_request=pr).aggregate(m=Max("gh_created_at")).get("m")  # type: ignore[arg-type]
     if sc_latest:
         candidates.append(sc_latest)
+    if candidate_shas:
+        ccr_latest = (
+            CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas)
+            .aggregate(m=Max("gh_completed_at"))
+            .get("m")
+        )
+        if ccr_latest:
+            candidates.append(ccr_latest)
+        csc_latest = (
+            CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_shas)
+            .aggregate(m=Max("gh_created_at"))
+            .get("m")
+        )
+        if csc_latest:
+            candidates.append(csc_latest)
     if not candidates:
         return None
     # Ensure aware
@@ -530,11 +590,15 @@ def next_revision_backfill_shas(
                 stale_non_open_pr = (now_ts - last_activity) >= timedelta(hours=stale_non_open_hours)
 
     # Snapshot CI presence up-front to avoid repeated queries per candidate.
-    status_ctx_rows = latest_status_contexts_for_pr(pr).values_list("head_sha", "state")
+    candidate_set = set(candidates)
+    status_ctx_rows = StatusContext.objects.filter(pull_request=pr, head_sha__in=candidate_set).values_list("head_sha", "state")
+    commit_status_ctx_rows = CommitStatusContext.objects.filter(
+        repository=pr.repository, head_sha__in=candidate_set
+    ).values_list("head_sha", "state")
     sc_any: set[str] = set()
     sc_pending: set[str] = set()
     sc_completed: set[str] = set()
-    for head_sha, state in status_ctx_rows:
+    for head_sha, state in list(status_ctx_rows) + list(commit_status_ctx_rows):
         if not head_sha:
             continue
         sc_any.add(head_sha)
@@ -543,10 +607,13 @@ def next_revision_backfill_shas(
         else:
             sc_completed.add(head_sha)
 
-    check_run_rows = latest_check_runs_for_pr(pr).values_list("head_sha", "status")
+    check_run_rows = CheckRun.objects.filter(pull_request=pr, head_sha__in=candidate_set).values_list("head_sha", "status")
+    commit_check_run_rows = CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_set).values_list(
+        "head_sha", "status"
+    )
     cr_any: set[str] = set()
     cr_pending: set[str] = set()
-    for head_sha, status in check_run_rows:
+    for head_sha, status in list(check_run_rows) + list(commit_check_run_rows):
         if not head_sha:
             continue
         cr_any.add(head_sha)
