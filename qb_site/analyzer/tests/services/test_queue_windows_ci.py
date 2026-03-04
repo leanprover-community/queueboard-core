@@ -6,7 +6,7 @@ from django.test import TestCase
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet
-from syncer.models import CheckRun, PullRequest, StatusContext
+from syncer.models import CommitCheckRun, CommitStatusContext, PullRequest
 from analyzer.services.queue_windows import is_on_queue_at
 
 
@@ -49,6 +49,7 @@ class TestQueueWindowsCI(TestCase):
             additions=0,
             deletions=0,
             changed_files_count=0,
+            head_sha="h1",
         )
 
     def test_ci_required_contexts_gate_queue_membership(self) -> None:
@@ -59,10 +60,9 @@ class TestQueueWindowsCI(TestCase):
         self.assertFalse(is_on_queue_at(pr, at=at))
 
         # Add a failing status for the required context.
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC1",
-            rest_id=None,
             head_sha="h1",
             name="lint",
             state="FAILURE",
@@ -73,11 +73,10 @@ class TestQueueWindowsCI(TestCase):
         self.assertFalse(is_on_queue_at(pr, at=at))
 
         # Add a successful status with the same context name; latest SUCCESS should make CI ok.
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC2",
-            rest_id=None,
-            head_sha="h2",
+            head_sha="h1",
             name="lint",
             state="SUCCESS",
             target_url=None,
@@ -95,10 +94,9 @@ class TestQueueWindowsCI(TestCase):
         pr = self._mk_pr(2)
         at = _dt(2024, 9, 6)
 
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC3",
-            rest_id=None,
             head_sha="h1",
             name="lint / linux",
             state="SUCCESS",
@@ -106,10 +104,9 @@ class TestQueueWindowsCI(TestCase):
             description=None,
             gh_created_at=_dt(2024, 9, 4),
         )
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC4",
-            rest_id=None,
             head_sha="h1",
             name="lint / mac",
             state="FAILURE",
@@ -119,10 +116,9 @@ class TestQueueWindowsCI(TestCase):
         )
         self.assertFalse(is_on_queue_at(pr, at=at))
 
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC5",
-            rest_id=None,
             head_sha="h1",
             name="lint / mac",
             state="SUCCESS",
@@ -147,10 +143,9 @@ class TestQueueWindowsCI(TestCase):
         pr = self._mk_pr(3)
         at = _dt(2024, 9, 6)
 
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC6",
-            rest_id=None,
             head_sha="h1",
             name="lint / linux",
             state="SUCCESS",
@@ -179,10 +174,9 @@ class TestQueueWindowsCI(TestCase):
         self.assertTrue(is_on_queue_at(pr, at=at))
 
         # Running required context is also non-blocking.
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC7",
-            rest_id=None,
             head_sha="h1",
             name="lint",
             state="PENDING",
@@ -193,10 +187,9 @@ class TestQueueWindowsCI(TestCase):
         self.assertTrue(is_on_queue_at(pr, at=at))
 
         # Observed required failure blocks queue eligibility.
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC8",
-            rest_id=None,
             head_sha="h1",
             name="lint",
             state="FAILURE",
@@ -207,8 +200,8 @@ class TestQueueWindowsCI(TestCase):
         self.assertFalse(is_on_queue_at(pr, at=_dt(2024, 9, 7)))
 
         # A newer running check run makes the required context non-failing again.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_RUNNING",
             head_sha="h1",
             name="lint",

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone as dt_timezone
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet, PRQueueWindow, PRRevision
-from syncer.models import PullRequest, CheckRun, PRTimelineEvent, PRTimelineEventType, StatusContext
+from syncer.models import CommitCheckRun, CommitStatusContext, PullRequest, PRTimelineEvent, PRTimelineEventType
 from analyzer.services.queue_windows import rebuild_queue_windows_for_ruleset
 from analyzer.services.revisions import rebuild_pr_revisions
 
@@ -15,7 +15,6 @@ def _dt(year: int, month: int, day: int) -> datetime:
     return datetime(year, month, day, tzinfo=dt_timezone.utc)
 
 
-@override_settings(ANALYZER_CI_SHA_READ_PRIMARY=False, ANALYZER_CI_SHA_READ_FALLBACK_PR=True)
 class TestQueueWindowCIWindows(TestCase):
     def setUp(self) -> None:
         self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
@@ -68,8 +67,8 @@ class TestQueueWindowCIWindows(TestCase):
         self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
 
         # Failing CI first, then passing, then failing again.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_FAIL",
             head_sha="sha1",
             name="lint",
@@ -80,8 +79,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_started_at=_dt(2024, 9, 2),
             gh_completed_at=_dt(2024, 9, 2),
         )
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_OK",
             head_sha="sha1",
             name="lint",
@@ -92,8 +91,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_started_at=_dt(2024, 9, 4),
             gh_completed_at=_dt(2024, 9, 4),
         )
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_FAIL_LATE",
             head_sha="sha1",
             name="lint",
@@ -119,8 +118,8 @@ class TestQueueWindowCIWindows(TestCase):
         self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
 
         # Required context is "lint", but the actual check run is suffixed.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_OK_FORK",
             head_sha="sha1",
             name="lint (fork)",
@@ -144,8 +143,8 @@ class TestQueueWindowCIWindows(TestCase):
         pr = self._mk_pr(11)
         self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
 
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC_OK_FORK",
             head_sha="sha1",
             name="lint (fork)",
@@ -170,8 +169,8 @@ class TestQueueWindowCIWindows(TestCase):
         self._add_revision(pr, "sha2", _dt(2024, 9, 6), None, 1)
 
         # CI success for sha1 at Sep 3.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_sha1_OK",
             head_sha="sha1",
             name="lint",
@@ -183,8 +182,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_completed_at=_dt(2024, 9, 3),
         )
         # No CI for sha2 until Sep 9.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_sha2_OK",
             head_sha="sha2",
             name="lint",
@@ -214,8 +213,8 @@ class TestQueueWindowCIWindows(TestCase):
         self._add_revision(pr, "shaP", _dt(2024, 9, 1), None, 0)
 
         # Only a pending run (status != COMPLETED) exists; no successful snapshot.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_PENDING",
             head_sha="shaP",
             name="lint",
@@ -250,8 +249,8 @@ class TestQueueWindowCIWindows(TestCase):
         self._add_revision(pr, "shaN", _dt(2024, 9, 1), None, 0)
 
         # Failure closes the initially-open no-fail window.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_NOFAIL_FAIL",
             head_sha="shaN",
             name="lint",
@@ -263,8 +262,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_completed_at=_dt(2024, 9, 4),
         )
         # A newer running check run re-opens eligibility in no-fail mode.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_NOFAIL_RUNNING",
             head_sha="shaN",
             name="lint",
@@ -286,10 +285,17 @@ class TestQueueWindowCIWindows(TestCase):
 
     def test_end_to_end_revisions_and_ci_windows_with_head_change(self) -> None:
         pr = self._mk_pr(4)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=_dt(2024, 9, 6),
+            before_sha="sha1",
+            after_sha="sha2",
+        )
 
         # CI success for initial head sha1 at Sep 2.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_sha1_OK",
             head_sha="sha1",
             name="lint",
@@ -302,8 +308,8 @@ class TestQueueWindowCIWindows(TestCase):
         )
 
         # Later CI failure for new head sha2 at Sep 6 (no success for sha2).
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_sha2_FAIL",
             head_sha="sha2",
             name="lint",
@@ -315,7 +321,7 @@ class TestQueueWindowCIWindows(TestCase):
             gh_completed_at=_dt(2024, 9, 6),
         )
 
-        # Build PRRevision windows from CI (no force-push events present).
+        # Build PRRevision windows from force-push + CI.
         res_rev = rebuild_pr_revisions(pr)
         self.assertGreaterEqual(PRRevision.objects.filter(pull_request=pr).count(), 2)
         self.assertGreaterEqual(res_rev.created, 1)
@@ -335,6 +341,8 @@ class TestQueueWindowCIWindows(TestCase):
 
     def test_end_to_end_force_push_and_ci_inferred_heads(self) -> None:
         pr = self._mk_pr(5)
+        pr.head_sha = "h3"
+        pr.save(update_fields=["head_sha"])
         t_fp = _dt(2024, 9, 5)
 
         # Force-push splits the timeline into two segments with baselines h0 and h2.
@@ -347,8 +355,8 @@ class TestQueueWindowCIWindows(TestCase):
         )
 
         # Segment 1: success for h0, then success for h1 (CI-inferred head change).
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_h0_OK",
             head_sha="h0",
             name="lint",
@@ -359,8 +367,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_started_at=_dt(2024, 9, 2),
             gh_completed_at=_dt(2024, 9, 2),
         )
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_h1_OK",
             head_sha="h1",
             name="lint",
@@ -373,8 +381,8 @@ class TestQueueWindowCIWindows(TestCase):
         )
 
         # Segment 2: success for h2, then a failing head h3 inferred from CI.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_h2_OK",
             head_sha="h2",
             name="lint",
@@ -385,8 +393,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_started_at=_dt(2024, 9, 6),
             gh_completed_at=_dt(2024, 9, 6),
         )
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_h3_FAIL",
             head_sha="h3",
             name="lint",
@@ -401,8 +409,9 @@ class TestQueueWindowCIWindows(TestCase):
         # Build revisions from force-push + CI signals.
         rebuild_pr_revisions(pr)
         revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
-        # Expected revision heads: h0 -> h1 (CI) -> h2 (force-push) -> h3 (CI)
-        self.assertEqual([r.head_sha for r in revs], ["h0", "h1", "h2", "h3"])
+        # Expected revision heads under constrained SHA inference:
+        # h0 -> h2 (force-push) -> h3 (current-head + CI).
+        self.assertEqual([r.head_sha for r in revs], ["h0", "h2", "h3"])
 
         # Rebuild queue windows; as_of after all events.
         as_of = _dt(2024, 9, 10)
@@ -424,8 +433,8 @@ class TestQueueWindowCIWindows(TestCase):
         pr = self._mk_pr(6)
         self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
 
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_TIE_FAIL",
             head_sha="sha1",
             name="lint",
@@ -436,8 +445,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_started_at=_dt(2024, 9, 4),
             gh_completed_at=_dt(2024, 9, 4),
         )
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC_TIE_OK",
             head_sha="sha1",
             name="lint",
@@ -465,8 +474,8 @@ class TestQueueWindowCIWindows(TestCase):
         pr = self._mk_pr(7)
         self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
 
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_LINT_OK",
             head_sha="sha1",
             name="lint",
@@ -477,8 +486,8 @@ class TestQueueWindowCIWindows(TestCase):
             gh_started_at=_dt(2024, 9, 2),
             gh_completed_at=_dt(2024, 9, 2),
         )
-        StatusContext.objects.create(
-            pull_request=pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC_BUILD_OK",
             head_sha="sha1",
             name="build",
@@ -498,8 +507,8 @@ class TestQueueWindowCIWindows(TestCase):
         pr = self._mk_pr(8)
         self._add_revision(pr, "sha1", _dt(2024, 9, 1), _dt(2024, 9, 5), 0)
 
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_SHA1_OK",
             head_sha="sha1",
             name="lint",

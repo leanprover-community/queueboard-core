@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, PRRevision
 from analyzer.models.queue_snapshot import QueueSnapshot
@@ -15,7 +15,6 @@ from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
 from syncer.models.commit_check_run import CommitCheckRun
 
 
-@override_settings(ANALYZER_CI_SHA_READ_PRIMARY=False, ANALYZER_CI_SHA_READ_FALLBACK_PR=True)
 class QueueboardSnapshotBuilderTests(TestCase):
     def setUp(self):
         self.repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
@@ -52,6 +51,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
             additions=1,
             deletions=1,
             changed_files_count=1,
+            head_sha=f"sha{number}",
             files=["src/file.py"],
             assignees=[],
             approvals=[],
@@ -71,10 +71,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
         return pr
 
     def _add_ci(self, pr: PullRequest, *, conclusion=CheckRunConclusion.SUCCESS, status=CheckRunStatus.COMPLETED, name="lint"):
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id=f"cr-{pr.number}-{name}",
-            head_sha="a" * 40,
+            head_sha=pr.head_sha or "",
             name=name,
             status=status,
             conclusion=conclusion,
@@ -209,10 +209,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
 
     def test_build_and_store_creates_snapshot_row(self):
         pr1 = self._make_pr(10, labels=("t-analysis",))
-        CheckRun.objects.create(
-            pull_request=pr1,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="cr10",
-            head_sha="a" * 40,
+            head_sha=pr1.head_sha or "",
             name="lint",
             status=CheckRunStatus.COMPLETED,
             conclusion=CheckRunConclusion.SUCCESS,
@@ -251,10 +251,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(first.queue_count, 0)  # no CI yet
 
         # Add CI and a second PR off-queue
-        CheckRun.objects.create(
-            pull_request=pr1,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="cr20",
-            head_sha="b" * 40,
+            head_sha=pr1.head_sha or "",
             name="lint",
             status=CheckRunStatus.COMPLETED,
             conclusion=CheckRunConclusion.SUCCESS,
@@ -285,10 +285,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
         )
 
         # CI for queue entry
-        CheckRun.objects.create(
-            pull_request=pr_queue,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="cr30",
-            head_sha="c" * 40,
+            head_sha=pr_queue.head_sha or "",
             name="lint",
             status=CheckRunStatus.COMPLETED,
             conclusion=CheckRunConclusion.SUCCESS,
@@ -296,10 +296,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
             gh_completed_at=self.now,
         )
         # CI for merge-conflict candidate so it qualifies for NeedsMerge
-        CheckRun.objects.create(
-            pull_request=pr_merge_conflict,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="cr31",
-            head_sha="d" * 40,
+            head_sha=pr_merge_conflict.head_sha or "",
             name="lint",
             status=CheckRunStatus.COMPLETED,
             conclusion=CheckRunConclusion.SUCCESS,
@@ -400,8 +400,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         prs = snapshot["prs"]
         self.assertEqual(prs[52]["ci_status"], "running")
 
-    @override_settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False)
-    def test_ci_status_sha_primary_reads_commit_rows(self):
+    def test_ci_status_reads_commit_rows(self):
         pr = self._make_pr(520, author=self.user, labels=("t-analysis",))
         rule_set = QueueRuleSet.objects.create(
             repository=self.repo,
@@ -431,7 +430,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(snapshot["prs"][520]["ci_status"], "pass")
         self.assertIn(520, snapshot["lists"]["dashboards"]["Queue"])
 
-    def test_ci_status_sha_primary_fallback_toggle(self):
+    def test_ci_status_ignores_pr_only_rows(self):
         pr = self._make_pr(521, author=self.user, labels=("t-analysis",))
         rule_set = QueueRuleSet.objects.create(
             repository=self.repo,
@@ -457,15 +456,9 @@ class QueueboardSnapshotBuilderTests(TestCase):
             gh_completed_at=self.now,
         )
 
-        with self.settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False):
-            snap_no_fallback = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
-        with self.settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=True):
-            snap_fallback = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
-
-        self.assertEqual(snap_no_fallback["prs"][521]["ci_status"], "missing")
-        self.assertNotIn(521, snap_no_fallback["lists"]["dashboards"]["Queue"])
-        self.assertEqual(snap_fallback["prs"][521]["ci_status"], "pass")
-        self.assertIn(521, snap_fallback["lists"]["dashboards"]["Queue"])
+        snap = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        self.assertEqual(snap["prs"][521]["ci_status"], "missing")
+        self.assertNotIn(521, snap["lists"]["dashboards"]["Queue"])
 
     def test_ci_status_ignores_head_rollup_pending_when_required_pass(self):
         pr = self._make_pr(53, author=self.user, labels=("t-analysis",))

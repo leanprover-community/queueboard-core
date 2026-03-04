@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from django.test import TestCase
 
 from core.models.repository import Repository
-from syncer.models import PullRequest, PRTimelineEvent, CheckRun, StatusContext
+from syncer.models import PullRequest, PRTimelineEvent, CommitCheckRun, CommitStatusContext
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.helpers import supported_timeline, fixtures_dir
 
@@ -112,13 +111,13 @@ class TestPagingSmoke(TestCase):
         if not pr_node_full:
             self.skipTest("bundle fixture missing pullRequest node")
 
-        # Count contexts across bundle + page using the same pruning semantics as sync.
+        # Count contexts across bundle + page using commit-scoped upsert semantics:
+        # rows are keyed by provider node id (with CheckRun SKIPPED filtered out).
         def count_ctx(nodes: list[dict]) -> tuple[int, int]:
-            cr_latest: dict[tuple[str, str], str] = {}
-            sc_latest: dict[tuple[str, str], str] = {}
+            cr_ids: set[str] = set()
+            sc_ids: set[str] = set()
             for n in nodes:
                 commit = (n or {}).get("commit") or {}
-                head_sha = commit.get("oid") or ""
                 ctx_nodes = ((commit.get("statusCheckRollup") or {}).get("contexts") or {}).get("nodes") or []
                 for c in ctx_nodes:
                     if not isinstance(c, dict):
@@ -127,24 +126,14 @@ class TestPagingSmoke(TestCase):
                     if t == "CheckRun":
                         if (c.get("conclusion") or "").upper() == "SKIPPED":
                             continue
-                        name = (c.get("name") or "").lower()
-                        ts = c.get("completedAt") or c.get("startedAt") or ""
-                        if not head_sha or not name or not ts:
-                            continue
-                        key = (head_sha, name)
-                        current = cr_latest.get(key)
-                        if current is None or ts > current:
-                            cr_latest[key] = ts
+                        gid = c.get("id")
+                        if gid:
+                            cr_ids.add(str(gid))
                     elif t == "StatusContext":
-                        name = (c.get("context") or "").lower()
-                        ts = c.get("createdAt") or ""
-                        if not head_sha or not name or not ts:
-                            continue
-                        key = (head_sha, name)
-                        current = sc_latest.get(key)
-                        if current is None or ts > current:
-                            sc_latest[key] = ts
-            return len(cr_latest), len(sc_latest)
+                        gid = c.get("id")
+                        if gid:
+                            sc_ids.add(str(gid))
+            return len(cr_ids), len(sc_ids)
 
         b_nodes = (pr_node_full.get("commits") or {}).get("nodes") or []
         p_nodes = (
@@ -201,9 +190,8 @@ class TestPagingSmoke(TestCase):
             dry_run=False,
         )
 
-        pr = PullRequest.objects.get(repository=repo, number=int(number))
-        db_cr = CheckRun.objects.filter(pull_request=pr).count()
-        db_sc = StatusContext.objects.filter(pull_request=pr).count()
+        db_cr = CommitCheckRun.objects.filter(repository=repo).count()
+        db_sc = CommitStatusContext.objects.filter(repository=repo).count()
         self.assertEqual(db_cr, exp_cr)
         self.assertEqual(db_sc, exp_sc)
         self.assertTrue(fc.commits_page_calls)

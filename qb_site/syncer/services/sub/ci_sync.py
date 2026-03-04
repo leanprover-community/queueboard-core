@@ -8,14 +8,11 @@ from django.utils import timezone
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
-from django.db.models.functions import Coalesce
 
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
-from syncer.models.check_run import CheckRun
 from syncer.models.commit_check_run import CommitCheckRun
 from syncer.models.commit_status_context import CommitStatusContext
 from syncer.models.pull_request import PullRequest
-from syncer.models.status_context import StatusContext
 from core.utils.db import update_if_changed, upsert_if_changed
 import logging
 
@@ -72,14 +69,6 @@ def _effective_allowlist_for_status(pr: PullRequest) -> List[str]:
     if mode == "allowlist":
         return _parse_allowlist(getattr(settings, "SYNCER_CI_ALLOW_STATUS_NAMES", ""))
     return []
-
-
-def _sha_storage_dual_write_enabled() -> bool:
-    return bool(getattr(settings, "SYNCER_CI_SHA_STORAGE_DUAL_WRITE", False))
-
-
-def _pr_storage_write_enabled() -> bool:
-    return bool(getattr(settings, "SYNCER_CI_PR_STORAGE_WRITE", True))
 
 
 def _upsert_commit_check_run(
@@ -203,8 +192,6 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     allow = _effective_allowlist_for_checkruns(pr)
     if allow:
         log.debug("CI sync: using CheckRun allowlist for %s (patterns=%s)", pr.repository, allow)
-    pr_storage_write_enabled = _pr_storage_write_enabled()
-    commit_storage_write_enabled = _sha_storage_dual_write_enabled() or not pr_storage_write_enabled
     now = timezone.now()
     earliest_ts = None
     latest_by_name: dict[str, timezone.datetime] = {}
@@ -225,7 +212,6 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
             log.debug("CI sync: skipping CheckRun %s due to SKIPPED conclusion", ctx.get("name"))
             continue
         values = {
-            "pull_request": pr,
             "head_sha": head_sha,
             "name": ctx.get("name") or "",
             "status": ctx.get("status") or "",
@@ -238,21 +224,10 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         was_created = False
         was_updated = False
         updated_fields: tuple[str, ...] = tuple()
-        if pr_storage_write_enabled:
-            obj, was_created, was_updated, updated_fields = upsert_if_changed(
-                CheckRun,
-                {"github_node_id": gid},
-                values,
-            )
-            # Always record when we last heard about this CheckRun from GitHub,
-            # even if the status snapshot itself did not change.
-            CheckRun.objects.filter(pk=obj.pk).update(last_synced_at=now)
-        if commit_storage_write_enabled:
-            commit_created, commit_updated, commit_updated_fields = _upsert_commit_check_run(pr, values, gid, now)
-            if not pr_storage_write_enabled:
-                was_created = commit_created
-                was_updated = commit_updated
-                updated_fields = commit_updated_fields
+        commit_created, commit_updated, commit_updated_fields = _upsert_commit_check_run(pr, values, gid, now)
+        was_created = commit_created
+        was_updated = commit_updated
+        updated_fields = commit_updated_fields
 
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
@@ -284,21 +259,6 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
 
-    if pr_storage_write_enabled:
-        # Prune older snapshot rows for the same (head_sha, name). Keep REST history intact.
-        for name_key, latest_ts in latest_by_name.items():
-            (
-                CheckRun.objects.filter(
-                    pull_request=pr,
-                    head_sha=head_sha,
-                    name__iexact=name_key,
-                    github_node_id__isnull=False,
-                )
-                .annotate(ts=Coalesce("gh_completed_at", "gh_started_at"))
-                .filter(ts__lt=latest_ts)
-                .delete()
-            )
-
     return CISyncResult(created=created, updated=updated, deleted=0)
 
 
@@ -316,8 +276,6 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     allow = _effective_allowlist_for_status(pr)
     if allow:
         log.debug("CI sync: using StatusContext allowlist for %s (patterns=%s)", pr.repository, allow)
-    pr_storage_write_enabled = _pr_storage_write_enabled()
-    commit_storage_write_enabled = _sha_storage_dual_write_enabled() or not pr_storage_write_enabled
     now = timezone.now()
     earliest_ts = None
     latest_by_name: dict[str, timezone.datetime] = {}
@@ -335,7 +293,6 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
                 log.debug("CI sync: skipping StatusContext %s due to allowlist (pat=%s)", nm, allow)
                 continue
         values = {
-            "pull_request": pr,
             "head_sha": head_sha,
             "name": ctx.get("context") or "",
             "state": ctx.get("state") or "",
@@ -346,19 +303,10 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         was_created = False
         was_updated = False
         updated_fields: tuple[str, ...] = tuple()
-        if pr_storage_write_enabled:
-            obj, was_created, was_updated, updated_fields = upsert_if_changed(
-                StatusContext,
-                {"github_node_id": gid},
-                values,
-            )
-            StatusContext.objects.filter(pk=obj.pk).update(last_synced_at=now)
-        if commit_storage_write_enabled:
-            commit_created, commit_updated, commit_updated_fields = _upsert_commit_status_context(pr, values, gid, now)
-            if not pr_storage_write_enabled:
-                was_created = commit_created
-                was_updated = commit_updated
-                updated_fields = commit_updated_fields
+        commit_created, commit_updated, commit_updated_fields = _upsert_commit_status_context(pr, values, gid, now)
+        was_created = commit_created
+        was_updated = commit_updated
+        updated_fields = commit_updated_fields
 
         created += 1 if was_created else 0
         updated += 1 if was_updated else 0
@@ -385,16 +333,5 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
 
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
-
-    if pr_storage_write_enabled:
-        # Prune older snapshot rows for the same (head_sha, name). Keep REST history intact.
-        for name_key, latest_ts in latest_by_name.items():
-            StatusContext.objects.filter(
-                pull_request=pr,
-                head_sha=head_sha,
-                name__iexact=name_key,
-                github_node_id__isnull=False,
-                gh_created_at__lt=latest_ts,
-            ).delete()
 
     return CISyncResult(created=created, updated=updated, deleted=0)

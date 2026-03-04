@@ -78,12 +78,9 @@
 - The backfill should be resumable and idempotent.
 
 ### Migration feature flags/settings
-- Add temporary settings to gate phases cleanly:
-  - `SYNCER_CI_SHA_STORAGE_DUAL_WRITE` (default `True` as of 2026-03-04)
-  - `SYNCER_CI_PR_STORAGE_WRITE` (default `True`; set `False` for S6 PR-write retirement)
-  - `ANALYZER_CI_SHA_READ_PRIMARY` (default `True` as of 2026-03-04)
-  - `ANALYZER_CI_SHA_READ_FALLBACK_PR` (default `False` as of 2026-03-04)
-- Keep the flags explicit rather than overloading existing backoff settings.
+- Transitional flags were used during S2-S6 rollout, but are now removed from
+  default runtime/env configuration. Runtime behavior is now SHA-first by
+  default (commit-scoped writes/reads primary; PR fallback off).
 
 ## Invariants / Subtleties
 - Invariant: CI evaluation for a PR at a point in time must be against that revision's `head_sha`.
@@ -234,15 +231,16 @@
     - SHA-primary reads have been running with PR fallback disabled for multiple
       hours in production without observed queue/snapshot regressions.
   - `S6` implementation (in progress):
-    - Flipped code defaults to SHA-first operation:
-      - `SYNCER_CI_SHA_STORAGE_DUAL_WRITE` default `True`
-      - `ANALYZER_CI_SHA_READ_PRIMARY` default `True`
-      - `ANALYZER_CI_SHA_READ_FALLBACK_PR` default `False`
+    - Flipped runtime defaults to SHA-first operation and removed transitional
+      env var wiring from `base.py` / `.env.example`:
+      - dual-write-on / SHA-primary / PR-fallback-off behavior is now the
+        default runtime posture.
     - Updated analyzer tests that intentionally use PR-keyed fixtures to set
       explicit per-class overrides, so they exercise queue/snapshot logic
       rather than depending on global storage defaults.
-    - Added a dedicated ingest gate `SYNCER_CI_PR_STORAGE_WRITE` (default `True`)
-      so PR-keyed writes can be disabled explicitly per environment.
+    - Added a dedicated ingest gate `SYNCER_CI_PR_STORAGE_WRITE` so PR-keyed
+      writes can be disabled explicitly per environment; current code-path
+      defaults are now PR-write-off and SHA-write-on.
     - Updated CI ingest (`sync_check_runs`/`sync_status_contexts`) so when
       PR-keyed writes are disabled, commit-scoped writes are still forced on
       even if dual-write is toggled off, preventing dropped CI data.
@@ -269,6 +267,15 @@
       behavior in `qb_site/syncer/tests/tasks/test_refresh_pending_ci_task.py`.
     - Added syncer coverage for PR-write-disabled mode in
       `qb_site/syncer/tests/subsystems/test_ci_sync.py`.
+    - Updated syncer ingest/backfill/smoke/integration tests to assert
+      commit-scoped CI rows by default, and kept PR-scoped assertions only in
+      tests that explicitly enable PR writes via `override_settings`.
+    - Completed cleanup of transitional runtime setting reads in code:
+      - analyzer queue-window/snapshot CI reads are now hardwired to
+        commit-scoped rows,
+      - syncer CI ingest is now hardwired to commit-scoped writes.
+    - Removed analyzer/syncer test reliance on transitional SHA/PR toggle
+      settings; tests now exercise storage/read-path behavior directly.
 - 2026-03-03:
   - Created this living plan to break Part 2 of decision `019` into executable phases.
   - No migration code implemented yet.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.utils import timezone
 
 from syncer.models import CheckRun, CommitCheckRun, CommitStatusContext, StatusContext
@@ -30,9 +30,10 @@ class TestCISync(TestCase):
         ]
         before = timezone.now()
         res = sync_check_runs(self.pr, ctxs, head_sha)
-        self.assertEqual(CheckRun.objects.filter(pull_request=self.pr).count(), 1)
+        self.assertEqual(CheckRun.objects.filter(pull_request=self.pr).count(), 0)
+        self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha=head_sha).count(), 1)
         self.assertEqual(res.created, 1)
-        cr = CheckRun.objects.get(pull_request=self.pr)
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR1")
         self.assertIsNotNone(cr.last_synced_at)
         self.assertGreaterEqual(cr.last_synced_at, before)
         # Update
@@ -60,9 +61,10 @@ class TestCISync(TestCase):
         ]
         before = timezone.now()
         res = sync_status_contexts(self.pr, ctxs, head_sha)
-        self.assertEqual(StatusContext.objects.filter(pull_request=self.pr).count(), 1)
+        self.assertEqual(StatusContext.objects.filter(pull_request=self.pr).count(), 0)
+        self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha=head_sha).count(), 1)
         self.assertEqual(res.created, 1)
-        sc = StatusContext.objects.get(pull_request=self.pr)
+        sc = CommitStatusContext.objects.get(repository=self.repo, github_node_id="SC1")
         self.assertIsNotNone(sc.last_synced_at)
         self.assertGreaterEqual(sc.last_synced_at, before)
         # Update state
@@ -307,113 +309,7 @@ class TestCISync(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=self.pr)
         self.assertEqual(state.dirty_from_ts, lint_started)
 
-    def test_prunes_older_snapshot_status_contexts(self) -> None:
-        head_sha = "abc1234"
-        ctxs_old = [
-            {
-                "id": "SC_OLD",
-                "context": "bors",
-                "state": "PENDING",
-                "targetUrl": None,
-                "description": "",
-                "createdAt": "2025-10-20T00:00:00Z",
-            }
-        ]
-        ctxs_new = [
-            {
-                "id": "SC_NEW",
-                "context": "bors",
-                "state": "SUCCESS",
-                "targetUrl": None,
-                "description": "",
-                "createdAt": "2025-10-20T01:00:00Z",
-            }
-        ]
-        sync_status_contexts(self.pr, ctxs_old, head_sha)
-        self.assertEqual(
-            StatusContext.objects.filter(pull_request=self.pr, head_sha=head_sha, name="bors").count(),
-            1,
-        )
-        sync_status_contexts(self.pr, ctxs_new, head_sha)
-        rows = StatusContext.objects.filter(pull_request=self.pr, head_sha=head_sha, name="bors")
-        self.assertEqual(rows.count(), 1)
-        self.assertEqual(rows.first().github_node_id, "SC_NEW")
-
-    def test_prunes_older_snapshot_check_runs(self) -> None:
-        head_sha = "abc1234"
-        ctxs_old = [
-            {
-                "id": "CR_OLD",
-                "name": "build",
-                "status": "IN_PROGRESS",
-                "conclusion": None,
-                "startedAt": "2025-10-20T00:00:00Z",
-                "completedAt": None,
-                "detailsUrl": None,
-                "externalId": None,
-            }
-        ]
-        ctxs_new = [
-            {
-                "id": "CR_NEW",
-                "name": "build",
-                "status": "COMPLETED",
-                "conclusion": "SUCCESS",
-                "startedAt": "2025-10-20T00:10:00Z",
-                "completedAt": "2025-10-20T00:20:00Z",
-                "detailsUrl": None,
-                "externalId": None,
-            }
-        ]
-        sync_check_runs(self.pr, ctxs_old, head_sha)
-        self.assertEqual(
-            CheckRun.objects.filter(pull_request=self.pr, head_sha=head_sha, name="build").count(),
-            1,
-        )
-        sync_check_runs(self.pr, ctxs_new, head_sha)
-        rows = CheckRun.objects.filter(pull_request=self.pr, head_sha=head_sha, name="build")
-        self.assertEqual(rows.count(), 1)
-        self.assertEqual(rows.first().github_node_id, "CR_NEW")
-
-    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=False, SYNCER_CI_PR_STORAGE_WRITE=True)
-    def test_sha_storage_dual_write_disabled(self) -> None:
-        head_sha = "abc1234"
-        sync_check_runs(
-            self.pr,
-            [
-                {
-                    "id": "CR_DUAL_OFF",
-                    "name": "build",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "startedAt": "2025-10-20T00:10:00Z",
-                    "completedAt": "2025-10-20T00:20:00Z",
-                    "detailsUrl": None,
-                    "externalId": None,
-                }
-            ],
-            head_sha,
-        )
-        sync_status_contexts(
-            self.pr,
-            [
-                {
-                    "id": "SC_DUAL_OFF",
-                    "context": "bors",
-                    "state": "SUCCESS",
-                    "targetUrl": None,
-                    "description": "",
-                    "createdAt": "2025-10-20T00:21:00Z",
-                }
-            ],
-            head_sha,
-        )
-
-        self.assertEqual(CommitCheckRun.objects.count(), 0)
-        self.assertEqual(CommitStatusContext.objects.count(), 0)
-
-    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=False, SYNCER_CI_PR_STORAGE_WRITE=False)
-    def test_commit_storage_forced_when_pr_storage_disabled(self) -> None:
+    def test_commit_storage_writes_commit_scoped_rows(self) -> None:
         head_sha = "abc1234"
         sync_check_runs(
             self.pr,
@@ -446,13 +342,10 @@ class TestCISync(TestCase):
             head_sha,
         )
 
-        self.assertEqual(CheckRun.objects.count(), 0)
-        self.assertEqual(StatusContext.objects.count(), 0)
         self.assertEqual(CommitCheckRun.objects.count(), 1)
         self.assertEqual(CommitStatusContext.objects.count(), 1)
 
-    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=True)
-    def test_sha_storage_dual_write_writes_commit_scoped_rows(self) -> None:
+    def test_commit_storage_sets_last_synced_at(self) -> None:
         head_sha = "abc1234"
         before = timezone.now()
         sync_check_runs(
@@ -497,8 +390,7 @@ class TestCISync(TestCase):
         self.assertGreaterEqual(ckr.last_synced_at, before)
         self.assertGreaterEqual(csc.last_synced_at, before)
 
-    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=True)
-    def test_sha_storage_dual_write_checkrun_external_id_conflict_does_not_crash(self) -> None:
+    def test_checkrun_external_id_conflict_does_not_crash(self) -> None:
         head_sha = "abc1234"
         CommitCheckRun.objects.create(
             repository=self.repo,

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone as dt_timezone
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from core.models import Repository
 from analyzer.models import QueueRuleSet, PRRevision
-from syncer.models import PullRequest, CheckRun, CommitCheckRun
+from syncer.models import PullRequest, CommitCheckRun
 from analyzer.services.queue_windows import is_on_queue_at
 
 
@@ -14,7 +14,6 @@ def _dt(year: int, month: int, day: int) -> datetime:
     return datetime(year, month, day, tzinfo=dt_timezone.utc)
 
 
-@override_settings(ANALYZER_CI_SHA_READ_PRIMARY=False, ANALYZER_CI_SHA_READ_FALLBACK_PR=True)
 class TestQueueWindowsPRRevision(TestCase):
     def setUp(self) -> None:
         self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
@@ -68,8 +67,8 @@ class TestQueueWindowsPRRevision(TestCase):
         self.assertFalse(is_on_queue_at(pr, at=at))
 
         # CI success exists, but for a different head SHA ("sha2") -> should not count.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR1",
             head_sha="sha2",
             name="lint",
@@ -83,8 +82,8 @@ class TestQueueWindowsPRRevision(TestCase):
         self.assertFalse(is_on_queue_at(pr, at=at))
 
         # Add a failing run for the correct head SHA "sha1" -> still not ok.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR2",
             head_sha="sha1",
             name="lint",
@@ -98,8 +97,8 @@ class TestQueueWindowsPRRevision(TestCase):
         self.assertFalse(is_on_queue_at(pr, at=at))
 
         # Add a later successful run for "sha1" and check after it completes.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR3",
             head_sha="sha1",
             name="lint",
@@ -127,8 +126,8 @@ class TestQueueWindowsPRRevision(TestCase):
 
         # CI snapshot exists for the later head, but at Sep 2 we should still
         # treat CI as unknown and keep the PR off the queue.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CRX",
             head_sha="shaX",
             name="lint",
@@ -148,8 +147,7 @@ class TestQueueWindowsPRRevision(TestCase):
         # PR should be on the queue.
         self.assertTrue(is_on_queue_at(pr, at=after))
 
-    @override_settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False)
-    def test_sha_primary_reads_commit_checkrun_rows(self) -> None:
+    def test_reads_commit_checkrun_rows(self) -> None:
         pr = self._mk_pr(3)
         PRRevision.objects.create(
             pull_request=pr,
@@ -170,8 +168,7 @@ class TestQueueWindowsPRRevision(TestCase):
         )
         self.assertTrue(is_on_queue_at(pr, at=_dt(2024, 9, 5)))
 
-    @override_settings(ANALYZER_CI_SHA_READ_PRIMARY=True, ANALYZER_CI_SHA_READ_FALLBACK_PR=False)
-    def test_sha_primary_without_fallback_ignores_pr_ci_rows(self) -> None:
+    def test_ignores_pr_ci_rows(self) -> None:
         pr = self._mk_pr(4)
         PRRevision.objects.create(
             pull_request=pr,
@@ -180,6 +177,10 @@ class TestQueueWindowsPRRevision(TestCase):
             to_ts=None,
             seq=0,
         )
+        # Legacy PR-keyed rows should not affect SHA-keyed evaluation.
+        # (No commit-scoped rows are written in this test.)
+        from syncer.models import CheckRun
+
         CheckRun.objects.create(
             pull_request=pr,
             github_node_id="CRD",
