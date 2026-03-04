@@ -79,9 +79,10 @@
 
 ### Migration feature flags/settings
 - Add temporary settings to gate phases cleanly:
-  - `SYNCER_CI_SHA_STORAGE_DUAL_WRITE` (default `False`)
-  - `ANALYZER_CI_SHA_READ_PRIMARY` (default `False`)
-  - `ANALYZER_CI_SHA_READ_FALLBACK_PR` (default `True` during transition)
+  - `SYNCER_CI_SHA_STORAGE_DUAL_WRITE` (default `True` as of 2026-03-04)
+  - `SYNCER_CI_PR_STORAGE_WRITE` (default `True`; set `False` for S6 PR-write retirement)
+  - `ANALYZER_CI_SHA_READ_PRIMARY` (default `True` as of 2026-03-04)
+  - `ANALYZER_CI_SHA_READ_FALLBACK_PR` (default `False` as of 2026-03-04)
 - Keep the flags explicit rather than overloading existing backoff settings.
 
 ## Invariants / Subtleties
@@ -228,6 +229,25 @@
 - Whether old PR-keyed tables should be retained for audit/debug after cutover, and for how long.
 
 ## Progress Notes
+- 2026-03-04:
+  - `S5` soak outcome (operational):
+    - SHA-primary reads have been running with PR fallback disabled for multiple
+      hours in production without observed queue/snapshot regressions.
+  - `S6` implementation (in progress):
+    - Flipped code defaults to SHA-first operation:
+      - `SYNCER_CI_SHA_STORAGE_DUAL_WRITE` default `True`
+      - `ANALYZER_CI_SHA_READ_PRIMARY` default `True`
+      - `ANALYZER_CI_SHA_READ_FALLBACK_PR` default `False`
+    - Updated analyzer tests that intentionally use PR-keyed fixtures to set
+      explicit per-class overrides, so they exercise queue/snapshot logic
+      rather than depending on global storage defaults.
+    - Added a dedicated ingest gate `SYNCER_CI_PR_STORAGE_WRITE` (default `True`)
+      so PR-keyed writes can be disabled explicitly per environment.
+    - Updated CI ingest (`sync_check_runs`/`sync_status_contexts`) so when
+      PR-keyed writes are disabled, commit-scoped writes are still forced on
+      even if dual-write is toggled off, preventing dropped CI data.
+    - Added syncer coverage for PR-write-disabled mode in
+      `qb_site/syncer/tests/subsystems/test_ci_sync.py`.
 - 2026-03-03:
   - Created this living plan to break Part 2 of decision `019` into executable phases.
   - No migration code implemented yet.

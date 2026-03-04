@@ -375,7 +375,8 @@ class TestCISync(TestCase):
         self.assertEqual(rows.count(), 1)
         self.assertEqual(rows.first().github_node_id, "CR_NEW")
 
-    def test_sha_storage_dual_write_disabled_by_default(self) -> None:
+    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=False, SYNCER_CI_PR_STORAGE_WRITE=True)
+    def test_sha_storage_dual_write_disabled(self) -> None:
         head_sha = "abc1234"
         sync_check_runs(
             self.pr,
@@ -410,6 +411,45 @@ class TestCISync(TestCase):
 
         self.assertEqual(CommitCheckRun.objects.count(), 0)
         self.assertEqual(CommitStatusContext.objects.count(), 0)
+
+    @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=False, SYNCER_CI_PR_STORAGE_WRITE=False)
+    def test_commit_storage_forced_when_pr_storage_disabled(self) -> None:
+        head_sha = "abc1234"
+        sync_check_runs(
+            self.pr,
+            [
+                {
+                    "id": "CR_PR_OFF",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2025-10-20T00:10:00Z",
+                    "completedAt": "2025-10-20T00:20:00Z",
+                    "detailsUrl": None,
+                    "externalId": None,
+                }
+            ],
+            head_sha,
+        )
+        sync_status_contexts(
+            self.pr,
+            [
+                {
+                    "id": "SC_PR_OFF",
+                    "context": "bors",
+                    "state": "SUCCESS",
+                    "targetUrl": None,
+                    "description": "",
+                    "createdAt": "2025-10-20T00:21:00Z",
+                }
+            ],
+            head_sha,
+        )
+
+        self.assertEqual(CheckRun.objects.count(), 0)
+        self.assertEqual(StatusContext.objects.count(), 0)
+        self.assertEqual(CommitCheckRun.objects.count(), 1)
+        self.assertEqual(CommitStatusContext.objects.count(), 1)
 
     @override_settings(SYNCER_CI_SHA_STORAGE_DUAL_WRITE=True)
     def test_sha_storage_dual_write_writes_commit_scoped_rows(self) -> None:
