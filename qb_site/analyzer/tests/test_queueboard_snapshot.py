@@ -15,6 +15,7 @@ from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
 from syncer.models.commit_check_run import CommitCheckRun
 
 
+@override_settings(ANALYZER_CI_SHA_READ_PRIMARY=False, ANALYZER_CI_SHA_READ_FALLBACK_PR=True)
 class QueueboardSnapshotBuilderTests(TestCase):
     def setUp(self):
         self.repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")

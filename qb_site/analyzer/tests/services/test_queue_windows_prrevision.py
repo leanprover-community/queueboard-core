@@ -14,6 +14,7 @@ def _dt(year: int, month: int, day: int) -> datetime:
     return datetime(year, month, day, tzinfo=dt_timezone.utc)
 
 
+@override_settings(ANALYZER_CI_SHA_READ_PRIMARY=False, ANALYZER_CI_SHA_READ_FALLBACK_PR=True)
 class TestQueueWindowsPRRevision(TestCase):
     def setUp(self) -> None:
         self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
