@@ -240,6 +240,7 @@ def load_snapshot(api_dir: str):
     """Load snapshot.json and return the legacy structures the dashboards expect."""
     with open(f"{api_dir}/snapshot.json", "r") as f:
         snapshot = json.load(f)
+    snapshot_meta = snapshot.get("meta") or {}
 
     prs_payload = snapshot["prs"]
     aggregate_info: Dict[str, AggregatePRInfo] = {}
@@ -279,4 +280,14 @@ def load_snapshot(api_dir: str):
             continue
         prs_to_list[dash] = [_to_basic(int(n), aggregate_info[str(n)]) for n in pr_numbers if str(n) in aggregate_info]
 
-    return aggregate_info, draft_prs, nondraft_prs, CI_status, all_pr_status, base_branch, prs_to_list, queue_data_status
+    return (
+        aggregate_info,
+        draft_prs,
+        nondraft_prs,
+        CI_status,
+        all_pr_status,
+        base_branch,
+        prs_to_list,
+        queue_data_status,
+        {"ci_gating_mode": snapshot_meta.get("ci_gating_mode")},
+    )

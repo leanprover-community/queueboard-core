@@ -35,6 +35,36 @@ from queueboard.util import format_delta
 from queueboard.snapshot import load_snapshot
 
 QUEUE_DATA_STATUS: dict[int, str] = {}
+CI_GATING_MODE: str | None = None
+
+
+def _ci_blocks_queue(ci_status: CIStatus, ci_gating_mode: str | None) -> bool:
+    if ci_status == CIStatus.Fail:
+        return True
+    if ci_gating_mode == "no_required_failures":
+        return False
+    return ci_status not in (CIStatus.Pass, CIStatus.FailInessential)
+
+
+def _ci_status_symbol(ci_status: CIStatus, ci_gating_mode: str | None) -> str:
+    icon = "&#9989;"
+    if ci_status == CIStatus.Pass:
+        return f'<a title="CI for this pull request passes">{icon}</a>'
+    if ci_status == CIStatus.Fail:
+        return '<a title="CI for this pull request fails">&#10060;</a>'
+    if ci_status == CIStatus.FailInessential:
+        return (
+            '<a title="CI for this pull request fails, but the failing jobs are typically spurious or related to '
+            "mathlib's infrastructure. Unless this PR modifies that infrastructure itself, the failure is not the "
+            'fault of this PR">&#10060;?</a>'
+        )
+    if ci_status == CIStatus.Running:
+        if ci_gating_mode == "no_required_failures":
+            return '<a title="Required CI is still running; non-blocking in no_required_failures mode">&#9989;?</a>'
+        return '<a title="CI for this pull request is still running">&#128996;</a>'
+    if ci_gating_mode == "no_required_failures":
+        return '<a title="Missing required CI snapshots; non-blocking in no_required_failures mode">&#9989;?</a>'
+    return '<a title="missing information about this PR\'s CI status">???</a>'
 
 
 ### Helper methods: writing HTML code for various parts of the generated webpage ###
@@ -649,14 +679,7 @@ def write_on_the_queue_page(
         if base_branch[pr_number] != "master":
             continue
         # from_fork = pr in prs_from_fork
-        status_symbol = {
-            CIStatus.Pass: f'<a title="CI for this pull request passes">{icon(True)}</a>',
-            CIStatus.Fail: f'<a title="CI for this pull request fails">{icon(False)}</a>',
-            # TODO: change symbol, cross with a ?, with underline and explanation!
-            CIStatus.FailInessential: f'<a title="CI for this pull request fails, but the failing jobs are typically spurious or related to mathlib\'s infrastructure. Unless this PR modifies that infrastructure itself, the failure is not the fault of this PR">{icon(False)}?</a>',
-            CIStatus.Running: '<a title="CI for this pull request is still running">&#128996;</a>',
-            CIStatus.Missing: '<a title="missing information about this PR\'s CI status">???</a>',
-        }
+        pr_ci_status = CI_status[pr_number]
         is_blocked = any(
             lab.name in ["blocked-by-other-PR", "blocked-by-core-PR", "blocked-by-batt-PR", "blocked-by-qq-PR"]
             for lab in pr.labels
@@ -665,7 +688,11 @@ def write_on_the_queue_page(
         is_ready = not (any(lab.name in ["WIP", "help-wanted", "please-adopt"] for lab in pr.labels))
         review = not (any(lab.name in ["awaiting-CI", "awaiting-author", "awaiting-zulip"] for lab in pr.labels))
         overall = (
-            (CI_status[pr_number] == CIStatus.Pass) and (not is_blocked) and (not has_merge_conflict) and is_ready and review
+            (not _ci_blocks_queue(pr_ci_status, CI_GATING_MODE))
+            and (not is_blocked)
+            and (not has_merge_conflict)
+            and is_ready
+            and review
         )
         name = pr.author_name
         if name is None:
@@ -744,7 +771,7 @@ def write_on_the_queue_page(
             title_link(pr.title, pr.url),
             _write_labels(pr.labels, "on_the_queue.html", ""),
             # icon(not from_fork), # TODO(August/September): re-instate with inverted meaning
-            status_symbol[CI_status[pr_number]],
+            _ci_status_symbol(pr_ci_status, CI_GATING_MODE),
             icon(not is_blocked),
             icon(not has_merge_conflict),
             icon(is_ready),
@@ -1111,9 +1138,12 @@ def main() -> None:
             base_branch,
             prs_to_list,
             queue_data_status,
+            snapshot_meta,
         ) = load_snapshot(API_DIR)
         global QUEUE_DATA_STATUS
+        global CI_GATING_MODE
         QUEUE_DATA_STATUS = queue_data_status
+        CI_GATING_MODE = snapshot_meta.get("ci_gating_mode")
     else:
         aggregate_info = load_from_json_file(path.join(API_DIR, "aggregate_info.json"))
         draft_PRs = load_from_json_file(path.join(API_DIR, "draft_PRs.json"))
