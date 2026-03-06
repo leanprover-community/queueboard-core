@@ -48,6 +48,19 @@ def sync_ci_enqueue_key(
     return f"{TASK_ENQUEUE_DEDUPE_PREFIX}sync_ci:{int(repo_id)}:{int(number)}:{pages}:{digest}"
 
 
+def sync_ci_repo_shas_enqueue_key(
+    *,
+    repo_id: int,
+    shas: Sequence[str],
+    max_pages_per_sha: int | None,
+) -> str:
+    """Build enqueue dedupe identity key for repo-scoped CI-by-SHA sync."""
+    pages = int(max_pages_per_sha) if max_pages_per_sha is not None else 0
+    canonical_shas = ",".join(_normalize_shas(shas))
+    digest = hashlib.sha1(canonical_shas.encode("utf-8")).hexdigest()[:16]
+    return f"{TASK_ENQUEUE_DEDUPE_PREFIX}sync_ci_repo_shas:{int(repo_id)}:{pages}:{digest}"
+
+
 def claim_enqueue_slot(*, key: str, ttl_seconds: int) -> bool:
     """Return True if enqueue should proceed for this dedupe key.
 
