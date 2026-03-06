@@ -181,6 +181,7 @@ def _enqueue_check_sync(summary: dict) -> dict:
             int(pr_number),
             shas=[head_sha],
             require_pr_association=False,
+            trigger_analyzer_after_sync=True,
         )
         task_ids.append(str(async_res.id))
     summary["reason"] = "enqueued_sync_ci"

@@ -788,6 +788,7 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
     max_pages_per_sha: Optional[int] = None,
     dry_run: bool = False,
     require_pr_association: Optional[bool] = None,
+    trigger_analyzer_after_sync: bool = False,
 ) -> Dict[str, Any]:
     """Fetch CI for a list of commit SHAs for a PR.
 
@@ -834,6 +835,7 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
                     shas=list(remaining_shas),
                     max_pages_per_sha=max_pages_per_sha,
                     dry_run=dry_run,
+                    trigger_analyzer_after_sync=trigger_analyzer_after_sync,
                 )
                 enqueue_with_parent(sig, self.request, eta=eta)
             except Exception:
@@ -850,6 +852,8 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
             "per_sha_results": [],
             "per_sha_results_truncated": False,
             "per_sha_results_cap": per_sha_cap,
+            "analyzer_enqueued": False,
+            "analyzer_task_id": None,
         }
 
     # Guard on budget before starting
@@ -913,6 +917,23 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
         done.append(sha)
 
     rl_final = client.get_last_rate_limit() or {}
+    analyzer_enqueued = False
+    analyzer_task_id: str | None = None
+    if trigger_analyzer_after_sync and not dry_run:
+        try:
+            from analyzer.tasks import process_pr_task
+
+            async_res = enqueue_with_parent(process_pr_task.s(int(pr.id)), self.request)
+            analyzer_enqueued = True
+            analyzer_task_id = str(async_res.id) if getattr(async_res, "id", None) else None
+        except Exception:
+            log.exception(
+                "sync_ci_for_shas_task: failed to enqueue analyzer.process_pr for repo=%s/%s pr=%s",
+                repo.owner,
+                repo.name,
+                number,
+            )
+
     return {
         "status": "ok",
         "repo": f"{repo.owner}/{repo.name}",
@@ -925,6 +946,8 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
         "per_sha_results_cap": per_sha_cap,
         "rate_limit": rl_final,
         "rate_events": rate_events,
+        "analyzer_enqueued": analyzer_enqueued,
+        "analyzer_task_id": analyzer_task_id,
     }
 
 
