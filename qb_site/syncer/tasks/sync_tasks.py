@@ -13,11 +13,11 @@ from django.conf import settings
 
 from core.models import Repository
 from syncer.models import PullRequest, RepoDiscoveryState
+from syncer.services.ci_sha_task_runner import run_ci_sync_for_pr_shas
 from syncer.services.github_client import GitHubClient
 from syncer.services.pr_sync_service import PRSyncService
 from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
-from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import record_ci_sha_fetch, should_enqueue_ci_sha_with_state
 from syncer.services.task_dedupe import (
     claim_enqueue_slot,
@@ -894,65 +894,32 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
             "analyzer_task_id": None,
         }
 
-    # Guard on budget before starting
-    rl0 = client.get_rate_limit() or {}
-    remaining0 = rl0.get("remaining") if isinstance(rl0, dict) else None
-    reset0 = rl0.get("resetAt") if isinstance(rl0, dict) else None
     threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
-    if isinstance(remaining0, int) and remaining0 <= threshold:
-        return _defer(reset0, shas)
-
     max_pages = (
         int(max_pages_per_sha) if isinstance(max_pages_per_sha, int) else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
     )
     require_assoc = bool(require_pr_association) if require_pr_association is not None else False
 
-    done: list[str] = []
-    todo: list[str] = [s for s in shas if s]
-    total_counts = {"checkruns_created": 0, "checkruns_updated": 0, "status_created": 0, "status_updated": 0}
-    per_sha_results: list[dict[str, Any]] = []
-    results_by_result: dict[str, int] = {}
-
-    for sha in todo:
-        # Check budget before each SHA
-        rl_now = client.get_last_rate_limit() or {}
-        remaining_now = rl_now.get("remaining") if isinstance(rl_now, dict) else None
-        reset_at = rl_now.get("resetAt") if isinstance(rl_now, dict) else None
-        if isinstance(remaining_now, int) and remaining_now <= threshold:
-            remaining = [s for s in todo if s not in done]
-            return _defer(reset_at, remaining)
-
-        if dry_run:
-            if len(per_sha_results) < per_sha_cap:
-                per_sha_results.append({"sha": sha, "result": "dry_run"})
-            results_by_result["dry_run"] = results_by_result.get("dry_run", 0) + 1
-            done.append(sha)
-            continue
-
-        res = sync_ci_for_sha(
-            pr,
-            sha,
-            client=client,
-            max_pages=max_pages,
-            rate_log=rate_log,
-            require_pr_association=require_assoc,
-        )
-        result = str(res.get("result") or "ok")
+    def _record_result(sha: str, result: str) -> None:
         record_ci_sha_fetch(pr=pr, sha=sha, result=result)
-        if len(per_sha_results) < per_sha_cap:
-            per_sha_results.append(
-                {
-                    "sha": sha,
-                    "result": result,
-                    "found_commit": bool(res.get("found_commit")),
-                    "found_contexts": bool(res.get("found_contexts")),
-                    "counts": {k: int(res.get(k, 0)) for k in total_counts.keys()},
-                }
-            )
-        results_by_result[result] = results_by_result.get(result, 0) + 1
-        for k in total_counts.keys():
-            total_counts[k] += int(res.get(k, 0))
-        done.append(sha)
+
+    exec_res = run_ci_sync_for_pr_shas(
+        pr=pr,
+        shas=shas,
+        client=client,
+        max_pages_per_sha=max_pages,
+        dry_run=dry_run,
+        require_pr_association=require_assoc,
+        budget_threshold=threshold,
+        per_sha_cap=per_sha_cap,
+        rate_log=rate_log,
+        on_sha_result=_record_result,
+    )
+    if str(exec_res.get("status") or "") == "deferred":
+        return _defer(
+            exec_res.get("reset_at") if isinstance(exec_res.get("reset_at"), str) else None,
+            [str(s) for s in exec_res.get("remaining_shas", []) if isinstance(s, str)],
+        )
 
     rl_final = client.get_last_rate_limit() or {}
     analyzer_enqueued = False
@@ -976,16 +943,202 @@ def sync_ci_for_shas_task(  # type: ignore[no-redef]
         "status": "ok",
         "repo": f"{repo.owner}/{repo.name}",
         "number": int(number),
-        "shas_done": done,
-        "counts": total_counts,
-        "results_by_result": results_by_result,
-        "per_sha_results": per_sha_results,
-        "per_sha_results_truncated": len(todo) > per_sha_cap,
+        "shas_done": exec_res.get("done", []),
+        "counts": exec_res.get("counts", {}),
+        "results_by_result": exec_res.get("results_by_result", {}),
+        "per_sha_results": exec_res.get("per_sha_results", []),
+        "per_sha_results_truncated": bool(exec_res.get("per_sha_results_truncated")),
         "per_sha_results_cap": per_sha_cap,
         "rate_limit": rl_final,
         "rate_events": rate_events,
         "analyzer_enqueued": analyzer_enqueued,
         "analyzer_task_id": analyzer_task_id,
+    }
+
+
+@shared_task(name="syncer.sync_ci_for_repo_shas", bind=True)
+def sync_ci_for_repo_shas_task(  # type: ignore[no-redef]
+    self,
+    repo_id: int,
+    *,
+    shas: Sequence[str],
+    max_pages_per_sha: Optional[int] = None,
+    dry_run: bool = False,
+    require_pr_association: Optional[bool] = None,
+    trigger_analyzer_after_sync: bool = False,
+) -> Dict[str, Any]:
+    """Fetch CI for repository SHAs without requiring PR fanout at enqueue time."""
+    repo = Repository.objects.get(id=int(repo_id))
+    client = GitHubClient(operation="syncer_ci_read", owner=repo.owner, repo=repo.name)
+    per_sha_cap = 50
+    threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+    max_pages = (
+        int(max_pages_per_sha) if isinstance(max_pages_per_sha, int) else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
+    )
+    require_assoc = bool(require_pr_association) if require_pr_association is not None else False
+
+    input_shas = [sha for sha in shas if sha]
+    unique_shas = list(dict.fromkeys(input_shas))
+    rate_events: list[dict[str, Any]] = []
+
+    def rate_log(label: str, rl_snap: dict) -> None:
+        try:
+            rate_events.append(
+                {
+                    "label": label,
+                    "cost": rl_snap.get("cost"),
+                    "remaining": rl_snap.get("remaining"),
+                    "resetAt": rl_snap.get("resetAt"),
+                }
+            )
+        except Exception:
+            pass
+
+    impacted_qs = PullRequest.objects.filter(repository=repo, state="open", head_sha__in=unique_shas).only(
+        "id", "number", "head_sha"
+    )
+    by_sha: dict[str, list[PullRequest]] = {}
+    impacted_pr_ids: set[int] = set()
+    for pr in impacted_qs:
+        if not pr.head_sha:
+            continue
+        by_sha.setdefault(pr.head_sha, []).append(pr)
+        impacted_pr_ids.add(int(pr.id))
+
+    pr_shas: dict[int, list[str]] = {}
+    pr_by_id: dict[int, PullRequest] = {}
+    unassociated_shas: list[str] = []
+    for sha in unique_shas:
+        prs = by_sha.get(sha) or []
+        if not prs:
+            unassociated_shas.append(sha)
+            continue
+        for pr in prs:
+            pr_by_id[int(pr.id)] = pr
+            pr_shas.setdefault(int(pr.id), [])
+            if sha not in pr_shas[int(pr.id)]:
+                pr_shas[int(pr.id)].append(sha)
+
+    def _defer(reset_at: Optional[str], remaining_shas: Sequence[str]) -> Dict[str, Any]:
+        eta = None
+        if isinstance(reset_at, str):
+            try:
+                rdt = dtparser.isoparse(reset_at)
+                if timezone.is_naive(rdt):
+                    rdt = timezone.make_aware(rdt)
+                eta = rdt + timedelta(seconds=5)
+            except Exception:
+                eta = None
+        if eta is not None and remaining_shas:
+            try:
+                sig = sync_ci_for_repo_shas_task.s(
+                    repo.id,
+                    shas=list(remaining_shas),
+                    max_pages_per_sha=max_pages_per_sha,
+                    dry_run=dry_run,
+                    require_pr_association=require_pr_association,
+                    trigger_analyzer_after_sync=trigger_analyzer_after_sync,
+                )
+                enqueue_with_parent(sig, self.request, eta=eta)
+            except Exception:
+                pass
+        rl = client.get_last_rate_limit() or {}
+        return {
+            "status": "deferred",
+            "repo": f"{repo.owner}/{repo.name}",
+            "repo_id": repo.id,
+            "remaining_shas": list(remaining_shas),
+            "unassociated_shas": unassociated_shas,
+            "impacted_pr_ids": sorted(impacted_pr_ids),
+            "impacted_pr_count": len(impacted_pr_ids),
+            "counts": {},
+            "results_by_result": {},
+            "per_sha_results": [],
+            "per_sha_results_truncated": False,
+            "per_sha_results_cap": per_sha_cap,
+            "rate_limit": rl,
+            "rate_events": rate_events,
+            "analyzer_enqueued": 0,
+            "analyzer_task_ids": [],
+        }
+
+    total_counts = {"checkruns_created": 0, "checkruns_updated": 0, "status_created": 0, "status_updated": 0}
+    results_by_result: dict[str, int] = {}
+    per_sha_results: list[dict[str, Any]] = []
+    shas_done: list[str] = []
+    shas_seen: set[str] = set()
+
+    for pr_id in sorted(pr_shas.keys()):
+        pr = pr_by_id[pr_id]
+        pr_exec = run_ci_sync_for_pr_shas(
+            pr=pr,
+            shas=pr_shas.get(pr_id, []),
+            client=client,
+            max_pages_per_sha=max_pages,
+            dry_run=dry_run,
+            require_pr_association=require_assoc,
+            budget_threshold=threshold,
+            per_sha_cap=per_sha_cap,
+            rate_log=rate_log,
+            on_sha_result=lambda sha, result, p=pr: record_ci_sha_fetch(pr=p, sha=sha, result=result),
+        )
+        if str(pr_exec.get("status") or "") == "deferred":
+            remaining = [sha for sha in unique_shas if sha not in shas_seen]
+            reset_at = pr_exec.get("reset_at") if isinstance(pr_exec.get("reset_at"), str) else None
+            return _defer(reset_at, remaining)
+
+        for key in total_counts.keys():
+            total_counts[key] += int((pr_exec.get("counts") or {}).get(key, 0))
+        for result_key, count in (pr_exec.get("results_by_result") or {}).items():
+            if not isinstance(result_key, str):
+                continue
+            results_by_result[result_key] = results_by_result.get(result_key, 0) + int(count)
+        for item in pr_exec.get("per_sha_results", []):
+            if not isinstance(item, dict):
+                continue
+            if len(per_sha_results) >= per_sha_cap:
+                continue
+            row = dict(item)
+            row["pr_number"] = int(pr.number)
+            per_sha_results.append(row)
+        for done_sha in pr_exec.get("done", []):
+            if not isinstance(done_sha, str):
+                continue
+            shas_seen.add(done_sha)
+            if done_sha not in shas_done:
+                shas_done.append(done_sha)
+
+    analyzer_task_ids: list[str] = []
+    if trigger_analyzer_after_sync and not dry_run:
+        try:
+            from analyzer.tasks import process_pr_task
+
+            for pr_id in sorted(impacted_pr_ids):
+                async_res = enqueue_with_parent(process_pr_task.s(int(pr_id)), self.request)
+                if getattr(async_res, "id", None):
+                    analyzer_task_ids.append(str(async_res.id))
+        except Exception:
+            log.exception("sync_ci_for_repo_shas_task: failed to enqueue analyzer.process_pr follow-up")
+
+    rl_final = client.get_last_rate_limit() or {}
+    return {
+        "status": "ok",
+        "repo": f"{repo.owner}/{repo.name}",
+        "repo_id": repo.id,
+        "input_shas": unique_shas,
+        "shas_done": shas_done,
+        "unassociated_shas": unassociated_shas,
+        "impacted_pr_ids": sorted(impacted_pr_ids),
+        "impacted_pr_count": len(impacted_pr_ids),
+        "counts": total_counts,
+        "results_by_result": results_by_result,
+        "per_sha_results": per_sha_results,
+        "per_sha_results_truncated": len(unique_shas) > per_sha_cap,
+        "per_sha_results_cap": per_sha_cap,
+        "rate_limit": rl_final,
+        "rate_events": rate_events,
+        "analyzer_enqueued": len(analyzer_task_ids),
+        "analyzer_task_ids": analyzer_task_ids,
     }
 
 

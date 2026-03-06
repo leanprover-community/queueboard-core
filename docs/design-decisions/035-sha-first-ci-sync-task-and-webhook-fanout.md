@@ -56,7 +56,7 @@
 - Any PR follow-up fanout must be explicit and observable in task summaries.
 
 ## Implementation Plan (Chunks)
-1. Introduce SHA-first task skeleton and shared CI-by-SHA execution helper extraction.
+1. ✅ Introduce SHA-first task skeleton and shared CI-by-SHA execution helper extraction.
 2. Add webhook check-event routing option flag to call SHA-first task path.
 3. Implement impacted-PR resolution and follow-up analyzer enqueue behavior.
 4. Add metrics:
@@ -86,6 +86,12 @@
 - 2026-03-06:
   - Split from decision `030-sync-task-dedupe-strategy.md` after identifying that webhook check-event fanout remains PR-scoped despite SHA-keyed CI needs.
   - This document now owns the architectural shift to SHA-first CI tasking; decision `030` remains focused on dedupe strategy and rollout.
+  - Chunk 1 implemented:
+    - Added shared runner `syncer/services/ci_sha_task_runner.py` to execute CI-by-SHA loops with common budget/defer behavior.
+    - Refactored existing `syncer.sync_ci_for_shas` task to call the shared runner (no contract change).
+    - Added new `syncer.sync_ci_for_repo_shas` task skeleton that accepts `(repo_id, shas)` and resolves impacted PRs internally.
+    - Added/updated tests in `qb_site/syncer/tests/tasks/test_sync_ci_for_shas_task.py` for PR-scoped and repo-scoped entrypoints.
+  - No additional design decision required before chunk 2; webhook routing remains unchanged in this chunk.
 
 ## References
 - `docs/design-decisions/030-sync-task-dedupe-strategy.md`
