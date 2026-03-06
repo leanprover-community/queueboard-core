@@ -3,10 +3,16 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import json
+from urllib.parse import parse_qs
 
 from django.conf import settings
+from django.db import IntegrityError
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+
+from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +25,33 @@ def _has_valid_github_signature(*, payload: bytes, signature_header: str, secret
         return False
     expected_sig = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(given_sig, expected_sig)
+
+
+def _parse_webhook_payload(payload: bytes) -> dict:
+    """Parse GitHub webhook body for both JSON and form-encoded webhook modes."""
+    try:
+        parsed = json.loads(payload or b"{}")
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # GitHub can send form-urlencoded payloads with JSON in `payload=...`.
+    try:
+        qs = parse_qs((payload or b"").decode("utf-8"), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return {}
+    payload_entries = qs.get("payload") or []
+    if not payload_entries:
+        return {}
+    raw = payload_entries[0]
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        parsed_form = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed_form if isinstance(parsed_form, dict) else {}
 
 
 @csrf_exempt
@@ -40,6 +73,36 @@ def github_webhook(request: HttpRequest) -> HttpResponse:
 
     event = request.headers.get("X-GitHub-Event", "")
     delivery = request.headers.get("X-GitHub-Delivery", "")
+    if not delivery:
+        return JsonResponse({"error": "Missing delivery id"}, status=400)
+
+    payload_data = _parse_webhook_payload(request.body)
+
+    action = str(payload_data.get("action") or "")
+    repo = payload_data.get("repository") if isinstance(payload_data.get("repository"), dict) else {}
+    repo_owner = str((repo.get("owner") or {}).get("login") or "") if isinstance(repo, dict) else ""
+    repo_name = str(repo.get("name") or "") if isinstance(repo, dict) else ""
+    summary = {
+        "event": event,
+        "action": action,
+        "repository": {"owner": repo_owner, "name": repo_name},
+    }
+
+    try:
+        GitHubWebhookDelivery.objects.create(
+            delivery_id=delivery,
+            event_type=event,
+            action=action,
+            repository_owner=repo_owner,
+            repository_name=repo_name,
+            processed_at=timezone.now(),
+            status=GitHubWebhookDeliveryStatus.ACCEPTED,
+            summary_json=summary,
+        )
+    except IntegrityError:
+        logger.info("github_webhook_duplicate event=%s delivery=%s", event, delivery)
+        return JsonResponse({"status": "duplicate"}, status=202)
+
     logger.info(
         "github_webhook_accepted event=%s delivery=%s payload_bytes=%s",
         event,
