@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -122,3 +123,51 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(kwargs["repository_name"], "mathlib4")
         self.assertEqual(kwargs["summary_json"]["route"], "check")
         self.assertEqual(kwargs["summary_json"]["head_sha"], "")
+
+    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
+    def test_pull_request_event_enqueues_sync_pr(self) -> None:
+        payload = b'{"action":"synchronize","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},"pull_request":{"number":123}}'
+        repo = SimpleNamespace(id=7)
+        task = SimpleNamespace(id="task-1")
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.Repository.objects.filter") as mock_filter,
+            patch("syncer.views.sync_pr_task.delay", return_value=task) as mock_delay,
+        ):
+            mock_filter.return_value.only.return_value.first.return_value = repo
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="pull_request",
+                HTTP_X_GITHUB_DELIVERY="delivery-5",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_delay.assert_called_once_with(7, 123)
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["route"], "pull_request")
+        self.assertEqual(kwargs["summary_json"]["reason"], "enqueued_sync_pr")
+        self.assertEqual(kwargs["summary_json"]["enqueued_sync_prs"], 1)
+
+    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
+    def test_pull_request_event_skips_when_repo_missing_or_inactive(self) -> None:
+        payload = b'{"action":"opened","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},"pull_request":{"number":124}}'
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.Repository.objects.filter") as mock_filter,
+            patch("syncer.views.sync_pr_task.delay") as mock_delay,
+        ):
+            mock_filter.return_value.only.return_value.first.return_value = None
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="pull_request",
+                HTTP_X_GITHUB_DELIVERY="delivery-6",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_delay.assert_not_called()
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "repository_not_active_or_missing")
