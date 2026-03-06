@@ -159,6 +159,18 @@ Primary producer paths to cover:
   - Added production webhook trial observations and prioritized `sync_ci_for_shas` enqueue dedupe.
   - Audited code paths and confirmed this plan is still largely unimplemented (except continuation debounce + CI backoff primitives).
   - Expanded explicit producer inventory so implementation can proceed incrementally without missing enqueue sources.
+  - Chunk 1 completed:
+    - added enqueue dedupe helper in `qb_site/syncer/services/task_dedupe.py`
+      - `sync_pr_enqueue_key(...)`
+      - `sync_ci_enqueue_key(...)` (sorted/unique SHA canonicalization + digest)
+      - `claim_enqueue_slot(...)` using Redis `SET NX EX` with fail-open semantics
+    - added focused tests in `qb_site/syncer/tests/services/test_task_dedupe.py`
+      - first-writer wins / duplicate suppression behavior
+      - fail-open when Redis client unavailable or errors
+      - deterministic key normalization for CI SHA sets
+    - validation:
+      - `uv run ruff check qb_site/syncer/services/task_dedupe.py qb_site/syncer/tests/services/test_task_dedupe.py` passed
+      - `uv run python qb_site/manage.py test syncer.tests.services.test_task_dedupe` blocked locally (Postgres not running in this environment)
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`
