@@ -60,6 +60,7 @@ class TestIncompletePrBackfillTask(TestCase):
 
         self.assertEqual(res.get("repo_id"), self.repo.id)
         self.assertEqual(res.get("enqueued"), 1)
+        self.assertEqual(res.get("deduped"), 0)
         # There were two incomplete PRs; after enqueuing one, one should remain.
         self.assertIn("OPEN", res.get("states") or [])
         mock_sync_pr_task.delay.assert_called_once()
@@ -153,3 +154,14 @@ class TestIncompletePrBackfillTask(TestCase):
             backfill_timeline_pages=mock.ANY,
             backfill_commit_pages=mock.ANY,
         )
+
+    @mock.patch("syncer.tasks.backfill_tasks.claim_enqueue_slot", return_value=False)
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_reports_deduped_when_enqueue_suppressed(self, mock_sync_pr_task, _mock_claim) -> None:
+        self._make_pr(9, timeline_done=False, commits_done=True)
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("enqueued"), 0)
+        self.assertEqual(res.get("deduped"), 1)
+        mock_sync_pr_task.delay.assert_not_called()

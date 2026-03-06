@@ -54,8 +54,18 @@ class TestTaskDedupe(TestCase):
             ok = td.claim_enqueue_slot(key="k1", ttl_seconds=30)
         self.assertTrue(ok)
 
+    def test_claim_enqueue_slot_fail_open_when_client_factory_raises(self) -> None:
+        with mock.patch.object(td, "_get_redis_client", side_effect=RuntimeError("client init failed")):
+            ok = td.claim_enqueue_slot(key="k1", ttl_seconds=30)
+        self.assertTrue(ok)
+
     def test_claim_runtime_slot_delegates(self) -> None:
         with mock.patch.object(td, "claim_enqueue_slot", return_value=False) as mock_claim:
             ok = td.claim_runtime_slot(key="k1", ttl_seconds=30)
         self.assertFalse(ok)
         mock_claim.assert_called_once_with(key="k1", ttl_seconds=30)
+
+    def test_claim_runtime_slot_fail_open_on_unexpected_error(self) -> None:
+        with mock.patch.object(td, "claim_enqueue_slot", side_effect=RuntimeError("unexpected")):
+            ok = td.claim_runtime_slot(key="k1", ttl_seconds=30)
+        self.assertTrue(ok)
