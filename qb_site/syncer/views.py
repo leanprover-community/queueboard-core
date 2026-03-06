@@ -213,7 +213,7 @@ def _enqueue_check_sync(summary: dict) -> dict:
             trigger_analyzer_after_sync=True,
         )
         task_ids.append(str(async_res.id))
-    summary["reason"] = "enqueued_sync_ci"
+    summary["reason"] = "deduped_sync_ci" if not task_ids and deduped > 0 else "enqueued_sync_ci"
     summary["enqueued_sync_ci"] = len(task_ids)
     summary["deduped_sync_ci"] = deduped
     summary["sync_ci_task_ids"] = task_ids
