@@ -175,6 +175,7 @@ GITHUB_OAUTH_AUTHORIZE_URL = os.getenv("GITHUB_OAUTH_AUTHORIZE_URL", "https://gi
 GITHUB_OAUTH_TOKEN_URL = os.getenv("GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token")
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "read:user")
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_APP_TOKEN_CONFIG: dict[str, object] = {}
 _GITHUB_APP_TOKEN_CONFIG_ENV = os.getenv("GITHUB_APP_TOKEN_CONFIG", "").strip()
 if _GITHUB_APP_TOKEN_CONFIG_ENV:
@@ -231,6 +232,7 @@ SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS = int(os.getenv("SYNCER_DISCOVERY_CO
 SYNCER_DISCOVERY_STATES_DEFAULT = [
     s.strip().upper() for s in os.getenv("SYNCER_DISCOVERY_STATES_DEFAULT", "OPEN,MERGED,CLOSED").split(",") if s.strip()
 ]
+SYNCER_GITHUB_WEBHOOK_ENABLED = env_bool(os.getenv("SYNCER_GITHUB_WEBHOOK_ENABLED"), False)
 # Rate and paging defaults
 SYNCER_RATE_REMAINING_MIN = int(os.getenv("SYNCER_RATE_REMAINING_MIN", 200))
 SYNCER_TIMELINE_K_DEFAULT = int(os.getenv("SYNCER_TIMELINE_K_DEFAULT", 150))
