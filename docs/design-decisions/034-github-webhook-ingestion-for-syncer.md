@@ -143,6 +143,37 @@
 - Phase 3: enable for all active repos; keep pollers unchanged.
 - Phase 4: tune polling frequencies only after observed webhook stability and lag metrics.
 
+## Operational Notes: GitHub App and Webhook Setup
+- When to create/configure the GitHub App:
+  - Create the app before Phase 1 (staging dry-run), after endpoint + signature verification code is merged and deployed.
+  - Do not point production repos at the webhook until Phase 2 starts (single-repo canary with enqueue enabled).
+- Recommended sequencing:
+  1. Deploy code with webhook endpoint and `SYNCER_GITHUB_WEBHOOK_ENABLED=false`.
+  2. Create GitHub App in staging, set webhook URL to staging endpoint, set webhook secret.
+  3. Validate delivery signatures and routing logs in dry-run mode (no enqueue).
+  4. Enable enqueue in staging.
+  5. Create/update production GitHub App webhook URL + secret.
+  6. Install app on one production repository (canary), monitor for 24-48 hours.
+  7. Expand installation to remaining active repositories.
+- Webhook URL targets:
+  - Staging: `https://<staging-host>/webhooks/github/`
+  - Production: `https://<prod-host>/webhooks/github/`
+- Required app webhook event subscriptions (phase 1):
+  - Pull requests,
+  - Check runs,
+  - Check suites.
+- Secret and configuration handling:
+  - Keep `GITHUB_WEBHOOK_SECRET` in deployment secret manager.
+  - Rotate secret by supporting a short dual-secret overlap window during deployment, then remove old secret.
+  - Keep `SYNCER_GITHUB_WEBHOOK_ENABLED` as a fast rollback toggle.
+- Failure/rollback runbook:
+  - If signature failures spike, disable webhook processing (`SYNCER_GITHUB_WEBHOOK_ENABLED=false`) and rely on pollers while fixing secret/config mismatch.
+  - If enqueue volume spikes unexpectedly, keep endpoint enabled but switch to dry-run routing mode to inspect event mix.
+  - If delivery backlog appears in GitHub, verify app installation scope and endpoint latency before reducing poll cadence.
+- Post-cutover steady-state guidance:
+  - Keep pollers/backfills enabled for at least one full CI retention/seasonality cycle before considering any schedule reductions.
+  - Revisit polling intervals only after observing stable webhook delivery and reduced CI freshness lag.
+
 ## Observability Additions
 - Delivery-level counters:
   - received,
