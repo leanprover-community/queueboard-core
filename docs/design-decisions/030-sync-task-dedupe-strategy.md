@@ -197,6 +197,12 @@ Primary producer paths to cover:
     - validation:
       - `uv run ruff check` passed on all touched Python files
       - targeted Django tests blocked locally (Postgres not running in this environment)
+  - Post-chunk observability follow-up:
+    - webhook check-event routing now emits explicit `reason=deduped_sync_ci` when all candidate CI enqueues are dedupe-suppressed.
+    - `SyncerMetricsSnapshot` now tracks dedupe-focused webhook metrics:
+      - `webhook_reason_deduped_sync_ci` (delivery count)
+      - `webhook_deduped_sync_ci_total` (sum of `summary_json.deduped_sync_ci` across deliveries in window)
+    - migration added: `0034_syncermetricssnapshot_webhook_deduped_sync_ci_total_and_more.py`.
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`
@@ -205,3 +211,4 @@ Primary producer paths to cover:
 - `qb_site/syncer/services/rate_budget.py`
 - `qb_site/qb_site/settings/base.py`
 - `docs/design-decisions/029-updatedat-discovery-watermark-and-catchup.md`
+- `docs/design-decisions/035-sha-first-ci-sync-task-and-webhook-fanout.md` (follow-up architecture split for SHA-first CI tasking)

@@ -181,7 +181,15 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     webhook_route_noop = webhook_q.filter(summary_json__contains={"route": "noop"}).count()
     webhook_reason_enqueued_sync_pr = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_pr"}).count()
     webhook_reason_enqueued_sync_ci = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_ci"}).count()
+    webhook_reason_deduped_sync_ci = webhook_q.filter(summary_json__contains={"reason": "deduped_sync_ci"}).count()
     webhook_reason_ignored_action = webhook_q.filter(summary_json__contains={"reason": "ignored_action"}).count()
+    webhook_deduped_sync_ci_total = 0
+    for delivery in webhook_q.only("summary_json"):
+        summary = delivery.summary_json if isinstance(delivery.summary_json, dict) else {}
+        try:
+            webhook_deduped_sync_ci_total += int(summary.get("deduped_sync_ci") or 0)
+        except Exception:
+            pass
     webhook_duplicates_touched = webhook_q.filter(last_duplicate_at__gte=start, last_duplicate_at__lt=now).count()
 
     # DB activity (rows created in the window)
@@ -227,7 +235,9 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         webhook_route_noop=webhook_route_noop,
         webhook_reason_enqueued_sync_pr=webhook_reason_enqueued_sync_pr,
         webhook_reason_enqueued_sync_ci=webhook_reason_enqueued_sync_ci,
+        webhook_reason_deduped_sync_ci=webhook_reason_deduped_sync_ci,
         webhook_reason_ignored_action=webhook_reason_ignored_action,
+        webhook_deduped_sync_ci_total=webhook_deduped_sync_ci_total,
         webhook_duplicates_touched=webhook_duplicates_touched,
         token_cost_total=token_cost_total,
         rows_pull_request=rows_pr,

@@ -350,6 +350,6 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(response.status_code, 202)
         mock_ci_delay.assert_not_called()
         kwargs = mock_create.call_args.kwargs
-        self.assertEqual(kwargs["summary_json"]["reason"], "enqueued_sync_ci")
+        self.assertEqual(kwargs["summary_json"]["reason"], "deduped_sync_ci")
         self.assertEqual(kwargs["summary_json"]["enqueued_sync_ci"], 0)
         self.assertEqual(kwargs["summary_json"]["deduped_sync_ci"], 1)
