@@ -122,6 +122,15 @@ class TestCollectMetrics(TestCase):
             status=GitHubWebhookDeliveryStatus.ACCEPTED,
             summary_json={"route": "check", "reason": "deduped_sync_ci", "deduped_sync_ci": 2, "enqueued_sync_ci": 0},
         )
+        GitHubWebhookDelivery.objects.create(
+            delivery_id="d-6",
+            event_type="pull_request",
+            action="synchronize",
+            repository_owner="o",
+            repository_name="r",
+            status=GitHubWebhookDeliveryStatus.ACCEPTED,
+            summary_json={"route": "pull_request", "reason": "deduped_sync_pr", "deduped_sync_prs": 3, "enqueued_sync_prs": 0},
+        )
         d2 = GitHubWebhookDelivery.objects.get(delivery_id="d-2")
         d2.duplicate_count = 2
         d2.last_duplicate_at = timezone.now() - timedelta(seconds=1)
@@ -136,13 +145,15 @@ class TestCollectMetrics(TestCase):
         self.assertEqual(snap.token_cost_total, 79)
         self.assertEqual(snap.repo_discovered, 5)
         self.assertEqual(snap.repo_enqueued, 3)
-        self.assertEqual(snap.webhook_deliveries, 5)
-        self.assertEqual(snap.webhook_route_pull_request, 2)
+        self.assertEqual(snap.webhook_deliveries, 6)
+        self.assertEqual(snap.webhook_route_pull_request, 3)
         self.assertEqual(snap.webhook_route_check, 2)
         self.assertEqual(snap.webhook_route_noop, 1)
         self.assertEqual(snap.webhook_reason_enqueued_sync_pr, 1)
         self.assertEqual(snap.webhook_reason_enqueued_sync_ci, 1)
+        self.assertEqual(snap.webhook_reason_deduped_sync_pr, 1)
         self.assertEqual(snap.webhook_reason_deduped_sync_ci, 1)
         self.assertEqual(snap.webhook_reason_ignored_action, 1)
+        self.assertEqual(snap.webhook_deduped_sync_pr_total, 3)
         self.assertEqual(snap.webhook_deduped_sync_ci_total, 2)
         self.assertEqual(snap.webhook_duplicates_touched, 1)
