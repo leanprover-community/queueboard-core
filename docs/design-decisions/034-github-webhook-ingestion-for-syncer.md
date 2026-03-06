@@ -201,6 +201,33 @@
   - Keep pollers/backfills enabled for at least one full CI retention/seasonality cycle before considering any schedule reductions.
   - Revisit polling intervals only after observing stable webhook delivery and reduced CI freshness lag.
 
+### Post-Webhooks Polling Tuning (Recommended)
+- Intent:
+  - reduce GitHub/API load now that webhook fanout is active,
+  - preserve pollers/backfills as safety net for missed deliveries and downtime.
+- Webhook flags (steady-state):
+  - `SYNCER_GITHUB_WEBHOOK_ENABLED=1`
+  - `SYNCER_GITHUB_WEBHOOK_DRY_RUN=0`
+- Stage 1 (immediate, low risk):
+  - `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS`: `300 -> 900`
+  - `SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS`: `600 -> 1800`
+  - `SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS`: `600 -> 1800`
+  - `SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS`: `600 -> 1800`
+- Stage 2 (after 3-7 days stable):
+  - `SYNCER_ACTIVE_REPOS_PERIOD_SECONDS`: `900 -> 1800`
+  - `SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS`: `1800 -> 3600`
+  - `SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS`: `1800 -> 3600`
+  - `SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS`: `1800 -> 3600`
+  - optional: `SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS`: `600 -> 1800`
+- Alternative load-control knobs (if cadence changes are undesirable):
+  - reduce `SYNCER_PENDING_CI_REFRESH_MAX_PRS`
+  - reduce `SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR`
+  - reduce `SYNCER_INCOMPLETE_BACKFILL_LIMIT`
+- Guardrails before each reduction step:
+  - webhook delivery + routing counters remain healthy,
+  - no sustained growth in convergence gap indicators (for example `prs_missing_head_ci_contexts`),
+  - no noticeable increase in stale CI/queue state reports from operators.
+
 ## Observability Additions
 - Delivery-level counters:
   - received,
