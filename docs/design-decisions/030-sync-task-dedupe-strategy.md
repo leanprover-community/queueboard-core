@@ -108,7 +108,7 @@ Primary producer paths to cover:
   - `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS` (default `300`),
   - `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS` (default `300`).
 - Runtime dedupe (phase 2):
-  - `SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS` (default TBD).
+  - `SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS` (default `300`).
 
 ## Chunked Implementation Plan
 1. Introduce Redis enqueue-dedupe helper for sync tasks (fail-open on Redis errors).
@@ -217,6 +217,24 @@ Primary producer paths to cover:
       - webhook pull_request dedupe suppression in `syncer/tests/test_github_webhook_endpoint.py`
       - repo discovery dedupe suppression in `syncer/tests/tasks/test_sync_repo_tasks.py`
       - history backfill dedupe suppression in `syncer/tests/backfill/test_repo_history_backfill_task.py`
+    - validation:
+      - `uv run ruff check` passed on all touched Python files
+      - targeted Django tests blocked locally (Postgres not running in this environment)
+  - Chunk 6 completed (`sync_pr` runtime dedupe):
+    - added dedicated runtime key namespace in `syncer/services/task_dedupe.py`:
+      - `sync_pr_runtime_key(...)`
+      - `claim_runtime_slot(...)`
+    - added runtime dedupe guard at start of `syncer.sync_pr_task`:
+      - when `force=False` and runtime key already claimed within TTL:
+        - returns `status=runtime_deduped`, `reason=recently_processed`
+      - `force=True` explicitly bypasses runtime dedupe
+    - added setting/env knob:
+      - `SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS` (default `300`)
+      - surfaced in `qb_site/qb_site/settings/base.py` and `.env.example`
+    - added targeted tests:
+      - runtime skip path in `syncer/tests/tasks/test_sync_pr_task_skip.py`
+      - force bypass path in `syncer/tests/tasks/test_sync_pr_task_skip.py`
+      - runtime key helper coverage in `syncer/tests/services/test_task_dedupe.py`
     - validation:
       - `uv run ruff check` passed on all touched Python files
       - targeted Django tests blocked locally (Postgres not running in this environment)

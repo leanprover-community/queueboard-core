@@ -12,6 +12,10 @@ class TestTaskDedupe(TestCase):
         key = td.sync_pr_enqueue_key(repo_id=12, number=34)
         self.assertEqual(key, "syncer:dedupe:enqueue:sync_pr:12:34")
 
+    def test_sync_pr_runtime_key(self) -> None:
+        key = td.sync_pr_runtime_key(repo_id=12, number=34)
+        self.assertEqual(key, "syncer:dedupe:runtime:sync_pr:12:34")
+
     def test_sync_ci_enqueue_key_normalizes_shas(self) -> None:
         key1 = td.sync_ci_enqueue_key(
             repo_id=5,
@@ -49,3 +53,9 @@ class TestTaskDedupe(TestCase):
         with mock.patch.object(td, "_get_redis_client", return_value=fake):
             ok = td.claim_enqueue_slot(key="k1", ttl_seconds=30)
         self.assertTrue(ok)
+
+    def test_claim_runtime_slot_delegates(self) -> None:
+        with mock.patch.object(td, "claim_enqueue_slot", return_value=False) as mock_claim:
+            ok = td.claim_runtime_slot(key="k1", ttl_seconds=30)
+        self.assertFalse(ok)
+        mock_claim.assert_called_once_with(key="k1", ttl_seconds=30)

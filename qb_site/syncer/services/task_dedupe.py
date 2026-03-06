@@ -7,6 +7,7 @@ from syncer.services.rate_budget import _get_redis_client
 
 
 TASK_ENQUEUE_DEDUPE_PREFIX = "syncer:dedupe:enqueue:"
+TASK_RUNTIME_DEDUPE_PREFIX = "syncer:dedupe:runtime:"
 
 
 def _normalize_shas(shas: Sequence[str]) -> list[str]:
@@ -26,6 +27,11 @@ def _normalize_shas(shas: Sequence[str]) -> list[str]:
 def sync_pr_enqueue_key(*, repo_id: int, number: int) -> str:
     """Build enqueue dedupe identity key for sync_pr."""
     return f"{TASK_ENQUEUE_DEDUPE_PREFIX}sync_pr:{int(repo_id)}:{int(number)}"
+
+
+def sync_pr_runtime_key(*, repo_id: int, number: int) -> str:
+    """Build runtime dedupe identity key for sync_pr task execution."""
+    return f"{TASK_RUNTIME_DEDUPE_PREFIX}sync_pr:{int(repo_id)}:{int(number)}"
 
 
 def sync_ci_enqueue_key(
@@ -59,3 +65,8 @@ def claim_enqueue_slot(*, key: str, ttl_seconds: int) -> bool:
         return bool(client.set(str(key), "1", nx=True, ex=ttl))
     except Exception:
         return True
+
+
+def claim_runtime_slot(*, key: str, ttl_seconds: int) -> bool:
+    """Return True if runtime execution should proceed for this dedupe key."""
+    return claim_enqueue_slot(key=key, ttl_seconds=ttl_seconds)
