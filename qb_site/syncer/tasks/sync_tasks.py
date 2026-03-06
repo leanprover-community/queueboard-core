@@ -19,7 +19,13 @@ from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import record_ci_sha_fetch, should_enqueue_ci_sha_with_state
-from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key, sync_pr_enqueue_key
+from syncer.services.task_dedupe import (
+    claim_enqueue_slot,
+    claim_runtime_slot,
+    sync_ci_enqueue_key,
+    sync_pr_enqueue_key,
+    sync_pr_runtime_key,
+)
 from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -67,6 +73,30 @@ def sync_pr_task(  # type: ignore[no-redef]
     Returns a summary dict with counts and rate limit info. Skips the PR if up-to-date.
     """
     repo = Repository.objects.get(id=repo_id)
+
+    if not force:
+        runtime_ttl = int(getattr(settings, "SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS", 300))
+        runtime_key = sync_pr_runtime_key(repo_id=repo.id, number=int(number))
+        if not claim_runtime_slot(key=runtime_key, ttl_seconds=runtime_ttl):
+            return {
+                "skipped": True,
+                "status": "runtime_deduped",
+                "reason": "recently_processed",
+                "repo": f"{repo.owner}/{repo.name}",
+                "repo_id": repo.id,
+                "number": int(number),
+                "dry_run": dry_run,
+                "params": {
+                    "timelineK": timelineK,
+                    "commitsM": commitsM,
+                    "max_timeline_pages": max_timeline_pages,
+                    "max_commit_pages": max_commit_pages,
+                    "force": force,
+                    "backfill_timeline_pages": backfill_timeline_pages,
+                    "backfill_commit_pages": backfill_commit_pages,
+                },
+            }
+
     client = GitHubClient(operation="syncer_pr_read", owner=repo.owner, repo=repo.name)
 
     def _schedule_defer(reset_at: Optional[str], where: str) -> Dict[str, Any]:

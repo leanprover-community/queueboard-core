@@ -6,8 +6,6 @@ from django.test import TestCase
 from django.utils import timezone
 from django.conf import settings
 
-from core.models import Repository
-from syncer.models import PullRequest
 from syncer.tasks.sync_tasks import sync_pr_task
 from syncer.tests.factories import make_repo, make_pr
 
@@ -165,3 +163,41 @@ class TestSyncPrTaskSkip(TestCase):
         self.assertFalse(res.get("skipped"))
         self.assertEqual(res.get("status"), "synced")
         mock_sync.assert_called_once()
+
+    @mock.patch("syncer.tasks.sync_tasks.claim_runtime_slot", return_value=False)
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_runtime_dedupe_skips_when_recently_processed(self, MockClient, _mock_runtime_claim) -> None:
+        self._make_pr(17, last_synced_at=timezone.now())
+        res = sync_pr_task.apply(kwargs={"repo_id": self.repo.id, "number": 17}).get()
+        self.assertTrue(res.get("skipped"))
+        self.assertEqual(res.get("status"), "runtime_deduped")
+        self.assertEqual(res.get("reason"), "recently_processed")
+        MockClient.assert_not_called()
+
+    @mock.patch("syncer.tasks.sync_tasks.claim_runtime_slot")
+    @mock.patch("syncer.tasks.sync_tasks.PRSyncService.sync_pull_request")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_force_bypasses_runtime_dedupe(self, MockClient, mock_sync, mock_runtime_claim) -> None:
+        pr = self._make_pr(19, last_synced_at=timezone.now())
+        mock_runtime_claim.return_value = False
+        gh = MockClient.return_value
+        gh.get_pr_header.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 19,
+                        "updatedAt": (pr.last_synced_at - timezone.timedelta(seconds=1)).isoformat(),
+                        "state": "OPEN",
+                        "isDraft": False,
+                    }
+                }
+            }
+        }
+        gh.get_last_rate_limit.return_value = {"remaining": 4990, "cost": 1, "resetAt": "2030-01-01T00:00:00Z"}
+        mock_sync.return_value = {}
+
+        res = sync_pr_task.apply(kwargs={"repo_id": self.repo.id, "number": 19, "force": True}).get()
+        self.assertFalse(res.get("skipped"))
+        self.assertEqual(res.get("status"), "synced")
+        mock_sync.assert_called_once()
+        mock_runtime_claim.assert_not_called()
