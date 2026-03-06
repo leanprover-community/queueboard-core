@@ -16,6 +16,7 @@ from django.views.decorators.csrf import csrf_exempt
 from core.models import Repository
 from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus, PullRequest
 from syncer.services.github_webhook_router import route_github_webhook
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task, sync_pr_task
 
 logger = logging.getLogger(__name__)
@@ -192,7 +193,18 @@ def _enqueue_check_sync(summary: dict) -> dict:
         return summary
 
     task_ids: list[str] = []
+    deduped = 0
+    ci_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
     for pr_number in resolved_pr_numbers:
+        key = sync_ci_enqueue_key(
+            repo_id=repo.id,
+            number=int(pr_number),
+            shas=[head_sha],
+            max_pages_per_sha=None,
+        )
+        if not claim_enqueue_slot(key=key, ttl_seconds=ci_dedupe_ttl):
+            deduped += 1
+            continue
         async_res = sync_ci_for_shas_task.delay(
             repo.id,
             int(pr_number),
@@ -203,6 +215,7 @@ def _enqueue_check_sync(summary: dict) -> dict:
         task_ids.append(str(async_res.id))
     summary["reason"] = "enqueued_sync_ci"
     summary["enqueued_sync_ci"] = len(task_ids)
+    summary["deduped_sync_ci"] = deduped
     summary["sync_ci_task_ids"] = task_ids
     return summary
 

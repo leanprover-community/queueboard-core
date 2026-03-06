@@ -11,6 +11,8 @@ from syncer.tasks.sync_tasks import sync_ci_for_shas_task
 from syncer.services.ci_backoff import should_enqueue_ci_sha
 from syncer.services.status_contexts import latest_status_contexts_for_pr
 from syncer.services.check_runs import latest_check_runs_for_pr
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key
+from django.conf import settings
 
 
 @shared_task(name="syncer.harvest_commit_history")
@@ -90,14 +92,22 @@ def harvest_commit_history_task(
         if pre_gate_count > len(missing):
             shas_skipped_backoff += pre_gate_count - len(missing)
     if missing:
-        ci_res = sync_ci_for_shas_task.delay(
+        dedupe_key = sync_ci_enqueue_key(
             repo_id=pr.repository_id,
             number=pr.number,
             shas=missing,
             max_pages_per_sha=1,
-            require_pr_association=False,
         )
-        ci_task_id = ci_res.id
+        dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
+        if claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+            ci_res = sync_ci_for_shas_task.delay(
+                repo_id=pr.repository_id,
+                number=pr.number,
+                shas=missing,
+                max_pages_per_sha=1,
+                require_pr_association=False,
+            )
+            ci_task_id = ci_res.id
     return {
         "skipped": False,
         "repo": f"{pr.repository.owner}/{pr.repository.name}",

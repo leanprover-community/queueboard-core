@@ -180,6 +180,23 @@ Primary producer paths to cover:
       - `uv run ruff format .env.example` is not applicable (non-Python file)
   - Updated defaults after review:
     - lowered enqueue dedupe defaults to `300s` for both CI and PR to balance duplicate suppression vs freshness under webhook-driven bursts.
+  - Chunk 3 completed (`sync_ci_for_shas` producer dedupe):
+    - applied enqueue dedupe to CI producer paths using `sync_ci_enqueue_key(...)` + `claim_enqueue_slot(...)`:
+      - webhook check-event fanout (`syncer/views.py`)
+      - pending-CI refresh fanout (`syncer/tasks/sync_tasks.py`)
+      - commit-history-triggered CI sync (`syncer/tasks/commit_history_tasks.py`)
+      - manual admin enqueue action (`syncer/admin.py`)
+    - added CI producer visibility fields where summaries already exist:
+      - webhook summary: `deduped_sync_ci`
+      - pending-CI refresh summary: `prs_skipped_dedupe`, `shas_skipped_dedupe`
+    - added targeted tests for dedupe suppression paths:
+      - `syncer/tests/test_github_webhook_endpoint.py`
+      - `syncer/tests/tasks/test_refresh_pending_ci_task.py`
+      - `syncer/tests/tasks/test_commit_history_tasks.py`
+      - `syncer/tests/admin/test_enqueue_ci_sha.py`
+    - validation:
+      - `uv run ruff check` passed on all touched Python files
+      - targeted Django tests blocked locally (Postgres not running in this environment)
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`

@@ -19,6 +19,7 @@ from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import record_ci_sha_fetch, should_enqueue_ci_sha_with_state
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key
 from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -1065,6 +1066,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     shas_missing_head_ci = 0
     shas_skipped_backoff = 0
     prs_skipped_backoff = 0
+    shas_skipped_dedupe = 0
+    prs_skipped_dedupe = 0
     per_pr: list[dict[str, Any]] = []
     skipped_stale = 0
     skipped_no_eligible = 0
@@ -1181,6 +1184,17 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
             shas_skipped_backoff += pre_gate_count - len(shas)
         actionable_found += 1
         pages_per_sha = int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
+        dedupe_key = sync_ci_enqueue_key(
+            repo_id=repo.id,
+            number=int(pr.number),
+            shas=shas,
+            max_pages_per_sha=pages_per_sha,
+        )
+        dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
+        if not claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+            prs_skipped_dedupe += 1
+            shas_skipped_dedupe += len(shas)
+            continue
         async_res = sync_ci_for_shas_task.delay(
             repo_id=repo.id,
             number=int(pr.number),
@@ -1215,6 +1229,8 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
         "shas_missing_head_ci": shas_missing_head_ci,
         "prs_skipped_backoff": prs_skipped_backoff,
         "shas_skipped_backoff": shas_skipped_backoff,
+        "prs_skipped_dedupe": prs_skipped_dedupe,
+        "shas_skipped_dedupe": shas_skipped_dedupe,
         "backlog_prs_actionable_scanned": actionable_found,
         "prs_scanned_total": prs_scanned_total,
         "prs_seen_pending_or_missing_head": prs_seen_pending_or_missing_head,

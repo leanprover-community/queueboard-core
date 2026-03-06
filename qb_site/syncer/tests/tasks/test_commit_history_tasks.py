@@ -115,6 +115,29 @@ class TestCommitHistoryTasks(TestCase):
                 self.assertEqual(res["repo"], "o/r")
                 self.assertEqual(res["number"], 1)
 
+    def test_harvest_task_dedupe_suppresses_ci_enqueue(self) -> None:
+        state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha-dedupe")
+        with (
+            patch("syncer.tasks.commit_history_tasks.GitHubClient") as MockClient,
+            patch(
+                "syncer.tasks.commit_history_tasks.harvest_commit_history_with_cursor",
+                return_value=(["shaX"], state),
+            ),
+            patch("syncer.tasks.commit_history_tasks.claim_enqueue_slot", return_value=False),
+            patch("syncer.tasks.commit_history_tasks.sync_ci_for_shas_task.delay") as mock_ci,
+        ):
+            MockClient.return_value.get_last_rate_limit.return_value = {}
+            res = harvest_commit_history_task(
+                pr_id=self.pr.id,
+                start_sha="sha-dedupe",
+                max_pages=1,
+                page_size=1,
+                since_iso=None,
+            )
+        mock_ci.assert_not_called()
+        self.assertIsNone(res["ci_task_id"])
+        self.assertEqual(res["ci_missing"], ["shaX"])
+
     def test_harvest_task_enqueues_for_pending_ci_rows(self) -> None:
         state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha3")
         StatusContext.objects.create(

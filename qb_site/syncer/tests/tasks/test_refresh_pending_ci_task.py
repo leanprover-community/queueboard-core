@@ -155,6 +155,18 @@ class TestRefreshPendingCITask(TestCase):
         self.assertEqual(items[0]["shas"], ["sha_missing"])
         mock_sync_ci_for_shas.delay.assert_called_once()
 
+    @mock.patch("syncer.tasks.sync_tasks.claim_enqueue_slot", return_value=False)
+    @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
+    def test_dedupe_suppresses_enqueue(self, mock_sync_ci_for_shas, _mock_claim) -> None:
+        self.pr.head_sha = "sha_missing"
+        self.pr.save(update_fields=["head_sha", "updated_at"])
+        res = refresh_pending_ci_for_repo_task(self.repo.id, max_prs=10, max_shas_per_pr=5, max_pending_hours=24)
+        self.assertEqual(res.get("prs_enqueued"), 0)
+        self.assertEqual(res.get("shas_enqueued"), 0)
+        self.assertEqual(res.get("prs_skipped_dedupe"), 1)
+        self.assertEqual(res.get("shas_skipped_dedupe"), 1)
+        mock_sync_ci_for_shas.delay.assert_not_called()
+
     @override_settings(SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS=60)
     @mock.patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task")
     def test_skips_when_head_sha_backoff_not_found(self, mock_sync_ci_for_shas) -> None:
