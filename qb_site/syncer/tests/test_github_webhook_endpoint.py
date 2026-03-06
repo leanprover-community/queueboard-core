@@ -69,6 +69,10 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json(), {"status": "accepted"})
         self.assertEqual(mock_create.call_count, 1)
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["event_type"], "ping")
+        self.assertEqual(kwargs["status"], "ACCEPTED")
+        self.assertEqual(kwargs["summary_json"]["route"], "noop")
 
     @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
     def test_missing_delivery_id_returns_400(self) -> None:
@@ -116,3 +120,5 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(kwargs["action"], "completed")
         self.assertEqual(kwargs["repository_owner"], "leanprover-community")
         self.assertEqual(kwargs["repository_name"], "mathlib4")
+        self.assertEqual(kwargs["summary_json"]["route"], "check")
+        self.assertEqual(kwargs["summary_json"]["head_sha"], "")
