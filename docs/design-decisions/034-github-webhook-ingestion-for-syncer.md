@@ -170,6 +170,17 @@
   - Pull requests,
   - Check runs,
   - Check suites.
+- Recommended GitHub App permissions (phase 1):
+  - Repository permissions:
+    - `Metadata: Read-only` (required baseline).
+    - `Pull requests: Read-only` (for pull_request event payload/repo scope).
+    - `Checks: Read-only` (for check_run/check_suite event context).
+    - `Commit statuses: Read-only` (recommended compatibility for status-context-oriented CI signals).
+  - Organization/account permissions:
+    - none required for this webhook ingestion phase.
+  - Notes:
+    - keep permissions minimal at first; expand only when later chunks need additional write operations.
+    - if app tokens are also used for syncer GraphQL reads in your deployment, ensure the app installation has repository access for the target repos.
 - Secret and configuration handling:
   - Keep `GITHUB_WEBHOOK_SECRET` in deployment secret manager.
   - Rotate secret by supporting a short dual-secret overlap window during deployment, then remove old secret.
