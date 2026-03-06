@@ -124,7 +124,8 @@
 - Chunk 2: implemented.
 - Chunk 3: implemented.
 - Chunk 4: implemented.
-- Chunk 5+: pending.
+- Chunk 5: implemented.
+- Chunk 6+: pending.
 
 ## Validation Plan
 - Unit tests:
@@ -268,6 +269,21 @@
 - Subtleties discovered:
   - Current `pull_request` action filtering is intentionally broad (any parsed `pull_request` event can enqueue), prioritizing correctness over efficiency in early rollout.
   - Action-level filtering/allowlist is a near-term optimization for upcoming chunks.
+
+### 2026-03-06 - Chunk 5 (check event fanout to sync_ci_for_shas + action filtering)
+- Implemented webhook fanout for `check_run` / `check_suite` routes:
+  - repo identity match in local DB with `is_active=True` gate,
+  - `head_sha`-based PR resolution from local open PRs (`PullRequest.head_sha`) plus payload PR references,
+  - enqueue `syncer.sync_ci_for_shas` per resolved PR with `shas=[head_sha]`.
+- Added action filtering:
+  - `pull_request` and `check_*` routes now ignore non-tracked actions (`reason=ignored_action`) and do not enqueue.
+- Added endpoint tests for:
+  - check event enqueue path,
+  - check event ignored-action path,
+  - pull_request ignored-action path.
+- Subtleties discovered:
+  - Payload PR references in check events are useful fallback data, but local `(repo, head_sha)` resolution remains the primary correctness source for active PRs.
+  - Action allowlists materially reduce unnecessary enqueues while keeping recovery safety via periodic pollers/backfills.
 
 ## Finalization Notes
 - After implementation stabilizes, convert this file into a concise final decision record:

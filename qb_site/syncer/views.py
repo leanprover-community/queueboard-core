@@ -13,11 +13,32 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from core.models import Repository
-from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus
+from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus, PullRequest
 from syncer.services.github_webhook_router import route_github_webhook
-from syncer.tasks.sync_tasks import sync_pr_task
+from syncer.tasks.sync_tasks import sync_ci_for_shas_task, sync_pr_task
 
 logger = logging.getLogger(__name__)
+
+PULL_REQUEST_SYNC_ACTIONS = {
+    "assigned",
+    "closed",
+    "converted_to_draft",
+    "edited",
+    "labeled",
+    "opened",
+    "ready_for_review",
+    "reopened",
+    "synchronize",
+    "unassigned",
+    "unlabeled",
+}
+CHECK_SYNC_ACTIONS = {
+    "completed",
+    "created",
+    "rerequested",
+    "requested",
+    "requested_action",
+}
 
 
 def _has_valid_github_signature(*, payload: bytes, signature_header: str, secret: str) -> bool:
@@ -66,8 +87,15 @@ def _enqueue_pull_request_sync(summary: dict) -> dict:
     repo_meta = summary.get("repository") if isinstance(summary.get("repository"), dict) else {}
     owner = str(repo_meta.get("owner") or "") if isinstance(repo_meta, dict) else ""
     name = str(repo_meta.get("name") or "") if isinstance(repo_meta, dict) else ""
+    action = str(summary.get("action") or "")
     pr_numbers_raw = summary.get("pr_numbers") if isinstance(summary.get("pr_numbers"), list) else []
     pr_numbers = [n for n in pr_numbers_raw if isinstance(n, int)]
+
+    if action not in PULL_REQUEST_SYNC_ACTIONS:
+        summary["reason"] = "ignored_action"
+        summary["enqueued_sync_prs"] = 0
+        summary["sync_pr_task_ids"] = []
+        return summary
 
     if not owner or not name:
         summary["reason"] = "missing_repository"
@@ -97,6 +125,70 @@ def _enqueue_pull_request_sync(summary: dict) -> dict:
     return summary
 
 
+def _enqueue_check_sync(summary: dict) -> dict:
+    """Enqueue CI-by-SHA refresh for check_run/check_suite webhook events."""
+    route = str(summary.get("route") or "")
+    if route != "check":
+        return summary
+
+    repo_meta = summary.get("repository") if isinstance(summary.get("repository"), dict) else {}
+    owner = str(repo_meta.get("owner") or "") if isinstance(repo_meta, dict) else ""
+    name = str(repo_meta.get("name") or "") if isinstance(repo_meta, dict) else ""
+    action = str(summary.get("action") or "")
+    head_sha = str(summary.get("head_sha") or "")
+    pr_numbers_raw = summary.get("pr_numbers") if isinstance(summary.get("pr_numbers"), list) else []
+    payload_pr_numbers = [n for n in pr_numbers_raw if isinstance(n, int)]
+
+    if action not in CHECK_SYNC_ACTIONS:
+        summary["reason"] = "ignored_action"
+        summary["enqueued_sync_ci"] = 0
+        summary["sync_ci_task_ids"] = []
+        return summary
+    if not owner or not name:
+        summary["reason"] = "missing_repository"
+        summary["enqueued_sync_ci"] = 0
+        summary["sync_ci_task_ids"] = []
+        return summary
+    if not head_sha:
+        summary["reason"] = "missing_head_sha"
+        summary["enqueued_sync_ci"] = 0
+        summary["sync_ci_task_ids"] = []
+        return summary
+
+    repo = Repository.objects.filter(owner=owner, name=name, is_active=True).only("id").first()
+    if repo is None:
+        summary["reason"] = "repository_not_active_or_missing"
+        summary["enqueued_sync_ci"] = 0
+        summary["sync_ci_task_ids"] = []
+        return summary
+
+    local_pr_numbers = list(
+        PullRequest.objects.filter(repository=repo, head_sha=head_sha, state="open").values_list("number", flat=True)
+    )
+    resolved_pr_numbers = sorted(set(local_pr_numbers) | set(payload_pr_numbers))
+    summary["resolved_pr_numbers"] = resolved_pr_numbers
+
+    if not resolved_pr_numbers:
+        summary["reason"] = "no_pr_resolution"
+        summary["enqueued_sync_ci"] = 0
+        summary["sync_ci_task_ids"] = []
+        return summary
+
+    task_ids: list[str] = []
+    for pr_number in resolved_pr_numbers:
+        async_res = sync_ci_for_shas_task.delay(
+            repo.id,
+            int(pr_number),
+            shas=[head_sha],
+            require_pr_association=False,
+        )
+        task_ids.append(str(async_res.id))
+    summary["reason"] = "enqueued_sync_ci"
+    summary["enqueued_sync_ci"] = len(task_ids)
+    summary["sync_ci_task_ids"] = task_ids
+    return summary
+
+
 @csrf_exempt
 def github_webhook(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
@@ -123,6 +215,7 @@ def github_webhook(request: HttpRequest) -> HttpResponse:
 
     summary = route_github_webhook(event=event, payload=payload_data)
     summary = _enqueue_pull_request_sync(summary)
+    summary = _enqueue_check_sync(summary)
     repo_meta = summary.get("repository") if isinstance(summary.get("repository"), dict) else {}
     repo_owner = str(repo_meta.get("owner") or "") if isinstance(repo_meta, dict) else ""
     repo_name = str(repo_meta.get("name") or "") if isinstance(repo_meta, dict) else ""

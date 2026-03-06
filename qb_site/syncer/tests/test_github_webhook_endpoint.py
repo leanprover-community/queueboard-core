@@ -171,3 +171,79 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         mock_delay.assert_not_called()
         kwargs = mock_create.call_args.kwargs
         self.assertEqual(kwargs["summary_json"]["reason"], "repository_not_active_or_missing")
+
+    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
+    def test_pull_request_event_ignores_untracked_action(self) -> None:
+        payload = b'{"action":"review_requested","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},"pull_request":{"number":125}}'
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.sync_pr_task.delay") as mock_delay,
+        ):
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="pull_request",
+                HTTP_X_GITHUB_DELIVERY="delivery-7",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_delay.assert_not_called()
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "ignored_action")
+
+    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
+    def test_check_run_event_enqueues_sync_ci_for_resolved_prs(self) -> None:
+        payload = (
+            b'{"action":"completed","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},'
+            b'"check_run":{"head_sha":"abc123","pull_requests":[{"number":201}]}}'
+        )
+        repo = SimpleNamespace(id=9)
+        task = SimpleNamespace(id="ci-task-1")
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.Repository.objects.filter") as mock_repo_filter,
+            patch("syncer.views.PullRequest.objects.filter") as mock_pr_filter,
+            patch("syncer.views.sync_ci_for_shas_task.delay", return_value=task) as mock_ci_delay,
+        ):
+            mock_repo_filter.return_value.only.return_value.first.return_value = repo
+            mock_pr_filter.return_value.values_list.return_value = [202]
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="check_run",
+                HTTP_X_GITHUB_DELIVERY="delivery-8",
+            )
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(mock_ci_delay.call_count, 2)
+        mock_ci_delay.assert_any_call(9, 201, shas=["abc123"], require_pr_association=False)
+        mock_ci_delay.assert_any_call(9, 202, shas=["abc123"], require_pr_association=False)
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "enqueued_sync_ci")
+        self.assertEqual(kwargs["summary_json"]["enqueued_sync_ci"], 2)
+        self.assertEqual(kwargs["summary_json"]["resolved_pr_numbers"], [201, 202])
+
+    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
+    def test_check_run_event_skips_when_action_ignored(self) -> None:
+        payload = (
+            b'{"action":"foo","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},'
+            b'"check_run":{"head_sha":"abc123","pull_requests":[{"number":203}]}}'
+        )
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.sync_ci_for_shas_task.delay") as mock_ci_delay,
+        ):
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="check_run",
+                HTTP_X_GITHUB_DELIVERY="delivery-9",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_ci_delay.assert_not_called()
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "ignored_action")
