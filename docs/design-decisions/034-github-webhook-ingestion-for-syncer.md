@@ -119,6 +119,13 @@
 7. Observability: logs/counters/admin view for delivery outcomes and routing reasons.
 8. Rollout controls: feature flag, dry-run mode (route-only logs, no enqueue), then enable enqueue.
 
+### Implementation Status
+- Chunk 1: implemented.
+- Chunk 2: implemented.
+- Chunk 3: implemented.
+- Chunk 4: implemented.
+- Chunk 5+: pending.
+
 ## Validation Plan
 - Unit tests:
   - signature validation accepts valid HMAC and rejects invalid/missing signature,
@@ -197,12 +204,70 @@
 - Do we need a separate dead-letter queue for malformed but signed payloads, or is structured logging sufficient initially?
 - Should webhook events for unknown repositories auto-create `Repository` rows, or remain strict/no-op?
 
+## Deferred Work
+- Direct webhook payload application (selective write-through):
+  - Current design treats webhook payloads as trigger/route signals and keeps canonical writes in sync tasks.
+  - Future optimization: for specific actions with trustworthy fields, apply small direct updates (for example, narrow PR field updates or event markers) to reduce follow-up GraphQL reads.
+  - Guardrails for this future work:
+    - keep idempotency by delivery id + object identity,
+    - avoid expanding payload handling into a second full ingestion path,
+    - retain `sync_pr`/`sync_ci_for_shas` as canonical reconciliation path.
+
 ## Progress Notes
-- 2026-03-04:
-  - Reviewed current syncer/analyzer codepaths and existing design docs.
-  - Confirmed no GitHub webhook endpoint exists yet.
-  - Confirmed CI-by-SHA and commit-scoped CI storage are already in place, so webhook work can focus on ingestion/routing/reliability.
-  - Drafted this living plan as the implementation baseline.
+### Update Discipline
+- Keep this section updated after each implemented chunk:
+  - what changed,
+  - tests added/updated,
+  - subtleties discovered that affect next chunks.
+
+### 2026-03-04 - Initial plan baseline
+- Reviewed current syncer/analyzer codepaths and existing design docs.
+- Confirmed no GitHub webhook endpoint existed yet.
+- Confirmed CI-by-SHA and commit-scoped CI storage were already in place, so webhook work could focus on ingestion/routing/reliability.
+- Drafted this living plan as the implementation baseline.
+
+### 2026-03-06 - Chunk 1 (endpoint + signature verification)
+- Implemented `POST /webhooks/github/` endpoint with:
+  - feature flag gate (`SYNCER_GITHUB_WEBHOOK_ENABLED`),
+  - secret-based HMAC verification (`GITHUB_WEBHOOK_SECRET`, `X-Hub-Signature-256`),
+  - fast `202` acknowledge path.
+- Added endpoint tests for method gating, disabled endpoint, missing secret, invalid signature, valid signature.
+- Subtleties discovered:
+  - In local/sandbox test environments, webhook endpoint tests should avoid DB dependence when possible (used `SimpleTestCase` for pure endpoint behavior in this chunk).
+
+### 2026-03-06 - Chunk 2 (delivery ledger + duplicate suppression)
+- Added `GitHubWebhookDelivery` model and migration for delivery-level idempotency/auditing.
+- Webhook handler now requires `X-GitHub-Delivery`, records accepted deliveries, and returns `202 duplicate` on replay.
+- Added tests for missing delivery id and duplicate delivery behavior.
+- Subtleties discovered:
+  - Delivery id is the primary idempotency key for webhook ingestion and should be treated as required for all production processing.
+
+### 2026-03-06 - Docs/compatibility pass against GitHub webhook docs
+- Verified behavior against GitHub docs for:
+  - signature validation expectations,
+  - delivery/event headers,
+  - payload content-type variants.
+- Added support for `application/x-www-form-urlencoded` webhook payloads (`payload=...` JSON) in addition to JSON bodies.
+- Added tests for missing signature header and form-encoded payload parsing.
+- Subtleties discovered:
+  - Signature must be computed over raw bytes exactly as delivered; parsing mode can vary but verification input must not.
+
+### 2026-03-06 - Chunk 3 (structured router service)
+- Added `syncer.services.github_webhook_router.route_github_webhook(...)` returning normalized routing summary.
+- Webhook handler now stores structured route summary in delivery ledger and logs route.
+- Added router unit tests (`pull_request`, `check_run`, unsupported event).
+- Subtleties discovered:
+  - Centralized parsing/routing keeps endpoint and future fanout logic testable and avoids scattering event-shape conditionals.
+
+### 2026-03-06 - Chunk 4 (pull_request fanout to sync_pr)
+- Implemented webhook fanout for `pull_request` route:
+  - repo identity match in local DB,
+  - `is_active=True` gating,
+  - enqueue `syncer.sync_pr` by `(repo_id, pr_number)`.
+- Added endpoint tests for enqueue path and inactive/missing repo skip path.
+- Subtleties discovered:
+  - Current `pull_request` action filtering is intentionally broad (any parsed `pull_request` event can enqueue), prioritizing correctness over efficiency in early rollout.
+  - Action-level filtering/allowlist is a near-term optimization for upcoming chunks.
 
 ## Finalization Notes
 - After implementation stabilizes, convert this file into a concise final decision record:
