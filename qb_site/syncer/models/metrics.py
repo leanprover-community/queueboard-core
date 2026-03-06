@@ -33,6 +33,15 @@ class SyncerMetricsSnapshot(models.Model):
     repo_enqueued = models.IntegerField(default=0)
     repo_discovery_cost = models.IntegerField(default=0)
 
+    # Webhook delivery activity (recorded from GitHubWebhookDelivery rows)
+    webhook_deliveries = models.IntegerField(default=0)
+    webhook_route_pull_request = models.IntegerField(default=0)
+    webhook_route_check = models.IntegerField(default=0)
+    webhook_route_noop = models.IntegerField(default=0)
+    webhook_reason_enqueued_sync_pr = models.IntegerField(default=0)
+    webhook_reason_enqueued_sync_ci = models.IntegerField(default=0)
+    webhook_reason_ignored_action = models.IntegerField(default=0)
+
     # DB activity
     rows_pull_request = models.IntegerField(default=0)
     rows_timeline_event = models.IntegerField(default=0)

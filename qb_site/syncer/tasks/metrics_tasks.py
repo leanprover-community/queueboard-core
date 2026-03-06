@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Periodic metrics collector for the Syncer.
 
 Collects a compact set of metrics every N seconds (default: 900s = 15 minutes) and
@@ -13,6 +11,8 @@ persists them to ``SyncerMetricsSnapshot``. The collector summarizes:
 This snapshot enables sizing hosting resources and monitoring token usage trends
 without parsing logs in production.
 """
+
+from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any, Dict
@@ -32,6 +32,7 @@ from syncer.models import (
     StatusContext,
     PRLabel,
     LabelDef,
+    GitHubWebhookDelivery,
 )
 from syncer.services import rate_budget as rb
 
@@ -172,6 +173,16 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
 
     token_cost_total = pr_cost_total + repo_cost_total + other_cost_total
 
+    # Webhook delivery activity in the window
+    webhook_q = GitHubWebhookDelivery.objects.filter(received_at__gte=start, received_at__lt=now)
+    webhook_deliveries = webhook_q.count()
+    webhook_route_pull_request = webhook_q.filter(summary_json__contains={"route": "pull_request"}).count()
+    webhook_route_check = webhook_q.filter(summary_json__contains={"route": "check"}).count()
+    webhook_route_noop = webhook_q.filter(summary_json__contains={"route": "noop"}).count()
+    webhook_reason_enqueued_sync_pr = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_pr"}).count()
+    webhook_reason_enqueued_sync_ci = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_ci"}).count()
+    webhook_reason_ignored_action = webhook_q.filter(summary_json__contains={"reason": "ignored_action"}).count()
+
     # DB activity (rows created in the window)
     rows_pr = PullRequest.objects.filter(created_at__gte=start, created_at__lt=now).count()
     rows_tl = PRTimelineEvent.objects.filter(created_at__gte=start, created_at__lt=now).count()
@@ -209,6 +220,13 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         repo_discovered=repo_discovered,
         repo_enqueued=repo_enqueued,
         repo_discovery_cost=repo_disc_cost,
+        webhook_deliveries=webhook_deliveries,
+        webhook_route_pull_request=webhook_route_pull_request,
+        webhook_route_check=webhook_route_check,
+        webhook_route_noop=webhook_route_noop,
+        webhook_reason_enqueued_sync_pr=webhook_reason_enqueued_sync_pr,
+        webhook_reason_enqueued_sync_ci=webhook_reason_enqueued_sync_ci,
+        webhook_reason_ignored_action=webhook_reason_ignored_action,
         token_cost_total=token_cost_total,
         rows_pull_request=rows_pr,
         rows_timeline_event=rows_tl,
@@ -226,6 +244,7 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         "window_start": snap.window_start.isoformat(),
         "pr_tasks": pr_count,
         "repo_tasks": repo_count,
+        "webhook_deliveries": webhook_deliveries,
         "db_size_bytes": db_size,
         "queue_default_depth": queue_default_depth,
         "queue_github_depth": queue_github_depth,
