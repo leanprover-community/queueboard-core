@@ -167,9 +167,13 @@
   - Staging: `https://<staging-host>/webhooks/github/`
   - Production: `https://<prod-host>/webhooks/github/`
 - Required app webhook event subscriptions (phase 1):
-  - Pull requests,
-  - Check runs,
-  - Check suites.
+  - Enable these GitHub App webhook events:
+    - `Pull request`
+    - `Check run`
+    - `Check suite`
+  - Notes:
+    - GitHub also sends `ping` when configuring/testing the webhook; this is expected.
+    - Do not enable extra events yet unless they are used by implemented routing/fanout logic.
 - Recommended GitHub App permissions (phase 1):
   - Repository permissions:
     - `Metadata: Read-only` (required baseline).
