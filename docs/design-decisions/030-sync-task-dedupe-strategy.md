@@ -70,11 +70,10 @@
 Candidate identities:
 - `syncer.sync_pr`:
   - key parts: `repo_id:number`
-  - TTL: `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS` (proposed default `1800`).
+  - TTL: `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS` (current default `300`).
 - `syncer.sync_ci_for_shas`:
   - key parts: `repo_id:number:max_pages_per_sha:sorted(shas)`
-  - TTL: `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS` (proposed default `900`).
-  - For webhook-driven check-event bursts, start with a much shorter effective TTL (candidate `60-120s`) and tune upward only if needed.
+  - TTL: `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS` (current default `300`).
 
 Primary producer paths to cover:
 - repo discovery fanout (`sync_repo_since_task`),
@@ -106,8 +105,8 @@ Primary producer paths to cover:
 
 ## Settings Plan
 - Enqueue dedupe:
-  - `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS` (default `1800`),
-  - `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS` (default `900`; webhook-first rollout candidate override `60-120`).
+  - `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS` (default `300`),
+  - `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS` (default `300`).
 - Runtime dedupe (phase 2):
   - `SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS` (default TBD).
 
@@ -171,6 +170,16 @@ Primary producer paths to cover:
     - validation:
       - `uv run ruff check qb_site/syncer/services/task_dedupe.py qb_site/syncer/tests/services/test_task_dedupe.py` passed
       - `uv run python qb_site/manage.py test syncer.tests.services.test_task_dedupe` blocked locally (Postgres not running in this environment)
+  - Chunk 2 completed:
+    - added settings in `qb_site/qb_site/settings/base.py`:
+      - `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS` (default `300`)
+      - `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS` (default `300`)
+    - added matching environment knobs to `.env.example` for discoverability/ops tuning.
+    - validation:
+      - `uv run ruff check qb_site/qb_site/settings/base.py` passed
+      - `uv run ruff format .env.example` is not applicable (non-Python file)
+  - Updated defaults after review:
+    - lowered enqueue dedupe defaults to `300s` for both CI and PR to balance duplicate suppression vs freshness under webhook-driven bursts.
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`
