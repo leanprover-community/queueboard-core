@@ -172,6 +172,31 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         kwargs = mock_create.call_args.kwargs
         self.assertEqual(kwargs["summary_json"]["reason"], "repository_not_active_or_missing")
 
+    @override_settings(
+        SYNCER_GITHUB_WEBHOOK_ENABLED=True,
+        SYNCER_GITHUB_WEBHOOK_DRY_RUN=True,
+        GITHUB_WEBHOOK_SECRET="test-secret",
+    )
+    def test_pull_request_event_dry_run_does_not_enqueue(self) -> None:
+        payload = b'{"action":"opened","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},"pull_request":{"number":130}}'
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.sync_pr_task.delay") as mock_delay,
+        ):
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="pull_request",
+                HTTP_X_GITHUB_DELIVERY="delivery-6b",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_delay.assert_not_called()
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "dry_run")
+        self.assertEqual(kwargs["summary_json"]["would_enqueue_sync_prs"], 1)
+
     @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
     def test_pull_request_event_ignores_untracked_action(self) -> None:
         payload = b'{"action":"review_requested","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},"pull_request":{"number":125}}'
@@ -259,3 +284,36 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         mock_ci_delay.assert_not_called()
         kwargs = mock_create.call_args.kwargs
         self.assertEqual(kwargs["summary_json"]["reason"], "ignored_action")
+
+    @override_settings(
+        SYNCER_GITHUB_WEBHOOK_ENABLED=True,
+        SYNCER_GITHUB_WEBHOOK_DRY_RUN=True,
+        GITHUB_WEBHOOK_SECRET="test-secret",
+    )
+    def test_check_run_event_dry_run_does_not_enqueue(self) -> None:
+        payload = (
+            b'{"action":"completed","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},'
+            b'"check_run":{"head_sha":"abc123","pull_requests":[{"number":204}]}}'
+        )
+        repo = SimpleNamespace(id=10)
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.Repository.objects.filter") as mock_repo_filter,
+            patch("syncer.views.PullRequest.objects.filter") as mock_pr_filter,
+            patch("syncer.views.sync_ci_for_shas_task.delay") as mock_ci_delay,
+        ):
+            mock_repo_filter.return_value.only.return_value.first.return_value = repo
+            mock_pr_filter.return_value.values_list.return_value = [205]
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="check_run",
+                HTTP_X_GITHUB_DELIVERY="delivery-9b",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_ci_delay.assert_not_called()
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "dry_run")
+        self.assertEqual(kwargs["summary_json"]["would_enqueue_sync_ci"], 2)

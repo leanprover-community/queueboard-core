@@ -41,6 +41,10 @@ CHECK_SYNC_ACTIONS = {
 }
 
 
+def _webhook_dry_run() -> bool:
+    return bool(getattr(settings, "SYNCER_GITHUB_WEBHOOK_DRY_RUN", False))
+
+
 def _has_valid_github_signature(*, payload: bytes, signature_header: str, secret: str) -> bool:
     if not signature_header or not signature_header.startswith("sha256="):
         return False
@@ -107,6 +111,12 @@ def _enqueue_pull_request_sync(summary: dict) -> dict:
         summary["enqueued_sync_prs"] = 0
         summary["sync_pr_task_ids"] = []
         return summary
+    if _webhook_dry_run():
+        summary["reason"] = "dry_run"
+        summary["enqueued_sync_prs"] = 0
+        summary["sync_pr_task_ids"] = []
+        summary["would_enqueue_sync_prs"] = len(sorted(set(pr_numbers)))
+        return summary
 
     repo = Repository.objects.filter(owner=owner, name=name, is_active=True).only("id").first()
     if repo is None:
@@ -172,6 +182,12 @@ def _enqueue_check_sync(summary: dict) -> dict:
         summary["reason"] = "no_pr_resolution"
         summary["enqueued_sync_ci"] = 0
         summary["sync_ci_task_ids"] = []
+        return summary
+    if _webhook_dry_run():
+        summary["reason"] = "dry_run"
+        summary["enqueued_sync_ci"] = 0
+        summary["sync_ci_task_ids"] = []
+        summary["would_enqueue_sync_ci"] = len(resolved_pr_numbers)
         return summary
 
     task_ids: list[str] = []

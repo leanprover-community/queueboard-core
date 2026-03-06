@@ -107,6 +107,7 @@
 - New settings:
   - `GITHUB_WEBHOOK_SECRET`,
   - `SYNCER_GITHUB_WEBHOOK_ENABLED` (optional feature flag),
+  - `SYNCER_GITHUB_WEBHOOK_DRY_RUN` (optional route-only mode),
   - optional allowlist: `SYNCER_GITHUB_WEBHOOK_EVENTS`.
 
 ## Implementation Plan (Chunks)
@@ -127,7 +128,7 @@
 - Chunk 5: implemented.
 - Chunk 6: implemented.
 - Chunk 7: partially implemented (metrics snapshot + admin visibility).
-- Chunk 8+: pending.
+- Chunk 8: implemented.
 
 ## Validation Plan
 - Unit tests:
@@ -191,6 +192,7 @@
   - Keep `GITHUB_WEBHOOK_SECRET` in deployment secret manager.
   - Rotate secret by supporting a short dual-secret overlap window during deployment, then remove old secret.
   - Keep `SYNCER_GITHUB_WEBHOOK_ENABLED` as a fast rollback toggle.
+  - Use `SYNCER_GITHUB_WEBHOOK_DRY_RUN=true` for route-only validation (record deliveries + routing summary, no task enqueue).
 - Failure/rollback runbook:
   - If signature failures spike, disable webhook processing (`SYNCER_GITHUB_WEBHOOK_ENABLED=false`) and rely on pollers while fixing secret/config mismatch.
   - If enqueue volume spikes unexpectedly, keep endpoint enabled but switch to dry-run routing mode to inspect event mix.
@@ -320,6 +322,15 @@
 - Added test coverage at the webhook endpoint level to assert check-event fanout passes `trigger_analyzer_after_sync=True`.
 - Subtleties discovered:
   - keeping analyzer follow-up opt-in (flagged) avoids changing behavior for all existing CI-by-SHA producers at once.
+
+### 2026-03-06 - Chunk 8 (rollout controls: dry-run routing mode)
+- Added `SYNCER_GITHUB_WEBHOOK_DRY_RUN` setting/env var.
+- In dry-run mode:
+  - webhook payloads are still verified, parsed, routed, and recorded in `GitHubWebhookDelivery`,
+  - fanout enqueue is skipped for both pull_request and check routes.
+- Added endpoint tests that assert dry-run behavior for pull_request and check events.
+- Subtleties discovered:
+  - dry-run mode is useful for validating event mix and routing correctness before enabling task fanout in staging/production.
 
 ## Finalization Notes
 - After implementation stabilizes, convert this file into a concise final decision record:
