@@ -18,6 +18,32 @@
   - enqueue dedupe for `syncer.sync_ci_for_shas` is the highest-priority mitigation.
   - `sync_pr` dedupe still useful, but secondary for queue stabilization.
 
+## Implementation Snapshot (2026-03-06 code audit)
+- Already present (related primitives):
+  - Repo continuation dedupe exists for discovery continuation scheduling only:
+    - `syncer.services.rate_budget.debounce_repo_schedule`
+    - used in `syncer.sync_repo_since` continuation enqueue path.
+  - CI retry/backoff gating exists via `CIShaFetchState`:
+    - `syncer.services.ci_backoff.should_enqueue_ci_sha(_with_state)`
+    - used by commit-history and pending-CI refresh producers.
+- Not yet present (scope of this plan):
+  - no generic enqueue-time dedupe helper for `sync_pr` / `sync_ci_for_shas` task signatures.
+  - no broad producer-side dedupe wrapping before `.delay()`/`enqueue_with_parent(...)`.
+  - no runtime dedupe guard in `sync_pr_task` (or `sync_ci_for_shas_task`).
+  - no dedicated dedupe settings in `qb_site/settings/base.py` for this strategy.
+
+## Producer Inventory To Cover
+- `sync_pr` enqueue producers:
+  - `syncer.tasks.sync_tasks.sync_repo_since_task`
+  - `syncer.tasks.backfill_tasks` (history/incomplete/engagement backfills)
+  - webhook endpoint path in `syncer.views`
+  - manual admin enqueue paths in `syncer.admin`
+- `sync_ci_for_shas` enqueue producers:
+  - webhook endpoint path in `syncer.views` (highest observed duplicate source)
+  - `syncer.tasks.sync_tasks.refresh_pending_ci_for_repo_task`
+  - `syncer.tasks.commit_history_tasks.harvest_commit_history_task`
+  - manual admin enqueue paths in `syncer.admin`
+
 ## Problem Statement
 - We need to reduce redundant sync workload in two places:
   - enqueue-time (prevent duplicate tasks entering queue),
@@ -86,13 +112,23 @@ Primary producer paths to cover:
   - `SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS` (default TBD).
 
 ## Chunked Implementation Plan
-1. Redis helper and enqueue dedupe utility.
-2. Apply enqueue dedupe to `sync_ci_for_shas` producers (highest priority from observed backlog).
-3. Add enqueue dedupe counters/metrics for CI fanout suppression and validate queue slope improvement.
-4. Apply enqueue dedupe to `sync_pr` producers.
-5. Add runtime dedupe to `sync_pr_task`.
-6. Add tests for dedupe behavior and fail-open semantics.
-7. Document operational tuning (TTLs and source-specific behavior).
+1. Introduce Redis enqueue-dedupe helper for sync tasks (fail-open on Redis errors).
+2. Add settings:
+   - `SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS`
+   - `SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS`
+3. Apply enqueue dedupe to `sync_ci_for_shas` producers first:
+   - webhook + refresh-pending + commit-history + admin paths.
+4. Add dedupe counters/summary fields for CI producer tasks and validate suppression ratio.
+5. Apply enqueue dedupe to `sync_pr` producers:
+   - repo discovery + backfill tasks + webhook + admin paths.
+6. Add runtime dedupe in `sync_pr_task`:
+   - setting `SYNCER_SYNC_PR_RUNTIME_DEDUPE_TTL_SECONDS`
+   - `force=True` bypass.
+7. Add tests for:
+   - allow-first/suppress-duplicate behavior,
+   - fail-open on Redis unavailable/error,
+   - runtime skip + `force=True` bypass.
+8. Capture rollout tuning notes from production observations.
 
 ## Validation Plan
 - Unit tests:
@@ -117,6 +153,12 @@ Primary producer paths to cover:
 - Should runtime dedupe include `sync_ci_for_shas` or remain `sync_pr`-only initially?
 - What TTL balances freshness vs duplicate suppression for very active PRs?
 - Should dedupe keys include operation source labels for finer-grained control?
+
+## Progress Notes
+- 2026-03-06:
+  - Added production webhook trial observations and prioritized `sync_ci_for_shas` enqueue dedupe.
+  - Audited code paths and confirmed this plan is still largely unimplemented (except continuation debounce + CI backoff primitives).
+  - Expanded explicit producer inventory so implementation can proceed incrementally without missing enqueue sources.
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`
