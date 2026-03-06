@@ -13,6 +13,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus
+from syncer.services.github_webhook_router import route_github_webhook
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +79,11 @@ def github_webhook(request: HttpRequest) -> HttpResponse:
 
     payload_data = _parse_webhook_payload(request.body)
 
-    action = str(payload_data.get("action") or "")
-    repo = payload_data.get("repository") if isinstance(payload_data.get("repository"), dict) else {}
-    repo_owner = str((repo.get("owner") or {}).get("login") or "") if isinstance(repo, dict) else ""
-    repo_name = str(repo.get("name") or "") if isinstance(repo, dict) else ""
-    summary = {
-        "event": event,
-        "action": action,
-        "repository": {"owner": repo_owner, "name": repo_name},
-    }
+    summary = route_github_webhook(event=event, payload=payload_data)
+    repo_meta = summary.get("repository") if isinstance(summary.get("repository"), dict) else {}
+    repo_owner = str(repo_meta.get("owner") or "") if isinstance(repo_meta, dict) else ""
+    repo_name = str(repo_meta.get("name") or "") if isinstance(repo_meta, dict) else ""
+    action = str(summary.get("action") or "")
 
     try:
         GitHubWebhookDelivery.objects.create(
@@ -104,9 +101,10 @@ def github_webhook(request: HttpRequest) -> HttpResponse:
         return JsonResponse({"status": "duplicate"}, status=202)
 
     logger.info(
-        "github_webhook_accepted event=%s delivery=%s payload_bytes=%s",
+        "github_webhook_accepted event=%s delivery=%s route=%s payload_bytes=%s",
         event,
         delivery,
+        summary.get("route"),
         len(request.body),
     )
     return JsonResponse({"status": "accepted"}, status=202)
