@@ -218,8 +218,20 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
             )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(mock_ci_delay.call_count, 2)
-        mock_ci_delay.assert_any_call(9, 201, shas=["abc123"], require_pr_association=False)
-        mock_ci_delay.assert_any_call(9, 202, shas=["abc123"], require_pr_association=False)
+        mock_ci_delay.assert_any_call(
+            9,
+            201,
+            shas=["abc123"],
+            require_pr_association=False,
+            trigger_analyzer_after_sync=True,
+        )
+        mock_ci_delay.assert_any_call(
+            9,
+            202,
+            shas=["abc123"],
+            require_pr_association=False,
+            trigger_analyzer_after_sync=True,
+        )
         kwargs = mock_create.call_args.kwargs
         self.assertEqual(kwargs["summary_json"]["reason"], "enqueued_sync_ci")
         self.assertEqual(kwargs["summary_json"]["enqueued_sync_ci"], 2)

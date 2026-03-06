@@ -125,8 +125,9 @@
 - Chunk 3: implemented.
 - Chunk 4: implemented.
 - Chunk 5: implemented.
+- Chunk 6: implemented.
 - Chunk 7: partially implemented (metrics snapshot + admin visibility).
-- Chunk 6+: pending.
+- Chunk 8+: pending.
 
 ## Validation Plan
 - Unit tests:
@@ -311,6 +312,14 @@
 - Added/updated metrics test assertions to cover webhook counters.
 - Subtleties discovered:
   - duplicate webhook deliveries are intentionally not represented as new rows (dedup by delivery id), so duplicate volume is currently observed via logs rather than snapshot counters.
+
+### 2026-03-06 - Chunk 6 (analyzer follow-up after webhook-triggered CI sync)
+- Added a `trigger_analyzer_after_sync` flag to `syncer.sync_ci_for_shas`.
+- For webhook-triggered check-event fanout, this flag is set to true so CI sync completion enqueues `analyzer.process_pr` for the touched PR.
+- Defer/continuation path preserves this flag to avoid losing analyzer follow-up when CI sync is budget-deferred.
+- Added test coverage at the webhook endpoint level to assert check-event fanout passes `trigger_analyzer_after_sync=True`.
+- Subtleties discovered:
+  - keeping analyzer follow-up opt-in (flagged) avoids changing behavior for all existing CI-by-SHA producers at once.
 
 ## Finalization Notes
 - After implementation stabilizes, convert this file into a concise final decision record:
