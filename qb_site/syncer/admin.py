@@ -21,6 +21,7 @@ from .models import (
     SyncerConvergenceSnapshot,
     RepoBackfillCursor,
     RepoDiscoveryState,
+    GitHubWebhookDelivery,
     CommitHistoryHarvest,
     CIShaFetchState,
     CommitCheckRun,
@@ -927,6 +928,13 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         "repo_discovered",
         "repo_enqueued",
         "repo_discovery_cost",
+        "webhook_deliveries",
+        "webhook_route_pull_request",
+        "webhook_route_check",
+        "webhook_route_noop",
+        "webhook_reason_enqueued_sync_pr",
+        "webhook_reason_enqueued_sync_ci",
+        "webhook_reason_ignored_action",
         "rows_pull_request",
         "rows_timeline_event",
         "rows_check_run",
@@ -990,6 +998,38 @@ class RepoBackfillCursorAdmin(ReadOnlyAdmin):
     def created_cursor_short(self, obj: RepoBackfillCursor) -> str:  # pragma: no cover - simple formatting
         cur = obj.created_cursor or ""
         return cur[:16] + "…" if len(cur) > 16 else cur
+
+
+@admin.register(GitHubWebhookDelivery)
+class GitHubWebhookDeliveryAdmin(ReadOnlyAdmin):
+    list_display = (
+        "delivery_id",
+        "event_type",
+        "action",
+        "repository_owner",
+        "repository_name",
+        "status",
+        "received_at",
+        "processed_at",
+        "route",
+        "reason",
+    )
+    list_filter = ("event_type", "status", "action", "received_at")
+    search_fields = ("delivery_id", "event_type", "repository_owner", "repository_name")
+    readonly_fields = [f.name for f in GitHubWebhookDelivery._meta.fields]  # type: ignore[attr-defined]
+    ordering = ("-received_at", "-id")
+
+    @admin.display(description="Route")
+    def route(self, obj: GitHubWebhookDelivery) -> str:
+        if isinstance(obj.summary_json, dict):
+            return str(obj.summary_json.get("route") or "")
+        return ""
+
+    @admin.display(description="Reason")
+    def reason(self, obj: GitHubWebhookDelivery) -> str:
+        if isinstance(obj.summary_json, dict):
+            return str(obj.summary_json.get("reason") or "")
+        return ""
 
 
 @admin.register(RepoDiscoveryState)

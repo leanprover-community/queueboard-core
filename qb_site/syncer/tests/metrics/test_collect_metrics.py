@@ -9,7 +9,7 @@ from django.utils import timezone
 from django_celery_results.models import TaskResult
 
 from syncer.tasks.metrics_tasks import collect_metrics_task
-from syncer.models import SyncerMetricsSnapshot
+from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus, SyncerMetricsSnapshot
 
 
 class TestCollectMetrics(TestCase):
@@ -77,6 +77,43 @@ class TestCollectMetrics(TestCase):
         # Non-dict result should be ignored for token cost aggregation
         self._mk_task("syncer.collect_convergence", 5)
 
+        GitHubWebhookDelivery.objects.create(
+            delivery_id="d-1",
+            event_type="pull_request",
+            action="synchronize",
+            repository_owner="o",
+            repository_name="r",
+            status=GitHubWebhookDeliveryStatus.ACCEPTED,
+            summary_json={"route": "pull_request", "reason": "enqueued_sync_pr"},
+        )
+        GitHubWebhookDelivery.objects.create(
+            delivery_id="d-2",
+            event_type="check_run",
+            action="completed",
+            repository_owner="o",
+            repository_name="r",
+            status=GitHubWebhookDeliveryStatus.ACCEPTED,
+            summary_json={"route": "check", "reason": "enqueued_sync_ci"},
+        )
+        GitHubWebhookDelivery.objects.create(
+            delivery_id="d-3",
+            event_type="pull_request",
+            action="review_requested",
+            repository_owner="o",
+            repository_name="r",
+            status=GitHubWebhookDeliveryStatus.ACCEPTED,
+            summary_json={"route": "pull_request", "reason": "ignored_action"},
+        )
+        GitHubWebhookDelivery.objects.create(
+            delivery_id="d-4",
+            event_type="ping",
+            action="",
+            repository_owner="",
+            repository_name="",
+            status=GitHubWebhookDeliveryStatus.ACCEPTED,
+            summary_json={"route": "noop", "reason": "unsupported_event"},
+        )
+
         res = collect_metrics_task()
         self.assertIn("id", res)
         snap = SyncerMetricsSnapshot.objects.get(id=res["id"])  # type: ignore[index]
@@ -86,3 +123,10 @@ class TestCollectMetrics(TestCase):
         self.assertEqual(snap.token_cost_total, 79)
         self.assertEqual(snap.repo_discovered, 5)
         self.assertEqual(snap.repo_enqueued, 3)
+        self.assertEqual(snap.webhook_deliveries, 4)
+        self.assertEqual(snap.webhook_route_pull_request, 2)
+        self.assertEqual(snap.webhook_route_check, 1)
+        self.assertEqual(snap.webhook_route_noop, 1)
+        self.assertEqual(snap.webhook_reason_enqueued_sync_pr, 1)
+        self.assertEqual(snap.webhook_reason_enqueued_sync_ci, 1)
+        self.assertEqual(snap.webhook_reason_ignored_action, 1)

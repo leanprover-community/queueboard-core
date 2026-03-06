@@ -125,6 +125,7 @@
 - Chunk 3: implemented.
 - Chunk 4: implemented.
 - Chunk 5: implemented.
+- Chunk 7: partially implemented (metrics snapshot + admin visibility).
 - Chunk 6+: pending.
 
 ## Validation Plan
@@ -299,6 +300,17 @@
 - Subtleties discovered:
   - Payload PR references in check events are useful fallback data, but local `(repo, head_sha)` resolution remains the primary correctness source for active PRs.
   - Action allowlists materially reduce unnecessary enqueues while keeping recovery safety via periodic pollers/backfills.
+
+### 2026-03-06 - Chunk 7 (partial: webhook observability in metrics/admin)
+- Added webhook counters to `SyncerMetricsSnapshot`:
+  - delivery count,
+  - route counts (`pull_request`, `check`, `noop`),
+  - reason counts (`enqueued_sync_pr`, `enqueued_sync_ci`, `ignored_action`).
+- Updated `syncer.collect_metrics` to populate these counters from `GitHubWebhookDelivery` rows within the snapshot window.
+- Added `GitHubWebhookDelivery` admin registration (read-only) with route/reason columns and useful filters/search.
+- Added/updated metrics test assertions to cover webhook counters.
+- Subtleties discovered:
+  - duplicate webhook deliveries are intentionally not represented as new rows (dedup by delivery id), so duplicate volume is currently observed via logs rather than snapshot counters.
 
 ## Finalization Notes
 - After implementation stabilizes, convert this file into a concise final decision record:
