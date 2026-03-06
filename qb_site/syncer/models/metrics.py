@@ -40,8 +40,10 @@ class SyncerMetricsSnapshot(models.Model):
     webhook_route_noop = models.IntegerField(default=0)
     webhook_reason_enqueued_sync_pr = models.IntegerField(default=0)
     webhook_reason_enqueued_sync_ci = models.IntegerField(default=0)
+    webhook_reason_deduped_sync_pr = models.IntegerField(default=0)
     webhook_reason_deduped_sync_ci = models.IntegerField(default=0)
     webhook_reason_ignored_action = models.IntegerField(default=0)
+    webhook_deduped_sync_pr_total = models.IntegerField(default=0)
     webhook_deduped_sync_ci_total = models.IntegerField(default=0)
     webhook_duplicates_touched = models.IntegerField(default=0)
 

@@ -251,6 +251,11 @@ Primary producer paths to cover:
     - validation:
       - `uv run ruff check` passed on touched files
       - targeted Django tests blocked locally (Postgres not running in this environment)
+  - Metrics follow-up:
+    - extended `SyncerMetricsSnapshot` webhook dedupe tracking to PR sync dedupe as well:
+      - `webhook_reason_deduped_sync_pr` (delivery count)
+      - `webhook_deduped_sync_pr_total` (sum of `summary_json.deduped_sync_prs`)
+    - updated collector/admin/tests and added migration `0035_syncermetricssnapshot_webhook_deduped_sync_pr_total_and_more.py`.
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`
