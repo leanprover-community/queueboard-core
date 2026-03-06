@@ -139,3 +139,26 @@ class TestEnqueueCISHAAdmin(TestCase):
                 self.assertEqual(resp.status_code, 200)
                 self.assertContains(resp, "task-feedback-123")
                 self.assertContains(resp, "CI-by-SHA task enqueued")
+
+    def test_dedupe_feedback_when_enqueue_suppressed(self) -> None:
+        url = reverse("admin:syncer_pullrequest_enqueue_ci_sha", args=[self.pr.pk])
+        with self.settings(ALLOWED_HOSTS=["testserver"]):
+            with self.modify_settings(MIDDLEWARE={"remove": ["django.middleware.csrf.CsrfViewMiddleware"]}):
+                from unittest.mock import patch
+
+                with (
+                    patch("syncer.services.task_dedupe.claim_enqueue_slot", return_value=False),
+                    patch("syncer.tasks.sync_tasks.sync_ci_for_shas_task.delay") as mock_delay,
+                ):
+                    resp = self.client.post(
+                        url,
+                        {
+                            "shas": "abc123",
+                            "pages": "1",
+                            "override_backoff": "on",
+                        },
+                        follow=True,
+                    )
+                self.assertEqual(resp.status_code, 200)
+                mock_delay.assert_not_called()
+                self.assertContains(resp, "duplicate CI-by-SHA task recently enqueued")

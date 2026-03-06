@@ -514,6 +514,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
         from django.conf import settings
         from syncer.tasks.sync_tasks import sync_ci_for_shas_task
         from syncer.services.ci_backoff import filter_ci_shas_for_enqueue, reset_ci_sha_fetch_state
+        from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key
 
         pr = self.get_object(request, object_id)
         if pr is None:
@@ -553,27 +554,49 @@ class PullRequestAdmin(ReadOnlyAdmin):
             )
             max_pages = int(pages) if pages and pages.isdigit() else int(getattr(settings, "SYNCER_CI_BY_SHA_PAGES", 1))
             if shas:
-                async_result = sync_ci_for_shas_task.delay(
+                dedupe_key = sync_ci_enqueue_key(
                     repo_id=pr.repository_id,
                     number=int(pr.number),
                     shas=shas,
                     max_pages_per_sha=max_pages,
-                    dry_run=dry_run,
-                    require_pr_association=require_assoc,
                 )
-                self.message_user(
-                    request,
-                    f"Enqueued CI-by-SHA for PR #{pr.number} (n={len(shas)} SHAs): task_id={async_result.id}",
-                )
-                submission_result = {
-                    "status": "enqueued",
-                    "task_id": async_result.id,
-                    "input_count": input_count,
-                    "enqueued_count": len(shas),
-                    "blocked_count": len(blocked),
-                    "reset_count": int(deleted),
-                    "dry_run": bool(dry_run),
-                }
+                dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
+                if claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+                    async_result = sync_ci_for_shas_task.delay(
+                        repo_id=pr.repository_id,
+                        number=int(pr.number),
+                        shas=shas,
+                        max_pages_per_sha=max_pages,
+                        dry_run=dry_run,
+                        require_pr_association=require_assoc,
+                    )
+                    self.message_user(
+                        request,
+                        f"Enqueued CI-by-SHA for PR #{pr.number} (n={len(shas)} SHAs): task_id={async_result.id}",
+                    )
+                    submission_result = {
+                        "status": "enqueued",
+                        "task_id": async_result.id,
+                        "input_count": input_count,
+                        "enqueued_count": len(shas),
+                        "blocked_count": len(blocked),
+                        "reset_count": int(deleted),
+                        "dry_run": bool(dry_run),
+                    }
+                else:
+                    self.message_user(
+                        request,
+                        f"Skipped enqueue for PR #{pr.number}: duplicate CI-by-SHA task recently enqueued.",
+                    )
+                    submission_result = {
+                        "status": "deduped",
+                        "task_id": None,
+                        "input_count": input_count,
+                        "enqueued_count": 0,
+                        "blocked_count": len(blocked),
+                        "reset_count": int(deleted),
+                        "dry_run": bool(dry_run),
+                    }
             if blocked:
                 self.message_user(
                     request,
