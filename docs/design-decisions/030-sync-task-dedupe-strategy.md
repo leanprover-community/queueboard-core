@@ -203,6 +203,23 @@ Primary producer paths to cover:
       - `webhook_reason_deduped_sync_ci` (delivery count)
       - `webhook_deduped_sync_ci_total` (sum of `summary_json.deduped_sync_ci` across deliveries in window)
     - migration added: `0034_syncermetricssnapshot_webhook_deduped_sync_ci_total_and_more.py`.
+  - Chunk 5 completed (`sync_pr` producer dedupe):
+    - applied enqueue dedupe to PR producer paths using `sync_pr_enqueue_key(...)` + `claim_enqueue_slot(...)`:
+      - repo discovery fanout in `syncer.sync_repo_since`
+      - history/incomplete/engagement backfills in `syncer/tasks/backfill_tasks.py`
+      - webhook pull_request routing in `syncer/views.py`
+      - admin manual enqueue actions in `syncer/admin.py` (single-item and bulk actions)
+    - added summary visibility where available:
+      - repo discovery summary: `prs_skipped_dedupe`
+      - webhook pull_request summary: `deduped_sync_prs`, plus `reason=deduped_sync_pr` when fully suppressed
+      - backfill summaries include `deduped` counts
+    - added targeted tests:
+      - webhook pull_request dedupe suppression in `syncer/tests/test_github_webhook_endpoint.py`
+      - repo discovery dedupe suppression in `syncer/tests/tasks/test_sync_repo_tasks.py`
+      - history backfill dedupe suppression in `syncer/tests/backfill/test_repo_history_backfill_task.py`
+    - validation:
+      - `uv run ruff check` passed on all touched Python files
+      - targeted Django tests blocked locally (Postgres not running in this environment)
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`

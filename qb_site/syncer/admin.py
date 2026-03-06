@@ -425,7 +425,24 @@ class PullRequestAdmin(ReadOnlyAdmin):
             )
         from syncer.tasks.sync_tasks import sync_pr_task
         from django.conf import settings
+        from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 
+        dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+        dedupe_key = sync_pr_enqueue_key(repo_id=pr.repository_id, number=pr.number)
+        if not claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+            self.message_user(request, f"Skipped enqueue for PR #{pr.number}: duplicate sync_pr task recently enqueued.")
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "title": "Skipped duplicate PR sync",
+                    "enqueued": [],
+                    "dry_run": False,
+                    "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
+                    "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+                },
+            )
         async_result = sync_pr_task.delay(
             pr.repository_id,
             pr.number,
@@ -456,7 +473,24 @@ class PullRequestAdmin(ReadOnlyAdmin):
             )
         from syncer.tasks.sync_tasks import sync_pr_task
         from django.conf import settings
+        from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 
+        dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+        dedupe_key = sync_pr_enqueue_key(repo_id=pr.repository_id, number=pr.number)
+        if not claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+            self.message_user(request, f"Skipped enqueue for PR #{pr.number}: duplicate sync_pr task recently enqueued.")
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "title": "Skipped duplicate FORCE PR sync",
+                    "enqueued": [],
+                    "dry_run": False,
+                    "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
+                    "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+                },
+            )
         async_result = sync_pr_task.delay(
             pr.repository_id,
             pr.number,
@@ -488,7 +522,24 @@ class PullRequestAdmin(ReadOnlyAdmin):
             )
         from syncer.tasks.sync_tasks import sync_pr_task
         from django.conf import settings
+        from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 
+        dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+        dedupe_key = sync_pr_enqueue_key(repo_id=pr.repository_id, number=pr.number)
+        if not claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+            self.message_user(request, f"Skipped enqueue for PR #{pr.number}: duplicate sync_pr task recently enqueued.")
+            return TemplateResponse(
+                request,
+                "admin/syncer/pullrequest/enqueue_sync.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "title": "Skipped duplicate DRY-RUN PR sync",
+                    "enqueued": [],
+                    "dry_run": True,
+                    "pr_detail_url": reverse("admin:syncer_pullrequest_change", args=[pr.pk]),
+                    "changelist_url": reverse("admin:syncer_pullrequest_changelist"),
+                },
+            )
         async_result = sync_pr_task.delay(
             pr.repository_id,
             pr.number,
@@ -702,10 +753,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
     def action_enqueue_sync(self, request, queryset):  # type: ignore[override]
         from syncer.tasks.sync_tasks import sync_pr_task
         from django.conf import settings
+        from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 
         enqueued: list[tuple[PullRequest, str]] = []
+        deduped = 0
         for pr in queryset.select_related("repository"):
             # Enqueue Celery task per PR
+            dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+            dedupe_key = sync_pr_enqueue_key(repo_id=pr.repository_id, number=pr.number)
+            if not claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+                deduped += 1
+                continue
             async_result = sync_pr_task.delay(
                 pr.repository_id,
                 pr.number,
@@ -713,6 +771,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
             )
             enqueued.append((pr, async_result.id))
+        if deduped:
+            self.message_user(request, f"Skipped {deduped} duplicate sync_pr enqueue(s).")
 
         context = {
             **self.admin_site.each_context(request),
@@ -728,9 +788,16 @@ class PullRequestAdmin(ReadOnlyAdmin):
     def action_enqueue_sync_dry_run(self, request, queryset):  # type: ignore[override]
         from syncer.tasks.sync_tasks import sync_pr_task
         from django.conf import settings
+        from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 
         enqueued: list[tuple[PullRequest, str]] = []
+        deduped = 0
         for pr in queryset.select_related("repository"):
+            dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+            dedupe_key = sync_pr_enqueue_key(repo_id=pr.repository_id, number=pr.number)
+            if not claim_enqueue_slot(key=dedupe_key, ttl_seconds=dedupe_ttl):
+                deduped += 1
+                continue
             async_result = sync_pr_task.delay(
                 pr.repository_id,
                 pr.number,
@@ -739,6 +806,8 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 backfill_commit_pages=int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1)),
             )
             enqueued.append((pr, async_result.id))
+        if deduped:
+            self.message_user(request, f"Skipped {deduped} duplicate sync_pr enqueue(s).")
 
         context = {
             **self.admin_site.each_context(request),

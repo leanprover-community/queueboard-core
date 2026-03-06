@@ -10,7 +10,22 @@ from django.utils import timezone
 from core.models import Repository
 from syncer.models import PullRequest, RepoBackfillCursor
 from syncer.services.github_client import GitHubClient
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 from .sync_tasks import sync_pr_task
+
+
+def _enqueue_sync_pr_if_allowed(
+    *,
+    repo_id: int,
+    number: int,
+    ttl_seconds: int,
+    **kwargs: Any,
+) -> bool:
+    key = sync_pr_enqueue_key(repo_id=repo_id, number=number)
+    if not claim_enqueue_slot(key=key, ttl_seconds=ttl_seconds):
+        return False
+    sync_pr_task.delay(repo_id, number, **kwargs)
+    return True
 
 
 @shared_task(name="syncer.backfill_repo_history")
@@ -37,6 +52,7 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
     client = GitHubClient(operation="syncer_repo_discovery", owner=repo.owner, repo=repo.name)
     used_pages = 0
     enqueued = 0
+    deduped = 0
     rate_events: list[dict] = []
     rl_snapshot: Dict[str, Any] = {}
 
@@ -93,8 +109,11 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
                 number = int(n.get("number"))
             except Exception:
                 continue
-            sync_pr_task.delay(repo.id, number)
-            enqueued += 1
+            pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+            if _enqueue_sync_pr_if_allowed(repo_id=repo.id, number=number, ttl_seconds=pr_dedupe_ttl):
+                enqueued += 1
+            else:
+                deduped += 1
 
         # Track oldest createdAt we have seen (for visibility only)
         try:
@@ -130,6 +149,7 @@ def backfill_repo_history_task(  # type: ignore[no-redef]
         "repo_id": repo.id,
         "pages_used": used_pages,
         "enqueued": enqueued,
+        "deduped": deduped,
         "completed": bool(cursor.completed),
         "states": st,
         "rate_events": rate_events,
@@ -229,21 +249,27 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
 
     backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1))
     backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1))
+    pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
 
     enqueued = 0
+    deduped = 0
     for pr in candidates:
-        sync_pr_task.delay(
-            repo.id,
-            int(pr.number),
+        if _enqueue_sync_pr_if_allowed(
+            repo_id=repo.id,
+            number=int(pr.number),
+            ttl_seconds=pr_dedupe_ttl,
             backfill_timeline_pages=backfill_timeline_pages,
             backfill_commit_pages=backfill_commit_pages,
-        )
-        enqueued += 1
+        ):
+            enqueued += 1
+        else:
+            deduped += 1
 
     return {
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
         "enqueued": enqueued,
+        "deduped": deduped,
         "states": result_states,
     }
 
@@ -323,14 +349,19 @@ def backfill_repo_engagement_task(  # type: ignore[no-redef]
         candidates.extend(qs_rest)
 
     enqueued = 0
+    deduped = 0
+    pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
     for pr in candidates:
-        sync_pr_task.delay(repo.id, int(pr.number))
-        enqueued += 1
+        if _enqueue_sync_pr_if_allowed(repo_id=repo.id, number=int(pr.number), ttl_seconds=pr_dedupe_ttl):
+            enqueued += 1
+        else:
+            deduped += 1
 
     return {
         "repo": f"{repo.owner}/{repo.name}",
         "repo_id": repo.id,
         "enqueued": enqueued,
+        "deduped": deduped,
         "states": result_states,
     }
 

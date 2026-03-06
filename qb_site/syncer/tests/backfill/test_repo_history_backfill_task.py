@@ -130,3 +130,27 @@ class TestRepoHistoryBackfillTask(TestCase):
 
         cursor.refresh_from_db()
         self.assertEqual(cursor.created_cursor, "CURX")
+
+    @mock.patch("syncer.tasks.backfill_tasks.claim_enqueue_slot", return_value=False)
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    @mock.patch("syncer.tasks.backfill_tasks.GitHubClient")
+    def test_backfill_dedupe_suppresses_pr_enqueues(self, MockClient, mock_sync_pr_task, _mock_claim) -> None:
+        gh = MockClient.return_value
+        gh.get_prs_created_page.return_value = {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": "CUR1"},
+                        "nodes": [
+                            {"number": 10, "createdAt": "2024-01-01T00:00:00Z", "state": "OPEN"},
+                            {"number": 5, "createdAt": "2023-12-31T00:00:00Z", "state": "CLOSED"},
+                        ],
+                    }
+                }
+            }
+        }
+
+        res = backfill_repo_history_task(self.repo.id, page_size=50, max_pages=1)
+        self.assertEqual(res.get("enqueued"), 0)
+        self.assertEqual(res.get("deduped"), 2)
+        mock_sync_pr_task.delay.assert_not_called()
