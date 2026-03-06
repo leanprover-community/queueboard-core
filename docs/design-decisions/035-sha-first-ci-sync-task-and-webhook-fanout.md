@@ -40,7 +40,8 @@
 - Keep pull_request-event routing unchanged initially.
 
 ### C) PR-Aware Follow-Up (Compatibility Layer)
-- After SHA sync, compute impacted PR ids (for open PRs referencing synced SHAs).
+- After SHA sync, compute impacted PR ids from Analyzer revision history (`analyzer.PRRevision`)
+  so historical head-SHA associations are covered.
 - Trigger analyzer/process follow-up in a bounded way:
   - either once per impacted PR,
   - or via a future batched analyzer API (follow-up option).
@@ -95,6 +96,9 @@
     - Added flag `SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST` (default `False`) for check-event routing.
     - With flag enabled, check-event webhooks enqueue one repo+SHA task (`syncer.sync_ci_for_repo_shas`) instead of per-PR fanout.
     - Added webhook endpoint test coverage for `sha_first` vs legacy `pr_fanout` mode summaries.
+  - Clarified analyzer fanout source:
+    - No new SHA↔PR mapping table is required for current scope.
+    - Chunk 3 will resolve impacted PRs using `analyzer.PRRevision` (historical head-SHA coverage), then fan out analyzer tasks per PR initially.
   - No additional design decision required before chunk 3.
 
 ## References
