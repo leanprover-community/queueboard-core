@@ -54,7 +54,10 @@ def claim_enqueue_slot(*, key: str, ttl_seconds: int) -> bool:
     Uses Redis SET key value NX EX ttl. The first contender wins; duplicates are
     suppressed while the key lives. Redis errors fail open to avoid dropping work.
     """
-    client = _get_redis_client()
+    try:
+        client = _get_redis_client()
+    except Exception:
+        return True
     if client is None:
         return True
     try:
@@ -69,4 +72,7 @@ def claim_enqueue_slot(*, key: str, ttl_seconds: int) -> bool:
 
 def claim_runtime_slot(*, key: str, ttl_seconds: int) -> bool:
     """Return True if runtime execution should proceed for this dedupe key."""
-    return claim_enqueue_slot(key=key, ttl_seconds=ttl_seconds)
+    try:
+        return claim_enqueue_slot(key=key, ttl_seconds=ttl_seconds)
+    except Exception:
+        return True

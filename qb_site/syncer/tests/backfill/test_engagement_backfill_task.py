@@ -54,6 +54,7 @@ class TestEngagementBackfillTask(TestCase):
         res = backfill_repo_engagement_task(self.repo.id, limit=1)
 
         self.assertEqual(res.get("enqueued"), 1)
+        self.assertEqual(res.get("deduped"), 0)
         self.assertEqual(mock_sync_pr_task.delay.call_count, 1)
         # Should have targeted one of the two needing engagement.
         enqueued_numbers = {call.args[1] for call in mock_sync_pr_task.delay.call_args_list}
@@ -79,7 +80,7 @@ class TestEngagementBackfillTask(TestCase):
     @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
     def test_prefers_open_prs(self, mock_sync_pr_task) -> None:
         open_pr = self._make_pr(1, state="open")
-        closed_pr = self._make_pr(2, state="closed")
+        self._make_pr(2, state="closed")
 
         res = backfill_repo_engagement_task(self.repo.id, limit=1, states=["OPEN", "CLOSED"])
 
@@ -104,3 +105,14 @@ class TestEngagementBackfillTask(TestCase):
 
         self.assertEqual(res.get("enqueued"), 1)
         mock_sync_pr_task.delay.assert_called_once_with(self.repo.id, pr.number)
+
+    @mock.patch("syncer.tasks.backfill_tasks.claim_enqueue_slot", return_value=False)
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_reports_deduped_when_enqueue_suppressed(self, mock_sync_pr_task, _mock_claim) -> None:
+        self._make_pr(3)
+
+        res = backfill_repo_engagement_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("enqueued"), 0)
+        self.assertEqual(res.get("deduped"), 1)
+        mock_sync_pr_task.delay.assert_not_called()

@@ -238,6 +238,19 @@ Primary producer paths to cover:
     - validation:
       - `uv run ruff check` passed on all touched Python files
       - targeted Django tests blocked locally (Postgres not running in this environment)
+  - Chunk 7 completed (test/fail-open closeout):
+    - hardened dedupe helper fail-open behavior:
+      - `claim_enqueue_slot(...)` now fail-opens if Redis client acquisition itself raises.
+      - `claim_runtime_slot(...)` now fail-opens on unexpected delegation errors.
+    - extended unit coverage in `syncer/tests/services/test_task_dedupe.py`:
+      - Redis client factory exception path
+      - runtime claim unexpected-exception fail-open path
+    - added/expanded producer summary coverage for dedupe counters:
+      - incomplete backfill and engagement backfill tests assert `deduped` fields
+      - added suppression tests for both backfill producers when dedupe blocks enqueue
+    - validation:
+      - `uv run ruff check` passed on touched files
+      - targeted Django tests blocked locally (Postgres not running in this environment)
 
 ## References
 - `qb_site/syncer/tasks/sync_tasks.py`
