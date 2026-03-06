@@ -127,7 +127,7 @@
 - Chunk 4: implemented.
 - Chunk 5: implemented.
 - Chunk 6: implemented.
-- Chunk 7: partially implemented (metrics snapshot + admin visibility).
+- Chunk 7: implemented.
 - Chunk 8: implemented.
 
 ## Validation Plan
@@ -314,6 +314,21 @@
 - Added/updated metrics test assertions to cover webhook counters.
 - Subtleties discovered:
   - duplicate webhook deliveries are intentionally not represented as new rows (dedup by delivery id), so duplicate volume is currently observed via logs rather than snapshot counters.
+
+### 2026-03-06 - Chunk 7 (completion: duplicate delivery observability)
+- Extended `GitHubWebhookDelivery` to track duplicate replay activity:
+  - `duplicate_count`,
+  - `last_duplicate_at`.
+- On duplicate delivery id:
+  - endpoint now increments `duplicate_count` and updates `last_duplicate_at`.
+- Extended `SyncerMetricsSnapshot` with `webhook_duplicates_touched`:
+  - number of delivery rows that observed duplicate replays during the snapshot window.
+- Surfaced duplicate fields in webhook delivery admin list display.
+- Updated tests:
+  - webhook duplicate path now asserts duplicate-update call,
+  - metrics test fixture includes duplicate replay and asserts `webhook_duplicates_touched`.
+- Subtleties discovered:
+  - `webhook_duplicates_touched` is a per-window touched-row indicator (distinct deliveries with duplicate activity), not an exact total replay count in window.
 
 ### 2026-03-06 - Chunk 6 (analyzer follow-up after webhook-triggered CI sync)
 - Added a `trigger_analyzer_after_sync` flag to `syncer.sync_ci_for_shas`.

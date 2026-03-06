@@ -935,6 +935,7 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         "webhook_reason_enqueued_sync_pr",
         "webhook_reason_enqueued_sync_ci",
         "webhook_reason_ignored_action",
+        "webhook_duplicates_touched",
         "rows_pull_request",
         "rows_timeline_event",
         "rows_check_run",
@@ -1011,6 +1012,8 @@ class GitHubWebhookDeliveryAdmin(ReadOnlyAdmin):
         "status",
         "received_at",
         "processed_at",
+        "duplicate_count",
+        "last_duplicate_at",
         "route",
         "reason",
     )

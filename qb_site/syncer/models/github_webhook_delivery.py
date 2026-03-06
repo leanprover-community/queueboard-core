@@ -17,6 +17,8 @@ class GitHubWebhookDelivery(models.Model):
     repository_name = models.CharField(max_length=255, blank=True, default="")
     received_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
+    last_duplicate_at = models.DateTimeField(null=True, blank=True)
+    duplicate_count = models.IntegerField(default=0)
     status = models.CharField(max_length=32, choices=GitHubWebhookDeliveryStatus.choices)
     summary_json = models.JSONField(default=dict, blank=True)
 
