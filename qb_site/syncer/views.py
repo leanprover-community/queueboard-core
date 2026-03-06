@@ -8,6 +8,7 @@ from urllib.parse import parse_qs
 
 from django.conf import settings
 from django.db import IntegrityError
+from django.db.models import F
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -250,6 +251,12 @@ def github_webhook(request: HttpRequest) -> HttpResponse:
             summary_json=summary,
         )
     except IntegrityError:
+        now = timezone.now()
+        GitHubWebhookDelivery.objects.filter(delivery_id=delivery).update(
+            duplicate_count=F("duplicate_count") + 1,
+            last_duplicate_at=now,
+            processed_at=now,
+        )
         logger.info("github_webhook_duplicate event=%s delivery=%s", event, delivery)
         return JsonResponse({"status": "duplicate"}, status=202)
 

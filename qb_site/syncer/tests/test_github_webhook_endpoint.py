@@ -90,7 +90,10 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
     @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
     def test_duplicate_delivery_returns_202_duplicate(self) -> None:
         payload = b'{"action":"completed","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"}}'
-        with patch("syncer.views.GitHubWebhookDelivery.objects.create", side_effect=IntegrityError):
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create", side_effect=IntegrityError),
+            patch("syncer.views.GitHubWebhookDelivery.objects.filter") as mock_filter,
+        ):
             response = self.client.post(
                 reverse("github-webhook"),
                 data=payload,
@@ -101,6 +104,8 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
             )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json(), {"status": "duplicate"})
+        self.assertEqual(mock_filter.call_count, 1)
+        self.assertEqual(mock_filter.return_value.update.call_count, 1)
 
     @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
     def test_form_encoded_payload_parses_action_and_repo(self) -> None:

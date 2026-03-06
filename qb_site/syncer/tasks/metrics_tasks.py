@@ -182,6 +182,7 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     webhook_reason_enqueued_sync_pr = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_pr"}).count()
     webhook_reason_enqueued_sync_ci = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_ci"}).count()
     webhook_reason_ignored_action = webhook_q.filter(summary_json__contains={"reason": "ignored_action"}).count()
+    webhook_duplicates_touched = webhook_q.filter(last_duplicate_at__gte=start, last_duplicate_at__lt=now).count()
 
     # DB activity (rows created in the window)
     rows_pr = PullRequest.objects.filter(created_at__gte=start, created_at__lt=now).count()
@@ -227,6 +228,7 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         webhook_reason_enqueued_sync_pr=webhook_reason_enqueued_sync_pr,
         webhook_reason_enqueued_sync_ci=webhook_reason_enqueued_sync_ci,
         webhook_reason_ignored_action=webhook_reason_ignored_action,
+        webhook_duplicates_touched=webhook_duplicates_touched,
         token_cost_total=token_cost_total,
         rows_pull_request=rows_pr,
         rows_timeline_event=rows_tl,

@@ -113,6 +113,10 @@ class TestCollectMetrics(TestCase):
             status=GitHubWebhookDeliveryStatus.ACCEPTED,
             summary_json={"route": "noop", "reason": "unsupported_event"},
         )
+        d2 = GitHubWebhookDelivery.objects.get(delivery_id="d-2")
+        d2.duplicate_count = 2
+        d2.last_duplicate_at = timezone.now() - timedelta(seconds=1)
+        d2.save(update_fields=["duplicate_count", "last_duplicate_at"])
 
         res = collect_metrics_task()
         self.assertIn("id", res)
@@ -130,3 +134,4 @@ class TestCollectMetrics(TestCase):
         self.assertEqual(snap.webhook_reason_enqueued_sync_pr, 1)
         self.assertEqual(snap.webhook_reason_enqueued_sync_ci, 1)
         self.assertEqual(snap.webhook_reason_ignored_action, 1)
+        self.assertEqual(snap.webhook_duplicates_touched, 1)
