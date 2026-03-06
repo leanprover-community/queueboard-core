@@ -292,6 +292,49 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(kwargs["summary_json"]["reason"], "enqueued_sync_ci")
         self.assertEqual(kwargs["summary_json"]["enqueued_sync_ci"], 2)
         self.assertEqual(kwargs["summary_json"]["resolved_pr_numbers"], [201, 202])
+        self.assertEqual(kwargs["summary_json"]["check_sync_mode"], "pr_fanout")
+
+    @override_settings(
+        SYNCER_GITHUB_WEBHOOK_ENABLED=True,
+        SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST=True,
+        GITHUB_WEBHOOK_SECRET="test-secret",
+    )
+    def test_check_run_event_sha_first_mode_enqueues_single_repo_sha_task(self) -> None:
+        payload = (
+            b'{"action":"completed","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},'
+            b'"check_run":{"head_sha":"abc123","pull_requests":[{"number":201}]}}'
+        )
+        repo = SimpleNamespace(id=9)
+        task = SimpleNamespace(id="repo-sha-task-1")
+        with (
+            patch("syncer.views.GitHubWebhookDelivery.objects.create") as mock_create,
+            patch("syncer.views.Repository.objects.filter") as mock_repo_filter,
+            patch("syncer.views.PullRequest.objects.filter") as mock_pr_filter,
+            patch("syncer.views.sync_ci_for_repo_shas_task.delay", return_value=task) as mock_repo_sha_delay,
+            patch("syncer.views.sync_ci_for_shas_task.delay") as mock_legacy_ci_delay,
+        ):
+            mock_repo_filter.return_value.only.return_value.first.return_value = repo
+            response = self.client.post(
+                reverse("github-webhook"),
+                data=payload,
+                content_type="application/json",
+                HTTP_X_HUB_SIGNATURE_256=_signature("test-secret", payload),
+                HTTP_X_GITHUB_EVENT="check_run",
+                HTTP_X_GITHUB_DELIVERY="delivery-8b",
+            )
+        self.assertEqual(response.status_code, 202)
+        mock_repo_sha_delay.assert_called_once_with(
+            9,
+            shas=["abc123"],
+            require_pr_association=False,
+            trigger_analyzer_after_sync=True,
+        )
+        mock_legacy_ci_delay.assert_not_called()
+        mock_pr_filter.assert_not_called()
+        kwargs = mock_create.call_args.kwargs
+        self.assertEqual(kwargs["summary_json"]["reason"], "enqueued_sync_ci")
+        self.assertEqual(kwargs["summary_json"]["enqueued_sync_ci"], 1)
+        self.assertEqual(kwargs["summary_json"]["check_sync_mode"], "sha_first")
 
     @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
     def test_check_run_event_skips_when_action_ignored(self) -> None:
