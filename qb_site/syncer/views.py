@@ -16,7 +16,7 @@ from django.views.decorators.csrf import csrf_exempt
 from core.models import Repository
 from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus, PullRequest
 from syncer.services.github_webhook_router import route_github_webhook
-from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key, sync_pr_enqueue_key
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task, sync_pr_task
 
 logger = logging.getLogger(__name__)
@@ -128,11 +128,18 @@ def _enqueue_pull_request_sync(summary: dict) -> dict:
         return summary
 
     task_ids: list[str] = []
+    deduped = 0
+    pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
     for pr_number in sorted(set(pr_numbers)):
+        key = sync_pr_enqueue_key(repo_id=repo.id, number=int(pr_number))
+        if not claim_enqueue_slot(key=key, ttl_seconds=pr_dedupe_ttl):
+            deduped += 1
+            continue
         async_res = sync_pr_task.delay(repo.id, pr_number)
         task_ids.append(str(async_res.id))
-    summary["reason"] = "enqueued_sync_pr"
+    summary["reason"] = "deduped_sync_pr" if not task_ids and deduped > 0 else "enqueued_sync_pr"
     summary["enqueued_sync_prs"] = len(task_ids)
+    summary["deduped_sync_prs"] = deduped
     summary["sync_pr_task_ids"] = task_ids
     return summary
 

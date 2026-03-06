@@ -19,7 +19,7 @@ from core.utils.locks import repo_advisory_lock
 from syncer.services.rate_budget import debounce_repo_schedule
 from syncer.services.ci_by_sha_service import sync_ci_for_sha
 from syncer.services.ci_backoff import record_ci_sha_fetch, should_enqueue_ci_sha_with_state
-from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_ci_enqueue_key, sync_pr_enqueue_key
 from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext
 from core.celery_signals import enqueue_with_parent
 
@@ -643,6 +643,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor)
 
         enqueued = 0
+        prs_skipped_dedupe = 0
         threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
         low_budget = isinstance(remaining, int) and remaining <= threshold
         continuation_scheduled = False
@@ -702,6 +703,11 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 to_enqueue = min(len(numbers), batch_max)
 
             for num in numbers[:to_enqueue]:
+                pr_dedupe_key = sync_pr_enqueue_key(repo_id=repo.id, number=int(num))
+                pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+                if not claim_enqueue_slot(key=pr_dedupe_key, ttl_seconds=pr_dedupe_ttl):
+                    prs_skipped_dedupe += 1
+                    continue
                 enqueue_with_parent(
                     sync_pr_task.s(
                         repo.id,
@@ -750,6 +756,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             "cutoff_iso": cutoff_iso,
             "discovered": len(numbers),
             "enqueued": enqueued,
+            "prs_skipped_dedupe": prs_skipped_dedupe,
             "rate_limit": rl,
             "low_budget": bool(low_budget),
             "scan_complete": scan_complete,

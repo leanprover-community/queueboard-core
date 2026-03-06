@@ -15,10 +15,11 @@ class TestSyncRepoTasks(TestCase):
         self.repo = make_repo()
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
+    @mock.patch("syncer.tasks.sync_tasks.claim_enqueue_slot", return_value=True)
     @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
-    def test_sync_repo_since_enqueues(self, MockClient, mock_sync_pr, mock_enqueue, mock_lock) -> None:
+    def test_sync_repo_since_enqueues(self, MockClient, mock_sync_pr, mock_enqueue, _mock_claim, mock_lock) -> None:
         # Acquire lock
         mock_lock.return_value.__enter__.return_value = True
         gh = MockClient.return_value
@@ -37,6 +38,7 @@ class TestSyncRepoTasks(TestCase):
         self.assertTrue(res.get("reached_cutoff"))
         self.assertEqual(res.get("discovered"), 3)
         self.assertEqual(res.get("enqueued"), 3)
+        self.assertEqual(res.get("prs_skipped_dedupe"), 0)
         self.assertEqual(
             res.get("rate_events"), [{"label": "repo_discovery", "cost": 9, "remaining": 4999, "resetAt": "2025-11-01T00:00:00Z"}]
         )
@@ -52,6 +54,30 @@ class TestSyncRepoTasks(TestCase):
         )
         # Ensure per-PR tasks were enqueued with parent headers
         self.assertEqual(mock_enqueue.call_count, 3)
+
+    @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
+    @mock.patch("syncer.tasks.sync_tasks.claim_enqueue_slot", return_value=False)
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
+    @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_sync_repo_since_dedupe_suppresses_pr_enqueues(
+        self, MockClient, mock_sync_pr, mock_enqueue, _mock_claim, mock_lock
+    ) -> None:
+        mock_lock.return_value.__enter__.return_value = True
+        gh = MockClient.return_value
+        gh.discover_changed_pr_numbers.return_value = mock.Mock(
+            numbers=[1, 2, 3],
+            reached_cutoff=True,
+            next_cursor=None,
+            hit_limit=False,
+        )
+        gh.get_last_rate_limit.return_value = {"remaining": 4999, "resetAt": "2025-11-01T00:00:00Z", "cost": 9}
+
+        res = sync_repo_since_task.apply(kwargs={"repo_id": self.repo.id}).get()
+        self.assertEqual(res.get("discovered"), 3)
+        self.assertEqual(res.get("enqueued"), 0)
+        self.assertEqual(res.get("prs_skipped_dedupe"), 3)
+        mock_enqueue.assert_not_called()
 
     @mock.patch("syncer.tasks.sync_tasks.repo_advisory_lock")
     @mock.patch("syncer.tasks.sync_tasks.sync_pr_task")
