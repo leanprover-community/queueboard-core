@@ -104,6 +104,10 @@
     - Added open-head fallback (`syncer.PullRequest.head_sha`) so recently-updated PRs are still included before revision rebuild catches up.
     - Analyzer follow-up remains per-PR fanout (`analyzer.process_pr`) for impacted PR ids.
     - Added task test coverage for PRRevision-driven impacted PR resolution.
+  - Performance follow-up deferred:
+    - Measured `EXPLAIN ANALYZE` for the `PRRevision` head-SHA lookup showed a seq scan over ~168k rows (~26ms in the sampled environment).
+    - We are deferring the index change for now; include this in the final architecture record as a tracked follow-up.
+    - Candidate future index: `analyzer_prrevision(head_sha, pull_request_id)` (or equivalent Django model index).
   - No additional design decision required before chunk 4.
 
 ## References
