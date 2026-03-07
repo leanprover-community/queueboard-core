@@ -994,30 +994,59 @@ def sync_ci_for_repo_shas_task(  # type: ignore[no-redef]
         except Exception:
             pass
 
-    impacted_qs = PullRequest.objects.filter(repository=repo, state="open", head_sha__in=unique_shas).only(
-        "id", "number", "head_sha"
-    )
-    by_sha: dict[str, list[PullRequest]] = {}
+    # Resolve impacted PRs using historical revision heads when available, with
+    # open-head fallback for recently-updated PRs whose revisions may not exist yet.
+    by_sha_pr_ids: dict[str, set[int]] = {}
     impacted_pr_ids: set[int] = set()
-    for pr in impacted_qs:
-        if not pr.head_sha:
-            continue
-        by_sha.setdefault(pr.head_sha, []).append(pr)
-        impacted_pr_ids.add(int(pr.id))
+    if unique_shas:
+        try:
+            from analyzer.models import PRRevision
 
+            for pr_id, head_sha in PRRevision.objects.filter(
+                pull_request__repository=repo,
+                head_sha__in=unique_shas,
+            ).values_list("pull_request_id", "head_sha"):
+                if not head_sha:
+                    continue
+                by_sha_pr_ids.setdefault(str(head_sha), set()).add(int(pr_id))
+                impacted_pr_ids.add(int(pr_id))
+        except Exception:
+            log.exception("sync_ci_for_repo_shas_task: failed PRRevision lookup for repo=%s/%s", repo.owner, repo.name)
+
+    for pr_id, head_sha in PullRequest.objects.filter(
+        repository=repo,
+        state="open",
+        head_sha__in=unique_shas,
+    ).values_list("id", "head_sha"):
+        if not head_sha:
+            continue
+        by_sha_pr_ids.setdefault(str(head_sha), set()).add(int(pr_id))
+        impacted_pr_ids.add(int(pr_id))
+
+    pr_by_id = {
+        int(pr.id): pr
+        for pr in PullRequest.objects.filter(id__in=impacted_pr_ids).only(
+            "id",
+            "number",
+            "repository_id",
+            "head_repo_owner_login",
+            "head_repo_name",
+            "state",
+        )
+    }
     pr_shas: dict[int, list[str]] = {}
-    pr_by_id: dict[int, PullRequest] = {}
     unassociated_shas: list[str] = []
     for sha in unique_shas:
-        prs = by_sha.get(sha) or []
-        if not prs:
+        pr_ids = sorted(by_sha_pr_ids.get(sha) or [])
+        if not pr_ids:
             unassociated_shas.append(sha)
             continue
-        for pr in prs:
-            pr_by_id[int(pr.id)] = pr
-            pr_shas.setdefault(int(pr.id), [])
-            if sha not in pr_shas[int(pr.id)]:
-                pr_shas[int(pr.id)].append(sha)
+        for pr_id in pr_ids:
+            if pr_id not in pr_by_id:
+                continue
+            pr_shas.setdefault(pr_id, [])
+            if sha not in pr_shas[pr_id]:
+                pr_shas[pr_id].append(sha)
 
     def _defer(reset_at: Optional[str], remaining_shas: Sequence[str]) -> Dict[str, Any]:
         eta = None
