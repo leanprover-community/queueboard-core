@@ -1058,7 +1058,7 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
             "webhook_check_deliveries",
             "webhook_sha_first_tasks_enqueued",
             "sha_task_impacted_pr_fanout_total",
-            "queue_github_depth",
+            "queue_default_depth",
             "created_at",
         ),
         "tasks": (
@@ -1076,6 +1076,8 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
             "repo_discovered",
             "repo_enqueued",
             "repo_discovery_cost",
+            "queue_default_depth",
+            "queue_github_depth",
             "created_at",
         ),
         "webhook": (
@@ -1107,8 +1109,6 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
             "rows_status_context",
             "rows_pr_label",
             "rows_label_def",
-            "queue_default_depth",
-            "queue_github_depth",
             "db_size_bytes",
             "created_at",
         ),
