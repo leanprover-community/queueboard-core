@@ -248,8 +248,12 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(kwargs["summary_json"]["enqueued_sync_prs"], 0)
         self.assertEqual(kwargs["summary_json"]["deduped_sync_prs"], 1)
 
-    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
-    def test_check_run_event_enqueues_sync_ci_for_resolved_prs(self) -> None:
+    @override_settings(
+        SYNCER_GITHUB_WEBHOOK_ENABLED=True,
+        SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST=False,
+        GITHUB_WEBHOOK_SECRET="test-secret",
+    )
+    def test_check_run_event_legacy_pr_fanout_enqueues_sync_ci_for_resolved_prs(self) -> None:
         payload = (
             b'{"action":"completed","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},'
             b'"check_run":{"head_sha":"abc123","pull_requests":[{"number":201}]}}'
@@ -294,12 +298,8 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
         self.assertEqual(kwargs["summary_json"]["resolved_pr_numbers"], [201, 202])
         self.assertEqual(kwargs["summary_json"]["check_sync_mode"], "pr_fanout")
 
-    @override_settings(
-        SYNCER_GITHUB_WEBHOOK_ENABLED=True,
-        SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST=True,
-        GITHUB_WEBHOOK_SECRET="test-secret",
-    )
-    def test_check_run_event_sha_first_mode_enqueues_single_repo_sha_task(self) -> None:
+    @override_settings(SYNCER_GITHUB_WEBHOOK_ENABLED=True, GITHUB_WEBHOOK_SECRET="test-secret")
+    def test_check_run_event_default_sha_first_enqueues_single_repo_sha_task(self) -> None:
         payload = (
             b'{"action":"completed","repository":{"owner":{"login":"leanprover-community"},"name":"mathlib4"},'
             b'"check_run":{"head_sha":"abc123","pull_requests":[{"number":201}]}}'
@@ -362,6 +362,7 @@ class TestGitHubWebhookEndpoint(SimpleTestCase):
     @override_settings(
         SYNCER_GITHUB_WEBHOOK_ENABLED=True,
         SYNCER_GITHUB_WEBHOOK_DRY_RUN=True,
+        SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST=False,
         GITHUB_WEBHOOK_SECRET="test-secret",
     )
     def test_check_run_event_dry_run_does_not_enqueue(self) -> None:
