@@ -1125,6 +1125,11 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
 
     change_list_template = "admin/syncer/syncermetricssnapshot/change_list.html"
 
+    def lookup_allowed(self, lookup, value, request=None):  # type: ignore[override]
+        if lookup == "cols":
+            return True
+        return super().lookup_allowed(lookup, value, request)
+
     def get_list_display(self, request):  # type: ignore[override]
         view = request.GET.get("cols", "overview")
         return self.COLUMN_GROUPS.get(view, self.COLUMN_GROUPS["overview"])
