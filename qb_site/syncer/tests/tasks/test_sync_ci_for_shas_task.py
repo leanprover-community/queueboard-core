@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 
+from analyzer.models import PRRevision
 from syncer.tests.factories import make_repo, make_pr
 from syncer.tasks.sync_tasks import sync_ci_for_repo_shas_task, sync_ci_for_shas_task
 
@@ -109,3 +112,55 @@ class TestSyncCIForSHAsTask(TestCase):
         self.assertEqual(res.get("impacted_pr_count"), 2)
         self.assertEqual(res.get("unassociated_shas"), ["sha-missing"])
         self.assertEqual(mock_runner.call_count, 2)
+
+    @mock.patch("syncer.tasks.sync_tasks.run_ci_sync_for_pr_shas")
+    @mock.patch("syncer.tasks.sync_tasks.enqueue_with_parent")
+    @mock.patch("syncer.tasks.sync_tasks.GitHubClient")
+    def test_repo_sha_task_uses_prrevision_history_for_impacted_prs(self, MockClient, mock_enqueue, mock_runner):
+        gh = MockClient.return_value
+        gh.get_last_rate_limit.return_value = {"remaining": 4800, "resetAt": "2030-01-01T00:00:00Z"}
+        closed_pr = make_pr(
+            self.repo,
+            30,
+            state="closed",
+            gh_created_at="2024-01-01T00:00:00Z",
+            gh_updated_at="2024-01-02T00:00:00Z",
+            base_ref_name="master",
+            head_ref_name="hist",
+            head_sha="current-sha",
+            head_repo_owner_login="o",
+            head_repo_name="r",
+        )
+        PRRevision.objects.create(
+            pull_request=closed_pr,
+            head_sha="historical-sha",
+            from_ts=timezone.now(),
+            to_ts=None,
+            seq=0,
+        )
+        mock_runner.return_value = {
+            "status": "ok",
+            "done": ["historical-sha"],
+            "counts": {"checkruns_created": 1, "checkruns_updated": 0, "status_created": 0, "status_updated": 1},
+            "results_by_result": {"ok": 1},
+            "per_sha_results": [{"sha": "historical-sha", "result": "ok"}],
+            "per_sha_results_truncated": False,
+            "remaining_shas": [],
+            "reset_at": None,
+        }
+        mock_enqueue.return_value = SimpleNamespace(id="analyzer-1")
+
+        res = sync_ci_for_repo_shas_task.apply(
+            kwargs={
+                "repo_id": self.repo.id,
+                "shas": ["historical-sha"],
+                "trigger_analyzer_after_sync": True,
+            }
+        ).get()
+
+        self.assertEqual(res.get("status"), "ok")
+        self.assertEqual(res.get("impacted_pr_count"), 1)
+        self.assertEqual(res.get("impacted_pr_ids"), [closed_pr.id])
+        self.assertEqual(mock_runner.call_count, 1)
+        self.assertEqual(mock_runner.call_args.kwargs["shas"], ["historical-sha"])
+        self.assertEqual(mock_enqueue.call_count, 1)

@@ -59,7 +59,7 @@
 ## Implementation Plan (Chunks)
 1. ✅ Introduce SHA-first task skeleton and shared CI-by-SHA execution helper extraction.
 2. ✅ Add webhook check-event routing option flag to call SHA-first task path.
-3. Implement impacted-PR resolution and follow-up analyzer enqueue behavior.
+3. ✅ Implement impacted-PR resolution and follow-up analyzer enqueue behavior.
 4. Add metrics:
    - webhook check delivery count,
    - SHA task enqueued count,
@@ -99,7 +99,12 @@
   - Clarified analyzer fanout source:
     - No new SHA↔PR mapping table is required for current scope.
     - Chunk 3 will resolve impacted PRs using `analyzer.PRRevision` (historical head-SHA coverage), then fan out analyzer tasks per PR initially.
-  - No additional design decision required before chunk 3.
+  - Chunk 3 implemented:
+    - `syncer.sync_ci_for_repo_shas` now resolves impacted PRs via `analyzer.PRRevision` for historical head-SHA coverage.
+    - Added open-head fallback (`syncer.PullRequest.head_sha`) so recently-updated PRs are still included before revision rebuild catches up.
+    - Analyzer follow-up remains per-PR fanout (`analyzer.process_pr`) for impacted PR ids.
+    - Added task test coverage for PRRevision-driven impacted PR resolution.
+  - No additional design decision required before chunk 4.
 
 ## References
 - `docs/design-decisions/030-sync-task-dedupe-strategy.md`
