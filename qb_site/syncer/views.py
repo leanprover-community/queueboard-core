@@ -14,15 +14,14 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from core.models import Repository
-from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus, PullRequest
+from syncer.models import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus
 from syncer.services.github_webhook_router import route_github_webhook
 from syncer.services.task_dedupe import (
     claim_enqueue_slot,
-    sync_ci_enqueue_key,
     sync_ci_repo_shas_enqueue_key,
     sync_pr_enqueue_key,
 )
-from syncer.tasks.sync_tasks import sync_ci_for_repo_shas_task, sync_ci_for_shas_task, sync_pr_task
+from syncer.tasks.sync_tasks import sync_ci_for_repo_shas_task, sync_pr_task
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +49,6 @@ CHECK_SYNC_ACTIONS = {
 
 def _webhook_dry_run() -> bool:
     return bool(getattr(settings, "SYNCER_GITHUB_WEBHOOK_DRY_RUN", False))
-
-
-def _check_webhook_sha_first_enabled() -> bool:
-    return bool(getattr(settings, "SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST", False))
 
 
 def _has_valid_github_signature(*, payload: bytes, signature_header: str, secret: str) -> bool:
@@ -164,8 +159,6 @@ def _enqueue_check_sync(summary: dict) -> dict:
     name = str(repo_meta.get("name") or "") if isinstance(repo_meta, dict) else ""
     action = str(summary.get("action") or "")
     head_sha = str(summary.get("head_sha") or "")
-    pr_numbers_raw = summary.get("pr_numbers") if isinstance(summary.get("pr_numbers"), list) else []
-    payload_pr_numbers = [n for n in pr_numbers_raw if isinstance(n, int)]
 
     if action not in CHECK_SYNC_ACTIONS:
         summary["reason"] = "ignored_action"
@@ -190,75 +183,37 @@ def _enqueue_check_sync(summary: dict) -> dict:
         summary["sync_ci_task_ids"] = []
         return summary
 
-    if _check_webhook_sha_first_enabled():
-        summary["check_sync_mode"] = "sha_first"
-        if _webhook_dry_run():
-            summary["reason"] = "dry_run"
-            summary["enqueued_sync_ci"] = 0
-            summary["sync_ci_task_ids"] = []
-            summary["would_enqueue_sync_ci"] = 1
-            return summary
-
-        ci_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
-        key = sync_ci_repo_shas_enqueue_key(
-            repo_id=repo.id,
-            shas=[head_sha],
-            max_pages_per_sha=None,
-        )
-        if not claim_enqueue_slot(key=key, ttl_seconds=ci_dedupe_ttl):
-            summary["reason"] = "deduped_sync_ci"
-            summary["enqueued_sync_ci"] = 0
-            summary["deduped_sync_ci"] = 1
-            summary["sync_ci_task_ids"] = []
-            return summary
-
-        async_res = sync_ci_for_repo_shas_task.delay(
-            repo.id,
-            shas=[head_sha],
-            require_pr_association=False,
-            trigger_analyzer_after_sync=True,
-        )
-        summary["reason"] = "enqueued_sync_ci"
-        summary["enqueued_sync_ci"] = 1
-        summary["deduped_sync_ci"] = 0
-        summary["sync_ci_task_ids"] = [str(async_res.id)]
-        return summary
-
-    summary["check_sync_mode"] = "pr_fanout"
-    local_pr_numbers = list(
-        PullRequest.objects.filter(repository=repo, head_sha=head_sha, state="open").values_list("number", flat=True)
-    )
-    resolved_pr_numbers = sorted(set(local_pr_numbers) | set(payload_pr_numbers))
-    summary["resolved_pr_numbers"] = resolved_pr_numbers
-
-    if not resolved_pr_numbers:
-        summary["reason"] = "no_pr_resolution"
-        summary["enqueued_sync_ci"] = 0
-        summary["sync_ci_task_ids"] = []
-        return summary
+    summary["check_sync_mode"] = "sha_first"
     if _webhook_dry_run():
         summary["reason"] = "dry_run"
         summary["enqueued_sync_ci"] = 0
         summary["sync_ci_task_ids"] = []
-        summary["would_enqueue_sync_ci"] = len(resolved_pr_numbers)
+        summary["would_enqueue_sync_ci"] = 1
         return summary
 
-    task_ids: list[str] = []
-    deduped = 0
     ci_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
-    for pr_number in resolved_pr_numbers:
-        key = sync_ci_enqueue_key(repo_id=repo.id, number=int(pr_number), shas=[head_sha], max_pages_per_sha=None)
-        if not claim_enqueue_slot(key=key, ttl_seconds=ci_dedupe_ttl):
-            deduped += 1
-            continue
-        async_res = sync_ci_for_shas_task.delay(
-            repo.id, int(pr_number), shas=[head_sha], require_pr_association=False, trigger_analyzer_after_sync=True
-        )
-        task_ids.append(str(async_res.id))
-    summary["reason"] = "deduped_sync_ci" if not task_ids and deduped > 0 else "enqueued_sync_ci"
-    summary["enqueued_sync_ci"] = len(task_ids)
-    summary["deduped_sync_ci"] = deduped
-    summary["sync_ci_task_ids"] = task_ids
+    key = sync_ci_repo_shas_enqueue_key(
+        repo_id=repo.id,
+        shas=[head_sha],
+        max_pages_per_sha=None,
+    )
+    if not claim_enqueue_slot(key=key, ttl_seconds=ci_dedupe_ttl):
+        summary["reason"] = "deduped_sync_ci"
+        summary["enqueued_sync_ci"] = 0
+        summary["deduped_sync_ci"] = 1
+        summary["sync_ci_task_ids"] = []
+        return summary
+
+    async_res = sync_ci_for_repo_shas_task.delay(
+        repo.id,
+        shas=[head_sha],
+        require_pr_association=False,
+        trigger_analyzer_after_sync=True,
+    )
+    summary["reason"] = "enqueued_sync_ci"
+    summary["enqueued_sync_ci"] = 1
+    summary["deduped_sync_ci"] = 0
+    summary["sync_ci_task_ids"] = [str(async_res.id)]
     return summary
 
 
