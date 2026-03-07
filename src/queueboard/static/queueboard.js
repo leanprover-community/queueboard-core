@@ -179,6 +179,7 @@ if (STANDARD) {
   }
 }
 const DEFAULT_LENGTH = 10;
+const DEFAULT_LENGTH_STR = String(DEFAULT_LENGTH);
 
 function sanitizeCellText(cellHtml) {
   if (cellHtml === null || cellHtml === undefined) {
@@ -290,7 +291,8 @@ function optionsFromParams() {
   // let fragment = window.location.hash;
   const params = new URLSearchParams(document.location.search);
   const search_params = params.get("search");
-  const pageLength = params.get("length") || DEFAULT_LENGTH;
+  const pageLengthRaw = params.get("length");
+  const pageLength = pageLengthRaw === null ? DEFAULT_LENGTH : Number(pageLengthRaw);
   const sort_params = params.getAll("sort");
   // The configuration for initial sorting of tables, for tables with and without approvals.
   let sort_config = [];
@@ -307,10 +309,21 @@ function optionsFromParams() {
     }
     // push to sort_config in same order as in sort_params
     if (STANDARD) {
-      sort_config.push([getIdx(col, false), dir]);
-      sort_config_approvals.push([getIdx(col, true), dir]);
+      const idx = getIdx(col, false);
+      const idxApprovals = getIdx(col, true);
+      if (!Number.isInteger(Number(idx)) || !Number.isInteger(Number(idxApprovals))) {
+        console.log(`invalid sorting column ${col} passed as sorting configuration`);
+        continue;
+      }
+      sort_config.push([idx, dir]);
+      sort_config_approvals.push([idxApprovals, dir]);
     } else {
-      sort_config.push([getIdx(col), dir]);
+      const idx = getIdx(col);
+      if (!Number.isInteger(Number(idx))) {
+        console.log(`invalid sorting column ${col} passed as sorting configuration`);
+        continue;
+      }
+      sort_config.push([idx, dir]);
     }
    }
   if (STANDARD && sort_config.length === 0) {
@@ -359,7 +372,7 @@ $(document).ready(function () {
 
     // an object that tracks the number of times to disable the event handlers below during updates from popstate events
     const ignoreNext = { search: 0, length: 0, order: 0 };
-    tables.push({table, ignoreNext});
+    tables.push({table, tableElement, ignoreNext});
     if (table) {
       addExportButton(table, tableElement);
     }
@@ -376,9 +389,9 @@ $(document).ready(function () {
       if (ignoreNext.length === 0) {
         const len = settings.api.page.len();
         const url = new URL(window.location.href);
-        const paramsLength = url.searchParams.get("length") || DEFAULT_LENGTH;
+        const paramsLength = url.searchParams.get("length") || DEFAULT_LENGTH_STR;
         console.log('length', len);
-        if (len !== paramsLength) {
+        if (String(len) !== paramsLength) {
           if (len === DEFAULT_LENGTH) {
             url.searchParams.delete('length');
           } else {
@@ -423,7 +436,10 @@ $(document).ready(function () {
     const {options, sort_config_approvals, sort_config, params} = optionsFromParams();
     console.log('popstate', params, options, sort_config_approvals, sort_config);
     // for each table, update search, length, and order settings
-    for (const {table, ignoreNext} of tables) {
+    for (const {table, tableElement, ignoreNext} of tables) {
+      if (!table) {
+        continue;
+      }
       if (params.has("search") && table.search() !== options.search.search) {
         ignoreNext.search++;
         table.search(options.search.search);
@@ -438,7 +454,7 @@ $(document).ready(function () {
       }
 
       if (STANDARD) {
-        const tableId = $(table).attr('id');
+        const tableId = tableElement.id || "";
         const show_approval = tableId == "t-queue-stale-unassigned" || tableId == "t-queue-stale-assigned" || tableId == "t-approved";
         ignoreNext.order++;
         ignoreNext.search++; // the draw() triggers a search
