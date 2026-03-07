@@ -1134,8 +1134,22 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         if view not in self.COLUMN_GROUPS:
             view = "overview"
         group_urls: dict[str, str] = {}
+        # Preserve user-applied filters/search/date hierarchy, but drop ordering
+        # and pagination params when switching column groups.
+        keep_keys = {
+            "q",
+            "window_seconds__exact",
+            "window_start__year",
+            "window_start__month",
+            "window_start__day",
+            "window_start__gte",
+            "window_start__lt",
+        }
         for group in self.COLUMN_GROUPS.keys():
             params = request.GET.copy()
+            for key in list(params.keys()):
+                if key not in keep_keys and key != "cols":
+                    params.pop(key, None)
             params["cols"] = group
             group_urls[group] = f"{request.path}?{params.urlencode()}"
         extra = {
