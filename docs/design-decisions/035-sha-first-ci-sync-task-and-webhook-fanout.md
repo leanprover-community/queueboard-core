@@ -65,7 +65,7 @@
    - SHA task enqueued count,
    - impacted PR fanout count.
 5. ✅ Migrate default webhook check path to SHA-first; keep fallback switch.
-6. Remove obsolete PR-fanout-only assumptions once stable.
+6. ✅ Remove obsolete PR-fanout-only assumptions once stable.
 
 ## Validation Plan
 - Unit tests:
@@ -120,6 +120,10 @@
     - Updated webhook endpoint tests:
       - default behavior asserts SHA-first enqueue path,
       - explicit legacy override coverage retained for PR-fanout path.
+  - Chunk 6 implemented:
+    - Removed legacy check-event PR-fanout webhook branch; check-event routing is now always SHA-first.
+    - Removed `SYNCER_GITHUB_WEBHOOK_CHECK_SHA_FIRST` setting/env toggle and obsolete `pr_fanout` summary fields from the check-event path.
+    - Updated webhook endpoint tests to assert always-SHA-first behavior (including dry-run and dedupe paths).
   - Performance follow-up deferred:
     - Measured `EXPLAIN ANALYZE` for the `PRRevision` head-SHA lookup showed a seq scan over ~168k rows (~26ms in the sampled environment).
     - We are deferring the index change for now; include this in the final architecture record as a tracked follow-up.
