@@ -1005,6 +1005,7 @@ class StatusContextAdmin(ReadOnlyAdmin):
 
 @admin.register(SyncerMetricsSnapshot)
 class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
+    _COLS_SESSION_KEY = "syncer_metrics_cols"
     ALL_COLUMNS = (
         "window_start",
         "window_seconds",
@@ -1131,13 +1132,25 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         return super().lookup_allowed(lookup, value, request)
 
     def get_list_display(self, request):  # type: ignore[override]
-        view = request.GET.get("cols", "overview")
+        view = request.GET.get("cols") or request.session.get(self._COLS_SESSION_KEY, "overview")
         return self.COLUMN_GROUPS.get(view, self.COLUMN_GROUPS["overview"])
 
     def changelist_view(self, request, extra_context=None):  # type: ignore[override]
-        view = request.GET.get("cols", "overview")
+        cols_raw = request.GET.get("cols")
+        if cols_raw in self.COLUMN_GROUPS:
+            request.session[self._COLS_SESSION_KEY] = cols_raw
+        view = str(request.session.get(self._COLS_SESSION_KEY, "overview"))
         if view not in self.COLUMN_GROUPS:
             view = "overview"
+            request.session[self._COLS_SESSION_KEY] = view
+
+        # Strip UI-only and previous-error params before Django changelist applies
+        # lookup/queryset processing; this avoids invalid lookup fallback behavior.
+        params_for_changelist = request.GET.copy()
+        params_for_changelist.pop("cols", None)
+        params_for_changelist.pop("e", None)
+        request.GET = params_for_changelist
+
         group_urls: dict[str, str] = {}
         # Preserve user-applied filters/search/date hierarchy, but drop ordering
         # and pagination params when switching column groups.
