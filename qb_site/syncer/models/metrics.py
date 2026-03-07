@@ -38,6 +38,8 @@ class SyncerMetricsSnapshot(models.Model):
     webhook_route_pull_request = models.IntegerField(default=0)
     webhook_route_check = models.IntegerField(default=0)
     webhook_route_noop = models.IntegerField(default=0)
+    webhook_check_deliveries = models.IntegerField(default=0)
+    webhook_sha_first_tasks_enqueued = models.IntegerField(default=0)
     webhook_reason_enqueued_sync_pr = models.IntegerField(default=0)
     webhook_reason_enqueued_sync_ci = models.IntegerField(default=0)
     webhook_reason_deduped_sync_pr = models.IntegerField(default=0)
@@ -46,6 +48,7 @@ class SyncerMetricsSnapshot(models.Model):
     webhook_deduped_sync_pr_total = models.IntegerField(default=0)
     webhook_deduped_sync_ci_total = models.IntegerField(default=0)
     webhook_duplicates_touched = models.IntegerField(default=0)
+    sha_task_impacted_pr_fanout_total = models.IntegerField(default=0)
 
     # DB activity
     rows_pull_request = models.IntegerField(default=0)

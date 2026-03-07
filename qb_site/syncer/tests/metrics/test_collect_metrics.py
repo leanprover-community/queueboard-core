@@ -74,6 +74,14 @@ class TestCollectMetrics(TestCase):
                 "rate_events": [{"label": "ci_page", "cost": 4}],
             },
         )
+        self._mk_task(
+            "syncer.sync_ci_for_repo_shas",
+            {
+                "repo": "o/r",
+                "impacted_pr_count": 3,
+                "rate_events": [{"label": "ci_repo_sha_page", "cost": 2}],
+            },
+        )
         # Non-dict result should be ignored for token cost aggregation
         self._mk_task("syncer.collect_convergence", 5)
 
@@ -93,7 +101,7 @@ class TestCollectMetrics(TestCase):
             repository_owner="o",
             repository_name="r",
             status=GitHubWebhookDeliveryStatus.ACCEPTED,
-            summary_json={"route": "check", "reason": "enqueued_sync_ci"},
+            summary_json={"route": "check", "check_sync_mode": "sha_first", "reason": "enqueued_sync_ci", "enqueued_sync_ci": 1},
         )
         GitHubWebhookDelivery.objects.create(
             delivery_id="d-3",
@@ -120,7 +128,13 @@ class TestCollectMetrics(TestCase):
             repository_owner="o",
             repository_name="r",
             status=GitHubWebhookDeliveryStatus.ACCEPTED,
-            summary_json={"route": "check", "reason": "deduped_sync_ci", "deduped_sync_ci": 2, "enqueued_sync_ci": 0},
+            summary_json={
+                "route": "check",
+                "check_sync_mode": "sha_first",
+                "reason": "deduped_sync_ci",
+                "deduped_sync_ci": 2,
+                "enqueued_sync_ci": 0,
+            },
         )
         GitHubWebhookDelivery.objects.create(
             delivery_id="d-6",
@@ -142,10 +156,12 @@ class TestCollectMetrics(TestCase):
         # Validate a few aggregates
         self.assertEqual(snap.pr_tasks, 1)
         self.assertEqual(snap.pr_token_cost, 50)
-        self.assertEqual(snap.token_cost_total, 79)
+        self.assertEqual(snap.token_cost_total, 81)
         self.assertEqual(snap.repo_discovered, 5)
         self.assertEqual(snap.repo_enqueued, 3)
         self.assertEqual(snap.webhook_deliveries, 6)
+        self.assertEqual(snap.webhook_check_deliveries, 2)
+        self.assertEqual(snap.webhook_sha_first_tasks_enqueued, 1)
         self.assertEqual(snap.webhook_route_pull_request, 3)
         self.assertEqual(snap.webhook_route_check, 2)
         self.assertEqual(snap.webhook_route_noop, 1)
@@ -157,3 +173,4 @@ class TestCollectMetrics(TestCase):
         self.assertEqual(snap.webhook_deduped_sync_pr_total, 3)
         self.assertEqual(snap.webhook_deduped_sync_ci_total, 2)
         self.assertEqual(snap.webhook_duplicates_touched, 1)
+        self.assertEqual(snap.sha_task_impacted_pr_fanout_total, 3)

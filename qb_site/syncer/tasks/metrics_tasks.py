@@ -179,6 +179,8 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     webhook_route_pull_request = webhook_q.filter(summary_json__contains={"route": "pull_request"}).count()
     webhook_route_check = webhook_q.filter(summary_json__contains={"route": "check"}).count()
     webhook_route_noop = webhook_q.filter(summary_json__contains={"route": "noop"}).count()
+    webhook_check_deliveries = webhook_route_check
+    webhook_sha_first_tasks_enqueued = 0
     webhook_reason_enqueued_sync_pr = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_pr"}).count()
     webhook_reason_enqueued_sync_ci = webhook_q.filter(summary_json__contains={"reason": "enqueued_sync_ci"}).count()
     webhook_reason_deduped_sync_pr = webhook_q.filter(summary_json__contains={"reason": "deduped_sync_pr"}).count()
@@ -188,6 +190,15 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     webhook_deduped_sync_ci_total = 0
     for delivery in webhook_q.only("summary_json"):
         summary = delivery.summary_json if isinstance(delivery.summary_json, dict) else {}
+        if (
+            summary.get("route") == "check"
+            and summary.get("check_sync_mode") == "sha_first"
+            and summary.get("reason") == "enqueued_sync_ci"
+        ):
+            try:
+                webhook_sha_first_tasks_enqueued += int(summary.get("enqueued_sync_ci") or 0)
+            except Exception:
+                pass
         try:
             webhook_deduped_sync_pr_total += int(summary.get("deduped_sync_prs") or 0)
         except Exception:
@@ -197,6 +208,12 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         except Exception:
             pass
     webhook_duplicates_touched = webhook_q.filter(last_duplicate_at__gte=start, last_duplicate_at__lt=now).count()
+    sha_task_impacted_pr_fanout_total = 0
+    for res in _iter_results(q.filter(task_name="syncer.sync_ci_for_repo_shas")):
+        try:
+            sha_task_impacted_pr_fanout_total += int(res.get("impacted_pr_count") or 0)
+        except Exception:
+            pass
 
     # DB activity (rows created in the window)
     rows_pr = PullRequest.objects.filter(created_at__gte=start, created_at__lt=now).count()
@@ -239,6 +256,8 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         webhook_route_pull_request=webhook_route_pull_request,
         webhook_route_check=webhook_route_check,
         webhook_route_noop=webhook_route_noop,
+        webhook_check_deliveries=webhook_check_deliveries,
+        webhook_sha_first_tasks_enqueued=webhook_sha_first_tasks_enqueued,
         webhook_reason_enqueued_sync_pr=webhook_reason_enqueued_sync_pr,
         webhook_reason_enqueued_sync_ci=webhook_reason_enqueued_sync_ci,
         webhook_reason_deduped_sync_pr=webhook_reason_deduped_sync_pr,
@@ -247,6 +266,7 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         webhook_deduped_sync_pr_total=webhook_deduped_sync_pr_total,
         webhook_deduped_sync_ci_total=webhook_deduped_sync_ci_total,
         webhook_duplicates_touched=webhook_duplicates_touched,
+        sha_task_impacted_pr_fanout_total=sha_task_impacted_pr_fanout_total,
         token_cost_total=token_cost_total,
         rows_pull_request=rows_pr,
         rows_timeline_event=rows_tl,
@@ -265,6 +285,9 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
         "pr_tasks": pr_count,
         "repo_tasks": repo_count,
         "webhook_deliveries": webhook_deliveries,
+        "webhook_check_deliveries": webhook_check_deliveries,
+        "webhook_sha_first_tasks_enqueued": webhook_sha_first_tasks_enqueued,
+        "sha_task_impacted_pr_fanout_total": sha_task_impacted_pr_fanout_total,
         "db_size_bytes": db_size,
         "queue_default_depth": queue_default_depth,
         "queue_github_depth": queue_github_depth,

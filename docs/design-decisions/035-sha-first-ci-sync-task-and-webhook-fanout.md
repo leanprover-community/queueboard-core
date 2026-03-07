@@ -60,7 +60,7 @@
 1. ✅ Introduce SHA-first task skeleton and shared CI-by-SHA execution helper extraction.
 2. ✅ Add webhook check-event routing option flag to call SHA-first task path.
 3. ✅ Implement impacted-PR resolution and follow-up analyzer enqueue behavior.
-4. Add metrics:
+4. ✅ Add metrics:
    - webhook check delivery count,
    - SHA task enqueued count,
    - impacted PR fanout count.
@@ -104,6 +104,16 @@
     - Added open-head fallback (`syncer.PullRequest.head_sha`) so recently-updated PRs are still included before revision rebuild catches up.
     - Analyzer follow-up remains per-PR fanout (`analyzer.process_pr`) for impacted PR ids.
     - Added task test coverage for PRRevision-driven impacted PR resolution.
+  - Chunk 4 implemented:
+    - Extended `SyncerMetricsSnapshot` with:
+      - `webhook_check_deliveries`,
+      - `webhook_sha_first_tasks_enqueued`,
+      - `sha_task_impacted_pr_fanout_total`.
+    - Updated `syncer.collect_metrics` aggregation:
+      - check delivery count from webhook summaries (`route=check`),
+      - SHA-first enqueue count from webhook summaries (`check_sync_mode=sha_first`, `reason=enqueued_sync_ci`),
+      - impacted PR fanout total from `syncer.sync_ci_for_repo_shas` task results (`impacted_pr_count`).
+    - Added migration and metrics test updates for the new fields.
   - Performance follow-up deferred:
     - Measured `EXPLAIN ANALYZE` for the `PRRevision` head-SHA lookup showed a seq scan over ~168k rows (~26ms in the sampled environment).
     - We are deferring the index change for now; include this in the final architecture record as a tracked follow-up.
