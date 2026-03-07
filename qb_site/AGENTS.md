@@ -36,6 +36,8 @@ uv run python qb_site/manage.py test zulip_bot
 
 ## Testing and Sandbox Notes
 - `bash scripts/repo_check_compose.sh` is the canonical full test/check script for this repo.
+- Backup policy coverage is enforced by `scripts/validate_backup_policy.py` and runs as part of `scripts/repo_check_compose.sh`.
+- When adding/removing Django tables in backup scope, update `scripts/backup_policy.py` in the same change.
 - That script starts Docker Compose services (Postgres/Redis/web) and may fail in sandboxed or restricted environments.
 - If Docker/Compose is unavailable:
   - run non-DB checks (`ruff`, GraphQL validation, pure-Python tests where applicable),

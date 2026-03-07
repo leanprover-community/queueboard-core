@@ -10,29 +10,12 @@ from typing import Any
 
 import psycopg
 
+from backup_policy import EXPORT_TABLE_QUERIES
+
 try:
     import pandas as pd
 except ImportError:  # pragma: no cover - optional dependency for parquet
     pd = None  # type: ignore
-
-DEFAULT_TABLE_QUERIES: dict[str, str] = {
-    "core_repository": "SELECT * FROM core_repository ORDER BY id",
-    "core_user": "SELECT * FROM core_user ORDER BY id",
-    "syncer_pullrequest": "SELECT * FROM syncer_pullrequest ORDER BY id",
-    "syncer_labeldef": "SELECT * FROM syncer_labeldef ORDER BY id",
-    "syncer_prlabel": "SELECT * FROM syncer_prlabel ORDER BY id",
-    "syncer_prtimelineevent": "SELECT * FROM syncer_prtimelineevent ORDER BY id",
-    "syncer_checkrun": "SELECT * FROM syncer_checkrun ORDER BY id",
-    "syncer_statuscontext": "SELECT * FROM syncer_statuscontext ORDER BY id",
-    "syncer_repobackfillcursor": "SELECT * FROM syncer_repobackfillcursor ORDER BY id",
-    "syncer_commithistoryharvest": "SELECT * FROM syncer_commithistoryharvest ORDER BY id",
-    "analyzer_queueruleset": "SELECT * FROM analyzer_queueruleset ORDER BY id",
-    "analyzer_prqueuewindow": "SELECT * FROM analyzer_prqueuewindow ORDER BY id",
-    "analyzer_prrevision": "SELECT * FROM analyzer_prrevision ORDER BY id",
-    "analyzer_prrevisionbuildstate": "SELECT * FROM analyzer_prrevisionbuildstate ORDER BY id",
-    "analyzer_prdependency": "SELECT * FROM analyzer_prdependency ORDER BY id",
-    "analyzer_prdependencystate": "SELECT * FROM analyzer_prdependencystate ORDER BY id",
-}
 
 
 def table_exists(conn: psycopg.Connection[Any], table: str) -> bool:
@@ -93,11 +76,11 @@ def main() -> None:
     if not args.database_url:
         raise SystemExit("DATABASE_URL must be set (or passed via --database-url)")
 
-    selected_tables = args.tables if args.tables else list(DEFAULT_TABLE_QUERIES.keys())
+    selected_tables = args.tables if args.tables else list(EXPORT_TABLE_QUERIES.keys())
 
     with psycopg.connect(args.database_url) as conn:
         for table in selected_tables:
-            query = DEFAULT_TABLE_QUERIES.get(table)
+            query = EXPORT_TABLE_QUERIES.get(table)
             if query is None:
                 print(f"Skipping unknown table '{table}' (not in curated list)")
                 continue

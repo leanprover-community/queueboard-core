@@ -17,49 +17,11 @@ from urllib.parse import urlparse
 import psycopg
 from psycopg import sql
 
+from backup_policy import SCRUB_SQL_BY_TABLE, TRUNCATE_TABLES
 
-# Tables to truncate (RESTART IDENTITY CASCADE). Missing tables are skipped.
-TRUNCATE_TABLES: tuple[str, ...] = (
-    # Django auth/admin/session
-    "auth_group",
-    "auth_group_permissions",
-    "auth_permission",
-    "auth_user",
-    "auth_user_groups",
-    "auth_user_user_permissions",
-    "django_admin_log",
-    "django_session",
-    "django_content_type",
-    "django_migrations",
-    # Celery task results
-    "django_celery_results_taskresult",
-    "django_celery_results_groupresult",
-    "core_taskresultlink",
-    # Reviewer preferences (private config)
-    "core_reviewerpreference",
-    # Snapshots/metrics caches
-    "analyzer_queuesnapshot",
-    "analyzer_reviewerassignmentsnapshot",
-    "analyzer_areastatssnapshot",
-    "analyzer_analyzerconvergencesnapshot",
-    "syncer_syncermetricssnapshot",
-    "syncer_syncerconvergencesnapshot",
-)
-
-# In-place scrubs (set private fields to NULL).
-SCRUB_QUERIES: tuple[tuple[str, sql.SQL], ...] = (
-    (
-        "core_user",
-        sql.SQL(
-            """
-            UPDATE core_user
-            SET
-              zulip_user_id = NULL,
-              zulip_full_name = NULL,
-              timezone = NULL
-            """
-        ),
-    ),
+# In-place scrubs (set private fields to NULL), compiled to SQL objects.
+SCRUB_QUERIES: tuple[tuple[str, sql.SQL], ...] = tuple(
+    (table, sql.SQL(statement)) for table, statement in SCRUB_SQL_BY_TABLE.items()
 )
 
 
