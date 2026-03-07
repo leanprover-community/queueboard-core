@@ -71,20 +71,16 @@ else
   fi
 fi
 
-echo "[3/11] Validate backup policy coverage (host)"
-if command -v uv >/dev/null 2>&1; then
-  uv run python scripts/validate_backup_policy.py
-else
-  python scripts/validate_backup_policy.py
-fi
-
-echo "[4/11] Starting web (waits on db:healthy via depends_on)"
+echo "[3/11] Starting web (waits on db:healthy via depends_on)"
 if ! docker compose up -d web; then
   echo "Compose failed to start services. Dumping service status and migrate logs..." >&2
   docker compose ps || true
   docker compose logs --no-color migrate || true
   exit 1
 fi
+
+echo "[4/11] Validate backup policy coverage (compose)"
+docker compose exec -T web python scripts/validate_backup_policy.py
 
 echo "[5/11] Django system checks (compose)"
 docker compose exec -T web python qb_site/manage.py check
