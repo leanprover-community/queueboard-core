@@ -1005,7 +1005,7 @@ class StatusContextAdmin(ReadOnlyAdmin):
 
 @admin.register(SyncerMetricsSnapshot)
 class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
-    list_display = (
+    ALL_COLUMNS = (
         "window_start",
         "window_seconds",
         "pr_tasks",
@@ -1021,6 +1021,8 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         "repo_enqueued",
         "repo_discovery_cost",
         "webhook_deliveries",
+        "webhook_check_deliveries",
+        "webhook_sha_first_tasks_enqueued",
         "webhook_route_pull_request",
         "webhook_route_check",
         "webhook_route_noop",
@@ -1032,6 +1034,7 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         "webhook_deduped_sync_pr_total",
         "webhook_deduped_sync_ci_total",
         "webhook_duplicates_touched",
+        "sha_task_impacted_pr_fanout_total",
         "rows_pull_request",
         "rows_timeline_event",
         "rows_check_run",
@@ -1043,6 +1046,74 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
         "db_size_bytes",
         "created_at",
     )
+    COLUMN_GROUPS = {
+        "overview": (
+            "window_start",
+            "window_seconds",
+            "pr_tasks",
+            "repo_tasks",
+            "token_cost_total",
+            "webhook_deliveries",
+            "webhook_check_deliveries",
+            "webhook_sha_first_tasks_enqueued",
+            "sha_task_impacted_pr_fanout_total",
+            "queue_github_depth",
+            "created_at",
+        ),
+        "tasks": (
+            "window_start",
+            "window_seconds",
+            "pr_tasks",
+            "pr_deferred",
+            "pr_failures",
+            "pr_avg_duration_s",
+            "pr_token_cost",
+            "token_cost_total",
+            "repo_tasks",
+            "repo_low_budget",
+            "repo_avg_duration_s",
+            "repo_discovered",
+            "repo_enqueued",
+            "repo_discovery_cost",
+            "created_at",
+        ),
+        "webhook": (
+            "window_start",
+            "window_seconds",
+            "webhook_deliveries",
+            "webhook_check_deliveries",
+            "webhook_sha_first_tasks_enqueued",
+            "webhook_route_pull_request",
+            "webhook_route_check",
+            "webhook_route_noop",
+            "webhook_reason_enqueued_sync_pr",
+            "webhook_reason_enqueued_sync_ci",
+            "webhook_reason_deduped_sync_pr",
+            "webhook_reason_deduped_sync_ci",
+            "webhook_reason_ignored_action",
+            "webhook_deduped_sync_pr_total",
+            "webhook_deduped_sync_ci_total",
+            "webhook_duplicates_touched",
+            "sha_task_impacted_pr_fanout_total",
+            "created_at",
+        ),
+        "storage": (
+            "window_start",
+            "window_seconds",
+            "rows_pull_request",
+            "rows_timeline_event",
+            "rows_check_run",
+            "rows_status_context",
+            "rows_pr_label",
+            "rows_label_def",
+            "queue_default_depth",
+            "queue_github_depth",
+            "db_size_bytes",
+            "created_at",
+        ),
+        "all": ALL_COLUMNS,
+    }
+    list_display = COLUMN_GROUPS["overview"]
     date_hierarchy = "window_start"
     ordering = ("-window_start",)
     search_fields = ("window_start",)
@@ -1054,8 +1125,25 @@ class SyncerMetricsSnapshotAdmin(ReadOnlyAdmin):
 
     change_list_template = "admin/syncer/syncermetricssnapshot/change_list.html"
 
+    def get_list_display(self, request):  # type: ignore[override]
+        view = request.GET.get("cols", "overview")
+        return self.COLUMN_GROUPS.get(view, self.COLUMN_GROUPS["overview"])
+
     def changelist_view(self, request, extra_context=None):  # type: ignore[override]
-        extra = extra_context or {}
+        view = request.GET.get("cols", "overview")
+        if view not in self.COLUMN_GROUPS:
+            view = "overview"
+        group_urls: dict[str, str] = {}
+        for group in self.COLUMN_GROUPS.keys():
+            params = request.GET.copy()
+            params["cols"] = group
+            group_urls[group] = f"{request.path}?{params.urlencode()}"
+        extra = {
+            **(extra_context or {}),
+            "metrics_column_groups": tuple(self.COLUMN_GROUPS.keys()),
+            "metrics_column_group_active": view,
+            "metrics_column_group_links": tuple((group, group_urls[group]) for group in self.COLUMN_GROUPS.keys()),
+        }
         if request.method == "POST" and request.POST.get("action") == "collect_metrics":
             try:
                 from syncer.tasks.metrics_tasks import collect_metrics_task

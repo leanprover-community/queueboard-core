@@ -6,6 +6,18 @@
 <div class="object-tools">
   <ul class="object-tools">
     <li>
+      <span style="padding: 0.5em 0.8em;">Columns:</span>
+    </li>
+    {% for group, group_url in metrics_column_group_links %}
+      <li>
+        {% if group == metrics_column_group_active %}
+          <strong style="padding: 0.5em 0.8em;">{{ group }}</strong>
+        {% else %}
+          <a href="{{ group_url }}">{{ group }}</a>
+        {% endif %}
+      </li>
+    {% endfor %}
+    <li>
       <form method="post" style="display:inline;">
         {% csrf_token %}
         <input type="hidden" name="action" value="collect_metrics" />
