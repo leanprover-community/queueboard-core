@@ -7,20 +7,20 @@ from django.db.models import Count, Exists, F, Min, OuterRef, Q
 
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.queue_window_build_state import record_queue_window_build_states
-from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
+from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
 
 
 def _is_ruleset_stale_for_pr(
     *,
-    pr: PullRequest,
     rule_set: QueueRuleSet,
     state: PRRevisionBuildState,
     rs_state: PRQueueWindowBuildState | None,
+    has_rollup_backfill: bool,
 ) -> bool:
     """Return whether queue windows are stale for a specific (PR, ruleset) pair."""
-    if queue_windows_need_rollup_backfill(pr=pr, rule_set=rule_set):
+    if has_rollup_backfill:
         return True
 
     if rs_state is None:
@@ -121,7 +121,7 @@ def rebuild_queue_windows_sweep_task(
         )
         if max_ruleset_updated_at is not None:
             needs_rebuild |= Q(min_ruleset_state_windows_built_at__lt=max_ruleset_updated_at)
-        pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=100)
+        pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=200)
 
         repo_rebuilt = 0
         repo_prs = 0
@@ -150,80 +150,127 @@ def rebuild_queue_windows_sweep_task(
             )
             continue
 
-        for pr in pr_qs:
-            if repo_prs >= int(max_prs_per_repo):
-                repo_limit_hit = True
-                break
+        def _process_batch(pr_batch: list[PullRequest]) -> None:
+            nonlocal repo_limit_hit, repo_rebuilt, repo_prs, total_prs
+            if not pr_batch:
+                return
 
-            try:
-                state = pr.revision_build_state
-            except PRRevisionBuildState.DoesNotExist:
-                state = PRRevisionBuildState.objects.create(pull_request=pr)
-            existing_rs_states = {
-                row.rule_set_id: row
-                for row in PRQueueWindowBuildState.objects.filter(
-                    pull_request=pr,
+            pr_ids = [int(pr.id) for pr in pr_batch]
+
+            missing_state_pr_ids: list[int] = []
+            states_by_pr_id: dict[int, PRRevisionBuildState] = {}
+            for pr in pr_batch:
+                try:
+                    states_by_pr_id[int(pr.id)] = pr.revision_build_state
+                except PRRevisionBuildState.DoesNotExist:
+                    missing_state_pr_ids.append(int(pr.id))
+
+            if missing_state_pr_ids:
+                PRRevisionBuildState.objects.bulk_create(
+                    [PRRevisionBuildState(pull_request_id=pr_id) for pr_id in missing_state_pr_ids],
+                    ignore_conflicts=True,
+                    batch_size=200,
+                )
+                for row in PRRevisionBuildState.objects.filter(pull_request_id__in=missing_state_pr_ids):
+                    states_by_pr_id[int(row.pull_request_id)] = row
+
+            rs_states_by_pr_id: dict[int, dict[int, PRQueueWindowBuildState]] = {}
+            for row in PRQueueWindowBuildState.objects.filter(
+                pull_request_id__in=pr_ids,
+                rule_set_id__in=rule_set_ids,
+            ):
+                rs_states_by_pr_id.setdefault(int(row.pull_request_id), {})[int(row.rule_set_id)] = row
+
+            rollup_backfill_pairs = set(
+                PRQueueWindow.objects.filter(
+                    pull_request_id__in=pr_ids,
                     rule_set_id__in=rule_set_ids,
                 )
-            }
-            stale_rule_sets = [
-                rs
-                for rs in rulesets
-                if _is_ruleset_stale_for_pr(
-                    pr=pr,
-                    rule_set=rs,
-                    state=state,
-                    rs_state=existing_rs_states.get(int(rs.id)),
+                .filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+                .values_list("pull_request_id", "rule_set_id")
+            )
+
+            for pr in pr_batch:
+                if repo_prs >= int(max_prs_per_repo):
+                    repo_limit_hit = True
+                    return
+
+                pr_id = int(pr.id)
+                state = states_by_pr_id.get(pr_id)
+                if state is None:
+                    continue
+                existing_rs_states = rs_states_by_pr_id.get(pr_id, {})
+                stale_rule_sets = [
+                    rs
+                    for rs in rulesets
+                    if _is_ruleset_stale_for_pr(
+                        rule_set=rs,
+                        state=state,
+                        rs_state=existing_rs_states.get(int(rs.id)),
+                        has_rollup_backfill=(pr_id, int(rs.id)) in rollup_backfill_pairs,
+                    )
+                ]
+                stale_ruleset = bool(stale_rule_sets)
+                if stale_ruleset:
+                    pr_num = int(pr.number)
+                    if pr_num not in repo_prs_stale_ruleset_seen:
+                        repo_prs_stale_ruleset_seen.add(pr_num)
+                    if len(repo_prs_stale_ruleset) < max_pr_list:
+                        repo_prs_stale_ruleset.append(pr_num)
+                if not stale_ruleset:
+                    pr_num = int(pr.number)
+                    if pr_num not in repo_prs_skipped_up_to_date_seen:
+                        repo_prs_skipped_up_to_date_seen.add(pr_num)
+                        if len(repo_prs_skipped_up_to_date) < max_pr_list:
+                            repo_prs_skipped_up_to_date.append(pr_num)
+                    continue
+
+                summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=stale_rule_sets)
+                per_ruleset = summary.get("per_ruleset", {}) or {}
+                pr_num = int(pr.number)
+                if any(
+                    res.get("reason") in {"pr_before_ruleset_effective_from", "pr_on_or_after_ruleset_effective_to"}
+                    for res in per_ruleset.values()
+                    if isinstance(res, dict)
+                ):
+                    if pr_num not in repo_rulesets_skipped_out_of_bounds_seen:
+                        repo_rulesets_skipped_out_of_bounds_seen.add(pr_num)
+                        if len(repo_rulesets_skipped_out_of_bounds) < max_pr_list:
+                            repo_rulesets_skipped_out_of_bounds.append(pr_num)
+                rebuilt_any = bool(
+                    int(summary.get("created", 0) or 0)
+                    or int(summary.get("updated", 0) or 0)
+                    or int(summary.get("deleted", 0) or 0)
                 )
-            ]
-            stale_ruleset = bool(stale_rule_sets)
-            if stale_ruleset:
-                pr_num = int(pr.number)
-                if pr_num not in repo_prs_stale_ruleset_seen:
-                    repo_prs_stale_ruleset_seen.add(pr_num)
-                if len(repo_prs_stale_ruleset) < max_pr_list:
-                    repo_prs_stale_ruleset.append(pr_num)
-            if not stale_ruleset:
-                pr_num = int(pr.number)
-                if pr_num not in repo_prs_skipped_up_to_date_seen:
-                    repo_prs_skipped_up_to_date_seen.add(pr_num)
-                    if len(repo_prs_skipped_up_to_date) < max_pr_list:
-                        repo_prs_skipped_up_to_date.append(pr_num)
-                continue
+                if stale_ruleset:
+                    if rebuilt_any and pr_num not in repo_prs_rebuilt_stale_ruleset_seen:
+                        repo_prs_rebuilt_stale_ruleset_seen.add(pr_num)
+                        if len(repo_prs_rebuilt_stale_ruleset) < max_pr_list:
+                            repo_prs_rebuilt_stale_ruleset.append(pr_num)
+                record_queue_window_build_states(
+                    pr=pr,
+                    rule_sets=stale_rule_sets,
+                    per_ruleset=per_ruleset,
+                    revision_version=int(state.revision_version),
+                    built_at=now_ts,
+                )
+                if rebuilt_any:
+                    repo_rebuilt += 1
 
-            summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=stale_rule_sets)
-            per_ruleset = summary.get("per_ruleset", {}) or {}
-            pr_num = int(pr.number)
-            if any(
-                res.get("reason") in {"pr_before_ruleset_effective_from", "pr_on_or_after_ruleset_effective_to"}
-                for res in per_ruleset.values()
-                if isinstance(res, dict)
-            ):
-                if pr_num not in repo_rulesets_skipped_out_of_bounds_seen:
-                    repo_rulesets_skipped_out_of_bounds_seen.add(pr_num)
-                    if len(repo_rulesets_skipped_out_of_bounds) < max_pr_list:
-                        repo_rulesets_skipped_out_of_bounds.append(pr_num)
-            rebuilt_any = bool(
-                int(summary.get("created", 0) or 0) or int(summary.get("updated", 0) or 0) or int(summary.get("deleted", 0) or 0)
-            )
-            if stale_ruleset:
-                if rebuilt_any and pr_num not in repo_prs_rebuilt_stale_ruleset_seen:
-                    repo_prs_rebuilt_stale_ruleset_seen.add(pr_num)
-                    if len(repo_prs_rebuilt_stale_ruleset) < max_pr_list:
-                        repo_prs_rebuilt_stale_ruleset.append(pr_num)
-            record_queue_window_build_states(
-                pr=pr,
-                rule_sets=stale_rule_sets,
-                per_ruleset=per_ruleset,
-                revision_version=int(state.revision_version),
-                built_at=now_ts,
-            )
-            if rebuilt_any:
-                repo_rebuilt += 1
+                repo_prs += 1
+                total_prs += 1
+                processed_pr_numbers.append(int(pr.number))
 
-            repo_prs += 1
-            total_prs += 1
-            processed_pr_numbers.append(int(pr.number))
+        batch: list[PullRequest] = []
+        for pr in pr_qs:
+            batch.append(pr)
+            if len(batch) >= 200:
+                _process_batch(batch)
+                batch = []
+                if repo_limit_hit:
+                    break
+        if not repo_limit_hit and batch:
+            _process_batch(batch)
         total_rebuilt += repo_rebuilt
         total_prs_skipped_up_to_date += len(repo_prs_skipped_up_to_date_seen)
         total_rulesets_skipped_out_of_bounds += len(repo_rulesets_skipped_out_of_bounds_seen)
