@@ -5,21 +5,25 @@ from typing import Iterable
 from django.db.models import QuerySet
 from django.db.models.functions import Coalesce
 
-from syncer.models import CheckRun, PullRequest
+from syncer.models import CommitCheckRun, PullRequest
 
 
 def latest_check_runs_for_pr(
     pr: PullRequest,
     *,
     head_shas: Iterable[str] | None = None,
-) -> "CheckRun.QuerySet":
-    """Return latest CheckRun rows per (head_sha, name) for a PR.
+) -> "CommitCheckRun.QuerySet":
+    """Return latest commit-scoped CheckRun rows per (head_sha, name).
 
     Note: This relies on Postgres DISTINCT ON semantics via distinct(fields).
     """
-    qs: QuerySet[CheckRun] = CheckRun.objects.filter(pull_request=pr)
+    qs: QuerySet[CommitCheckRun] = CommitCheckRun.objects.filter(repository=pr.repository)
     if head_shas:
         qs = qs.filter(head_sha__in=list(head_shas))
+    elif pr.head_sha:
+        qs = qs.filter(head_sha=pr.head_sha)
+    else:
+        return qs.none()
     return qs.order_by(
         "head_sha",
         "name",

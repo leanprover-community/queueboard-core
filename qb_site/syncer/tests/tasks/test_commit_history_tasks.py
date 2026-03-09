@@ -9,7 +9,7 @@ from unittest.mock import patch
 from syncer.models import CIShaFetchState, PullRequest, CommitHistoryHarvest
 from core.models import Repository
 from syncer.tasks.commit_history_tasks import harvest_commit_history_sweep, harvest_commit_history_task
-from syncer.models import CheckRun, StatusContext
+from syncer.models import CommitCheckRun, CommitStatusContext
 
 
 class TestCommitHistoryTasks(TestCase):
@@ -88,8 +88,8 @@ class TestCommitHistoryTasks(TestCase):
 
         # If CI already exists for the harvested sha, do not enqueue
         state2 = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha2")
-        CheckRun.objects.create(
-            pull_request=self.pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_exists",
             head_sha="shaY",
             name="build",
@@ -140,8 +140,8 @@ class TestCommitHistoryTasks(TestCase):
 
     def test_harvest_task_enqueues_for_pending_ci_rows(self) -> None:
         state = CommitHistoryHarvest.objects.create(pull_request=self.pr, start_sha="sha3")
-        StatusContext.objects.create(
-            pull_request=self.pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC_pending",
             rest_id=None,
             head_sha="sha_pending",
@@ -151,8 +151,8 @@ class TestCommitHistoryTasks(TestCase):
             description=None,
             gh_created_at=timezone.now(),
         )
-        CheckRun.objects.create(
-            pull_request=self.pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_queued",
             head_sha="sha_queued",
             name="build",
@@ -161,8 +161,8 @@ class TestCommitHistoryTasks(TestCase):
             details_url=None,
             external_id=None,
         )
-        StatusContext.objects.create(
-            pull_request=self.pr,
+        CommitStatusContext.objects.create(
+            repository=self.repo,
             github_node_id="SC_done",
             rest_id=None,
             head_sha="sha_done",
