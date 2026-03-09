@@ -233,13 +233,19 @@
 {% else %}
 <p>No queue windows for this PR yet.</p>
 {% endif %}
-<h2>Check runs (latest 10)</h2>
-{% if checkrun_list_url %}
+<h2>Commit check runs (latest 10)</h2>
+{% if ci_candidate_shas %}
 <p>
-  <a href="{{ checkrun_list_url }}">View all check runs for this PR</a>
+  Candidate SHAs:
+  <code>{{ ci_candidate_shas|join:", " }}</code>
 </p>
 {% endif %}
-{% if check_runs %}
+{% if commit_checkrun_list_url %}
+<p>
+  <a href="{{ commit_checkrun_list_url }}">View all commit check runs for this repository</a>
+</p>
+{% endif %}
+{% if commit_check_runs %}
 <table class="listing">
   <thead>
     <tr>
@@ -251,10 +257,10 @@
     </tr>
   </thead>
   <tbody>
-    {% for cr in check_runs %}
+    {% for cr in commit_check_runs %}
     <tr>
       <td>
-        <a href="{% url 'admin:syncer_checkrun_change' cr.id %}">{{ cr.name }}</a>
+        <a href="{% url 'admin:syncer_commitcheckrun_change' cr.id %}">{{ cr.name }}</a>
       </td>
       <td>{{ cr.status }}</td>
       <td>{{ cr.conclusion }}</td>
@@ -265,15 +271,15 @@
   </tbody>
 </table>
 {% else %}
-<p>No check runs for this PR yet.</p>
+<p>No commit check runs found for this PR's known SHAs yet.</p>
 {% endif %}
-<h2>Status contexts (latest 10)</h2>
-{% if statuscontext_list_url %}
+<h2>Commit status contexts (latest 10)</h2>
+{% if commit_statuscontext_list_url %}
 <p>
-  <a href="{{ statuscontext_list_url }}">View all status contexts for this PR</a>
+  <a href="{{ commit_statuscontext_list_url }}">View all commit status contexts for this repository</a>
 </p>
 {% endif %}
-{% if status_contexts %}
+{% if commit_status_contexts %}
 <table class="listing">
   <thead>
     <tr>
@@ -284,10 +290,10 @@
     </tr>
   </thead>
   <tbody>
-    {% for sc in status_contexts %}
+    {% for sc in commit_status_contexts %}
     <tr>
       <td>
-        <a href="{% url 'admin:syncer_statuscontext_change' sc.id %}">{{ sc.name }}</a>
+        <a href="{% url 'admin:syncer_commitstatuscontext_change' sc.id %}">{{ sc.name }}</a>
       </td>
       <td>{{ sc.state }}</td>
       <td>{{ sc.head_sha }}</td>
@@ -297,7 +303,7 @@
   </tbody>
 </table>
 {% else %}
-<p>No status contexts for this PR yet.</p>
+<p>No commit status contexts found for this PR's known SHAs yet.</p>
 {% endif %}
 <h2>Commit history harvests (latest 10)</h2>
 {% if commithistoryharvest_list_url %}

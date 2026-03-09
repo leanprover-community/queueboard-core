@@ -366,14 +366,35 @@ class PullRequestAdmin(ReadOnlyAdmin):
                 labels = PRLabel.objects.filter(pull_request=pr).select_related("label_def").order_by("-created_at")[:10]
                 timeline_events = PRTimelineEvent.objects.filter(pull_request=pr).order_by("-occurred_at", "-id")[:10]
                 revisions = PRRevision.objects.filter(pull_request=pr).order_by("-seq", "-from_ts", "-id")[:10]
+                revision_shas = [
+                    sha
+                    for sha in PRRevision.objects.filter(pull_request=pr)
+                    .exclude(head_sha__isnull=True)
+                    .exclude(head_sha="")
+                    .values_list("head_sha", flat=True)
+                    .distinct()[:200]
+                ]
+                candidate_shas = list(dict.fromkeys(([pr.head_sha] if pr.head_sha else []) + revision_shas))
                 revision_build_state = (
                     PRRevisionBuildState.objects.filter(pull_request=pr).select_related("tail_revision").first()
                 )
                 queue_windows = (
                     PRQueueWindow.objects.filter(pull_request=pr).select_related("rule_set").order_by("-from_ts", "-id")[:10]
                 )
-                check_runs = CheckRun.objects.filter(pull_request=pr).order_by("-gh_completed_at", "-id")[:10]
-                status_contexts = StatusContext.objects.filter(pull_request=pr).order_by("-gh_created_at", "-id")[:10]
+                commit_check_runs = (
+                    CommitCheckRun.objects.filter(repository=pr.repository, head_sha__in=candidate_shas).order_by(
+                        "-gh_completed_at", "-id"
+                    )[:10]
+                    if candidate_shas
+                    else []
+                )
+                commit_status_contexts = (
+                    CommitStatusContext.objects.filter(repository=pr.repository, head_sha__in=candidate_shas).order_by(
+                        "-gh_created_at", "-id"
+                    )[:10]
+                    if candidate_shas
+                    else []
+                )
                 commit_history_harvests = CommitHistoryHarvest.objects.filter(pull_request=pr).order_by(
                     "-updated_at",
                     "-id",
@@ -388,14 +409,19 @@ class PullRequestAdmin(ReadOnlyAdmin):
                         "labels": labels,
                         "timeline_events": timeline_events,
                         "revisions": revisions,
+                        "ci_candidate_shas": candidate_shas,
                         "revision_build_state": revision_build_state,
                         "queue_windows": queue_windows,
-                        "check_runs": check_runs,
-                        "status_contexts": status_contexts,
+                        "commit_check_runs": commit_check_runs,
+                        "commit_status_contexts": commit_status_contexts,
                         "commit_history_harvests": commit_history_harvests,
                         "timeline_list_url": f"{reverse('admin:syncer_prtimelineevent_changelist')}?pull_request__id__exact={pr.id}",
-                        "checkrun_list_url": f"{reverse('admin:syncer_checkrun_changelist')}?pull_request__id__exact={pr.id}",
-                        "statuscontext_list_url": f"{reverse('admin:syncer_statuscontext_changelist')}?pull_request__id__exact={pr.id}",
+                        "commit_checkrun_list_url": (
+                            f"{reverse('admin:syncer_commitcheckrun_changelist')}?repository__id__exact={pr.repository_id}"
+                        ),
+                        "commit_statuscontext_list_url": (
+                            f"{reverse('admin:syncer_commitstatuscontext_changelist')}?repository__id__exact={pr.repository_id}"
+                        ),
                         "prrevision_list_url": f"{reverse('admin:analyzer_prrevision_changelist')}?pull_request__id__exact={pr.id}",
                         "prrevisionbuildstate_list_url": (
                             f"{reverse('admin:analyzer_prrevisionbuildstate_changelist')}?pull_request__id__exact={pr.id}"
