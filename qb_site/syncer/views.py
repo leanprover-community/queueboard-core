@@ -191,18 +191,22 @@ def _enqueue_check_sync(summary: dict) -> dict:
         summary["would_enqueue_sync_ci"] = 1
         return summary
 
-    ci_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
-    key = sync_ci_repo_shas_enqueue_key(
-        repo_id=repo.id,
-        shas=[head_sha],
-        max_pages_per_sha=None,
-    )
-    if not claim_enqueue_slot(key=key, ttl_seconds=ci_dedupe_ttl):
-        summary["reason"] = "deduped_sync_ci"
-        summary["enqueued_sync_ci"] = 0
-        summary["deduped_sync_ci"] = 1
-        summary["sync_ci_task_ids"] = []
-        return summary
+    # Let terminal check events bypass dedupe so fail->success reruns are never
+    # suppressed by an earlier in-flight enqueue for the same SHA.
+    bypass_dedupe = action == "completed"
+    if not bypass_dedupe:
+        ci_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_CI_DEDUPE_TTL_SECONDS", 300))
+        key = sync_ci_repo_shas_enqueue_key(
+            repo_id=repo.id,
+            shas=[head_sha],
+            max_pages_per_sha=None,
+        )
+        if not claim_enqueue_slot(key=key, ttl_seconds=ci_dedupe_ttl):
+            summary["reason"] = "deduped_sync_ci"
+            summary["enqueued_sync_ci"] = 0
+            summary["deduped_sync_ci"] = 1
+            summary["sync_ci_task_ids"] = []
+            return summary
 
     async_res = sync_ci_for_repo_shas_task.delay(
         repo.id,
@@ -213,6 +217,7 @@ def _enqueue_check_sync(summary: dict) -> dict:
     summary["reason"] = "enqueued_sync_ci"
     summary["enqueued_sync_ci"] = 1
     summary["deduped_sync_ci"] = 0
+    summary["ci_dedupe_bypassed"] = 1 if bypass_dedupe else 0
     summary["sync_ci_task_ids"] = [str(async_res.id)]
     return summary
 
