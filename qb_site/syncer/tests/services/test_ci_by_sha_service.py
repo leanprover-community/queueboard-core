@@ -259,3 +259,80 @@ class TestCIBySHAService(TestCase):
         gh.get_ci_by_commit.return_value = page
         res = sync_ci_for_sha(self.pr, "assoc456", client=gh, max_pages=1, require_pr_association=True)
         self.assertGreaterEqual(res.get("status_created", 0), 1)
+
+    @mock.patch("syncer.services.ci_by_sha_service.GitHubClient")
+    def test_reports_noop_when_contexts_are_already_up_to_date(self, MockClient) -> None:
+        gh = MockClient.return_value
+        page = {
+            "data": {
+                "repository": {
+                    "object": {
+                        "__typename": "Commit",
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "id": "CR_noop",
+                                        "name": "ci/noop",
+                                        "status": "COMPLETED",
+                                        "conclusion": "SUCCESS",
+                                        "startedAt": "2024-01-05T00:01:00Z",
+                                        "completedAt": "2024-01-05T00:02:00Z",
+                                        "detailsUrl": None,
+                                        "externalId": None,
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        gh.get_ci_by_commit.return_value = page
+        first = sync_ci_for_sha(self.pr, "noop123", client=gh, max_pages=1)
+        self.assertEqual(first.get("result"), "ok")
+
+        second = sync_ci_for_sha(self.pr, "noop123", client=gh, max_pages=1)
+        self.assertEqual(second.get("result"), "noop")
+        self.assertEqual(second.get("eligible_contexts_total"), 1)
+        self.assertEqual(second.get("saved_contexts_total"), 0)
+
+    @mock.patch("syncer.services.ci_by_sha_service.GitHubClient")
+    def test_reports_filtered_when_all_contexts_are_excluded(self, MockClient) -> None:
+        gh = MockClient.return_value
+        self.repo.ci_tracked_checkrun_names = ["build"]
+        self.repo.save(update_fields=["ci_tracked_checkrun_names", "updated_at"])
+        page = {
+            "data": {
+                "repository": {
+                    "object": {
+                        "__typename": "Commit",
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "id": "CR_filtered",
+                                        "name": "lint-only",
+                                        "status": "COMPLETED",
+                                        "conclusion": "SUCCESS",
+                                        "startedAt": "2024-01-05T00:01:00Z",
+                                        "completedAt": "2024-01-05T00:02:00Z",
+                                        "detailsUrl": None,
+                                        "externalId": None,
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        }
+        gh.get_ci_by_commit.return_value = page
+        res = sync_ci_for_sha(self.pr, "filt123", client=gh, max_pages=1)
+        self.assertEqual(res.get("result"), "filtered")
+        self.assertEqual(res.get("eligible_contexts_total"), 0)
+        self.assertEqual(res.get("filtered_contexts_total"), 1)

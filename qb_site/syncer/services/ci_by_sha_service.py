@@ -189,6 +189,8 @@ def sync_ci_for_sha(
     seen_sc_ids: set[str] = set()
     raw_contexts_total = 0
     saved_contexts_total = 0
+    eligible_contexts_total = 0
+    filtered_contexts_total = 0
     for page_idx, nodes in enumerate(context_pages):
         cr_contexts: list[dict[str, Any]] = []
         sc_contexts: list[dict[str, Any]] = []
@@ -218,6 +220,8 @@ def sync_ci_for_sha(
         )
         cr_res = sync_check_runs(pr, cr_contexts, sha)
         sc_res = sync_status_contexts(pr, sc_contexts, sha)
+        eligible_contexts_total += int(cr_res.eligible) + int(sc_res.eligible)
+        filtered_contexts_total += int(cr_res.filtered) + int(sc_res.filtered)
         saved_contexts_total += cr_res.created + cr_res.updated + sc_res.created + sc_res.updated
         if cr_res.created == 0 and cr_res.updated == 0 and cr_contexts:
             log.debug(
@@ -248,8 +252,11 @@ def sync_ci_for_sha(
         updated_sc,
     )
     result = "ok"
-    if raw_contexts_total > 0 and saved_contexts_total == 0:
+    if raw_contexts_total > 0 and saved_contexts_total == 0 and eligible_contexts_total == 0:
         result = "filtered"
+    elif eligible_contexts_total > 0 and saved_contexts_total == 0:
+        # Contexts matched the sync filters but were already up-to-date (no-op write).
+        result = "noop"
     return {
         "checkruns_created": created_cr,
         "checkruns_updated": updated_cr,
@@ -262,6 +269,8 @@ def sync_ci_for_sha(
         "repo_used": {"owner": repo_used[0], "name": repo_used[1]} if repo_used else None,
         "pages_fetched": len(context_pages),
         "raw_contexts_total": raw_contexts_total,
+        "eligible_contexts_total": eligible_contexts_total,
+        "filtered_contexts_total": filtered_contexts_total,
         "saved_contexts_total": saved_contexts_total,
         "assoc_prs_count": len(assoc_prs),
         "association_required": association_required,

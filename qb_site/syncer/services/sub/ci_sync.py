@@ -24,6 +24,8 @@ class CISyncResult:
     created: int = 0
     updated: int = 0
     deleted: int = 0
+    eligible: int = 0
+    filtered: int = 0
 
 
 @dataclass
@@ -189,6 +191,8 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     """
     created = 0
     updated = 0
+    eligible = 0
+    filtered = 0
     allow = _effective_allowlist_for_checkruns(pr)
     if allow:
         log.debug("CI sync: using CheckRun allowlist for %s (patterns=%s)", pr.repository, allow)
@@ -207,10 +211,13 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
             nm = (ctx.get("name") or "").lower()
             if not any(pat in nm for pat in allow):
                 log.debug("CI sync: skipping CheckRun %s due to allowlist (pat=%s)", nm, allow)
+                filtered += 1
                 continue
         if (ctx.get("conclusion") or "").upper() == "SKIPPED":
             log.debug("CI sync: skipping CheckRun %s due to SKIPPED conclusion", ctx.get("name"))
+            filtered += 1
             continue
+        eligible += 1
         values = {
             "head_sha": head_sha,
             "name": ctx.get("name") or "",
@@ -259,7 +266,7 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
 
-    return CISyncResult(created=created, updated=updated, deleted=0)
+    return CISyncResult(created=created, updated=updated, deleted=0, eligible=eligible, filtered=filtered)
 
 
 def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sha: str) -> CISyncResult:
@@ -273,6 +280,8 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     """
     created = 0
     updated = 0
+    eligible = 0
+    filtered = 0
     allow = _effective_allowlist_for_status(pr)
     if allow:
         log.debug("CI sync: using StatusContext allowlist for %s (patterns=%s)", pr.repository, allow)
@@ -291,7 +300,9 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
             nm = (ctx.get("context") or "").lower()
             if not any(pat in nm for pat in allow):
                 log.debug("CI sync: skipping StatusContext %s due to allowlist (pat=%s)", nm, allow)
+                filtered += 1
                 continue
+        eligible += 1
         values = {
             "head_sha": head_sha,
             "name": ctx.get("context") or "",
@@ -334,4 +345,4 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
 
-    return CISyncResult(created=created, updated=updated, deleted=0)
+    return CISyncResult(created=created, updated=updated, deleted=0, eligible=eligible, filtered=filtered)
