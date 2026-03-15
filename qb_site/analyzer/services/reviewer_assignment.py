@@ -5,7 +5,7 @@ import json
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Iterable, Sequence
+from typing import Callable, Dict, Iterable, Sequence
 
 from django.utils.dateparse import parse_datetime
 
@@ -98,6 +98,68 @@ class ReviewerSuggestionResult:
     all_potential_reviewers: list[str]
     all_available_reviewers: list[str]
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PRAssignmentPriority:
+    sort_key: tuple[object, ...] = ()
+    details: dict[str, object] = field(default_factory=dict)
+
+
+PRAssignmentPriorityScorer = Callable[
+    [int, dict, Sequence[ReviewerProfile], Dict[str, tuple[list[int], float, int]], set[str]],
+    PRAssignmentPriority,
+]
+
+
+def _default_pr_assignment_priority(
+    pr_number: int,
+    pr_entry: dict,
+    reviewers: Sequence[ReviewerProfile],
+    assignment_stats: Dict[str, tuple[list[int], float, int]],
+    excluded_logins: set[str],
+) -> PRAssignmentPriority:
+    del pr_number, pr_entry, reviewers, assignment_stats, excluded_logins
+    return PRAssignmentPriority()
+
+
+def rank_prs_for_assignment(
+    *,
+    prs_to_assign: Iterable[int],
+    all_prs: Dict[int | str, dict],
+    reviewers: Sequence[ReviewerProfile],
+    assignment_stats: Dict[str, tuple[list[int], float, int]],
+    excluded_by_pr: dict[int, set[str]] | None = None,
+    priority_scorer: PRAssignmentPriorityScorer | None = None,
+) -> tuple[list[int], dict[str, dict]]:
+    scorer = priority_scorer or _default_pr_assignment_priority
+    ranked_items: list[tuple[tuple[object, ...], int, int]] = []
+    trace: dict[str, dict] = {}
+
+    for input_index, pr_number in enumerate(prs_to_assign):
+        pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number))
+        if not pr_entry:
+            trace[str(pr_number)] = {"input_index": input_index, "missing_pr": True}
+            ranked_items.append(((), input_index, pr_number))
+            continue
+
+        excluded_logins = excluded_by_pr.get(pr_number, set()) if excluded_by_pr else set()
+        priority = scorer(pr_number, pr_entry, reviewers, assignment_stats, excluded_logins)
+        trace[str(pr_number)] = {
+            "input_index": input_index,
+            "sort_key": list(priority.sort_key),
+            "details": priority.details,
+        }
+        ranked_items.append((priority.sort_key, input_index, pr_number))
+
+    ranked_items.sort(key=lambda item: (item[0], item[1]))
+    ordered_prs = [pr_number for _, _, pr_number in ranked_items]
+
+    for output_index, pr_number in enumerate(ordered_prs):
+        trace.setdefault(str(pr_number), {})
+        trace[str(pr_number)]["output_index"] = output_index
+
+    return ordered_prs, trace
 
 
 def build_reviewer_catalog(repository: Repository, *, now: datetime | None = None) -> list[ReviewerProfile]:
@@ -465,14 +527,23 @@ def suggest_reviewers_many(
     all_prs: Dict[int | str, dict],
     rng: random.Random | None = None,
     excluded_by_pr: dict[int, set[str]] | None = None,
+    priority_scorer: PRAssignmentPriorityScorer | None = None,
 ) -> dict[int, str]:
     """Suggest reviewers for many PRs, updating in-memory load after each pick."""
     stats_copy: Dict[str, tuple[list[int], float, int]] = {
         login: (list(open_list), float(weight), int(total)) for login, (open_list, weight, total) in assignments.items()
     }
     suggestions: dict[int, str] = {}
+    ordered_prs, _ = rank_prs_for_assignment(
+        prs_to_assign=prs_to_assign,
+        all_prs=all_prs,
+        reviewers=reviewers,
+        assignment_stats=stats_copy,
+        excluded_by_pr=excluded_by_pr,
+        priority_scorer=priority_scorer,
+    )
 
-    for pr_number in prs_to_assign:
+    for pr_number in ordered_prs:
         pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number))
         if not pr_entry:
             continue
@@ -506,18 +577,28 @@ def suggest_reviewers_many_with_trace(
     all_prs: Dict[int | str, dict],
     rng: random.Random | None = None,
     excluded_by_pr: dict[int, set[str]] | None = None,
+    priority_scorer: PRAssignmentPriorityScorer | None = None,
 ) -> tuple[dict[int, str], dict[str, dict]]:
     """Suggest reviewers for many PRs, capturing per-PR trace and updating in-memory load after each pick."""
     stats_copy: Dict[str, tuple[list[int], float, int]] = {
         login: (list(open_list), float(weight), int(total)) for login, (open_list, weight, total) in assignments.items()
     }
     suggestions: dict[int, str] = {}
-    per_pr: dict[str, dict] = {}
+    ordered_prs, ranking_trace = rank_prs_for_assignment(
+        prs_to_assign=prs_to_assign,
+        all_prs=all_prs,
+        reviewers=reviewers,
+        assignment_stats=stats_copy,
+        excluded_by_pr=excluded_by_pr,
+        priority_scorer=priority_scorer,
+    )
+    per_pr: dict[str, dict] = {pr_number: {"priority": trace} for pr_number, trace in ranking_trace.items()}
 
-    for pr_number in prs_to_assign:
+    for pr_number in ordered_prs:
         pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number))
         if not pr_entry:
-            per_pr[str(pr_number)] = {
+            per_pr[str(pr_number)].update(
+                {
                 "labels": [],
                 "author": "",
                 "opt_outs": [],
@@ -525,7 +606,8 @@ def suggest_reviewers_many_with_trace(
                 "available": [],
                 "picked": None,
                 "reason": "missing-pr",
-            }
+                }
+            )
             continue
         excluded_logins = excluded_by_pr.get(pr_number) if excluded_by_pr else None
         result, trace = suggest_reviewer_for_pr_with_trace(
@@ -535,7 +617,7 @@ def suggest_reviewers_many_with_trace(
             rng=rng,
             excluded_logins=excluded_logins,
         )
-        per_pr[str(pr_number)] = trace
+        per_pr[str(pr_number)].update(trace)
         if result.suggested is None:
             continue
         suggestions[pr_number] = result.suggested

@@ -7,11 +7,14 @@ from django.test import SimpleTestCase, TestCase
 
 from analyzer.services.reviewer_assignment import (
     AreaStatsBuilder,
+    PRAssignmentPriority,
     ReviewerAssignmentBuilder,
     ReviewerProfile,
     collect_assignment_statistics,
     compute_area_stats,
+    rank_prs_for_assignment,
     suggest_reviewer_for_pr,
+    suggest_reviewers_many,
 )
 from core.models import Repository, ReviewerPreference, User
 from analyzer.models import ReviewerOptOut
@@ -142,6 +145,91 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(result.all_potential_reviewers, ["bob", "alice"])
         self.assertEqual(result.all_available_reviewers, [])
         self.assertIsNone(result.suggested)
+
+    def test_rank_prs_for_assignment_defaults_to_input_order(self):
+        stats = collect_assignment_statistics(self.snapshot)
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[4, 1],
+            all_prs=self.snapshot["prs"],
+            reviewers=self.reviewers,
+            assignment_stats=stats.assignments,
+        )
+
+        self.assertEqual(ordered, [4, 1])
+        self.assertEqual(trace["4"]["input_index"], 0)
+        self.assertEqual(trace["4"]["output_index"], 0)
+        self.assertEqual(trace["4"]["sort_key"], [])
+
+    def test_rank_prs_for_assignment_accepts_custom_priority_scorer(self):
+        stats = collect_assignment_statistics(self.snapshot)
+
+        def scorer(pr_number, pr_entry, reviewers, assignment_stats, excluded_logins):
+            del pr_entry, reviewers, assignment_stats, excluded_logins
+            return PRAssignmentPriority(sort_key=(-pr_number,), details={"priority_score": pr_number})
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[1, 4],
+            all_prs=self.snapshot["prs"],
+            reviewers=self.reviewers,
+            assignment_stats=stats.assignments,
+            priority_scorer=scorer,
+        )
+
+        self.assertEqual(ordered, [4, 1])
+        self.assertEqual(trace["4"]["details"], {"priority_score": 4})
+        self.assertEqual(trace["4"]["output_index"], 0)
+
+    def test_suggest_reviewers_many_uses_ranked_pr_order(self):
+        snapshot = {
+            "meta": {"generated_at": "2025-01-01T00:00:00Z"},
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "pr_status": "AwaitingReview",
+                    "last_status_change": {"status": "valid", "delta": {"days": 0}},
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 50},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "pr_status": "AwaitingReview",
+                    "last_status_change": {"status": "valid", "delta": {"days": 0}},
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 50},
+                },
+            },
+        }
+        reviewers = [
+            ReviewerProfile(
+                github_login="alice",
+                maximum_capacity=1,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-analysis"],
+                preferred_labels_lower={"t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            )
+        ]
+
+        def scorer(pr_number, pr_entry, reviewers, assignment_stats, excluded_logins):
+            del pr_entry, reviewers, assignment_stats, excluded_logins
+            return PRAssignmentPriority(sort_key=(0 if pr_number == 2 else 1,))
+
+        suggestions = suggest_reviewers_many(
+            reviewers=reviewers,
+            assignments={},
+            prs_to_assign=[1, 2],
+            all_prs=snapshot["prs"],
+            rng=random.Random(0),
+            priority_scorer=scorer,
+        )
+
+        self.assertEqual(suggestions, {2: "alice"})
 
 
 class ReviewerAssignmentBuilderTests(TestCase):
