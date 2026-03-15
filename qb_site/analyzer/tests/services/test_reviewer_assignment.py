@@ -231,6 +231,109 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
 
         self.assertEqual(suggestions, {2: "alice"})
 
+    def test_suggest_reviewers_many_recomputes_priority_after_each_assignment(self):
+        snapshot = {
+            "meta": {"generated_at": "2025-01-01T00:00:00Z"},
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "pr_status": "AwaitingReview",
+                    "last_status_change": {"status": "valid", "delta": {"days": 0}},
+                    "labels": [{"name": "t-zeta", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 50},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "pr_status": "AwaitingReview",
+                    "last_status_change": {"status": "valid", "delta": {"days": 0}},
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 50},
+                },
+                3: {
+                    "assignees": [],
+                    "author": "frank",
+                    "pr_status": "AwaitingReview",
+                    "last_status_change": {"status": "valid", "delta": {"days": 0}},
+                    "labels": [{"name": "t-algebra", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 50},
+                },
+            },
+        }
+        reviewers = [
+            ReviewerProfile(
+                github_login="alice",
+                maximum_capacity=1,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-zeta", "t-analysis"],
+                preferred_labels_lower={"t-zeta", "t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            ),
+            ReviewerProfile(
+                github_login="bob",
+                maximum_capacity=1,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-analysis", "t-algebra"],
+                preferred_labels_lower={"t-analysis", "t-algebra"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            ),
+            ReviewerProfile(
+                github_login="carol",
+                maximum_capacity=1,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-analysis"],
+                preferred_labels_lower={"t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            ),
+        ]
+        existing_assignments = {
+            "carol": ([], 0.99, 0),
+        }
+
+        def scorer(pr_number, pr_entry, reviewers, assignment_stats, excluded_logins):
+            del pr_entry, excluded_logins
+
+            def remaining_capacity(login):
+                current = assignment_stats.get(login, ([], 0.0, 0))
+                reviewer = next(r for r in reviewers if r.github_login == login)
+                return reviewer.maximum_capacity - float(current[1])
+
+            alice_remaining = remaining_capacity("alice")
+            if pr_number == 1:
+                return PRAssignmentPriority(sort_key=(-10 if alice_remaining > 0 else 10, pr_number))
+
+            candidate_capacity = 0.0
+            for reviewer in reviewers:
+                if pr_number == 2 and reviewer.github_login in {"alice", "bob", "carol"}:
+                    candidate_capacity += max(0.0, remaining_capacity(reviewer.github_login))
+                if pr_number == 3 and reviewer.github_login == "bob":
+                    candidate_capacity += max(0.0, remaining_capacity(reviewer.github_login))
+
+            if alice_remaining > 0:
+                return PRAssignmentPriority(sort_key=(-candidate_capacity, pr_number))
+            return PRAssignmentPriority(sort_key=(candidate_capacity, pr_number))
+
+        suggestions = suggest_reviewers_many(
+            reviewers=reviewers,
+            assignments=existing_assignments,
+            prs_to_assign=[1, 2, 3],
+            all_prs=snapshot["prs"],
+            rng=random.Random(0),
+            priority_scorer=scorer,
+        )
+
+        self.assertEqual(suggestions, {1: "alice", 2: "carol", 3: "bob"})
+
 
 class ReviewerAssignmentBuilderTests(TestCase):
     def setUp(self):

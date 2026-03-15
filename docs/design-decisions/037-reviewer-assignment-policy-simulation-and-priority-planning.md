@@ -323,6 +323,11 @@
     - extracted pure assignment primitives and batch execution into `qb_site/analyzer/services/reviewer_assignment_engine.py`
     - rewired `reviewer_assignment.py` to act as the snapshot/model integration layer over the engine
     - preserved current batch semantics, including one-shot ranking, so iterative rescoring remains future work in chunk 2
+- 2026-03-15:
+  - Chunk 2 started:
+    - updated the engine loop to rescore remaining PRs after each assignment round using current in-memory reviewer load
+    - kept the persisted trace compact by recording selection round and per-round priority data only for the chosen PR
+    - added service-level coverage that distinguishes iterative rescoring from the old one-shot ranking behavior
 
 ## References
 - `docs/design-decisions/README.md`
