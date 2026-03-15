@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+import re
 from typing import Callable, Dict, Iterable, Sequence
 
 
@@ -75,9 +76,81 @@ def _topic_labels(pr_entry: dict) -> list[str]:
     return names
 
 
+def _queue_age_seconds(pr_entry: dict) -> float | None:
+    total_queue_time = pr_entry.get("total_queue_time") or {}
+    status = str(total_queue_time.get("status") or "valid").lower()
+    if status != "valid":
+        return None
+    value = total_queue_time.get("value_td")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _title_priority(title: str | None) -> int:
+    normalized = (title or "").strip().lower()
+    return 0 if re.match(r"^feat(?:[:( ]|$)", normalized) else 1
+
+
 def _current_weight(login: str, assignments: Dict[str, tuple[list[int], float, int]]) -> float:
     data = assignments.get(login)
     return float(data[1]) if data else 0.0
+
+
+def _reviewer_candidate_state(
+    *,
+    pr_entry: dict,
+    reviewers: Sequence[ReviewerProfile],
+    assignment_stats: Dict[str, tuple[list[int], float, int]],
+    excluded_logins: set[str] | None = None,
+) -> tuple[list[str], list[str], list[float], str | None]:
+    labels = _topic_labels(pr_entry)
+    labels_lower = [lab.lower() for lab in labels]
+    author = pr_entry.get("author") or ""
+    author_norm = _normalize_login(author)
+
+    matching: list[tuple[ReviewerProfile, list[str]]] = []
+    excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
+    if labels_lower:
+        for reviewer in reviewers:
+            if author_norm in {reviewer.github_login.lower(), *reviewer.conflict_of_interest_lower}:
+                continue
+            match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
+            if match:
+                matching.append((reviewer, match))
+    else:
+        matching = [(rev, []) for rev in reviewers if _normalize_login(rev.github_login) != author_norm]
+
+    if not matching:
+        return [], [], [], "no-match"
+
+    if not labels_lower:
+        proposed = matching
+    else:
+        max_score = max(len(m) for _, m in matching)
+        if max_score > 1:
+            proposed = [(rev, m) for rev, m in matching if len(m) == max_score]
+        else:
+            proposed = [(rev, m) for rev, m in matching if m]
+        if not proposed:
+            return [], [], [], "no-matching-labels"
+
+    proposed_sorted = sorted(proposed, key=lambda item: _current_weight(item[0].github_login, assignment_stats))
+    all_potential = [rev.github_login for rev, _ in proposed_sorted]
+
+    available: list[str] = []
+    available_weights: list[float] = []
+    for reviewer, _ in proposed_sorted:
+        if _normalize_login(reviewer.github_login) in excluded_lower:
+            continue
+        current_weight = _current_weight(reviewer.github_login, assignment_stats)
+        remaining = reviewer.maximum_capacity - current_weight
+        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break:
+            available.append(reviewer.github_login)
+            available_weights.append(remaining)
+
+    return all_potential, available, available_weights, None
 
 
 def _default_pr_assignment_priority(
@@ -87,8 +160,36 @@ def _default_pr_assignment_priority(
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     excluded_logins: set[str],
 ) -> PRAssignmentPriority:
-    del pr_number, pr_entry, reviewers, assignment_stats, excluded_logins
-    return PRAssignmentPriority()
+    _, available, available_weights, _ = _reviewer_candidate_state(
+        pr_entry=pr_entry,
+        reviewers=reviewers,
+        assignment_stats=assignment_stats,
+        excluded_logins=excluded_logins,
+    )
+    queue_age_seconds = _queue_age_seconds(pr_entry)
+    title_priority = _title_priority(pr_entry.get("title"))
+    available_reviewer_count = len(available)
+    total_remaining_capacity = float(sum(available_weights))
+    assignable_now = available_reviewer_count > 0
+    queue_age_sort = -(queue_age_seconds if queue_age_seconds is not None else 0.0)
+    priority = PRAssignmentPriority(
+        sort_key=(
+            0 if assignable_now else 1,
+            available_reviewer_count,
+            total_remaining_capacity,
+            queue_age_sort,
+            title_priority,
+            pr_number,
+        ),
+        details={
+            "assignable_now": assignable_now,
+            "available_reviewer_count": available_reviewer_count,
+            "total_remaining_capacity": total_remaining_capacity,
+            "queue_age_seconds": queue_age_seconds,
+            "title_priority": title_priority,
+        },
+    )
+    return priority
 
 
 def rank_prs_for_assignment(
@@ -139,55 +240,19 @@ def suggest_reviewer_for_pr(
     rng: random.Random | None = None,
     excluded_logins: set[str] | None = None,
 ) -> ReviewerSuggestionResult:
-    labels = _topic_labels(pr_entry)
-    labels_lower = [lab.lower() for lab in labels]
-    author = pr_entry.get("author") or ""
-    author_norm = _normalize_login(author)
-
-    matching: list[tuple[ReviewerProfile, list[str]]] = []
-    excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
-    if labels_lower:
-        for reviewer in reviewers:
-            if author_norm in {reviewer.github_login.lower(), *reviewer.conflict_of_interest_lower}:
-                continue
-            match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
-            if match:
-                matching.append((reviewer, match))
-    else:
-        matching = [(rev, []) for rev in reviewers if _normalize_login(rev.github_login) != author_norm]
-
-    if not matching:
-        return ReviewerSuggestionResult(suggested=None, all_potential_reviewers=[], all_available_reviewers=[], reason="no-match")
-
-    if not labels_lower:
-        proposed = matching
-    else:
-        max_score = max(len(m) for _, m in matching)
-        if max_score > 1:
-            proposed = [(rev, m) for rev, m in matching if len(m) == max_score]
-        else:
-            proposed = [(rev, m) for rev, m in matching if m]
-        if not proposed:
-            return ReviewerSuggestionResult(
-                suggested=None,
-                all_potential_reviewers=[],
-                all_available_reviewers=[],
-                reason="no-matching-labels",
-            )
-
-    proposed_sorted = sorted(proposed, key=lambda item: _current_weight(item[0].github_login, assignment_stats))
-    all_potential = [rev.github_login for rev, _ in proposed_sorted]
-
-    available: list[str] = []
-    available_weights: list[float] = []
-    for reviewer, _ in proposed_sorted:
-        if _normalize_login(reviewer.github_login) in excluded_lower:
-            continue
-        current_weight = _current_weight(reviewer.github_login, assignment_stats)
-        remaining = reviewer.maximum_capacity - current_weight
-        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break:
-            available.append(reviewer.github_login)
-            available_weights.append(remaining)
+    all_potential, available, available_weights, unavailable_reason = _reviewer_candidate_state(
+        pr_entry=pr_entry,
+        reviewers=reviewers,
+        assignment_stats=assignment_stats,
+        excluded_logins=excluded_logins,
+    )
+    if not all_potential:
+        return ReviewerSuggestionResult(
+            suggested=None,
+            all_potential_reviewers=[],
+            all_available_reviewers=[],
+            reason=unavailable_reason or "no-match",
+        )
 
     if not available:
         return ReviewerSuggestionResult(
