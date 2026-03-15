@@ -560,13 +560,13 @@ def build_reviewer_assignment_trace(
     assignment_stats = collect_assignment_statistics(payload)
 
     dashboards = payload.get("lists", {}).get("dashboards", {})
-    stale_unassigned = dashboards.get("QueueStaleUnassigned", [])
+    queue_prs = dashboards.get("Queue", [])
 
-    excluded_by_pr = _opt_outs_for_prs(repository, stale_unassigned)
+    excluded_by_pr = _opt_outs_for_prs(repository, queue_prs)
     suggestions, per_pr = suggest_reviewers_many_with_trace(
         reviewers=reviewers,
         assignments=assignment_stats.assignments,
-        prs_to_assign=stale_unassigned,
+        prs_to_assign=queue_prs,
         all_prs=payload.get("prs", {}),
         rng=rng,
         excluded_by_pr=excluded_by_pr,
@@ -585,12 +585,12 @@ def build_reviewer_assignment_trace(
         "rule_set_id": payload.get("meta", {}).get("rule_set_id", "default"),
         "queue_snapshot_generated_at": payload.get("meta", {}).get("generated_at"),
         "queue_snapshot_cache_key": queue_snapshot.cache_key,
-        "stale_unassigned_prs": len(stale_unassigned),
+        "queue_prs": len(queue_prs),
     }
     summary = {
-        "attempted": len(stale_unassigned),
+        "attempted": len(queue_prs),
         "assigned": len(suggestions),
-        "unassigned": len(stale_unassigned) - len(suggestions),
+        "unassigned": len(queue_prs) - len(suggestions),
         "reason_counts": reason_counts,
     }
 
@@ -702,15 +702,14 @@ class ReviewerAssignmentBuilder:
 
         dashboards = payload.get("lists", {}).get("dashboards", {})
         queue_prs = dashboards.get("Queue", [])
-        stale_unassigned = dashboards.get("QueueStaleUnassigned", [])
 
         automatic_assignments = suggest_reviewers_many(
             reviewers=reviewers,
             assignments=assignment_stats.assignments,
-            prs_to_assign=stale_unassigned,
+            prs_to_assign=queue_prs,
             all_prs=payload.get("prs", {}),
             rng=self.rng,
-            excluded_by_pr=_opt_outs_for_prs(repository, stale_unassigned),
+            excluded_by_pr=_opt_outs_for_prs(repository, queue_prs),
         )
 
         rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")

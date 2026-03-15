@@ -305,6 +305,29 @@ class ReviewerAssignmentBuilderTests(TestCase):
             queue_snapshot.cache_key,
         )
 
+    def test_build_assigns_non_stale_queue_prs(self):
+        self._make_pr(14, labels=("t-analysis",))
+
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertIn(14, payload["automatic_assignments"])
+
     def test_unassignment_event_excludes_reviewer_from_auto_assignments(self):
         ReviewerPreference.objects.create(
             repository=self.repo,
