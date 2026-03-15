@@ -376,22 +376,31 @@ def run_assignment_simulation(
         login: (list(open_list), float(weight), int(total)) for login, (open_list, weight, total) in inputs.assignments.items()
     }
     suggestions: dict[int, str] = {}
-    ordered_prs, ranking_trace = rank_prs_for_assignment(
-        prs_to_assign=inputs.prs_to_assign,
-        all_prs=inputs.all_prs,
-        reviewers=inputs.reviewers,
-        assignment_stats=stats_copy,
-        excluded_by_pr=inputs.excluded_by_pr,
-        priority_scorer=priority_scorer,
-    )
+    remaining_prs = list(inputs.prs_to_assign)
 
     per_pr: dict[str, dict]
     if include_trace:
-        per_pr = {pr_number: {"priority": trace} for pr_number, trace in ranking_trace.items()}
+        per_pr = {}
     else:
         per_pr = {}
 
-    for pr_number in ordered_prs:
+    round_index = 0
+    while remaining_prs:
+        ordered_prs, ranking_trace = rank_prs_for_assignment(
+            prs_to_assign=remaining_prs,
+            all_prs=inputs.all_prs,
+            reviewers=inputs.reviewers,
+            assignment_stats=stats_copy,
+            excluded_by_pr=inputs.excluded_by_pr,
+            priority_scorer=priority_scorer,
+        )
+        pr_number = ordered_prs[0]
+
+        if include_trace:
+            per_pr.setdefault(str(pr_number), {})
+            per_pr[str(pr_number)]["round_index"] = round_index
+            per_pr[str(pr_number)]["priority"] = ranking_trace[str(pr_number)]
+
         pr_entry = inputs.all_prs.get(pr_number) or inputs.all_prs.get(str(pr_number))
         if not pr_entry:
             if include_trace:
@@ -406,6 +415,8 @@ def run_assignment_simulation(
                         "reason": "missing-pr",
                     }
                 )
+            remaining_prs.remove(pr_number)
+            round_index += 1
             continue
 
         excluded_logins = inputs.excluded_by_pr.get(pr_number) if inputs.excluded_by_pr else None
@@ -429,6 +440,8 @@ def run_assignment_simulation(
             )
 
         if result.suggested is None:
+            remaining_prs.remove(pr_number)
+            round_index += 1
             continue
 
         suggestions[pr_number] = result.suggested
@@ -436,5 +449,8 @@ def run_assignment_simulation(
         open_list = list(open_list)
         open_list.append(pr_number)
         stats_copy[result.suggested] = (open_list, weight + 1, total + 1)
+
+        remaining_prs.remove(pr_number)
+        round_index += 1
 
     return SimulationResult(suggestions=suggestions, per_pr=per_pr, final_assignment_stats=stats_copy)
