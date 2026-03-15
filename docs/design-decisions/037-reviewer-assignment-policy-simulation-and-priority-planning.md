@@ -328,6 +328,16 @@
     - updated the engine loop to rescore remaining PRs after each assignment round using current in-memory reviewer load
     - kept the persisted trace compact by recording selection round and per-round priority data only for the chosen PR
     - added service-level coverage that distinguishes iterative rescoring from the old one-shot ranking behavior
+- 2026-03-15:
+  - Chunk 5 started:
+    - implemented the first default deterministic scorer in the engine
+    - current priority order is:
+      - assignable PRs before currently-unassignable PRs
+      - fewer available reviewers first
+      - lower total remaining reviewer capacity first
+      - older queue age first
+      - `feat` title bonus as a final weak tiebreak before PR number
+    - added service coverage for scarcity, assignability, queue-age, and title-bonus edge cases
 
 ## References
 - `docs/design-decisions/README.md`

@@ -159,7 +159,168 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(ordered, [4, 1])
         self.assertEqual(trace["4"]["input_index"], 0)
         self.assertEqual(trace["4"]["output_index"], 0)
-        self.assertEqual(trace["4"]["sort_key"], [])
+        self.assertEqual(trace["4"]["details"]["available_reviewer_count"], 1)
+
+    def test_default_priority_prefers_assignable_prs_over_unassignable_prs(self):
+        snapshot = {
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "title": "fix: alpha",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 100},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "title": "fix: beta",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 200},
+                },
+            }
+        }
+        reviewers = [
+            ReviewerProfile(
+                github_login="alice",
+                maximum_capacity=1,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-analysis"],
+                preferred_labels_lower={"t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            )
+        ]
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[1, 2],
+            all_prs=snapshot["prs"],
+            reviewers=reviewers,
+            assignment_stats={},
+            excluded_by_pr={1: {"alice"}},
+        )
+
+        self.assertEqual(ordered, [2, 1])
+        self.assertFalse(trace["1"]["details"]["assignable_now"])
+        self.assertTrue(trace["2"]["details"]["assignable_now"])
+
+    def test_default_priority_prefers_scarcer_prs_before_older_prs(self):
+        snapshot = {
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "title": "fix: scarce",
+                    "labels": [{"name": "t-zeta", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 10},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "title": "fix: older",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 1000},
+                },
+            }
+        }
+        reviewers = [
+            ReviewerProfile(
+                github_login="alice",
+                maximum_capacity=2,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-zeta", "t-analysis"],
+                preferred_labels_lower={"t-zeta", "t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            ),
+            ReviewerProfile(
+                github_login="bob",
+                maximum_capacity=2,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-analysis"],
+                preferred_labels_lower={"t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            ),
+        ]
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[2, 1],
+            all_prs=snapshot["prs"],
+            reviewers=reviewers,
+            assignment_stats={},
+        )
+
+        self.assertEqual(ordered, [1, 2])
+        self.assertEqual(trace["1"]["details"]["available_reviewer_count"], 1)
+        self.assertEqual(trace["2"]["details"]["available_reviewer_count"], 2)
+
+    def test_default_priority_prefers_older_prs_before_feat_bonus(self):
+        snapshot = {
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "title": "fix: older",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 1000},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "title": "feat: newer",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 100},
+                },
+            }
+        }
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[2, 1],
+            all_prs=snapshot["prs"],
+            reviewers=self.reviewers,
+            assignment_stats={},
+        )
+
+        self.assertEqual(ordered, [1, 2])
+        self.assertEqual(trace["2"]["details"]["title_priority"], 0)
+
+    def test_default_priority_uses_feat_bonus_as_tiebreak(self):
+        snapshot = {
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "title": "fix: alpha",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 100},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "title": "feat: beta",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 100},
+                },
+            }
+        }
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[1, 2],
+            all_prs=snapshot["prs"],
+            reviewers=self.reviewers,
+            assignment_stats={},
+        )
+
+        self.assertEqual(ordered, [2, 1])
+        self.assertEqual(trace["2"]["details"]["title_priority"], 0)
+        self.assertEqual(trace["1"]["details"]["title_priority"], 1)
 
     def test_rank_prs_for_assignment_accepts_custom_priority_scorer(self):
         stats = collect_assignment_statistics(self.snapshot)
