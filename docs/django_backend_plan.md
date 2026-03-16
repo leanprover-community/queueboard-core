@@ -155,36 +155,14 @@ Reviewer preferences import (management command)
 - Notes:
   - We intentionally avoid an FK from `label_name` to `LabelDef` to keep ingestion fast, tolerate gaps, and preserve historical names independent of label catalog renames; classification will canonicalize names as needed.
 
-### Syncer Model: CheckRun
-- Purpose: snapshot of the latest check runs per commit context (via GraphQL statusCheckRollup) used to classify current CI; run-level history (multiple attempts) can be added later.
-- Fields:
-  - `pull_request` (FK → syncer.PullRequest)
-  - `github_node_id` (str, unique) — GraphQL node id
-  - `head_sha` (str), `name` (str)
-  - `status` (QUEUED/IN_PROGRESS/COMPLETED), `conclusion` (SUCCESS/FAILURE/CANCELLED/NEUTRAL/SKIPPED/TIMED_OUT/ACTION_REQUIRED, nullable)
-  - `details_url` (url, nullable), `external_id` (str, nullable)
-  - Timestamps: `gh_started_at` (nullable), `gh_completed_at` (nullable)
-    - Note: GitHub GraphQL CheckRun does not expose `updatedAt`; we omit `gh_updated_at` and rely on `gh_completed_at`/`gh_started_at` for ordering. Callers that need current status should use the latest row per `(head_sha, name)` to avoid stale pending entries.
-  - Ingestion: `last_synced_at` (nullable, updated on every CI ingest/refresh so we know when we last heard about this run from GitHub)
-- Indexes:
-  - `(pull_request, gh_completed_at)` for chronological scans
+### Syncer Model: CommitCheckRun
+- Purpose: commit-scoped snapshot of the latest check runs per context (via GraphQL statusCheckRollup) used to classify current CI.
 
-### Syncer Model: StatusContext
-- Purpose: per-commit context statuses. In v1 we ingest latest snapshots for each context from GraphQL rollup.
-- Fields:
-  - `pull_request` (FK → syncer.PullRequest)
-  - `github_node_id` (str, unique, nullable) — GraphQL snapshot id
-  - `head_sha` (str), `name` (context name), `state` (SUCCESS/FAILURE/ERROR/PENDING)
-  - `target_url` (url, nullable), `description` (text, nullable)
-  - Timestamp: `gh_created_at` (datetime)
-  - Ingestion: `last_synced_at` (nullable, updated on every CI ingest/refresh so we know when we last heard about this context from GitHub)
-- Notes:
-  - StatusContext rows may be append-only when sourced from REST history; callers that need current status should use the latest row per `(head_sha, name)` to avoid stale pending entries.
-- Indexes:
-  - `(pull_request, gh_created_at)` for chronological scans
+### Syncer Model: CommitStatusContext
+- Purpose: commit-scoped status contexts; latest snapshots come from GraphQL rollup and optional history can come from REST statuses.
 
 Analyzer ownership: coarse CI transitions
-- Analyzer will materialize `PRCIStatusEvent (pull_request, occurred_at, ci_status)` from CheckRun + StatusContext and the repo-configurable “inessential jobs” list. This keeps Syncer focused on raw facts and allows us to evolve classification rules without ingestion changes.
+- Analyzer will materialize `PRCIStatusEvent (pull_request, occurred_at, ci_status)` from commit-scoped CI rows and the repo-configurable “inessential jobs” list. This keeps Syncer focused on raw facts and allows us to evolve classification rules without ingestion changes.
 
 
 ## Service Architecture

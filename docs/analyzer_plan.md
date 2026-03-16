@@ -16,7 +16,7 @@ This plan captures how the Analyzer app will compute "who was on the queue at ti
 ## Data Inputs
 - `syncer.PullRequest`: createdAt, updatedAt, closedAt, mergedAt, is_draft, base/head refs.
 - `syncer.PRTimelineEvent`: label add/remove, draft toggles, reopen/closed, head ref force‑push (already modeled).
-- `syncer.CheckRun` and `syncer.StatusContext`: snapshots per head commit via statusCheckRollup.
+- `syncer.CommitCheckRun` and `syncer.CommitStatusContext`: snapshots per head commit via statusCheckRollup.
 - Derived (Analyzer, planned): `PRCIStatusEvent` stream (pass/fail/running/missing) from the above snapshots.
 
 ## Core Outputs
@@ -42,7 +42,7 @@ This plan captures how the Analyzer app will compute "who was on the queue at ti
    - Deferred per `010-queue-windows-first`: initial rollout will replay labels directly from `PRTimelineEvent` inside the queue window builder.
 
 3) `ci_events.py` — **planned**
-   - Transform `CheckRun`/`StatusContext` snapshots into coarse `PRCIStatusEvent` transitions (pass/fail/running/missing), using repo config and ruleset CI requirements.
+   - Transform commit-scoped CI snapshots into coarse `PRCIStatusEvent` transitions (pass/fail/running/missing), using repo config and ruleset CI requirements.
    - Expose: `ci_state_at(t)`, `ci_windows()`.
 
 4) `queue_window_builder.py` — **implemented (first version, CI-aware)**

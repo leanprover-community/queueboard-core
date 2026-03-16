@@ -15,7 +15,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - PullRequest core fields
   - Current labels (LabelDef + PRLabel)
   - Key timeline events (label add/remove; draft toggles; reopened/closed)
-  - CI history from CheckRun snapshots and StatusContext snapshots (latest per commit context via statusCheckRollup)
+  - CI history from commit-scoped CheckRun/StatusContext snapshots (latest per commit context via statusCheckRollup)
 - Minimize API calls while staying robust and easy to reason about.
 
 ## Discovery & Preflight
@@ -43,10 +43,10 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 
 ## Models and Ownership
 - Syncer (raw facts):
-  - `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun` (snapshot via statusCheckRollup), `StatusContext` (snapshot via statusCheckRollup)
+  - `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CommitCheckRun` (snapshot via statusCheckRollup), `CommitStatusContext` (snapshot via statusCheckRollup)
   - Core entity touch points: update `core.Repository.github_node_id` and `core.Repository.default_branch`; upsert `core.User` for PR authors (and later reviewers/assignees) using GitHub node id or login.
 - Analyzer (derived semantics):
-  - `PRCIStatusEvent` (coarse CI transitions: pass/fail/fail-inessential/running/missing) computed from CheckRun + StatusContext and the repo-configurable “inessential jobs” set.
+  - `PRCIStatusEvent` (coarse CI transitions: pass/fail/fail-inessential/running/missing) computed from commit-scoped CI rows and the repo-configurable “inessential jobs” set.
 
 ## Ingestion Flow (Per Repository)
 1) Discover changed PRs
@@ -62,8 +62,8 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - LabelDef: upsert by `(repository, lower(name))` with display `name` and `color`.
 - PRLabel: diff the current attachments vs DB; bulk create missing and delete extras.
 - PRTimelineEvent: insert key events by `github_node_id` with `occurred_at`; store `label_name` as-is; persist `before_sha`/`after_sha` for force‑push events.
-- CheckRun (snapshot): from `status.contexts` union when `__typename == CheckRun`; upsert by `github_node_id`; set `head_sha`, `gh_started_at`, `gh_completed_at`; prune older snapshot rows per `(head_sha, name)`.
-- StatusContext (snapshot): from `status.contexts` union when `__typename == StatusContext`; upsert by `github_node_id`; set `head_sha`, `gh_created_at`.
+- CommitCheckRun (snapshot): from `status.contexts` union when `__typename == CheckRun`; upsert by `github_node_id`; set `head_sha`, `gh_started_at`, `gh_completed_at`.
+- CommitStatusContext (snapshot): from `status.contexts` union when `__typename == StatusContext`; upsert by `github_node_id`; set `head_sha`, `gh_created_at`.
 
 4) Trigger Analyzer
 - Enqueue recompute for `PRCIStatusEvent` (and downstream status evolution) for changed PRs.
@@ -73,9 +73,9 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
 - LabelDef: unique `(repository, lower(name))`
 - PRLabel: unique `(pull_request, label_def)`
 - PRTimelineEvent: conditional unique on `github_node_id` when present
-- CheckRun: unique `github_node_id`
-- StatusContext: unique `github_node_id`
-- Replay indexes: `(pull_request, occurred_at)` for timeline; `(pull_request, gh_completed_at)` (CheckRun) and `(pull_request, gh_created_at)` (StatusContext)
+- CommitCheckRun: unique `github_node_id`
+- CommitStatusContext: unique `github_node_id`
+- Replay indexes: `(pull_request, occurred_at)` for timeline; repository/SHA indexes for commit-scoped CI tables.
 
 ## Paging Queries (v1)
 - Keep the bundle for the first page; add lean page queries for subsequent pages when needed:
@@ -101,8 +101,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - `services/sub/ci_sync.py`: `sync_check_runs(...)` (snapshots) and `sync_status_contexts(...)` (snapshots)
 - Tasks & CLI:
   - `syncer/tasks/sync_tasks.py`: `sync_repo_task`, `sync_pr_task`
-    - `refresh_pending_ci_for_repo_task(repo_id, max_prs, max_shas_per_pr, max_pending_hours)` to re-poll CI for SHAs whose CheckRuns/StatusContexts remain pending.
-      - Pending detection uses the latest StatusContext and CheckRun per `(head_sha, name)` to avoid stale pending rows.
+    - `refresh_pending_ci_for_repo_task(repo_id, max_prs, max_shas_per_pr, max_pending_hours)` to re-poll CI for SHAs whose commit-scoped CI rows remain pending.
     - `refresh_pending_ci_for_active_repos_task(max_prs_per_repo, max_shas_per_pr, max_pending_hours)` to enqueue pending-CI refresh for all active repositories (used by Celery beat).
   - `syncer/tasks/backfill_tasks.py`:
     - `backfill_repo_history_task(repo_id, page_size, max_pages, states)` for createdAt-based history backfill.
@@ -201,7 +200,7 @@ Our watermark choice (single `last_synced_at` for V1) is recorded in `docs/desig
   - Run inside compose: `docker compose exec -T web python qb_site/manage.py test syncer`.
 
 - Admin
-  - Read‑only registrations for `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CheckRun`, `StatusContext`.
+  - Read‑only registrations for `PullRequest`, `LabelDef`, `PRLabel`, `PRTimelineEvent`, `CommitCheckRun`, `CommitStatusContext`.
   - PullRequest actions: enqueue sync (real or dry‑run) — lists task IDs after submission.
   - Repository “Sync tools” page: sync specific PR numbers or discover+sync since cutoff (real or dry‑run), with simple result table.
 

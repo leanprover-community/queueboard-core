@@ -31,7 +31,7 @@ def should_enqueue_ci_sha(*, pr: PullRequest, sha: str, reason: str | None = Non
     """Return True if CI-by-SHA should be enqueued.
 
     Note: "skipped_association" is treated as a no-op result and does not backoff.
-    This path should be deprecated once CI is SHA-keyed instead of PR-keyed.
+    This path exists to rate-limit CI-by-SHA fetches.
     """
     _ = reason
     if not sha:

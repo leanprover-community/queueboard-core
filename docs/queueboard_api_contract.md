@@ -90,7 +90,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Covered today:
   - Core PR metadata: state, draft, timestamps, base/head refs, head repo owner/name, title/body, additions/deletions, `changed_files_count` (Syncer `PullRequest`).
   - Engagement fields: first 100 `files`, `assignees`, `approvals` (approving review authors), `commenters` (issue + review authors), `number_total_comments`, with completeness flags and `engagement_synced_at`.
-  - CI rollup inputs: `CheckRun`, `StatusContext`.
+  - CI rollup inputs: `CommitCheckRun`, `CommitStatusContext`.
   - Labels and attachments: `LabelDef`, `PRLabel`.
   - Timeline events needed for state evolution: `PRTimelineEvent` (label add/remove, draft toggles, reopen/close).
   - Identity: `Repository`, `User`; reviewer preferences exist in `ReviewerPreference`.
@@ -128,7 +128,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
   - `valid` otherwise.
 - Inputs:
   - `PullRequest` with engagement fields/flags, `last_synced_at`, `engagement_synced_at`, timeline backfill flags.
-  - `PRLabel`/`LabelDef`, `PRTimelineEvent`, `CheckRun`/`StatusContext`, `PRDependency`, reviewer preferences.
+  - `PRLabel`/`LabelDef`, `PRTimelineEvent`, commit-scoped CI rows, `PRDependency`, reviewer preferences.
 - Steps:
   1) Fetch open PRs for the repo; prefetch labels/engagement fields.
   2) Build `AggregatePRInfo` per PR from stored fields; map completeness→`DataStatus`; format `head_repo` from owner/name.
@@ -158,7 +158,7 @@ Future cleanup
 - Builder: a `QueueboardSnapshotBuilder` that chunk-iterates open PRs (e.g., 200–500 via `values()`/`iterator`) and assembles `prs`/`lists` in one pass, backed by keyed maps loaded up front:
   - Labels: `pr_id -> [(name, color, url)]`
   - Dependencies: `pr_id -> [dep_number]`
-  - CI: `pr_id -> rule-set-aware ci_status` from required contexts (`CheckRun`/`StatusContext`) plus head rollup for `fail-inessential`
+  - CI: `pr_id -> rule-set-aware ci_status` from required contexts (commit-scoped CI rows) plus head rollup for `fail-inessential`
   - Timeline: stream `PRTimelineEvent` ordered by `(pr_id, occurred_at)` to compute `last_status_change` / `first_on_queue` / `total_queue_time` per PR; if this is too heavy, read from precomputed queue windows/table instead.
   - Engagement fields: `modified_files`, `assignees`, `approvals`, `commenters`, `number_total_comments`, plus completeness flags mapped to `DataStatus`.
 - Queue rules: governed by the selected rule set (label/draft/open requirements and required CI contexts); `queue.json` is not required and can be used only for optional parity checks during development.
@@ -169,7 +169,7 @@ Future cleanup
 ### Precomputation to keep refreshes cheap
 - Materialize timeline-derived fields per PR (or per ruleset) in Analyzer tables: `last_status_change`, `first_on_queue`, `total_queue_time`, and/or `PRQueueWindow` summaries; snapshot reads these instead of replaying timeline events.
 - Persist current `PRStatus` (label + CI + draft classification) per ruleset to avoid reclassification on every snapshot build.
-- Persist a coarse CI rollup per PR/head (or per PR) so snapshot avoids scanning all `CheckRun`/`StatusContext` rows.
+- Persist a coarse CI rollup per PR/head (or per PR) so snapshot avoids scanning all commit-scoped CI rows.
 - If reviewer suggestions/area stats/dependency graph move server-side, precompute them in dedicated tasks or cache them alongside the snapshot payload.
 
 ### Progress (implemented)
