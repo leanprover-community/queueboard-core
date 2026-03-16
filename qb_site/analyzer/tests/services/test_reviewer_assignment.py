@@ -146,6 +146,25 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(result.all_available_reviewers, [])
         self.assertIsNone(result.suggested)
 
+    def test_pr_without_topic_label_is_not_auto_assigned(self):
+        result = suggest_reviewer_for_pr(
+            pr_number=5,
+            pr_entry={
+                "assignees": [],
+                "author": "dave",
+                "title": "fix: unlabeled",
+                "labels": [],
+                "total_queue_time": {"status": "valid", "value_td": 100},
+            },
+            reviewers=self.reviewers,
+            assignment_stats={},
+            rng=random.Random(0),
+        )
+
+        self.assertEqual(result.reason, "missing-topic-label")
+        self.assertEqual(result.all_potential_reviewers, [])
+        self.assertEqual(result.all_available_reviewers, [])
+
     def test_rank_prs_for_assignment_defaults_to_input_order(self):
         stats = collect_assignment_statistics(self.snapshot)
 
@@ -205,6 +224,37 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(ordered, [2, 1])
         self.assertFalse(trace["1"]["details"]["assignable_now"])
         self.assertTrue(trace["2"]["details"]["assignable_now"])
+
+    def test_default_priority_treats_missing_topic_label_as_unassignable(self):
+        snapshot = {
+            "prs": {
+                1: {
+                    "assignees": [],
+                    "author": "dave",
+                    "title": "fix: unlabeled",
+                    "labels": [],
+                    "total_queue_time": {"status": "valid", "value_td": 1000},
+                },
+                2: {
+                    "assignees": [],
+                    "author": "erin",
+                    "title": "fix: labeled",
+                    "labels": [{"name": "t-analysis", "color": "123456"}],
+                    "total_queue_time": {"status": "valid", "value_td": 10},
+                },
+            }
+        }
+
+        ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[1, 2],
+            all_prs=snapshot["prs"],
+            reviewers=self.reviewers,
+            assignment_stats={},
+        )
+
+        self.assertEqual(ordered, [2, 1])
+        self.assertFalse(trace["1"]["details"]["assignable_now"])
+        self.assertFalse(trace["1"]["details"]["has_topic_label"])
 
     def test_default_priority_prefers_scarcer_prs_before_older_prs(self):
         snapshot = {
@@ -679,6 +729,29 @@ class ReviewerAssignmentBuilderTests(TestCase):
         payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
 
         self.assertIn(14, payload["automatic_assignments"])
+
+    def test_build_does_not_assign_queue_pr_without_topic_label(self):
+        self._make_pr(15, labels=())
+
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertNotIn(15, payload["automatic_assignments"])
 
     def test_unassignment_event_excludes_reviewer_from_auto_assignments(self):
         ReviewerPreference.objects.create(

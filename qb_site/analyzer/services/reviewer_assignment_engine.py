@@ -107,6 +107,9 @@ def _reviewer_candidate_state(
 ) -> tuple[list[str], list[str], list[float], str | None]:
     labels = _topic_labels(pr_entry)
     labels_lower = [lab.lower() for lab in labels]
+    if not labels_lower:
+        return [], [], [], "missing-topic-label"
+
     author = pr_entry.get("author") or ""
     author_norm = _normalize_login(author)
 
@@ -183,6 +186,7 @@ def _default_pr_assignment_priority(
         ),
         details={
             "assignable_now": assignable_now,
+            "has_topic_label": bool(_topic_labels(pr_entry)),
             "available_reviewer_count": available_reviewer_count,
             "total_remaining_capacity": total_remaining_capacity,
             "queue_age_seconds": queue_age_seconds,
@@ -289,6 +293,19 @@ def suggest_reviewer_for_pr_with_trace(
 ) -> tuple[ReviewerSuggestionResult, dict]:
     labels = _topic_labels(pr_entry)
     labels_lower = [lab.lower() for lab in labels]
+    if not labels_lower:
+        excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
+        trace = _pr_trace_base(pr_entry, excluded_logins=excluded_lower)
+        trace["candidate_counts"] = {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0}
+        result = ReviewerSuggestionResult(
+            suggested=None,
+            all_potential_reviewers=[],
+            all_available_reviewers=[],
+            reason="missing-topic-label",
+        )
+        trace.update({"available": [], "picked": None, "reason": result.reason})
+        return result, trace
+
     author = pr_entry.get("author") or ""
     author_norm = _normalize_login(author)
 
