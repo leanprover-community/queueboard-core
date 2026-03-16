@@ -846,7 +846,7 @@ def write_review_queue_page(
     aggregate_info: dict[int, AggregatePRInfo],
 ) -> None:
     title = "  <h1>The mathlib review queue</h1>"
-    welcome = "<p>Welcome to the mathlib review page. Everybody's help with reviewing is appreciated. Reviewing contributions is important, and everybody is welcome to review pull requests! If you're not sure how, the <a href=\"https://leanprover-community.github.io/contribute/pr-review.html\">pull request review guide</a> is there to help you.<br>\n  This page contains tables of</p>"
+    welcome = "<p>Welcome to the mathlib review page. Everybody's help with reviewing is appreciated. Reviewing contributions is important, and everybody is welcome to review pull requests! If you're not sure how, the <a href=\"https://leanprover-community.github.io/contribute/pr-review.html\">pull request review guide</a> is there to help you.<br>\n  This page is the main reviewer-facing queue: if a PR is ready for review, it belongs here. The triage page contains additional triage-oriented views, but it is not the primary review queue.<br>\n  This page contains tables of</p>"
     items = [
         (Dashboard.Queue, "all PRs ready for review", ""),
         (
@@ -978,8 +978,8 @@ def write_triage_page(
         ("statistics", "PR statistics"),
         ("not-yet-landed", "Not yet landed PRs"),
         ("review-status", "Review status"),
-        (getIdTitle(Dashboard.QueueStaleUnassigned)[0], "Stale unassigned PRs"),
-        (getIdTitle(Dashboard.QueueStaleAssigned)[0], "Stale assigned PRs"),
+        (getIdTitle(Dashboard.QueueStaleUnassigned)[0], "Needs triage: unassigned PRs"),
+        (getIdTitle(Dashboard.QueueStaleAssigned)[0], "Needs triage: assigned PRs"),
         ("spuriousci", ""),
         (getIdTitle(Dashboard.QueueTechDebt)[0], "Tech debt PRs"),
         getIdTitle(Dashboard.NeedsDecision),
@@ -1054,7 +1054,8 @@ def write_triage_page(
     <li><strong>{len(prs_to_list[Dashboard.QueueTechDebt])}</strong> are addressing technical debt ({link_to(Dashboard.QueueTechDebt, "namely these", "review_dashboard.html")}), and</li>
     <li><strong>{len(recent_on_queue)}</strong> appeared on the review queue within the last two weeks.</li>
   </ul>
-  <p>On the other hand, {link_to(Dashboard.QueueStaleUnassigned, f"<strong>{unassigned}</strong> PRs")} are unassigned and have not seen a status change in a week, and {link_to(Dashboard.QueueStaleAssigned, f"<strong>{stale_assigned}</strong> PRs")} are assigned, without recent review activity.</p>"""
+  <p>On the other hand, {link_to(Dashboard.QueueStaleUnassigned, f"<strong>{unassigned}</strong> PRs")} are unassigned and have not seen a status change in three days, and {link_to(Dashboard.QueueStaleAssigned, f"<strong>{stale_assigned}</strong> PRs")} are assigned and have seen no review movement in two weeks.</p>
+  <p>These are triage-oriented views, not the main review queue. Updating a PR may remove it from one of these lists, but does not remove it from the review queue unless the PR's status changes out of awaiting review.</p>"""
     review_heading = "\n  ".join(review_heading.splitlines())
 
     # Write a dashboard of unassigned PRs: we can safely skip the "assignee" column.
