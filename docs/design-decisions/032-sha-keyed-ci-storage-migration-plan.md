@@ -47,7 +47,7 @@
 ## Operational Notes
 - Current status:
   - Migration is complete for runtime behavior.
-  - PR-keyed CI tables remain as legacy data only (not runtime dependencies).
+  - Legacy PR-keyed CI tables have been removed.
 - Planner correctness nuance:
   - Missing-CI planner enqueues only `actionable_shas` after backoff gating.
   - Backoff-blocked planned SHAs remain retryable in later sweeps.

@@ -1,6 +1,6 @@
 # CI by SHA backoff ledger and SHA-keyed CI migration
 
-## Implementation Status (as of 2026-03-02)
+## Implementation Status
 - Part 1 (CI-by-SHA backoff ledger) is implemented.
   - Model: `syncer.CIShaFetchState` (`qb_site/syncer/models/ci_sha_fetch_state.py`)
   - Policy/service: `qb_site/syncer/services/ci_backoff.py`
@@ -14,13 +14,13 @@
     - `SYNCER_CI_SHA_SETTLE_WINDOW_SECONDS`
     - `SYNCER_CI_SHA_HARD_CAP_DAYS`
     - `SYNCER_CI_SHA_MIN_ATTEMPTS_TERMINAL`
-- Part 2 (SHA-keyed CI storage migration) is not implemented yet.
-  - No SHA-keyed CI tables (e.g., commit-scoped check/context tables) currently exist.
-  - Analyzer queue/snapshot CI reads remain PR-keyed today.
+- Part 2 (SHA-keyed CI storage migration) is now implemented.
+  - Commit-scoped CI tables exist and are the runtime source of truth.
+  - Legacy PR-keyed CI tables have been removed.
 - Practical sequencing implication:
   - `024` (per-ruleset queue-window build state) and `023` (no-required-failures CI mode)
     are not blocked on Part 2.
-  - Part 2 remains a correctness/efficiency follow-up for CI storage/read architecture.
+  - This document remains useful for the migration rationale and rollout history.
 
 ## Context
 - CI contexts are fetched per commit SHA (GraphQL statusCheckRollup), but we currently store them per PR in `syncer.CheckRun` and `syncer.StatusContext`.
@@ -57,7 +57,7 @@ This decision has two parts:
 - Add a helper (`syncer.services.ci_backoff.should_enqueue_ci_sha(...)`) that:
   - Allows enqueue if there is no ledger row.
   - Applies cooldowns for `empty` and `error`.
-  - Treats `skipped_association` as a no-op result (no backoff); this should be deprecated once CI is SHA-keyed.
+  - Treats `skipped_association` as a no-op result (no backoff).
   - Treats `not_found`/`filtered`/`empty` as terminal only after the settle window (or hard cap) has elapsed.
 - Default cooldowns (configurable settings):
   - `SYNCER_CI_SHA_BACKOFF_EMPTY_SECONDS` (default 300)
