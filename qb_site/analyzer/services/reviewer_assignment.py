@@ -49,6 +49,29 @@ def _opt_outs_for_prs(repository: Repository, pr_numbers: Sequence[int]) -> dict
     return opt_outs
 
 
+def _active_reviewer_logins(reviewers: Sequence[ReviewerProfile]) -> set[str]:
+    return {
+        _normalize_login(reviewer.github_login) for reviewer in reviewers if reviewer.auto_assign and not reviewer.temporary_break
+    }
+
+
+def _filter_prs_without_active_assignee(
+    pr_numbers: Sequence[int],
+    *,
+    all_prs: Dict[int | str, dict],
+    reviewers: Sequence[ReviewerProfile],
+) -> list[int]:
+    active_logins = _active_reviewer_logins(reviewers)
+    filtered: list[int] = []
+    for pr_number in pr_numbers:
+        pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number)) or {}
+        assignees = {_normalize_login(str(login)) for login in (pr_entry.get("assignees") or []) if login}
+        if assignees & active_logins:
+            continue
+        filtered.append(int(pr_number))
+    return filtered
+
+
 def _queue_time_seconds(pr_entry: dict) -> tuple[float | None, DataStatus]:
     total_queue_time = pr_entry.get("total_queue_time") or {}
     status = str(total_queue_time.get("status") or "valid")
@@ -253,12 +276,17 @@ def build_reviewer_assignment_trace(
 
     dashboards = payload.get("lists", {}).get("dashboards", {})
     queue_prs = dashboards.get("Queue", [])
+    assignable_queue_prs = _filter_prs_without_active_assignee(
+        queue_prs,
+        all_prs=payload.get("prs", {}),
+        reviewers=reviewers,
+    )
 
-    excluded_by_pr = _opt_outs_for_prs(repository, queue_prs)
+    excluded_by_pr = _opt_outs_for_prs(repository, assignable_queue_prs)
     suggestions, per_pr = suggest_reviewers_many_with_trace(
         reviewers=reviewers,
         assignments=assignment_stats.assignments,
-        prs_to_assign=queue_prs,
+        prs_to_assign=assignable_queue_prs,
         all_prs=payload.get("prs", {}),
         rng=rng,
         excluded_by_pr=excluded_by_pr,
@@ -278,11 +306,12 @@ def build_reviewer_assignment_trace(
         "queue_snapshot_generated_at": payload.get("meta", {}).get("generated_at"),
         "queue_snapshot_cache_key": queue_snapshot.cache_key,
         "queue_prs": len(queue_prs),
+        "assignment_candidate_prs": len(assignable_queue_prs),
     }
     summary = {
-        "attempted": len(queue_prs),
+        "attempted": len(assignable_queue_prs),
         "assigned": len(suggestions),
-        "unassigned": len(queue_prs) - len(suggestions),
+        "unassigned": len(assignable_queue_prs) - len(suggestions),
         "reason_counts": reason_counts,
     }
 
@@ -394,14 +423,19 @@ class ReviewerAssignmentBuilder:
 
         dashboards = payload.get("lists", {}).get("dashboards", {})
         queue_prs = dashboards.get("Queue", [])
+        assignable_queue_prs = _filter_prs_without_active_assignee(
+            queue_prs,
+            all_prs=payload.get("prs", {}),
+            reviewers=reviewers,
+        )
 
         automatic_assignments = suggest_reviewers_many(
             reviewers=reviewers,
             assignments=assignment_stats.assignments,
-            prs_to_assign=queue_prs,
+            prs_to_assign=assignable_queue_prs,
             all_prs=payload.get("prs", {}),
             rng=self.rng,
-            excluded_by_pr=_opt_outs_for_prs(repository, queue_prs),
+            excluded_by_pr=_opt_outs_for_prs(repository, assignable_queue_prs),
         )
 
         rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")

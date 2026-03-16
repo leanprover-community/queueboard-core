@@ -753,6 +753,90 @@ class ReviewerAssignmentBuilderTests(TestCase):
 
         self.assertNotIn(15, payload["automatic_assignments"])
 
+    def test_build_skips_pr_already_assigned_to_active_reviewer(self):
+        pr = self._make_pr(16, labels=("t-analysis",))
+        pr.assignees = ["alice"]
+        pr.save(update_fields=["assignees"])
+
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertNotIn(16, payload["automatic_assignments"])
+
+    def test_build_keeps_pr_assigned_only_to_inactive_reviewer_as_candidate(self):
+        other = User.objects.create(github_login="carol")
+        pr = self._make_pr(17, labels=("t-analysis",))
+        pr.assignees = ["carol"]
+        pr.save(update_fields=["assignees"])
+
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=other,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=False,
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertIn(17, payload["automatic_assignments"])
+
+    def test_build_keeps_pr_assigned_only_to_reviewer_on_break_as_candidate(self):
+        pr = self._make_pr(18, labels=("t-analysis",))
+        pr.assignees = ["alice"]
+        pr.save(update_fields=["assignees"])
+
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+            away_until=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertIn(18, payload["automatic_assignments"])
+
     def test_unassignment_event_excludes_reviewer_from_auto_assignments(self):
         ReviewerPreference.objects.create(
             repository=self.repo,
