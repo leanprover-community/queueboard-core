@@ -88,3 +88,89 @@ span.label {
 .qb-export-btn:hover {
   background: #ececec;
 }
+
+.qb-filter-bar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: 0.75rem;
+  vertical-align: middle;
+}
+
+.qb-filter-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.qb-filter-summary {
+  list-style: none;
+  box-sizing: border-box;
+  min-width: 8.5rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #888;
+  border-radius: 4px;
+  background: #f7f7f7;
+  cursor: pointer;
+  user-select: none;
+}
+
+.qb-filter-summary::-webkit-details-marker {
+  display: none;
+}
+
+.qb-filter-summary::after {
+  content: " \25be";
+  font-size: 0.85em;
+}
+
+.qb-filter-dropdown[open] .qb-filter-options {
+  display: flex;
+}
+
+.qb-filter-options {
+  position: absolute;
+  z-index: 20;
+  display: none;
+  flex-direction: column;
+  min-width: 18rem;
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: 0.5rem;
+  margin-top: 0.3rem;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+.qb-filter-actions {
+  display: flex;
+  gap: 0.35rem;
+  padding-bottom: 0.45rem;
+  margin-bottom: 0.35rem;
+  border-bottom: 1px solid #e1e1e1;
+}
+
+.qb-filter-action {
+  padding: 0.2rem 0.55rem;
+  border: 1px solid #b7b7b7;
+  border-radius: 4px;
+  background: #f7f7f7;
+  cursor: pointer;
+}
+
+.qb-filter-action:hover {
+  background: #ececec;
+}
+
+.qb-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.2rem 0;
+  cursor: pointer;
+}
+
+.qb-filter-option span {
+  font-size: 0.95rem;
+}

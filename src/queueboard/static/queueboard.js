@@ -180,6 +180,356 @@ if (STANDARD) {
 }
 const DEFAULT_LENGTH = 10;
 const DEFAULT_LENGTH_STR = String(DEFAULT_LENGTH);
+const EMPTY_FILTER_TOKEN = "__none__";
+const PR_TYPE_OPTIONS = [
+  ["feat", "feat (feature)"],
+  ["fix", "fix (bug fix)"],
+  ["doc", "doc (documentation)"],
+  ["style", "style (formatting, missing semicolons, ...)"],
+  ["refactor", "refactor"],
+  ["test", "test (when adding missing tests)"],
+  ["chore", "chore (maintain)"],
+  ["perf", "perf (performance improvement, optimization, ...)"],
+  ["ci", "ci (for changes to github workflows, other automation)"],
+  ["other", "none of the above"],
+];
+const tableFilterState = new WeakMap();
+const tableFilterContexts = [];
+
+function isTopicLabel(name) {
+  if (!name) {
+    return false;
+  }
+  const lowered = name.toLowerCase();
+  return lowered.startsWith("t-") || lowered === "ci" || lowered === "imo" || lowered === "tech debt";
+}
+
+function sortCaseInsensitive(values) {
+  return [...values].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+}
+
+function dedupeCaseInsensitive(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized === "") {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function canonicalizeCaseInsensitive(values, allowedValues) {
+  const allowedByKey = new Map(allowedValues.map((value) => [String(value).toLowerCase(), value]));
+  const out = [];
+  const seen = new Set();
+  for (const value of values) {
+    const key = String(value || "").trim().toLowerCase();
+    if (key === "" || seen.has(key) || !allowedByKey.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(allowedByKey.get(key));
+  }
+  return out;
+}
+
+function extractLabelNames(cellHtml) {
+  if (cellHtml === null || cellHtml === undefined) {
+    return [];
+  }
+  const container = document.createElement("div");
+  container.innerHTML = String(cellHtml);
+  const labels = [...container.querySelectorAll("span.label")].map((node) => node.textContent.replace(/\s+/g, " ").trim());
+  return dedupeCaseInsensitive(labels);
+}
+
+function extractPrTypeFromTitle(cellHtml) {
+  const title = sanitizeCellText(cellHtml);
+  const match = title.match(/^(feat|fix|doc|style|refactor|test|chore|perf|ci)(?:\([^)]*\))?(?:!?)?:/i);
+  return match ? match[1].toLowerCase() : "other";
+}
+
+function getLabelsColumnHtml(data) {
+  return STANDARD ? (data[4] || "") : (data[3] || "");
+}
+
+function getTitleColumnHtml(data) {
+  return data[2] || "";
+}
+
+function updateFilterSummary(summaryNode, label, selectedCount, totalCount) {
+  if (totalCount === 0) {
+    summaryNode.textContent = `${label} (0)`;
+    return;
+  }
+  if (selectedCount === totalCount) {
+    summaryNode.textContent = `${label} (all)`;
+    return;
+  }
+  summaryNode.textContent = `${label} (${selectedCount}/${totalCount})`;
+}
+
+function renderCheckboxFilter(container, options, selectedValues, inputName, onChange) {
+  container.innerHTML = "";
+  for (const [value, label] of options) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "qb-filter-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.name = inputName;
+    checkbox.value = value;
+    checkbox.checked = selectedValues.has(value);
+    checkbox.addEventListener("change", onChange);
+
+    const text = document.createElement("span");
+    text.textContent = label;
+
+    wrapper.appendChild(checkbox);
+    wrapper.appendChild(text);
+    container.appendChild(wrapper);
+  }
+}
+
+function createFilterDropdown(label) {
+  const details = document.createElement("details");
+  details.className = "qb-filter-dropdown";
+
+  const summary = document.createElement("summary");
+  summary.className = "qb-filter-summary";
+  details.appendChild(summary);
+
+  const options = document.createElement("div");
+  options.className = "qb-filter-options";
+  details.appendChild(options);
+
+  updateFilterSummary(summary, label, 0, 0);
+  return { details, summary, options, label };
+}
+
+function createFilterActions(onSelectAll, onClearAll) {
+  const actions = document.createElement("div");
+  actions.className = "qb-filter-actions";
+
+  const selectAll = document.createElement("button");
+  selectAll.type = "button";
+  selectAll.className = "qb-filter-action";
+  selectAll.textContent = "Select all";
+  selectAll.addEventListener("click", onSelectAll);
+
+  const clearAll = document.createElement("button");
+  clearAll.type = "button";
+  clearAll.className = "qb-filter-action";
+  clearAll.textContent = "Clear all";
+  clearAll.addEventListener("click", onClearAll);
+
+  actions.appendChild(selectAll);
+  actions.appendChild(clearAll);
+  return actions;
+}
+
+function collectTopicLabelsFromTable(table) {
+  const labels = [];
+  table.rows().every(function () {
+    labels.push(...extractLabelNames(this.data()[STANDARD ? 4 : 3]).filter(isTopicLabel));
+  });
+  return sortCaseInsensitive(dedupeCaseInsensitive(labels));
+}
+
+function parseFilterParams(params) {
+  const prTypeParams = dedupeCaseInsensitive(params.getAll("pr_type").map((value) => value.toLowerCase()));
+  const topicLabelParams = dedupeCaseInsensitive(params.getAll("topic_label"));
+  return {
+    prTypes: prTypeParams.includes(EMPTY_FILTER_TOKEN) ? [] : prTypeParams,
+    topicLabels: topicLabelParams.includes(EMPTY_FILTER_TOKEN) ? [] : topicLabelParams,
+    hasPrTypeParam: params.has("pr_type"),
+    hasTopicLabelParam: params.has("topic_label"),
+  };
+}
+
+function setCheckboxSelection(container, selectedValues) {
+  for (const input of container.querySelectorAll('input[type="checkbox"]')) {
+    input.checked = selectedValues.has(input.value);
+  }
+}
+
+function drawAllFilteredTables() {
+  for (const { table, ignoreNext } of tableFilterContexts) {
+    ignoreNext.search++;
+    table.draw();
+  }
+}
+
+function updateFilterParamsInUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("pr_type");
+  url.searchParams.delete("topic_label");
+
+  const firstState = tableFilterContexts[0];
+  if (!firstState) {
+    window.history.pushState({}, "", url.toString());
+    return;
+  }
+
+  if (firstState.prTypes.size === 0) {
+    url.searchParams.append("pr_type", EMPTY_FILTER_TOKEN);
+  } else if (firstState.prTypes.size !== firstState.prTypeOptions.length) {
+    for (const value of firstState.prTypeOptions) {
+      if (firstState.prTypes.has(value)) {
+        url.searchParams.append("pr_type", value);
+      }
+    }
+  }
+
+  if (firstState.topicLabelOptions.length === 0) {
+    // No available topic-label options on this page; omit the param entirely.
+  } else if (firstState.topicLabels.size === 0) {
+    url.searchParams.append("topic_label", EMPTY_FILTER_TOKEN);
+  } else if (firstState.topicLabels.size !== firstState.topicLabelOptions.length) {
+    for (const value of firstState.topicLabelOptions) {
+      if (firstState.topicLabels.has(value)) {
+        url.searchParams.append("topic_label", value);
+      }
+    }
+  }
+
+  window.history.pushState({}, "", url.toString());
+}
+
+function applyGlobalFilterSelection({ prTypes, topicLabels, pushHistory = true }) {
+  for (const state of tableFilterContexts) {
+    state.prTypes = new Set(prTypes);
+    state.topicLabels = new Set(topicLabels);
+    setCheckboxSelection(state.prTypeFilter.options, state.prTypes);
+    setCheckboxSelection(state.topicFilter.options, state.topicLabels);
+    updateFilterSummary(state.prTypeFilter.summary, "PR type", state.prTypes.size, state.prTypeOptions.length);
+    updateFilterSummary(state.topicFilter.summary, "Topic label", state.topicLabels.size, state.topicLabelOptions.length);
+  }
+  drawAllFilteredTables();
+  if (pushHistory) {
+    updateFilterParamsInUrl();
+  }
+}
+
+function installTableFilters(table, tableElement, topicLabels, initialFilters, ignoreNext) {
+  const container = table.table().container();
+  const searchContainer = container.querySelector(".dt-search, .dataTables_filter");
+  if (!searchContainer) {
+    return;
+  }
+
+  const filterBar = document.createElement("div");
+  filterBar.className = "qb-filter-bar";
+
+  const prTypeFilter = createFilterDropdown("PR type");
+  const topicFilter = createFilterDropdown("Topic label");
+  filterBar.appendChild(prTypeFilter.details);
+  filterBar.appendChild(topicFilter.details);
+  const exportButton = searchContainer.querySelector(".qb-export-btn");
+  if (exportButton) {
+    searchContainer.insertBefore(filterBar, exportButton);
+  } else {
+    searchContainer.appendChild(filterBar);
+  }
+
+  const state = {
+    table,
+    tableElement,
+    ignoreNext,
+    prTypeOptions: PR_TYPE_OPTIONS.map(([value]) => value),
+    prTypes: new Set(
+      initialFilters.hasPrTypeParam
+        ? canonicalizeCaseInsensitive(initialFilters.prTypes, PR_TYPE_OPTIONS.map(([value]) => value))
+        : PR_TYPE_OPTIONS.map(([value]) => value)
+    ),
+    topicLabelOptions: [...topicLabels],
+    topicLabels: new Set(
+      initialFilters.hasTopicLabelParam ? canonicalizeCaseInsensitive(initialFilters.topicLabels, topicLabels) : topicLabels
+    ),
+    prTypeFilter,
+    topicFilter,
+  };
+  tableFilterState.set(tableElement, state);
+  tableFilterContexts.push(state);
+
+  const syncPrTypeSelection = () => {
+    applyGlobalFilterSelection({
+      prTypes: [...prTypeFilter.options.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value),
+      topicLabels: [...state.topicLabels],
+    });
+  };
+  const syncTopicSelection = () => {
+    applyGlobalFilterSelection({
+      prTypes: [...state.prTypes],
+      topicLabels: [...topicFilter.options.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value),
+    });
+  };
+
+  const syncPrTypeSelectionFromValues = (values) => {
+    applyGlobalFilterSelection({
+      prTypes: values,
+      topicLabels: [...state.topicLabels],
+    });
+  };
+  const syncTopicSelectionFromValues = (values) => {
+    applyGlobalFilterSelection({
+      prTypes: [...state.prTypes],
+      topicLabels: values,
+    });
+  };
+
+  renderCheckboxFilter(prTypeFilter.options, PR_TYPE_OPTIONS, state.prTypes, `${tableElement.id}-pr-type`, syncPrTypeSelection);
+  prTypeFilter.options.prepend(
+    createFilterActions(
+      () => syncPrTypeSelectionFromValues([...state.prTypeOptions]),
+      () => syncPrTypeSelectionFromValues([])
+    )
+  );
+  updateFilterSummary(prTypeFilter.summary, "PR type", state.prTypes.size, state.prTypeOptions.length);
+
+  const topicOptions = state.topicLabelOptions.map((value) => [value, value]);
+  renderCheckboxFilter(topicFilter.options, topicOptions, state.topicLabels, `${tableElement.id}-topic-label`, syncTopicSelection);
+  topicFilter.options.prepend(
+    createFilterActions(
+      () => syncTopicSelectionFromValues([...state.topicLabelOptions]),
+      () => syncTopicSelectionFromValues([])
+    )
+  );
+  updateFilterSummary(topicFilter.summary, "Topic label", state.topicLabels.size, state.topicLabelOptions.length);
+}
+
+$.fn.dataTable.ext.search.push(function (settings, data) {
+  const tableElement = settings.nTable;
+  const state = tableFilterState.get(tableElement);
+  if (!state) {
+    return true;
+  }
+
+  const prType = extractPrTypeFromTitle(getTitleColumnHtml(data));
+  if (state.prTypes.size !== state.prTypeOptions.length && !state.prTypes.has(prType)) {
+    return false;
+  }
+
+  if (state.topicLabels.size !== state.topicLabelOptions.length) {
+    if (state.topicLabels.size === 0) {
+      return false;
+    }
+    const rowTopicLabels = extractLabelNames(getLabelsColumnHtml(data)).filter(isTopicLabel);
+    if (!rowTopicLabels.some((label) => state.topicLabels.has(label))) {
+      return false;
+    }
+  }
+
+  return true;
+});
 
 function sanitizeCellText(cellHtml) {
   if (cellHtml === null || cellHtml === undefined) {
@@ -293,6 +643,7 @@ function optionsFromParams() {
   const search_params = params.get("search");
   const pageLengthRaw = params.get("length");
   const pageLength = pageLengthRaw === null ? DEFAULT_LENGTH : Number(pageLengthRaw);
+  const filterParams = parseFilterParams(params);
   const sort_params = params.getAll("sort");
   // The configuration for initial sorting of tables, for tables with and without approvals.
   let sort_config = [];
@@ -348,12 +699,13 @@ function optionsFromParams() {
         search: search_params
     };
   }
-  return ({ options, sort_config_approvals, sort_config, params });
+  return ({ options, sort_config_approvals, sort_config, params, filterParams });
 }
 
 $(document).ready(function () {
-  const {options, sort_config_approvals, sort_config} = optionsFromParams();
+  const {options, sort_config_approvals, sort_config, filterParams} = optionsFromParams();
   const tables = [];
+  const pageTopicLabels = [];
   $('table').each(function () {
     let table;
     const tableElement = this;
@@ -375,6 +727,7 @@ $(document).ready(function () {
     tables.push({table, tableElement, ignoreNext});
     if (table) {
       addExportButton(table, tableElement);
+      pageTopicLabels.push(...collectTopicLabelsFromTable(table));
     }
 
     // event handlers to update params when table settings are changed
@@ -430,11 +783,26 @@ $(document).ready(function () {
     });
   });
 
+  const sharedTopicLabels = sortCaseInsensitive(dedupeCaseInsensitive(pageTopicLabels));
+  for (const {table, tableElement, ignoreNext} of tables) {
+    if (table) {
+      installTableFilters(table, tableElement, sharedTopicLabels, filterParams, ignoreNext);
+    }
+  }
+
+  document.addEventListener("click", (event) => {
+    for (const dropdown of document.querySelectorAll(".qb-filter-dropdown[open]")) {
+      if (!dropdown.contains(event.target)) {
+        dropdown.removeAttribute("open");
+      }
+    }
+  });
+
   // handle query parameter changes when user clicks backwards / forwards in history
   // (popstate is not fired on pushState)
   $(window).on('popstate', function (event) {
-    const {options, sort_config_approvals, sort_config, params} = optionsFromParams();
-    console.log('popstate', params, options, sort_config_approvals, sort_config);
+    const {options, sort_config_approvals, sort_config, params, filterParams} = optionsFromParams();
+    console.log('popstate', params, options, sort_config_approvals, sort_config, filterParams);
     // for each table, update search, length, and order settings
     for (const {table, tableElement, ignoreNext} of tables) {
       if (!table) {
@@ -465,5 +833,17 @@ $(document).ready(function () {
         table.order(sort_config).draw();
       }
     }
+    applyGlobalFilterSelection({
+      prTypes: filterParams.hasPrTypeParam
+        ? canonicalizeCaseInsensitive(filterParams.prTypes, PR_TYPE_OPTIONS.map(([value]) => value))
+        : PR_TYPE_OPTIONS.map(([value]) => value),
+      topicLabels: filterParams.hasTopicLabelParam
+        ? canonicalizeCaseInsensitive(
+            filterParams.topicLabels,
+            tableFilterContexts[0] ? tableFilterContexts[0].topicLabelOptions : []
+          )
+        : (tableFilterContexts[0] ? tableFilterContexts[0].topicLabelOptions : []),
+      pushHistory: false,
+    });
   });
 });
