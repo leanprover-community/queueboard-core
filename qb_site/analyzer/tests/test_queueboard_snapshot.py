@@ -9,10 +9,9 @@ from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, PRRevisio
 from analyzer.models.queue_snapshot import QueueSnapshot
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository, User
-from syncer.models import LabelDef, PRLabel, PullRequest
+from syncer.models import CommitCheckRun, LabelDef, PRLabel, PullRequest
+from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus
 from syncer.models.pull_request import PullRequestState
-from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
-from syncer.models.commit_check_run import CommitCheckRun
 
 
 class QueueboardSnapshotBuilderTests(TestCase):
@@ -430,7 +429,7 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(snapshot["prs"][520]["ci_status"], "pass")
         self.assertIn(520, snapshot["lists"]["dashboards"]["Queue"])
 
-    def test_ci_status_ignores_pr_only_rows(self):
+    def test_ci_status_ignores_non_head_commit_rows(self):
         pr = self._make_pr(521, author=self.user, labels=("t-analysis",))
         rule_set = QueueRuleSet.objects.create(
             repository=self.repo,
@@ -445,10 +444,10 @@ class QueueboardSnapshotBuilderTests(TestCase):
             to_ts=None,
             seq=0,
         )
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR-521",
-            head_sha="sha521",
+            head_sha="oldsha521",
             name="lint",
             status=CheckRunStatus.COMPLETED,
             conclusion=CheckRunConclusion.SUCCESS,

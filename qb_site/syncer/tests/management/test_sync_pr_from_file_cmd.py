@@ -8,10 +8,8 @@ from syncer.models import (
     LabelDef,
     PRLabel,
     PRTimelineEvent,
-    CheckRun,
     CommitCheckRun,
     CommitStatusContext,
-    StatusContext,
 )
 from syncer.tests.factories import make_repo
 from syncer.tests.helpers import fixtures_dir
@@ -62,8 +60,6 @@ class TestSyncFromFileCommand(TestCase):
         # Timeline
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 4)
         # CI snapshots
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
@@ -77,7 +73,5 @@ class TestSyncFromFileCommand(TestCase):
         )
         self.assertEqual(PRLabel.objects.filter(pull_request=pr).count(), 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 4)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)

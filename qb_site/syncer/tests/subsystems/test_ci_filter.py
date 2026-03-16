@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.test import TestCase, override_settings
 
 from syncer.tests.factories import make_repo, make_pr
-from syncer.models import CheckRun, CommitCheckRun, CommitStatusContext, StatusContext
+from syncer.models import CommitCheckRun, CommitStatusContext
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 
 
@@ -49,7 +49,6 @@ class TestCIFilter(TestCase):
         ]
         res = sync_check_runs(self.pr, ctxs, self.sha)
         # Only build and test are kept; lint is dropped
-        self.assertEqual(CheckRun.objects.filter(pull_request=self.pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha=self.sha).count(), 2)
         self.assertEqual(res.created, 2)
 
@@ -83,6 +82,5 @@ class TestCIFilter(TestCase):
         ]
         res = sync_status_contexts(self.pr, ctxs, self.sha)
         # Keep bors and required-checks; drop circleci build
-        self.assertEqual(StatusContext.objects.filter(pull_request=self.pr).count(), 0)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha=self.sha).count(), 2)
         self.assertEqual(res.created, 2)

@@ -5,7 +5,7 @@ from django.db.models import Q
 
 from core.models import Repository
 from core.models.base import TimestampedModel
-from .check_run import CheckRunConclusion, CheckRunStatus
+from .ci_enums import CheckRunConclusion, CheckRunStatus
 
 
 class CommitCheckRun(TimestampedModel):

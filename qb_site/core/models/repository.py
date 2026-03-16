@@ -33,7 +33,7 @@ class Repository(TimestampedModel):
 
     # Optional per-repo CI tracking filters. When non-empty, these act as allowlists
     # for Syncer ingestion, matched as case-insensitive substrings against
-    # CheckRun.name and StatusContext.context respectively. If empty, global
+    # Commit-scoped check run and status context names respectively. If empty, global
     # SYNCER_CI_* settings apply.
     ci_tracked_checkrun_names = models.JSONField(default=list, blank=True)
     ci_tracked_status_names = models.JSONField(default=list, blank=True)

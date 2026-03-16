@@ -22,6 +22,8 @@ Notes
 - Compose runs migrations via a dedicated `migrate` service; `web`/`worker`/`beat` depend on it to avoid
   concurrent migration races.
 - `scripts/repo_check_compose.sh` requires Docker/Compose and starts services; it may not be runnable in sandboxed environments.
+- `scripts/repo_check_compose.sh` also validates the sanitized backup policy coverage, so schema/table removals
+  must be reflected in `scripts/backup_policy.py`.
 - In restricted/sandboxed environments, prefer non-DB checks (lint/format, GraphQL validation, pure-Python tests) or ask the user to run compose checks and share output.
 
 ## Coding Style & Naming Conventions

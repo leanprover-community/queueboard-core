@@ -28,8 +28,8 @@ from syncer.models import (
     SyncerMetricsSnapshot,
     PullRequest,
     PRTimelineEvent,
-    CheckRun,
-    StatusContext,
+    CommitCheckRun,
+    CommitStatusContext,
     PRLabel,
     LabelDef,
     GitHubWebhookDelivery,
@@ -218,8 +218,8 @@ def collect_metrics_task() -> Dict[str, Any]:  # type: ignore[no-redef]
     # DB activity (rows created in the window)
     rows_pr = PullRequest.objects.filter(created_at__gte=start, created_at__lt=now).count()
     rows_tl = PRTimelineEvent.objects.filter(created_at__gte=start, created_at__lt=now).count()
-    rows_cr = CheckRun.objects.filter(created_at__gte=start, created_at__lt=now).count()
-    rows_sc = StatusContext.objects.filter(created_at__gte=start, created_at__lt=now).count()
+    rows_cr = CommitCheckRun.objects.filter(created_at__gte=start, created_at__lt=now).count()
+    rows_sc = CommitStatusContext.objects.filter(created_at__gte=start, created_at__lt=now).count()
     rows_pl = PRLabel.objects.filter(created_at__gte=start, created_at__lt=now).count()
     rows_ld = LabelDef.objects.filter(created_at__gte=start, created_at__lt=now).count()
 

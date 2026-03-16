@@ -177,20 +177,5 @@ class TestQueueWindowsPRRevision(TestCase):
             to_ts=None,
             seq=0,
         )
-        # Legacy PR-keyed rows should not affect SHA-keyed evaluation.
-        # (No commit-scoped rows are written in this test.)
-        from syncer.models import CheckRun
-
-        CheckRun.objects.create(
-            pull_request=pr,
-            github_node_id="CRD",
-            head_sha="shaD",
-            name="lint",
-            status="COMPLETED",
-            conclusion="SUCCESS",
-            details_url=None,
-            external_id=None,
-            gh_started_at=_dt(2024, 9, 4),
-            gh_completed_at=_dt(2024, 9, 4),
-        )
+        # No commit-scoped rows are written in this test.
         self.assertFalse(is_on_queue_at(pr, at=_dt(2024, 9, 5)))

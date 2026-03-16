@@ -11,10 +11,8 @@ from syncer.models import (
     LabelDef,
     PRLabel,
     PRTimelineEvent,
-    CheckRun,
     CommitCheckRun,
     CommitStatusContext,
-    StatusContext,
 )
 from syncer.services.pr_sync_service import PRSyncService
 import json
@@ -115,8 +113,6 @@ class TestPRSyncIntegration(TestCase):
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 3)
 
         # CI snapshots created in SHA-keyed storage
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
@@ -163,8 +159,6 @@ class TestPRSyncIntegration(TestCase):
         pr = PullRequest.objects.get(repository=self.repo, number=1)
         self.assertEqual(PRLabel.objects.filter(pull_request=pr).count(), 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 3)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
@@ -181,8 +175,6 @@ class TestPRSyncIntegration(TestCase):
         # DB counts unchanged
         self.assertEqual(PRLabel.objects.filter(pull_request=pr).count(), 2)
         self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 3)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo).count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo).count(), 1)
 
@@ -659,8 +651,6 @@ class TestPRSyncIntegration(TestCase):
         }
         res1 = svc.sync_pull_request_bundle(self.repo, bundle1, dry_run=False)
         pr = PullRequest.objects.get(repository=self.repo, number=3)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr).count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha="h1").count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha="h1").count(), 1)
         self.assertEqual(res1["checkruns_upserted"], 1)
