@@ -24,6 +24,7 @@
   - building/storing assignment snapshots and compact trace payloads
 - The engine now rescoring remaining PRs after each round is the canonical batch behavior.
 - The default production priority policy is deterministic and lexicographic:
+  - PRs without a topic label are not auto-assigned and should be handled earlier in triage
   - assignable PRs before currently-unassignable PRs
   - fewer available reviewers first
   - lower total remaining reviewer capacity first
@@ -40,6 +41,7 @@
 - The compact persisted trace remains stable enough for operational inspection while leaving room to evolve the engine’s internal trace shape.
 - The default live behavior changed:
   - all queue PRs are attempted
+  - queue PRs without topic labels are intentionally left unassigned
   - ordering now reflects the new default priority policy
   - production builds use the extracted engine path with no feature flag
 - Future simulation and policy-comparison tooling is easier to add because the engine operates on plain data structures.
