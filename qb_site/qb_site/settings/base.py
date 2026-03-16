@@ -357,9 +357,9 @@ ANALYTICS_CONVERGENCE_PERIOD_SECONDS = int(os.getenv("ANALYTICS_CONVERGENCE_PERI
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
-# Comma-separated substrings matched case-insensitively against CheckRun.name
+# Comma-separated substrings matched case-insensitively against commit check run names
 SYNCER_CI_ALLOW_CHECKRUN_NAMES = os.getenv("SYNCER_CI_ALLOW_CHECKRUN_NAMES", "")
-# Comma-separated substrings matched case-insensitively against StatusContext.context
+# Comma-separated substrings matched case-insensitively against commit status context names
 SYNCER_CI_ALLOW_STATUS_NAMES = os.getenv("SYNCER_CI_ALLOW_STATUS_NAMES", "")
 
 # Beat schedule: periodically enqueue repo syncs for active repositories.

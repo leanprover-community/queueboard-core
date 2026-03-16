@@ -5,7 +5,7 @@ from django.db.models import Q
 
 from core.models import Repository
 from core.models.base import TimestampedModel
-from .status_context import StatusContextState
+from .ci_enums import StatusContextState
 
 
 class CommitStatusContext(TimestampedModel):

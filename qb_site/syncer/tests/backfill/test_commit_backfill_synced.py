@@ -5,10 +5,8 @@ from unittest import mock
 from django.test import TestCase
 
 from syncer.models import PullRequest
-from syncer.models.check_run import CheckRun
 from syncer.models.commit_check_run import CommitCheckRun
 from syncer.models.commit_status_context import CommitStatusContext
-from syncer.models.status_context import StatusContext
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.tests.factories import make_repo, make_pr
 
@@ -118,8 +116,6 @@ class TestCommitBackfillSynced(TestCase):
         pr = PullRequest.objects.get(repository=self.repo, number=101)
         self.assertTrue(pr.commits_backfill_cursor)
         self.assertTrue(pr.commits_backfill_done)
-        self.assertEqual(CheckRun.objects.filter(pull_request=pr, head_sha="def456").count(), 0)
-        self.assertEqual(StatusContext.objects.filter(pull_request=pr, head_sha="def456").count(), 0)
         self.assertGreaterEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha="def456").count(), 1)
         self.assertGreaterEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha="def456").count(), 1)
 

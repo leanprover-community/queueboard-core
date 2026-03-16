@@ -16,8 +16,7 @@ from syncer.models import (
     PRTimelineEvent,
     PRTimelineEventType,
 )
-from syncer.models.check_run import CheckRunStatus
-from syncer.models.status_context import StatusContextState
+from syncer.models.ci_enums import CheckRunStatus, StatusContextState
 from analyzer.models import PRRevision, PRRevisionBuildState
 
 PR_REVISION_BUILDER_VERSION = 1

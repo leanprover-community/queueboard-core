@@ -7,8 +7,8 @@ from unittest.mock import patch
 from core.models import Repository
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevisionBuildState, QueueRuleSet
 from analyzer.tasks.process_pr import process_pr
+from syncer.models import CommitCheckRun, PullRequest, PRTimelineEvent, PRTimelineEventType
 from syncer.services.sub.ci_sync import sync_check_runs
-from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType, CheckRun
 
 
 class TestProcessPRTask(TestCase):
@@ -116,8 +116,8 @@ class TestProcessPRTask(TestCase):
             after_sha="h2",
         )
         # Seed CI for h1 so only h2 is missing.
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id="CR_h1",
             head_sha="h1",
             name="build",

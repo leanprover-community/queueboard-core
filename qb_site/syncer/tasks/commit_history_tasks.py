@@ -3,8 +3,7 @@ from __future__ import annotations
 from celery import shared_task
 
 from syncer.models import PullRequest
-from syncer.models.check_run import CheckRunStatus
-from syncer.models.status_context import StatusContextState
+from syncer.models.ci_enums import CheckRunStatus, StatusContextState
 from syncer.services.github_client import GitHubClient
 from syncer.services.commit_history import harvest_commit_history_with_cursor
 from syncer.tasks.sync_tasks import sync_ci_for_shas_task

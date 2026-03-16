@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.utils import timezone
 
-from syncer.models import CheckRun, CommitCheckRun, CommitStatusContext, StatusContext
+from syncer.models import CommitCheckRun, CommitStatusContext
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.tests.factories import make_repo, make_pr
 from analyzer.models import PRRevisionBuildState
@@ -30,7 +30,6 @@ class TestCISync(TestCase):
         ]
         before = timezone.now()
         res = sync_check_runs(self.pr, ctxs, head_sha)
-        self.assertEqual(CheckRun.objects.filter(pull_request=self.pr).count(), 0)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha=head_sha).count(), 1)
         self.assertEqual(res.created, 1)
         cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR1")
@@ -61,7 +60,6 @@ class TestCISync(TestCase):
         ]
         before = timezone.now()
         res = sync_status_contexts(self.pr, ctxs, head_sha)
-        self.assertEqual(StatusContext.objects.filter(pull_request=self.pr).count(), 0)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha=head_sha).count(), 1)
         self.assertEqual(res.created, 1)
         sc = CommitStatusContext.objects.get(repository=self.repo, github_node_id="SC1")

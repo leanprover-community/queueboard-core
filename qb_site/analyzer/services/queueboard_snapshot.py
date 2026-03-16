@@ -15,11 +15,10 @@ from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnap
 from analyzer.services.queue_rules import QueueRules, rules_for_rule_set
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
+from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus, StatusContextState
 from syncer.models.pull_request import PullRequestState
-from syncer.models.check_run import CheckRunConclusion, CheckRunStatus
 from syncer.models.commit_check_run import CommitCheckRun
 from syncer.models.commit_status_context import CommitStatusContext
-from syncer.models.status_context import StatusContextState
 from queueboard.classify_pr_state import determine_PR_status, label_categorisation_rules, PRState
 from queueboard.ci_status import CIStatus
 from queueboard.util import format_delta

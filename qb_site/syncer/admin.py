@@ -15,8 +15,6 @@ from .models import (
     LabelDef,
     PRLabel,
     PRTimelineEvent,
-    CheckRun,
-    StatusContext,
     SyncerMetricsSnapshot,
     SyncerConvergenceSnapshot,
     RepoBackfillCursor,
@@ -82,48 +80,6 @@ class PRTimelineEventInline(admin.TabularInline):
             def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
                 super().__init__(*args, **kwargs)
                 qs = self_inner.queryset.order_by("-occurred_at")
-                self_inner.queryset = qs[:10]
-
-        return LimitedFormSet
-
-
-class CheckRunInline(admin.TabularInline):
-    model = CheckRun
-    extra = 0
-    can_delete = False
-    fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "created_at", "updated_at", "details_url")
-    readonly_fields = ("name", "status", "conclusion", "head_sha", "gh_completed_at", "created_at", "updated_at", "details_url")
-    ordering = ("-gh_completed_at",)
-    show_change_link = True
-
-    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
-        FormSet = super().get_formset(request, obj, **kwargs)
-
-        class LimitedFormSet(FormSet):  # type: ignore[misc]
-            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
-                super().__init__(*args, **kwargs)
-                qs = self_inner.queryset.order_by("-gh_completed_at")
-                self_inner.queryset = qs[:10]
-
-        return LimitedFormSet
-
-
-class StatusContextInline(admin.TabularInline):
-    model = StatusContext
-    extra = 0
-    can_delete = False
-    fields = ("name", "state", "head_sha", "gh_created_at", "created_at", "updated_at", "target_url")
-    readonly_fields = ("name", "state", "head_sha", "gh_created_at", "created_at", "updated_at", "target_url")
-    ordering = ("-gh_created_at",)
-    show_change_link = True
-
-    def get_formset(self, request, obj=None, **kwargs):  # type: ignore[override]
-        FormSet = super().get_formset(request, obj, **kwargs)
-
-        class LimitedFormSet(FormSet):  # type: ignore[misc]
-            def __init__(self_inner, *args, **kwargs):  # type: ignore[no-redef]
-                super().__init__(*args, **kwargs)
-                qs = self_inner.queryset.order_by("-gh_created_at")
                 self_inner.queryset = qs[:10]
 
         return LimitedFormSet
@@ -946,84 +902,6 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "label_name",
         "before_sha",
         "after_sha",
-        "created_at",
-        "updated_at",
-    )
-
-
-@admin.register(CheckRun)
-class CheckRunAdmin(ReadOnlyAdmin):
-    def short_sha(self, obj: CheckRun) -> str:  # pragma: no cover - simple formatting
-        return obj.head_sha[:7]
-
-    short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
-
-    list_display = (
-        "pull_request",
-        "name",
-        "status",
-        "conclusion",
-        "short_sha",
-        "gh_completed_at",
-        "last_synced_at",
-        "created_at",
-        "updated_at",
-    )
-    list_filter = ("pull_request__repository", "status", "conclusion")
-    search_fields = ("name", "head_sha", "pull_request__number")
-    date_hierarchy = "gh_completed_at"
-    ordering = ("-gh_completed_at", "-id")
-    raw_id_fields = ("pull_request",)
-    readonly_fields = (
-        "pull_request",
-        "github_node_id",
-        "head_sha",
-        "name",
-        "status",
-        "conclusion",
-        "details_url",
-        "external_id",
-        "gh_started_at",
-        "gh_completed_at",
-        "last_synced_at",
-        "created_at",
-        "updated_at",
-    )
-
-
-@admin.register(StatusContext)
-class StatusContextAdmin(ReadOnlyAdmin):
-    def short_sha(self, obj: StatusContext) -> str:  # pragma: no cover - simple formatting
-        return obj.head_sha[:7]
-
-    short_sha.short_description = "head_sha"  # type: ignore[attr-defined]
-
-    list_display = (
-        "pull_request",
-        "name",
-        "state",
-        "short_sha",
-        "gh_created_at",
-        "last_synced_at",
-        "created_at",
-        "updated_at",
-    )
-    list_filter = ("pull_request__repository", "state")
-    search_fields = ("name", "head_sha", "pull_request__number")
-    date_hierarchy = "gh_created_at"
-    ordering = ("-gh_created_at", "-id")
-    raw_id_fields = ("pull_request",)
-    readonly_fields = (
-        "pull_request",
-        "github_node_id",
-        "rest_id",
-        "head_sha",
-        "name",
-        "state",
-        "target_url",
-        "description",
-        "gh_created_at",
-        "last_synced_at",
         "created_at",
         "updated_at",
     )

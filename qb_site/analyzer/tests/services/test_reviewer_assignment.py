@@ -18,9 +18,9 @@ from analyzer.services.reviewer_assignment import (
 )
 from core.models import Repository, ReviewerPreference, User
 from analyzer.models import ReviewerOptOut
+from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus
 from syncer.services.pr_sync_service import PRSyncService
-from syncer.models import LabelDef, PRLabel, PullRequest
-from syncer.models.check_run import CheckRun, CheckRunConclusion, CheckRunStatus
+from syncer.models import CommitCheckRun, LabelDef, PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 
 
@@ -589,8 +589,8 @@ class ReviewerAssignmentBuilderTests(TestCase):
         for label_name in labels:
             label_def, _ = LabelDef.objects.get_or_create(repository=self.repo, name=label_name, defaults={"color": "123456"})
             PRLabel.objects.create(pull_request=pr, label_def=label_def)
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id=f"cr-{number}",
             head_sha="a" * 40,
             name="lint",
@@ -1121,8 +1121,8 @@ class AreaStatsBuilderTests(TestCase):
         for label_name in labels:
             label_def, _ = LabelDef.objects.get_or_create(repository=self.repo, name=label_name, defaults={"color": "123456"})
             PRLabel.objects.create(pull_request=pr, label_def=label_def)
-        CheckRun.objects.create(
-            pull_request=pr,
+        CommitCheckRun.objects.create(
+            repository=self.repo,
             github_node_id=f"cr-area-{number}",
             head_sha="a" * 40,
             name="lint",
