@@ -506,14 +506,15 @@ function installTableFilters(table, tableElement, topicLabels, initialFilters, i
   updateFilterSummary(topicFilter.summary, "Topic label", state.topicLabels.size, state.topicLabelOptions.length);
 }
 
-$.fn.dataTable.ext.search.push(function (settings, data) {
+$.fn.dataTable.ext.search.push(function (settings, data, dataIndex) {
   const tableElement = settings.nTable;
   const state = tableFilterState.get(tableElement);
   if (!state) {
     return true;
   }
+  const rowData = new $.fn.dataTable.Api(settings).row(dataIndex).data() || data;
 
-  const prType = extractPrTypeFromTitle(getTitleColumnHtml(data));
+  const prType = extractPrTypeFromTitle(getTitleColumnHtml(rowData));
   if (state.prTypes.size !== state.prTypeOptions.length && !state.prTypes.has(prType)) {
     return false;
   }
@@ -522,7 +523,7 @@ $.fn.dataTable.ext.search.push(function (settings, data) {
     if (state.topicLabels.size === 0) {
       return false;
     }
-    const rowTopicLabels = extractLabelNames(getLabelsColumnHtml(data)).filter(isTopicLabel);
+    const rowTopicLabels = extractLabelNames(getLabelsColumnHtml(rowData)).filter(isTopicLabel);
     if (!rowTopicLabels.some((label) => state.topicLabels.has(label))) {
       return false;
     }
