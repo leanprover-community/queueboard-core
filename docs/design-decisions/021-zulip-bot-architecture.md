@@ -68,7 +68,6 @@ ZULIP_COMMAND_POLICY = {
   - `message.sender_email`
   - `message.sender_full_name`
   - and `message.stream_id` for stream messages.
-- Commands outside policy are silently ignored (`HTTP 200` with empty response body).
 - Commands outside policy are silently ignored via Zulip no-op response JSON (`{"response_not_required": true}`).
 - Unknown commands:
   - Return private filtered help if user/context is allowed for at least one command.
