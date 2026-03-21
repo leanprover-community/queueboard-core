@@ -25,7 +25,10 @@ bash scripts/repo_check_compose.sh                                              
 - That script depends on Docker Compose and may be unavailable in sandboxed environments.
 - In restricted environments, run what is still valid locally:
   - `uv run ruff check .`
-  - fixture-based legacy tests under `src/queueboard/`
+  - `uv run python src/queueboard/test_state_evolution.py`
+  - `uv run python src/queueboard/test_snapshot.py`
+  - `uv run python src/queueboard/test_process.py`
+  - `uv run python src/queueboard/test_reviewer_topics.py`
   - other non-DB checks.
 - If Compose checks cannot run, clearly report that gap and request user-run results when needed.
 - Snapshot dashboard outputs by copying `*.html` into `before/` and `after/` folders, then diff to spot regressions.

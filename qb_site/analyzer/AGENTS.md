@@ -21,17 +21,37 @@ docker compose exec -T web python qb_site/manage.py plan_ci_backfill --repo lean
 
 # Backfill reviewer opt-outs command
 docker compose exec -T web python qb_site/manage.py backfill_reviewer_opt_outs --dry-run
+
+# Backfill queue-window build states (e.g. after adding a new build-state field)
+docker compose exec -T web python qb_site/manage.py backfill_queue_window_build_states --dry-run
 ```
 
 ## Task Surface
-- Periodic analyzer tasks include:
-  - `analyzer.plan_missing_ci`,
-  - `analyzer.rebuild_revisions_sweep`,
-  - `analyzer.rebuild_queue_windows_sweep`,
-  - `analyzer.rebuild_dependencies_sweep`,
-  - snapshot refresh tasks (`queueboard`, reviewer assignment, area stats),
-  - `analyzer.collect_convergence`.
-- Keep tasks idempotent and resumable; prefer explicit summary payloads to aid admin/task-result debugging.
+Celery task names (as registered via `@shared_task(name=…)`):
+
+**Per-PR processing**
+- `analyzer.process_pr` — orchestrates revisions, queue windows, dependency parsing, and CI-by-SHA planning for a single PR after syncer ingest.
+
+**Sweep / periodic tasks**
+- `analyzer.plan_missing_ci` — identifies revision heads with no CI data and enqueues CI-by-SHA syncs.
+- `analyzer.rebuild_revisions_sweep` — sweeps all repos to rebuild PR revision windows.
+- `analyzer.rebuild_queue_windows_sweep` — sweeps all repos to rebuild queue-window rows.
+- `analyzer.collect_convergence` — records convergence analytics snapshots.
+
+**Dependency tasks**
+- `analyzer.rebuild_pr_dependencies` — rebuilds dependency edges for a single PR.
+- `analyzer.rebuild_dependencies_sweep` — sweeps all repos to rebuild PR dependency state.
+
+**Snapshot / assignment tasks**
+- `analyzer.build_queueboard_snapshot` / `analyzer.refresh_queueboard_snapshots`
+- `analyzer.build_reviewer_assignment` / `analyzer.refresh_reviewer_assignments`
+- `analyzer.build_area_stats` / `analyzer.refresh_area_stats`
+
+**Reviewer attention tasks**
+- `analyzer.reviewer_attention_daily` — daily sweep that computes reviewer-attention signals.
+- `analyzer.reviewer_attention_cleanup` — prunes stale reviewer-attention records.
+
+Keep tasks idempotent and resumable; prefer explicit summary payloads to aid admin/task-result debugging.
 
 ## Testing Expectations
 - Canonical full validation still goes through `bash scripts/repo_check_compose.sh`.

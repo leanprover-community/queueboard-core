@@ -17,7 +17,8 @@ cd qb_site/zulip_bot/frontend && npm test
 ```
 
 ## Command Architecture Notes
-- Assignment command flow is split for clarity:
+- Commands live in `commands/`: `assign`, `unassign`, `assigned_prs`, `prefs`, `help`, `echo`, `register_test`.
+- Assignment command flow (all under `services/`) is split for clarity:
   - parse: `assignment_command_parser.py`,
   - validate: `assignment_validation.py`,
   - preflight/mutation orchestration: `assignment_execution.py` + `assignment_preflight.py`.
@@ -30,10 +31,12 @@ cd qb_site/zulip_bot/frontend && npm test
 - Do not log secrets/tokens or raw sensitive payload fragments.
 
 ## Registration and Preferences
-- Registration-link/state behavior is in:
+- Registration-link/state behavior is in `services/`:
   - `registration_links.py`,
   - `registration_oauth_state.py`,
-  - `registration_linking.py`.
+  - `registration_linking.py`,
+  - `registration_bootstrap.py` (initial bootstrap helpers),
+  - `prefs_links.py` (preference deep-link generation).
 - Zulip prefs form/UI behavior spans Django forms/views and `frontend/` tests; keep behavior parity across backend validation and frontend affordances.
 
 ## Testing Expectations

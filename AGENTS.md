@@ -57,3 +57,14 @@ Notes
 ## Design Decisions
 - Architectural and operational choices are recorded under `docs/design-decisions/`.
 - Start with `docs/design-decisions/README.md` for format and naming conventions.
+
+## Keeping AGENTS.md Files Updated
+- Every directory with significant logic has its own `AGENTS.md` (mirrored as `CLAUDE.md`).
+  Current locations: root, `qb_site/`, `qb_site/syncer/`, `qb_site/analyzer/`,
+  `qb_site/zulip_bot/`, `src/queueboard/`.
+- When you add, rename, or remove management commands, Celery tasks, key services, or
+  directory structure, update the relevant `AGENTS.md` in the same commit/PR.
+- When you add a new app or significant sub-directory, create a matching `AGENTS.md`
+  (and a `CLAUDE.md` that just contains `@AGENTS.md`) in that directory.
+- Keep task names in AGENTS.md in sync with the `name=` string in `@shared_task(name=…)`
+  decorators—these are the identifiers used in admin, logs, and beat schedules.

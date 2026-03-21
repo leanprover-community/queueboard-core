@@ -49,11 +49,16 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
 
 ## Scheduling Notes
 - Beat periodically enqueues:
-  - `syncer.sync_active_repos` -> `syncer.sync_repo_since` (discovery),
-  - `syncer.backfill_repo_history_active`,
-  - `syncer.backfill_repo_incomplete_prs_active`,
-  - `syncer.refresh_pending_ci_for_active_repos`,
-  - optional engagement/commit-history sweeps.
+  - `syncer.sync_active_repos` → fans out to `syncer.sync_repo_since` (discovery/watermark),
+  - `syncer.sync_pr` — per-PR ingest (enqueued by discovery or admin),
+  - `syncer.backfill_repo_history_active` → `syncer.backfill_repo_history`,
+  - `syncer.backfill_repo_incomplete_prs_active` → `syncer.backfill_repo_incomplete_prs`,
+  - `syncer.refresh_pending_ci_for_active_repos` → `syncer.refresh_pending_ci_for_repo`,
+  - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
+  - `syncer.backfill_repo_engagement_active` → `syncer.backfill_repo_engagement` (optional),
+  - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
+  - `syncer.collect_convergence` — records syncer convergence metrics,
+  - `syncer.collect_metrics` — records sync throughput/lag metrics.
 - Keep task behavior idempotent and retry-safe; prefer explicit status/reason payloads in return dicts.
 
 ## Data and Service Notes
