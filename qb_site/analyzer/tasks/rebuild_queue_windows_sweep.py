@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from celery import shared_task
+from datetime import datetime
 from django.utils import timezone
 
 from django.db.models import Count, Exists, F, Min, OuterRef, Q
@@ -18,21 +19,49 @@ def _is_ruleset_stale_for_pr(
     state: PRRevisionBuildState,
     rs_state: PRQueueWindowBuildState | None,
     has_rollup_backfill: bool,
+    pr_gh_updated_at: datetime | None = None,
 ) -> bool:
-    """Return whether queue windows are stale for a specific (PR, ruleset) pair."""
+    """Return whether queue windows are stale for a specific (PR, ruleset) pair.
+
+    This is the *exact* per-ruleset staleness check executed in Python after the
+    SQL prefilter (``needs_rebuild``) narrows the candidate PR set.  Every condition
+    here must have a corresponding conservative signal in the outer SQL filter so that
+    the prefilter does not produce false negatives (i.e., it may include extra PRs but
+    must never miss a stale one).
+
+    Staleness sources and their SQL counterparts
+    -------------------------------------------
+    - No build-state row              → ``active_ruleset_state_count < len(rule_set_ids)``
+    - ``revision_version_built`` null → ``null_ruleset_state_revision_count > 0``
+    - ``revision_version_built`` lag  → ``min_ruleset_state_revision_built < revision_version``
+    - ``windows_built_at`` null       → ``null_ruleset_state_windows_built_at_count > 0``
+    - Ruleset ``updated_at`` changed  → ``min_ruleset_state_windows_built_at < max_ruleset_updated_at``
+    - Label/state change (``gh_updated_at``) → ``min_ruleset_state_windows_built_at < gh_updated_at``
+    - Rollup fields missing           → ``has_rollup_backfill=True`` (Exists subquery)
+    """
+    # Existing windows have missing rollup fields (window_count=0 or first_on_queue_ts=None).
     if has_rollup_backfill:
         return True
 
+    # No build-state row yet for this (PR, ruleset) pair.
     if rs_state is None:
         return True
 
+    # Build-state freshness fields are null — windows were never successfully recorded.
     if rs_state.revision_version_built is None:
         return True
+    # A new revision was built after the last queue-window rebuild.
     if rs_state.revision_version_built < state.revision_version:
         return True
     if rs_state.windows_built_at is None:
         return True
+    # The ruleset definition changed (e.g. forbidden_label_names updated) after last rebuild.
     if rule_set.updated_at and rs_state.windows_built_at < rule_set.updated_at:
+        return True
+    # GitHub bumps pr.gh_updated_at on label events, review-state changes, and other
+    # PR metadata changes.  If windows were built before that timestamp, queue membership
+    # may have changed (e.g. a forbidden label was added/removed) without a revision bump.
+    if pr_gh_updated_at and rs_state.windows_built_at < pr_gh_updated_at:
         return True
     return False
 
@@ -111,16 +140,32 @@ def rebuild_queue_windows_sweep_task(
             ),
         )
 
+        # Conservative SQL prefilter: select PRs that *might* have stale queue windows.
+        # This may include false positives (handled by the exact per-PR check below), but
+        # must never produce false negatives.  Every condition in _is_ruleset_stale_for_pr
+        # has a corresponding approximate signal here.
         needs_rebuild = (
+            # PR has no revision build-state at all — treat as stale.
             Q(revision_build_state__isnull=True)
+            # At least one existing window row is missing rollup fields.
             | Q(has_rollup_backfill=True)
+            # Fewer build-state rows than active rulesets — at least one ruleset is missing.
             | Q(active_ruleset_state_count__lt=len(rule_set_ids))
+            # At least one build-state row has a null revision_version_built.
             | Q(null_ruleset_state_revision_count__gt=0)
+            # The oldest built revision is behind the current revision_version.
             | Q(min_ruleset_state_revision_built__lt=F("revision_build_state__revision_version"))
+            # At least one build-state row has a null windows_built_at.
             | Q(null_ruleset_state_windows_built_at_count__gt=0)
         )
+        # The oldest windows_built_at predates the most recently updated ruleset definition.
         if max_ruleset_updated_at is not None:
             needs_rebuild |= Q(min_ruleset_state_windows_built_at__lt=max_ruleset_updated_at)
+        # Detect staleness from label/state changes: GitHub bumps updated_at on label events,
+        # and the syncer stores this as gh_updated_at. If windows were built before that
+        # timestamp, queue membership may have changed without a revision bump.
+        # Using an F() expression avoids a correlated subquery and keeps this O(1) per row.
+        needs_rebuild |= Q(min_ruleset_state_windows_built_at__lt=F("gh_updated_at"))
         pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=200)
 
         repo_rebuilt = 0
@@ -208,6 +253,7 @@ def rebuild_queue_windows_sweep_task(
                         state=state,
                         rs_state=existing_rs_states.get(int(rs.id)),
                         has_rollup_backfill=(pr_id, int(rs.id)) in rollup_backfill_pairs,
+                        pr_gh_updated_at=pr.gh_updated_at,
                     )
                 ]
                 stale_ruleset = bool(stale_rule_sets)

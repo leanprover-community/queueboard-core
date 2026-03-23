@@ -4,7 +4,7 @@ from django.db import transaction
 
 from analyzer.services.revisions import rebuild_pr_revisions
 from analyzer.services.queue_window_build_state import record_queue_window_build_states
-from analyzer.services.queue_windows import queue_windows_need_rollup_backfill, rebuild_queue_windows_for_pr
+from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from analyzer.models import QueueRuleSet
 from syncer.services.github_client import GitHubClient
 from syncer.models import PullRequest
@@ -24,8 +24,10 @@ def process_pr(
     """Orchestrate revision rebuild and queue window rebuild for a single PR.
 
     This is a minimal orchestrator: it assumes timeline backfill is complete,
-    runs the revision builder, and rebuilds queue windows for all rule sets when
-    revisions changed. Tail-append handling is delegated to `rebuild_pr_revisions`.
+    runs the revision builder, and always rebuilds queue windows for all rule sets.
+    Queue windows are rebuilt unconditionally so that label-only changes (which do
+    not bump revision_version) are reflected promptly. Tail-append handling is
+    delegated to `rebuild_pr_revisions`.
     """
     if not getattr(pr, "timeline_backfill_done", False):
         return {"status": "skipped", "reason": "timeline_backfill_incomplete"}
@@ -41,17 +43,14 @@ def process_pr(
         "planned": 0,
         "enqueued": [],
     }
-    queue_results: dict[int, dict[str, object]] = {}
     rulesets = list(QueueRuleSet.objects.filter(repository=pr.repository, is_active=True))
-    rollup_missing = False
-    for rule_set in rulesets:
-        if queue_windows_need_rollup_backfill(pr=pr, rule_set=rule_set):
-            rollup_missing = True
-            break
 
-    if strategy != "noop" or rollup_missing:
-        summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=rulesets)
-        queue_results = summary.get("per_ruleset", {}) or {}
+    # Always rebuild queue windows: label changes don't bump revision_version but do
+    # affect queue membership, so we must rebuild on every process_pr invocation.
+    summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=rulesets)
+    queue_results = summary.get("per_ruleset", {}) or {}
+
+    if strategy != "noop":
         # Harvest commit history per force-push segment baseline to surface missed heads via Syncer task.
         fps = list(
             pr.timeline_events.filter(type="HEAD_FORCE_PUSHED")

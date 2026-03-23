@@ -180,6 +180,27 @@ class TestProcessPRTask(TestCase):
         self.assertGreaterEqual(qwin.window_count, 1)
         self.assertIsNotNone(qwin.first_on_queue_ts)
 
+    def test_rebuilds_queue_windows_on_noop_revision_strategy(self) -> None:
+        """Queue windows are rebuilt even when no revision changed (label-only sync scenario)."""
+        pr = self._mk_pr(6)
+        self.assertEqual(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).count(), 0)
+
+        class _StubRes:
+            strategy = "noop"
+            created = 0
+            deleted = 0
+
+        with patch("analyzer.tasks.process_pr.rebuild_pr_revisions", return_value=_StubRes()):
+            res = process_pr(pr, client=self._StubClient())
+
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["revisions"], "noop")
+        # Windows must be rebuilt regardless of revision strategy.
+        self.assertGreaterEqual(PRQueueWindow.objects.filter(pull_request=pr, rule_set=self.rule_set).count(), 1)
+        self.assertIsNotNone(PRQueueWindowBuildState.objects.filter(pull_request=pr, rule_set=self.rule_set).first())
+        # No harvest tasks for noop.
+        self.assertEqual(res["harvest"], {})
+
     def test_process_pr_two_identical_cycles_do_not_churn_revision_version(self) -> None:
         pr = self._mk_pr(5)
         t_fp = pr.gh_created_at + timezone.timedelta(hours=1)

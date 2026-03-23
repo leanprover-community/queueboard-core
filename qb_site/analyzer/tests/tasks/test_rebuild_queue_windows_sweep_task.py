@@ -290,11 +290,14 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
         )
+        # state_one is up-to-date: windows_built_at is after gh_updated_at so it is
+        # not stale under the gh_updated_at staleness check.
+        state_one_built_at = timezone.now()
         state_one = PRQueueWindowBuildState.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
             revision_version_built=1,
-            windows_built_at=built_at,
+            windows_built_at=state_one_built_at,
             last_status="rebuilt",
         )
         state_two = PRQueueWindowBuildState.objects.create(
@@ -304,9 +307,8 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             windows_built_at=built_at,
             last_status="rebuilt",
         )
-        # Align ruleset timestamps with built_at so only the explicit bump below
-        # marks one ruleset as stale.
-        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        # Align ruleset timestamps so only the explicit bump below marks rs_two stale.
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=state_one_built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
         # Only rs_two should be stale.
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=timezone.now())
@@ -316,7 +318,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertEqual(res["prs_checked"], 1)
         state_one.refresh_from_db()
         state_two.refresh_from_db()
-        self.assertEqual(state_one.windows_built_at, built_at)
+        self.assertEqual(state_one.windows_built_at, state_one_built_at)
         self.assertGreater(state_two.windows_built_at, built_at)
 
     def test_missing_ruleset_state_is_stale_even_when_legacy_state_is_up_to_date(self) -> None:
@@ -390,11 +392,14 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at + timezone.timedelta(hours=1))
+        # windows_built_at is after gh_updated_at so self.rule_set's state is not
+        # stale under the gh_updated_at check; only rs_two (missing state) is stale.
+        existing_built_at = timezone.now()
         existing = PRQueueWindowBuildState.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
             revision_version_built=1,
-            windows_built_at=built_at,
+            windows_built_at=existing_built_at,
             last_status="rebuilt",
         )
         PRQueueWindow.objects.create(
@@ -420,7 +425,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
 
         self.assertEqual(res["prs_checked"], 1)
         existing.refresh_from_db()
-        self.assertEqual(existing.windows_built_at, built_at)
+        self.assertEqual(existing.windows_built_at, existing_built_at)
         created = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=rs_two)
         self.assertGreater(created.windows_built_at, built_at)
         self.assertEqual(created.last_status, "rebuilt")
@@ -569,11 +574,14 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        # up_to_date: windows_built_at is after gh_updated_at so it is not stale
+        # under the gh_updated_at check; only rs_two (stale revision) triggers rebuild.
+        up_to_date_built_at = timezone.now()
         up_to_date = PRQueueWindowBuildState.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
             revision_version_built=2,
-            windows_built_at=built_at,
+            windows_built_at=up_to_date_built_at,
             last_status="rebuilt",
         )
         stale = PRQueueWindowBuildState.objects.create(
@@ -608,7 +616,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         up_to_date.refresh_from_db()
         stale.refresh_from_db()
         self.assertEqual(up_to_date.revision_version_built, 2)
-        self.assertEqual(up_to_date.windows_built_at, built_at)
+        self.assertEqual(up_to_date.windows_built_at, up_to_date_built_at)
         self.assertEqual(stale.revision_version_built, 2)
         self.assertGreater(stale.windows_built_at, built_at)
 
@@ -632,11 +640,13 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        # up_to_date: windows_built_at is after gh_updated_at so it is not stale
+        # under the gh_updated_at check; only rs_two (null revision) is stale.
         up_to_date = PRQueueWindowBuildState.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
             revision_version_built=2,
-            windows_built_at=built_at,
+            windows_built_at=timezone.now(),
             last_status="rebuilt",
         )
         stale = PRQueueWindowBuildState.objects.create(
@@ -735,3 +745,63 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertEqual(up_to_date.revision_version_built, 2)
         self.assertIsNotNone(stale.windows_built_at)
         self.assertGreater(stale.windows_built_at, built_at)
+
+    def test_rebuilds_when_gh_updated_at_after_windows_built_at(self) -> None:
+        """Label-only GitHub update (no revision bump) causes a stale window rebuild.
+
+        This is the bug scenario: gh_updated_at is bumped by a label change but
+        revision_version and ruleset are unchanged, so the only staleness signal
+        is windows_built_at < gh_updated_at.
+        """
+        pr = self._mk_pr(16)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        # windows_built_at is before gh_updated_at: simulates windows rebuilt before
+        # the label was applied, but not yet re-rebuilt after it was removed.
+        old_built_at = pr.gh_updated_at - timezone.timedelta(hours=2)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=old_built_at,
+        )
+        # Pin ruleset updated_at to old_built_at so it is not a staleness trigger.
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=old_built_at)
+        rs_state = PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=old_built_at,
+            last_status="rebuilt",
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 1)
+        rs_state.refresh_from_db()
+        self.assertGreater(rs_state.windows_built_at, old_built_at)
+
+    def test_skips_when_windows_built_at_after_gh_updated_at(self) -> None:
+        """A PR whose windows were rebuilt after the last GitHub update is not stale."""
+        pr = self._mk_pr(17)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        # windows_built_at is after gh_updated_at: no staleness.
+        fresh_built_at = pr.gh_updated_at + timezone.timedelta(hours=1)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            windows_built_revision_version=1,
+            windows_built_at=fresh_built_at,
+        )
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=fresh_built_at)
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=fresh_built_at,
+            last_status="rebuilt",
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertEqual(res["windows_rebuilt"], 0)
