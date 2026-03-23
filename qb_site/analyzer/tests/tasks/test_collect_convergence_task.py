@@ -179,15 +179,18 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             is_active=True,
         )
         pr = self._mk_pr(11)
+        # Set gh_updated_at before built_at so it does not trigger gh_updated_at staleness.
+        built_at = timezone.now()
+        PullRequest.objects.filter(pk=pr.pk).update(gh_updated_at=built_at - timezone.timedelta(hours=1))
+        pr.refresh_from_db()
         PRRevision.objects.create(pull_request=pr, head_sha="z1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
-        built_at = timezone.now() - timezone.timedelta(days=2)
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
             windows_built_revision_version=1,
             windows_built_at=built_at,
         )
-        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at - timezone.timedelta(hours=2))
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=timezone.now())
         PRQueueWindowBuildState.objects.create(
             pull_request=pr,
@@ -225,7 +228,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         collect_analyzer_convergence_task.apply().get()
         snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
         self.assertIsNotNone(snap)
-        # Exactly one stale (pr, ruleset) pair: (pr, rs_two).
+        # Exactly one stale (pr, ruleset) pair: (pr, rs_two) — rs_two.updated_at > built_at.
         self.assertEqual(snap.windows_stale, 1)
 
     def test_windows_stale_counts_missing_per_ruleset_state_pair(self) -> None:
@@ -239,15 +242,18 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         )
         pr = self._mk_pr(12)
         PRRevision.objects.create(pull_request=pr, head_sha="z2", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        # Set gh_updated_at before built_at so it does not trigger gh_updated_at staleness
+        # on the existing (pr, rule_set) build-state row.
         built_at = timezone.now()
+        PullRequest.objects.filter(pk=pr.pk).update(gh_updated_at=built_at - timezone.timedelta(hours=1))
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
             windows_built_revision_version=1,
             windows_built_at=built_at,
         )
-        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
-        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at - timezone.timedelta(hours=2))
+        QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at - timezone.timedelta(hours=2))
         PRQueueWindowBuildState.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
@@ -279,6 +285,72 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         self.assertIsNotNone(snap)
         # Missing state row for rs_two counts as stale regardless of legacy PR-level fields.
         self.assertEqual(snap.windows_stale, 1)
+
+    def test_windows_stale_detects_gh_updated_at_staleness(self) -> None:
+        """windows_stale counts (PR, ruleset) pairs where windows were built before gh_updated_at.
+
+        This covers label-only changes: GitHub bumps updated_at on label events, and
+        windows built before that timestamp may no longer reflect current queue membership.
+        """
+        pr = self._mk_pr(20)
+        PRRevision.objects.create(pull_request=pr, head_sha="s1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        # windows_built_at is before gh_updated_at (label event occurred after last rebuild).
+        old_built_at = pr.gh_updated_at - timezone.timedelta(hours=2)
+        PRRevisionBuildState.objects.create(pull_request=pr, revision_version=1)
+        # Rule set updated_at is before windows_built_at — not the cause of staleness here.
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=old_built_at - timezone.timedelta(hours=1))
+        self.rule_set.refresh_from_db()
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=old_built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.windows_stale, 1)
+
+    def test_windows_stale_skips_when_windows_built_at_after_gh_updated_at(self) -> None:
+        """windows_stale is 0 when windows were built after the last gh_updated_at."""
+        pr = self._mk_pr(21)
+        PRRevision.objects.create(pull_request=pr, head_sha="s2", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        fresh_built_at = pr.gh_updated_at + timezone.timedelta(hours=1)
+        PRRevisionBuildState.objects.create(pull_request=pr, revision_version=1)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=pr.gh_updated_at - timezone.timedelta(hours=1))
+        self.rule_set.refresh_from_db()
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=fresh_built_at,
+            last_status="rebuilt",
+        )
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=pr.gh_created_at,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=pr.gh_created_at,
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.windows_stale, 0)
 
     def test_ci_not_checked_uses_commit_scoped_ci_rows(self) -> None:
         pr_missing = self._mk_pr(60)

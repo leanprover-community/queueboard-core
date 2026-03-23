@@ -33,7 +33,7 @@ def collect_analyzer_convergence_task() -> dict:
                 rev_version=F("revision_build_state__revision_version"),
             )
             .filter(rev_version__isnull=False)
-            .values("id", "rev_version")
+            .values("id", "rev_version", "gh_updated_at")
         )
         windows_stale = 0
         if active_rulesets and prs_with_rev:
@@ -61,6 +61,7 @@ def collect_analyzer_convergence_task() -> dict:
             for pr_row in prs_with_rev:
                 pr_id = int(pr_row["id"])
                 rev_version = int(pr_row["rev_version"])
+                pr_gh_updated_at = pr_row.get("gh_updated_at")
                 for rs in active_rulesets:
                     rs_id = int(rs.id)
                     if (pr_id, rs_id) in rollup_stale_pairs:
@@ -70,11 +71,16 @@ def collect_analyzer_convergence_task() -> dict:
                     if rs_state is not None:
                         rs_rev = rs_state["revision_version_built"]
                         rs_built_at = rs_state["windows_built_at"]
+                        # NOTE: keep these staleness conditions in sync with
+                        # _is_ruleset_stale_for_pr in rebuild_queue_windows_sweep.py.
                         stale = (
                             rs_rev is None
                             or int(rs_rev) < rev_version
                             or rs_built_at is None
                             or (bool(rs.updated_at) and bool(rs_built_at) and rs_built_at < rs.updated_at)
+                            # GitHub bumps gh_updated_at on label/state changes; if windows
+                            # were built before that, queue membership may have changed.
+                            or (bool(pr_gh_updated_at) and bool(rs_built_at) and rs_built_at < pr_gh_updated_at)
                         )
                         if stale:
                             windows_stale += 1

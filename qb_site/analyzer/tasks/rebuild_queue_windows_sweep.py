@@ -29,6 +29,10 @@ def _is_ruleset_stale_for_pr(
     the prefilter does not produce false negatives (i.e., it may include extra PRs but
     must never miss a stale one).
 
+    NOTE: keep these staleness conditions in sync with the ``stale`` calculation
+    in ``collect_analyzer_convergence_task`` (collect_convergence.py), which uses
+    the same logic to count stale ``(PR, ruleset)`` pairs for the convergence metric.
+
     Staleness sources and their SQL counterparts
     -------------------------------------------
     - No build-state row              → ``active_ruleset_state_count < len(rule_set_ids)``
