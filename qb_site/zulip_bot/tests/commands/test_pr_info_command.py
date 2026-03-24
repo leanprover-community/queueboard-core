@@ -280,6 +280,10 @@ class CiEmojiTests(TestCase):
     def test_missing_ci_required(self) -> None:
         self.assertEqual(_ci_emoji("missing", True), ":cross_mark: (missing)")
 
+    def test_fail_inessential_treated_as_pass(self) -> None:
+        self.assertEqual(_ci_emoji("fail-inessential", False), ":check:")
+        self.assertEqual(_ci_emoji("fail-inessential", True), ":check:")
+
 
 # ---------------------------------------------------------------------------
 # Full command flow tests (mocked service + Zulip client)

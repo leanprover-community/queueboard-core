@@ -132,7 +132,7 @@ def _mentions(logins: list[str], mention_map: dict[str, str]) -> str:
 
 
 def _ci_emoji(ci_status: str, ci_requires_success: bool) -> str:
-    if ci_status == "pass":
+    if ci_status in ("pass", "fail-inessential"):
         return ":check:"
     if ci_status == "fail":
         return ":cross_mark:"
