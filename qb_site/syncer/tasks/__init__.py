@@ -6,3 +6,4 @@ from . import sync_tasks  # noqa: F401
 from . import metrics_tasks  # noqa: F401
 from . import backfill_tasks  # noqa: F401
 from . import collect_convergence  # noqa: F401
+from . import webhook_delivery_cleanup  # noqa: F401
