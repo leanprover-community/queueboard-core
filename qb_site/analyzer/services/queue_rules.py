@@ -80,13 +80,28 @@ def rules_for_rule_set(obj: QueueRuleSet) -> QueueRules:
     )
 
 
+def default_rule_set_for_repo(repo: Repository) -> QueueRuleSet | None:
+    """Return the canonical default active ruleset for a repository.
+
+    Prefers a ruleset explicitly marked ``is_default=True``; falls back to the
+    latest active ruleset by version/id; returns ``None`` if no active rulesets
+    exist (e.g. the repo was just added).
+    """
+    qs = QueueRuleSet.objects.filter(repository=repo, is_active=True)
+    obj = qs.filter(is_default=True).first()
+    if obj is None:
+        obj = qs.order_by("-version", "-id").first()
+    return obj
+
+
 def load_rules_for_repo(repo: Repository, at: Optional[datetime] = None) -> QueueRules:
     """Load the appropriate QueueRuleSet for a repository at time ``at``.
 
     Behavior
     - If ``at`` is provided, prefer the latest ruleset whose effective window
       contains ``at`` (effective_from <= at < effective_to when set).
-    - If no such ruleset exists, fall back to the latest active ruleset by version/id.
+    - If no such time-matched ruleset exists, fall back to ``default_rule_set_for_repo``
+      (which prefers ``is_default=True``, then highest version).
     - If no active rulesets exist at all, return default rules (open/not-draft only).
     """
     qs = QueueRuleSet.objects.filter(repository=repo, is_active=True)
@@ -98,10 +113,10 @@ def load_rules_for_repo(repo: Repository, at: Optional[datetime] = None) -> Queu
         ).order_by("-version", "-id")
         obj = qs_eff.first()
     if obj is None:
-        obj = qs.order_by("-version", "-id").first()
+        obj = default_rule_set_for_repo(repo)
     if obj is None:
         return QueueRules()
     return rules_for_rule_set(obj)
 
 
-__all__ = ["QueueRules", "load_rules_for_repo", "rules_for_rule_set"]
+__all__ = ["QueueRules", "default_rule_set_for_repo", "load_rules_for_repo", "rules_for_rule_set"]

@@ -12,7 +12,7 @@ from django.db.models import F, Q, QuerySet, Window
 from django.db.models.functions import RowNumber
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
-from analyzer.services.queue_rules import QueueRules, rules_for_rule_set
+from analyzer.services.queue_rules import QueueRules, default_rule_set_for_repo, rules_for_rule_set
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
 from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus, StatusContextState
@@ -779,7 +779,7 @@ class QueueboardSnapshotBuilder:
         }
 
     def _default_rule_set(self, repository: Repository) -> QueueRuleSet | None:
-        return QueueRuleSet.objects.filter(repository=repository, is_active=True).order_by("-version", "-id").first()
+        return default_rule_set_for_repo(repository)
 
     def _dependencies_for_repo(self, repository: Repository) -> Dict[int, List[int]]:
         qs: QuerySet[PRDependency] = PRDependency.objects.filter(

@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot
-from analyzer.services.queue_rules import QueueRules, load_rules_for_repo
+from analyzer.models import PRDependency, PRQueueWindow, QueueSnapshot
+from analyzer.services.queue_rules import QueueRules, default_rule_set_for_repo, load_rules_for_repo
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
 
@@ -69,7 +69,7 @@ def get_pr_queue_info(owner: str, repo_name: str, pr_number: int) -> PRQueueInfo
     except Repository.DoesNotExist:
         return None
 
-    rule_set = QueueRuleSet.objects.filter(repository=repository, is_active=True).order_by("-version", "-id").first()
+    rule_set = default_rule_set_for_repo(repository)
     cache_key = str(rule_set.id) if rule_set else "default"
     snapshot = QueueSnapshot.objects.filter(repository=repository, cache_key=cache_key).order_by("-generated_at").first()
 

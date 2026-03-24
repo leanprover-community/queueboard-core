@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 
 from analyzer.models import QueueSnapshot
 from analyzer.services.dependency_graph import DependencyGraphBuilder
+from analyzer.services.queue_rules import default_rule_set_for_repo
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 from api.views.queueboard_snapshot import _as_bool, _etag_matches
 from core.models import Repository
@@ -41,7 +42,14 @@ class QueueboardDependencyGraphView(APIView):
         if repo is None:
             return Response({"detail": "repository not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        cache_key = request.query_params.get("cache_key", "default")
+        cache_key_param = request.query_params.get("cache_key")
+        if cache_key_param is not None:
+            cache_key = cache_key_param
+            rule_set_id = None
+        else:
+            rule_set = default_rule_set_for_repo(repo)
+            cache_key = str(rule_set.id) if rule_set else "default"
+            rule_set_id = rule_set.id if rule_set else None
         refresh_requested = _as_bool(request.query_params.get("refresh"))
         ttl_seconds = int(getattr(settings, "ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS", 0))
         snapshot = (
@@ -66,6 +74,7 @@ class QueueboardDependencyGraphView(APIView):
                 repository_id=repo.id,
                 cache_key=cache_key,
                 expires_in_seconds=expires_in,
+                rule_set_id=rule_set_id,
             )
             refresh_task_id = getattr(async_res, "id", None)
             headers = {}
@@ -82,6 +91,7 @@ class QueueboardDependencyGraphView(APIView):
                 repository_id=repo.id,
                 cache_key=cache_key,
                 expires_in_seconds=expires_in,
+                rule_set_id=rule_set_id,
             )
             refresh_task_id = getattr(async_res, "id", None)
 

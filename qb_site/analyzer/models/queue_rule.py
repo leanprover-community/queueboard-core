@@ -55,6 +55,12 @@ class QueueRuleSet(TimestampedModel):
     # Whether this ruleset should be considered when building snapshots/windows.
     is_active = models.BooleanField(default=True)
 
+    # Designates this as the canonical default ruleset for the repository.
+    # At most one ruleset per repository may have is_default=True (enforced by
+    # a partial unique constraint). When no default is designated the system
+    # falls back to the highest-version active ruleset.
+    is_default = models.BooleanField(default=False)
+
     require_open = models.BooleanField(default=True)
     require_not_draft = models.BooleanField(default=True)
     require_ci_success = models.BooleanField(default=False)
@@ -75,6 +81,11 @@ class QueueRuleSet(TimestampedModel):
             models.UniqueConstraint(
                 fields=["repository", "version"],
                 name="analyzer_queueruleset_repo_version_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["repository"],
+                condition=models.Q(is_default=True),
+                name="analyzer_queueruleset_repo_single_default",
             ),
         ]
         ordering = ["repository", "-version", "id"]

@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from analyzer.models import QueueSnapshot, QueueRuleSet
+from analyzer.services.queue_rules import default_rule_set_for_repo
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 from core.models import Repository
 
@@ -52,7 +53,7 @@ class QueueboardSnapshotView(APIView):
         elif cache_key_param is not None:
             cache_key = cache_key_param
         else:
-            rule_set = QueueRuleSet.objects.filter(repository=repo, is_active=True).order_by("-version", "-id").first()
+            rule_set = default_rule_set_for_repo(repo)
             cache_key = str(rule_set.id) if rule_set else "default"
 
         refresh_requested = _as_bool(request.query_params.get("refresh"))

@@ -424,9 +424,15 @@ class RepositoryAdmin(admin.ModelAdmin):
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
                 try:
+                    from analyzer.services.queue_rules import default_rule_set_for_repo
                     from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 
-                    async_res = build_queueboard_snapshot.delay(repository_id=repo.id, cache_key="default")
+                    rule_set = default_rule_set_for_repo(repo)
+                    async_res = build_queueboard_snapshot.delay(
+                        repository_id=repo.id,
+                        cache_key=str(rule_set.id) if rule_set else "default",
+                        rule_set_id=rule_set.id if rule_set else None,
+                    )
                     notice = f"Enqueued queue snapshot build for {repo.owner}/{repo.name}: {async_res.id}"
                 except Exception as e:  # pragma: no cover - external dependency
                     error = f"Failed to enqueue queue snapshot build: {e}"
@@ -434,9 +440,15 @@ class RepositoryAdmin(admin.ModelAdmin):
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
                 try:
+                    from analyzer.services.queue_rules import default_rule_set_for_repo
                     from analyzer.tasks.reviewer_assignment import build_reviewer_assignment
 
-                    async_res = build_reviewer_assignment.delay(repository_id=repo.id, cache_key="default")
+                    rule_set = default_rule_set_for_repo(repo)
+                    async_res = build_reviewer_assignment.delay(
+                        repository_id=repo.id,
+                        cache_key=str(rule_set.id) if rule_set else "default",
+                        rule_set_id=rule_set.id if rule_set else None,
+                    )
                     notice = f"Enqueued reviewer assignment build for {repo.owner}/{repo.name}: {async_res.id}"
                 except Exception as e:  # pragma: no cover - external dependency
                     error = f"Failed to enqueue reviewer assignment build: {e}"
@@ -444,9 +456,15 @@ class RepositoryAdmin(admin.ModelAdmin):
                 form = self.SyncPRsForm(prefix="prs")
                 repo_form = self.RepoSyncTaskForm(prefix="repo")
                 try:
+                    from analyzer.services.queue_rules import default_rule_set_for_repo
                     from analyzer.tasks.reviewer_assignment import build_area_stats
 
-                    async_res = build_area_stats.delay(repository_id=repo.id, cache_key="default")
+                    rule_set = default_rule_set_for_repo(repo)
+                    async_res = build_area_stats.delay(
+                        repository_id=repo.id,
+                        cache_key=str(rule_set.id) if rule_set else "default",
+                        rule_set_id=rule_set.id if rule_set else None,
+                    )
                     notice = f"Enqueued area stats build for {repo.owner}/{repo.name}: {async_res.id}"
                 except Exception as e:  # pragma: no cover - external dependency
                     error = f"Failed to enqueue area stats build: {e}"
@@ -558,33 +576,51 @@ class RepositoryAdmin(admin.ModelAdmin):
     refresh_pending_ci_action.short_description = "Enqueue pending-CI refresh for selected repositories"  # type: ignore[attr-defined]
 
     def build_queue_snapshot_action(self, request, queryset):  # type: ignore[override]
+        from analyzer.services.queue_rules import default_rule_set_for_repo
         from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 
         count = 0
         for repo in queryset:
-            build_queueboard_snapshot.delay(repository_id=repo.id, cache_key="default")
+            rule_set = default_rule_set_for_repo(repo)
+            build_queueboard_snapshot.delay(
+                repository_id=repo.id,
+                cache_key=str(rule_set.id) if rule_set else "default",
+                rule_set_id=rule_set.id if rule_set else None,
+            )
             count += 1
         self.message_user(request, f"Enqueued queue snapshot build for {count} repositories.")
 
     build_queue_snapshot_action.short_description = "Build queue snapshot for selected repositories"  # type: ignore[attr-defined]
 
     def build_reviewer_assignment_action(self, request, queryset):  # type: ignore[override]
+        from analyzer.services.queue_rules import default_rule_set_for_repo
         from analyzer.tasks.reviewer_assignment import build_reviewer_assignment
 
         count = 0
         for repo in queryset:
-            build_reviewer_assignment.delay(repository_id=repo.id, cache_key="default")
+            rule_set = default_rule_set_for_repo(repo)
+            build_reviewer_assignment.delay(
+                repository_id=repo.id,
+                cache_key=str(rule_set.id) if rule_set else "default",
+                rule_set_id=rule_set.id if rule_set else None,
+            )
             count += 1
         self.message_user(request, f"Enqueued reviewer assignment build for {count} repositories.")
 
     build_reviewer_assignment_action.short_description = "Build reviewer assignments for selected repositories"  # type: ignore[attr-defined]
 
     def build_area_stats_action(self, request, queryset):  # type: ignore[override]
+        from analyzer.services.queue_rules import default_rule_set_for_repo
         from analyzer.tasks.reviewer_assignment import build_area_stats
 
         count = 0
         for repo in queryset:
-            build_area_stats.delay(repository_id=repo.id, cache_key="default")
+            rule_set = default_rule_set_for_repo(repo)
+            build_area_stats.delay(
+                repository_id=repo.id,
+                cache_key=str(rule_set.id) if rule_set else "default",
+                rule_set_id=rule_set.id if rule_set else None,
+            )
             count += 1
         self.message_user(request, f"Enqueued area stats build for {count} repositories.")
 
