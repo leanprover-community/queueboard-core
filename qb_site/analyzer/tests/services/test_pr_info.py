@@ -69,11 +69,12 @@ def _mk_snapshot(
     dashboards: dict,
     pr_count: int = 0,
     queue_count: int = 0,
+    cache_key: str = "default",
 ) -> QueueSnapshot:
     all_pr_nums = list(prs_data.keys())
     return QueueSnapshot.objects.create(
         repository=repo,
-        cache_key="default",
+        cache_key=cache_key,
         generated_at=generated_at,
         payload={
             "meta": {
@@ -161,6 +162,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
             required_label_names=[],
             forbidden_label_names=[],
         )
+        self.cache_key = str(self.rule_set.id)
         self.now = _dt(2026, 3, 1, 12)
 
     def test_on_queue_pr_returns_correct_fields(self) -> None:
@@ -175,7 +177,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
             on_queue_since=queue_since,
             total_queue_seconds=28 * 86400,
         )
-        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 123)
 
@@ -195,7 +197,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
 
     def test_snapshot_created_at_populated(self) -> None:
         entry = _pr_entry(123, created_at="2026-01-15T10:00:00+00:00")
-        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 123)
 
@@ -204,7 +206,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
 
     def test_missing_created_at_in_old_snapshot_returns_none(self) -> None:
         entry = _pr_entry(123, created_at=None)
-        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 123)
 
@@ -214,7 +216,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
     def test_not_on_queue_draft_pr(self) -> None:
         entry = _pr_entry(456, is_draft=True)
         entry["last_queue_status_change"] = None
-        _mk_snapshot(self.repo, self.now, {"456": entry}, {"OtherBase": [], "Unlabelled": [456]})
+        _mk_snapshot(self.repo, self.now, {"456": entry}, {"OtherBase": [], "Unlabelled": [456]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 456)
 
@@ -230,7 +232,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
             "delta": {},
             "current_status": "OffQueue",
         }
-        _mk_snapshot(self.repo, self.now, {"789": entry}, {})
+        _mk_snapshot(self.repo, self.now, {"789": entry}, {}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 789)
 
@@ -243,7 +245,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
 
         stale_time = datetime.now(tz.utc) - timedelta(hours=3)
         entry = _pr_entry(123)
-        _mk_snapshot(self.repo, stale_time, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, stale_time, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 123)
 
@@ -255,7 +257,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
 
         fresh_time = datetime.now(tz.utc) - timedelta(minutes=10)
         entry = _pr_entry(123)
-        _mk_snapshot(self.repo, fresh_time, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, fresh_time, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 123)
 
@@ -265,7 +267,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
     def test_pr_not_in_snapshot_falls_back_to_db(self) -> None:
         # Snapshot exists but doesn't contain PR 999
         entry = _pr_entry(123)
-        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
         # PR 999 exists in DB as merged
         _mk_pr(self.repo, 999, state="closed", merged_at=_dt(2026, 2, 20))
 
@@ -278,7 +280,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
     def test_dependency_in_snapshot_shows_open(self) -> None:
         dep_entry = _pr_entry(200, title="Dep PR")
         main_entry = _pr_entry(100, direct_dependencies=[200])
-        _mk_snapshot(self.repo, self.now, {"100": main_entry, "200": dep_entry}, {"Queue": [100, 200]})
+        _mk_snapshot(self.repo, self.now, {"100": main_entry, "200": dep_entry}, {"Queue": [100, 200]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 100)
 
@@ -291,7 +293,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
     def test_dependency_not_in_snapshot_looked_up_in_db(self) -> None:
         _mk_pr(self.repo, 200, state="closed", merged_at=_dt(2026, 2, 15))
         main_entry = _pr_entry(100, direct_dependencies=[200])
-        _mk_snapshot(self.repo, self.now, {"100": main_entry}, {"Queue": [100]})
+        _mk_snapshot(self.repo, self.now, {"100": main_entry}, {"Queue": [100]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("leanprover-community", "mathlib4", 100)
 
@@ -306,7 +308,7 @@ class GetPrQueueInfoSnapshotTests(TestCase):
 
     def test_case_insensitive_repo_lookup(self) -> None:
         entry = _pr_entry(123)
-        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]})
+        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
 
         info = get_pr_queue_info("LEANPROVER-COMMUNITY", "MATHLIB4", 123)
 

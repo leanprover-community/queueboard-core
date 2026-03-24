@@ -131,6 +131,18 @@ def _mentions(logins: list[str], mention_map: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _ci_emoji(ci_status: str, ci_requires_success: bool) -> str:
+    if ci_status == "pass":
+        return ":check:"
+    if ci_status == "fail":
+        return ":cross_mark:"
+    if ci_status == "running":
+        return ":yellow:"
+    # missing — pass or fail depending on whether CI is required
+    base = ":cross_mark:" if ci_requires_success else ":check:"
+    return f"{base} (missing)"
+
+
 def _dep_label(dep: DependencyInfo) -> str:
     url = f"https://github.com/{dep.owner}/{dep.repo}/pull/{dep.number}"
     link = f"[{dep.owner}/{dep.repo}#{dep.number}]({url})"
@@ -161,7 +173,9 @@ def _format_pr_info(info: PRQueueInfo, mention_map: dict[str, str], now: datetim
     author_str = _mention(info.author_login, mention_map)
     created_str = format_since_timestamp(info.created_at, now=now)
     updated_str = format_since_timestamp(info.updated_at, now=now)
-    lines.append(f"By {author_str}  ·  Created: {created_str}  ·  Updated: {updated_str}")
+    lines.append(f"By {author_str}")
+    lines.append(f"Created: {created_str}")
+    lines.append(f"Updated: {updated_str}")
 
     # Data freshness line.
     if info.snapshot_generated_at is not None:
@@ -187,9 +201,9 @@ def _format_pr_info(info: PRQueueInfo, mention_map: dict[str, str], now: datetim
         lines.append(f"**Not on queue** — {reasons}")
 
     # CI + assignees.
-    ci_str = info.ci_status or "unknown"
+    ci_display = _ci_emoji(info.ci_status, info.ci_requires_success)
     assignees_str = _mentions(info.assignee_logins, mention_map)
-    lines.append(f"CI: {ci_str}  ·  Assignees: {assignees_str}")
+    lines.append(f"CI: {ci_display}  ·  Assignees: {assignees_str}")
 
     # Labels.
     if info.labels:

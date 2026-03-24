@@ -11,6 +11,7 @@ from core.models import User
 from zulip_bot.commands import CommandContext
 from zulip_bot.commands.pr_info import (
     _build_mention_map,
+    _ci_emoji,
     _format_pr_info,
     _parse_pr_refs,
     pr_info_command,
@@ -56,6 +57,7 @@ def _make_pr_info(
     labels: list[str] | None = None,
     assignee_logins: list[str] | None = None,
     ci_status: str = "pass",
+    ci_requires_success: bool = False,
     off_queue_reasons: list[str] | None = None,
     total_queue_seconds: int | None = 86400,
     queue_since: datetime | None = None,
@@ -78,6 +80,7 @@ def _make_pr_info(
         labels=labels or ["awaiting-review"],
         assignee_logins=assignee_logins or [],
         ci_status=ci_status,
+        ci_requires_success=ci_requires_success,
         on_queue=on_queue,
         off_queue_reasons=off_queue_reasons or [],
         queue_since=queue_since or _dt(2026, 2, 1),
@@ -229,6 +232,14 @@ class FormatPrInfoTests(TestCase):
         self.assertIn("`t-algebra`", text)
         self.assertIn("`awaiting-review`", text)
 
+    def test_author_created_updated_on_separate_lines(self) -> None:
+        info = _make_pr_info(author_login="alice")
+        text = _format_pr_info(info, {}, self._now())
+        lines = text.splitlines()
+        self.assertTrue(any(line.startswith("By ") for line in lines))
+        self.assertTrue(any(line.startswith("Created: ") for line in lines))
+        self.assertTrue(any(line.startswith("Updated: ") for line in lines))
+
     def test_dependency_link_included(self) -> None:
         dep = DependencyInfo(
             owner="leanprover-community",
@@ -243,6 +254,31 @@ class FormatPrInfoTests(TestCase):
         text = _format_pr_info(info, {}, self._now())
         self.assertIn("[leanprover-community/mathlib4#100]", text)
         self.assertIn("[merged]", text)
+
+
+# ---------------------------------------------------------------------------
+# CI emoji helper tests (no DB required)
+# ---------------------------------------------------------------------------
+
+
+class CiEmojiTests(TestCase):
+    def test_pass(self) -> None:
+        self.assertEqual(_ci_emoji("pass", False), ":check:")
+        self.assertEqual(_ci_emoji("pass", True), ":check:")
+
+    def test_fail(self) -> None:
+        self.assertEqual(_ci_emoji("fail", False), ":cross_mark:")
+        self.assertEqual(_ci_emoji("fail", True), ":cross_mark:")
+
+    def test_running(self) -> None:
+        self.assertEqual(_ci_emoji("running", False), ":yellow:")
+        self.assertEqual(_ci_emoji("running", True), ":yellow:")
+
+    def test_missing_ci_not_required(self) -> None:
+        self.assertEqual(_ci_emoji("missing", False), ":check: (missing)")
+
+    def test_missing_ci_required(self) -> None:
+        self.assertEqual(_ci_emoji("missing", True), ":cross_mark: (missing)")
 
 
 # ---------------------------------------------------------------------------
