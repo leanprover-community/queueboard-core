@@ -388,6 +388,113 @@ class TestCISync(TestCase):
         self.assertGreaterEqual(ckr.last_synced_at, before)
         self.assertGreaterEqual(csc.last_synced_at, before)
 
+    def test_in_progress_cancelled_coerced_to_completed(self) -> None:
+        """GitHub can deliver IN_PROGRESS+CANCELLED during a race; we must store COMPLETED."""
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "CR_CANCEL",
+                "name": "build",
+                "status": "IN_PROGRESS",
+                "conclusion": "CANCELLED",
+                "startedAt": "2025-10-20T00:00:00Z",
+                "completedAt": None,
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR_CANCEL")
+        self.assertEqual(cr.status, "COMPLETED")
+        self.assertEqual(cr.conclusion, "CANCELLED")
+
+    def test_queued_with_conclusion_coerced_to_completed(self) -> None:
+        """Any non-null conclusion coerces status to COMPLETED regardless of original status."""
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "CR_QUEUED_FAIL",
+                "name": "build",
+                "status": "QUEUED",
+                "conclusion": "FAILURE",
+                "startedAt": None,
+                "completedAt": "2025-10-20T01:00:00Z",
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR_QUEUED_FAIL")
+        self.assertEqual(cr.status, "COMPLETED")
+        self.assertEqual(cr.conclusion, "FAILURE")
+
+    def test_existing_in_progress_row_updated_to_completed_on_cancelled_refresh(self) -> None:
+        """An existing IN_PROGRESS row is updated to COMPLETED when a refresh delivers CANCELLED."""
+        head_sha = "abc1234"
+        # Initial write: genuinely in progress
+        ctxs = [
+            {
+                "id": "CR_LIVE",
+                "name": "build",
+                "status": "IN_PROGRESS",
+                "conclusion": None,
+                "startedAt": "2025-10-20T00:00:00Z",
+                "completedAt": None,
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR_LIVE")
+        self.assertEqual(cr.status, "IN_PROGRESS")
+        # Refresh: GitHub now returns IN_PROGRESS+CANCELLED (race condition)
+        ctxs[0]["conclusion"] = "CANCELLED"
+        res = sync_check_runs(self.pr, ctxs, head_sha)
+        self.assertEqual(res.updated, 1)
+        cr.refresh_from_db()
+        self.assertEqual(cr.status, "COMPLETED")
+        self.assertEqual(cr.conclusion, "CANCELLED")
+
+    def test_completed_status_unchanged_when_conclusion_present(self) -> None:
+        """COMPLETED+SUCCESS is written as-is; coercion is a no-op for already-COMPLETED rows."""
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "CR_OK",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": "2025-10-20T00:00:00Z",
+                "completedAt": "2025-10-20T01:00:00Z",
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR_OK")
+        self.assertEqual(cr.status, "COMPLETED")
+        self.assertEqual(cr.conclusion, "SUCCESS")
+
+    def test_in_progress_without_conclusion_stored_as_is(self) -> None:
+        """Genuinely in-progress runs (null conclusion) are stored without coercion."""
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "CR_RUNNING",
+                "name": "build",
+                "status": "IN_PROGRESS",
+                "conclusion": None,
+                "startedAt": "2025-10-20T00:00:00Z",
+                "completedAt": None,
+                "detailsUrl": None,
+                "externalId": None,
+            }
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+        cr = CommitCheckRun.objects.get(repository=self.repo, github_node_id="CR_RUNNING")
+        self.assertEqual(cr.status, "IN_PROGRESS")
+        self.assertIsNone(cr.conclusion)
+
     def test_checkrun_external_id_conflict_does_not_crash(self) -> None:
         head_sha = "abc1234"
         CommitCheckRun.objects.create(

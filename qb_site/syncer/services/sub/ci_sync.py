@@ -76,12 +76,18 @@ def _effective_allowlist_for_status(pr: PullRequest) -> List[str]:
 def _upsert_commit_check_run(
     pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime
 ) -> tuple[bool, bool, tuple[str, ...]]:
+    # GitHub's API occasionally delivers a non-null conclusion alongside a non-COMPLETED
+    # status (e.g. IN_PROGRESS + CANCELLED) as a race condition during cancellation.
+    # A non-null conclusion is authoritative: the run has ended, so normalise to COMPLETED.
+    status = values["status"]
+    if values.get("conclusion") is not None and status != "COMPLETED":
+        status = "COMPLETED"
     commit_values = {
         "repository": pr.repository,
         "github_node_id": gid,
         "head_sha": values["head_sha"],
         "name": values["name"],
-        "status": values["status"],
+        "status": status,
         "conclusion": values["conclusion"],
         "details_url": values["details_url"],
         "external_id": values["external_id"],

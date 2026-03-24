@@ -45,6 +45,11 @@
   - Use a single bundle query with `commits(last: M) { commit { status { contexts { id __typename ... }}}}`.
   - Upsert `CheckRun` snapshots by `github_node_id`; set `head_sha`, map timestamps.
   - Upsert `StatusContext` snapshots by `github_node_id`; set `head_sha`, `gh_created_at`.
+  - **Status/conclusion normalisation**: GitHub's API can deliver a non-null `conclusion` alongside
+    a non-`COMPLETED` `status` (e.g. `IN_PROGRESS + CANCELLED`) as a race condition during
+    cancellation. We treat a non-null `conclusion` as authoritative — the run has ended — and
+    coerce `status` to `COMPLETED` at write time in `_upsert_commit_check_run`. This prevents
+    phantom `IN_PROGRESS`/`QUEUED` rows from accumulating in `CommitCheckRun`.
   - If history is enabled, schedule REST backfill per commit SHA and upsert rows by `rest_id`.
 - Analyzer
   - Derive coarse CI from the latest CheckRun/StatusContext snapshots. Apply the repo‑scoped “inessential jobs” set (case‑insensitive match on `name`/`context`).
