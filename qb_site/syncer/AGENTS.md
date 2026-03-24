@@ -54,6 +54,7 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
   - `syncer.backfill_repo_history_active` → `syncer.backfill_repo_history`,
   - `syncer.backfill_repo_incomplete_prs_active` → `syncer.backfill_repo_incomplete_prs`,
   - `syncer.refresh_pending_ci_for_active_repos` → `syncer.refresh_pending_ci_for_repo`,
+  - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows),
   - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
   - `syncer.backfill_repo_engagement_active` → `syncer.backfill_repo_engagement` (optional),
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),

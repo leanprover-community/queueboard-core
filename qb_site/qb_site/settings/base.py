@@ -278,6 +278,10 @@ SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS = int(os.getenv("SYNCER_PENDING_CI_REFR
 SYNCER_PENDING_CI_REFRESH_MAX_PRS = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_PRS", 5))
 SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR", 5))
 
+# CI row expiry / superseded-row cleanup
+SYNCER_CI_EXPIRY_PERIOD_SECONDS = int(os.getenv("SYNCER_CI_EXPIRY_PERIOD_SECONDS", 86400))
+SYNCER_CI_STALE_PENDING_DAYS = int(os.getenv("SYNCER_CI_STALE_PENDING_DAYS", 30))
+
 # Commit-history harvest sweep defaults
 SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS", 600))
 SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_MAX_JOBS", 25))
@@ -395,6 +399,14 @@ if SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS > 0:
             "max_prs_per_repo": SYNCER_PENDING_CI_REFRESH_MAX_PRS,
             "max_shas_per_pr": SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR,
             "max_pending_hours": SYNCER_PENDING_CI_MAX_AGE_HOURS,
+        },
+    }
+if SYNCER_CI_EXPIRY_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["expire_stale_ci_for_active_repos"] = {
+        "task": "syncer.expire_stale_ci_for_active_repos",
+        "schedule": SYNCER_CI_EXPIRY_PERIOD_SECONDS,
+        "kwargs": {
+            "stale_pending_days": SYNCER_CI_STALE_PENDING_DAYS,
         },
     }
 if SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS > 0:

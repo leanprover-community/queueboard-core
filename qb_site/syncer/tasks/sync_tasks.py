@@ -1463,6 +1463,101 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     }
 
 
+@shared_task(name="syncer.expire_stale_ci_for_repo")
+def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
+    repo_id: int,
+    *,
+    stale_pending_days: int | None = None,
+) -> Dict[str, Any]:
+    """Delete stale and superseded CommitCheckRun / CommitStatusContext rows for one repo.
+
+    Four passes:
+    1. Stale pending check runs   – status != COMPLETED, origin older than stale_pending_days.
+    2. Stale pending status ctxs  – state == PENDING, gh_created_at older than stale_pending_days.
+    3. Superseded check runs      – older non-latest row per (head_sha, name).
+    4. Superseded status contexts – same for CommitStatusContext, but only graphql-keyed rows
+                                    (rest_id IS NULL); REST history rows are intentionally multi-row.
+    """
+    from django.db.models import Max
+
+    repo = Repository.objects.get(id=int(repo_id))
+
+    if stale_pending_days is None:
+        stale_pending_days = int(getattr(settings, "SYNCER_CI_STALE_PENDING_DAYS", 30))
+    stale_pending_days_int = int(stale_pending_days)
+
+    # ------------------------------------------------------------------ #
+    # Pass 1: stale pending CommitCheckRun rows                           #
+    # ------------------------------------------------------------------ #
+    deleted_stale_cr = 0
+    if stale_pending_days_int > 0:
+        cutoff = timezone.now() - timedelta(days=stale_pending_days_int)
+        origin = Coalesce("gh_started_at", "gh_completed_at", "created_at")
+        deleted_stale_cr, _ = (
+            CommitCheckRun.objects.filter(repository=repo)
+            .exclude(status="COMPLETED")
+            .annotate(origin=origin)
+            .filter(origin__lt=cutoff)
+            .delete()
+        )
+
+    # ------------------------------------------------------------------ #
+    # Pass 2: stale pending CommitStatusContext rows                      #
+    # ------------------------------------------------------------------ #
+    deleted_stale_sc = 0
+    if stale_pending_days_int > 0:
+        cutoff = timezone.now() - timedelta(days=stale_pending_days_int)
+        deleted_stale_sc, _ = (
+            CommitStatusContext.objects.filter(repository=repo, state="PENDING").filter(gh_created_at__lt=cutoff).delete()
+        )
+
+    # ------------------------------------------------------------------ #
+    # Pass 3: superseded CommitCheckRun rows (older non-latest per        #
+    #         (head_sha, name) within this repo)                          #
+    # ------------------------------------------------------------------ #
+    latest_cr_ids = (
+        CommitCheckRun.objects.filter(repository=repo)
+        .values("head_sha", "name")
+        .annotate(latest_id=Max("id"))
+        .values_list("latest_id", flat=True)
+    )
+    deleted_superseded_cr, _ = CommitCheckRun.objects.filter(repository=repo).exclude(id__in=latest_cr_ids).delete()
+
+    # ------------------------------------------------------------------ #
+    # Pass 4: superseded CommitStatusContext rows (graphql-keyed only)    #
+    # ------------------------------------------------------------------ #
+    latest_sc_ids = (
+        CommitStatusContext.objects.filter(repository=repo, rest_id__isnull=True)
+        .values("head_sha", "name")
+        .annotate(latest_id=Max("id"))
+        .values_list("latest_id", flat=True)
+    )
+    deleted_superseded_sc, _ = (
+        CommitStatusContext.objects.filter(repository=repo, rest_id__isnull=True).exclude(id__in=latest_sc_ids).delete()
+    )
+
+    return {
+        "repo": f"{repo.owner}/{repo.name}",
+        "repo_id": repo.id,
+        "stale_pending_days": stale_pending_days_int,
+        "deleted_stale_pending_check_runs": deleted_stale_cr,
+        "deleted_stale_pending_status_contexts": deleted_stale_sc,
+        "deleted_superseded_check_runs": deleted_superseded_cr,
+        "deleted_superseded_status_contexts": deleted_superseded_sc,
+    }
+
+
+@shared_task(name="syncer.expire_stale_ci_for_active_repos")
+def expire_stale_ci_for_active_repos_task(  # type: ignore[no-redef]
+    stale_pending_days: int | None = None,
+) -> Dict[str, Any]:
+    """Fan out expire_stale_ci_for_repo_task to all active repositories."""
+    repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
+    for repo in repos:
+        expire_stale_ci_for_repo_task.delay(repo.id, stale_pending_days=stale_pending_days)
+    return {"repos": len(repos), "enqueued": len(repos)}
+
+
 @shared_task(name="syncer.refresh_pending_ci_for_active_repos")
 def refresh_pending_ci_for_active_repos_task(  # type: ignore[no-redef]
     max_prs_per_repo: int = 5,
