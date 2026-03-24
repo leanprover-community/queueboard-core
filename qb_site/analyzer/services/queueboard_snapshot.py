@@ -959,6 +959,7 @@ class QueueboardSnapshotBuilder:
         return {
             "state": pr.state,
             "is_draft": pr.is_draft,
+            "created_at": _isoformat(pr.gh_created_at),
             "base_branch": pr.base_ref_name,
             "branch_name": pr.head_ref_name,
             "head_repo": pr.head_repo_owner_login,

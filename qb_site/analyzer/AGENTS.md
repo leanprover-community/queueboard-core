@@ -7,6 +7,10 @@
   - dependency extraction/state,
   - snapshots (queueboard/reviewer assignment/area stats/convergence).
 - Keep derived logic in `services/` and orchestration/sweeps in `tasks/`.
+- Key read-only services:
+  - `queueboard_snapshot.py` — builds and caches the full per-repo queue snapshot payload.
+  - `reviewer_attention.py` / `reviewer_attention_format.py` — per-reviewer queue attention reports and formatting helpers.
+  - `pr_info.py` — `get_pr_queue_info(owner, repo, pr_number)`: returns `PRQueueInfo` for a single PR; prefers the default `QueueSnapshot`, falls back to direct DB queries for merged/closed PRs.
 
 ## High-Value Commands
 ```bash

@@ -25,6 +25,7 @@ from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.commands import register_test as _register_test  # noqa: F401
+from zulip_bot.commands import pr_info as _pr_info  # noqa: F401
 from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
@@ -134,7 +135,10 @@ def webhook(request: HttpRequest) -> HttpResponse:
             return ignored_response()
 
         result = command.handler(context, parsed_command.args)
-        return zulip_response(result, command.response_mode)
+        # A STREAM-registered command invoked from a DM must still reply privately;
+        # there is no stream to post to in that context.
+        effective_mode = ResponseMode.PRIVATE if context.is_private else command.response_mode
+        return zulip_response(result, effective_mode)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("zulip_command_unexpected_error")
         return zulip_response(_unexpected_error_response(exc), ResponseMode.PRIVATE)

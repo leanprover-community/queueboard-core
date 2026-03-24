@@ -85,6 +85,46 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
+        }
+    )
+    def test_stream_command_replies_in_stream(self) -> None:
+        result = self._post_payload(self._payload(content="@**qb-bot** echo hello", id=50, stream_id=5))
+        self.assertEqual(result["status"], 200)
+        self.assertEqual(result["json"]["type"], "private")  # echo is PRIVATE
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "echo": {"allowed_groups": ["all"], "allowed_contexts": ["all"]},
+        }
+    )
+    def test_stream_registered_command_invoked_from_dm_replies_privately(self) -> None:
+        """A command registered as STREAM should still reply privately when invoked via DM."""
+        from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
+
+        # Register a temporary STREAM command for this test.
+        @register_command(name="test-stream-cmd", description="test", response_mode=ResponseMode.STREAM)
+        def _test_cmd(ctx: CommandContext, args: str) -> CommandResult:
+            return CommandResult(content="stream-reply", response_mode=ResponseMode.STREAM)
+
+        try:
+            with override_settings(
+                ZULIP_COMMAND_POLICY={
+                    "test-stream-cmd": {"allowed_groups": ["all"], "allowed_contexts": ["all"]},
+                }
+            ):
+                result = self._post_payload(
+                    self._payload(content="test-stream-cmd", message_type="private")
+                )
+            self.assertEqual(result["status"], 200)
+            self.assertEqual(result["json"]["type"], "private")
+            self.assertEqual(result["json"]["content"], "stream-reply")
+        finally:
+            from zulip_bot.commands import _COMMANDS  # type: ignore[attr-defined]
+            _COMMANDS.pop("test-stream-cmd", None)
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
             "help": {"allowed_groups": [1234], "allowed_contexts": ["dm"]},
         }
     )
