@@ -439,7 +439,7 @@ def write_dashboard(
 
     if extra_settings is None:
         extra_settings = ExtraColumnSettings.default()
-    return _inner(prs[kind], kind, aggregate_info, extra_settings, header)
+    return _inner(prs.get(kind, []), kind, aggregate_info, extra_settings, header)
 
 
 # Specific code for writing the actual webpage files.
