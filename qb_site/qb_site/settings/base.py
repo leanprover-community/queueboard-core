@@ -771,3 +771,14 @@ if SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS > 0:
         "task": "site_analytics.aggregate_daily_metrics",
         "schedule": SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS,
     }
+if SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["site_analytics_aggregate_monthly"] = {
+        "task": "site_analytics.aggregate_monthly_metrics",
+        "schedule": SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS,
+    }
+if SITE_ANALYTICS_PRUNE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["site_analytics_prune_pageviews"] = {
+        "task": "site_analytics.prune_old_pageviews",
+        "schedule": SITE_ANALYTICS_PRUNE_PERIOD_SECONDS,
+        "kwargs": {"retention_days": SITE_ANALYTICS_RETENTION_DAYS},
+    }

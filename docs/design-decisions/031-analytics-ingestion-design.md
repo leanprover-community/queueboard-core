@@ -125,7 +125,7 @@
 3. `A3` ✓ Daily aggregate model + service + Celery task.
    - Add `AnalyticsDailyMetric` model, upsert service, and `site_analytics.aggregate_daily_metrics` Celery task.
    - Wire beat schedule entry in `base.py`.
-4. `A4` Monthly aggregate model + service + Celery task + prune task.
+4. `A4` ✓ Monthly aggregate model + service + Celery task + prune task.
    - Add `AnalyticsMonthlyMetric` model, upsert service, and `site_analytics.aggregate_monthly_metrics` Celery task.
    - Add `site_analytics.prune_old_pageviews` task.
    - Wire beat schedule entries.
@@ -183,6 +183,10 @@
     - Subtlety — rolling window default (`days_back=2`): recomputes today and yesterday on every run so events arriving near UTC midnight or during a prior task run are never missed. The task is fully idempotent: each call overwrites aggregates with a fresh count, so retries and overlapping runs are harmless.
     - Subtlety — preserve aggregates when raw rows are gone: if raw pageviews have been pruned (by the A4 retention task) but an aggregate row already exists, the service leaves the existing row in place rather than zeroing it. Zeroing would silently destroy reporting data after the retention window passes.
     - Subtlety — `__date` lookup and UTC: Django's `occurred_at__date=d` with `USE_TZ=True` and `TIME_ZONE=UTC` correctly evaluates the date boundary at UTC midnight in PostgreSQL. Covered by `test_date_boundary_is_utc`.
+  - `A4` implemented: `AnalyticsMonthlyMetric` model, monthly aggregation service, `site_analytics.aggregate_monthly_metrics` and `site_analytics.prune_old_pageviews` Celery tasks, beat schedule entries, backup policy entries, tests.
+    - Subtlety — `month` stored as first-of-month `DateField`: avoids a separate `YearMonthField` or string; sorts and filters naturally, and is unambiguous regardless of timezone. Any query for a given month uses `month=date(year, month, 1)`.
+    - Subtlety — index name length limit: Django enforces a 30-character limit on `Index` names. `sa_monthlymetric_site_month_idx` (31 chars) triggered `models.E034` at `makemigrations` time. Renamed to `sa_monthly_site_month_idx`. The daily metric constraint name `sa_dailymetric_site_date_unique` (31 chars) is a `UniqueConstraint` name, not an `Index` name, so Django does not enforce the same limit for it.
+    - Subtlety — prune task does not touch aggregate tables: `prune_old_pageviews` only deletes `AnalyticsPageView` rows. The daily/monthly aggregate tables are never pruned automatically; they are the durable reporting record.
 
 ## Open Questions
 - ~~Should `site` configuration live in DB (admin-editable) or settings/env (static)?~~ Resolved: settings/env (`SITE_ANALYTICS_ALLOWED_SITES`) for v1.
