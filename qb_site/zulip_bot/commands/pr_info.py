@@ -22,14 +22,16 @@ _URL_RE = re.compile(r"https://github\.com/([^/\s\"]+)/([^/\s\"]+)/pull/(\d+)")
 
 @register_command(
     name="pr-info",
-    description="Show queue info for one or more GitHub PR links (up to 10).",
+    description="Show queue info for one or more GitHub PR links (up to 10). Zulip linkifiers also work.",
     response_mode=ResponseMode.STREAM,
 )
 def pr_info_command(context: CommandContext, args: str) -> CommandResult:
     refs = _parse_pr_refs(context, args)
     if not refs:
         return CommandResult(
-            content=("No GitHub PR links found. Usage: `pr-info https://github.com/owner/repo/pull/123`"),
+            content=(
+                "No GitHub PR links found. Usage: `pr-info https://github.com/<owner>/<repo>/pull/123` or `pr-info #123, #456` (using Zulip linkifiers)"
+            ),
             response_mode=ResponseMode.STREAM,
         )
 
