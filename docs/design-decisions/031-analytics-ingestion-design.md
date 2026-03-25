@@ -49,14 +49,13 @@
 ### HTTP ingestion contract
 - Endpoint: `POST /api/v1/analytics/collect`
 - Request payload (v1):
-  - `site` (slug; required)
+  - `site` (slug; required; must be in `SITE_ANALYTICS_ALLOWED_SITES`)
   - `path` (required)
   - `referrer` (optional)
-  - `token` (optional; validated when site is configured as token-required)
 - Behavior:
-  - CSRF-exempt endpoint for third-party/static-site calls.
+  - Uses DRF `APIView` with `authentication_classes = []` and `permission_classes = []`; this implicitly bypasses CSRF enforcement without needing `@csrf_exempt`.
   - Minimal synchronous work: validate, compute hash fields, write one row, return `204`.
-  - Reject malformed payloads with `400`; unauthorized token with `403`.
+  - Reject unknown `site` or malformed payloads with `400`.
 
 ### Data model (planned)
 - `AnalyticsPageView` (raw)
@@ -78,6 +77,7 @@
 - Compute `visitor_month_hash = sha256(ip + normalized_user_agent + month_key + secret_salt)`.
 - `month_key` is UTC `YYYY-MM`; this intentionally prevents cross-month correlation.
 - `secret_salt` comes from env/config (e.g., `SITE_ANALYTICS_HASH_SALT`).
+- IP extraction: read `X-Forwarded-For` first (set by Heroku's routing layer and most reverse proxies); fall back to `REMOTE_ADDR`. Take the first (leftmost) address from `X-Forwarded-For` to get the client IP.
 - Retain raw rows only for bounded backfill/debug windows (target: 12-18 months).
 
 ### Aggregation strategy
@@ -88,7 +88,8 @@
 - Wire schedules in `qb_site/qb_site/settings/base.py` with env-overridable intervals and retention days.
 
 ### Security and abuse controls
-- Lightweight allowlist/denylist for `site` identifiers.
+- Site allowlist via `SITE_ANALYTICS_ALLOWED_SITES` env var (comma-separated slugs); unknown slugs rejected with `400`.
+  - Per-site tokens deferred to v1.1.
 - Basic bot filtering:
   - denylist common bot user-agent substrings.
   - optional reject when user-agent is empty.
@@ -97,7 +98,10 @@
 ### Public sanitized backup compatibility
 - This data will flow through the public backup pipeline in `.github/workflows/upload_backup.yaml`.
 - Keep analytics tables and fields compatible with sanitization/export scripts (`scripts/sanitize_backup.py`, `scripts/export_for_analysis.py`).
-- If analytics introduces potentially sensitive columns, update sanitization rules and manifest outputs in the same change.
+- Backup policy for analytics tables:
+  - `site_analytics_analyticspageview` → `TRUNCATE_TABLES` (raw rows contain visitor hashes; exclude from public backup).
+  - `site_analytics_analyticsdailymetric`, `site_analytics_analyticsmonthlymetric` → `RETAIN_TABLES` (aggregate-only, safe to share).
+- `scripts/backup_policy.py` must be updated in A1 alongside the migration; `repo_check_compose.sh` enforces coverage.
 - Treat this as a release gate for analytics schema changes, consistent with `docs/design-decisions/016-sanitized-backups.md`.
 
 ## Invariants / Subtleties
@@ -110,21 +114,25 @@
 ## Implementation Plan (Chunks)
 1. `A1` App scaffold + settings wiring.
    - Create `site_analytics` app and add to `INSTALLED_APPS`.
-   - Add env settings for hash salt, retention days, and task periods.
+   - Add `AnalyticsPageView` raw model and initial migration.
+   - Add env settings: `SITE_ANALYTICS_HASH_SALT`, `SITE_ANALYTICS_ALLOWED_SITES` (comma-separated slugs), `SITE_ANALYTICS_RETENTION_DAYS`, task period vars.
+   - Update `scripts/backup_policy.py` with the three new tables.
+   - Create `qb_site/site_analytics/AGENTS.md` (and `CLAUDE.md`).
 2. `A2` Raw ingestion endpoint + validation.
    - Add `POST /api/v1/analytics/collect` route and view.
-   - Implement payload validation, token check, hashing service, and raw insert.
-3. `A3` Aggregate models + aggregation services.
-   - Add daily/monthly metric models and upsert services.
-   - Add management command entrypoints for manual runs.
-4. `A4` Celery task scheduling.
-   - Add periodic tasks + beat schedule keys in base settings.
-   - Ensure retry-safe/idempotent task behavior.
+   - Implement payload validation, site allowlist check, IP extraction (X-Forwarded-For → REMOTE_ADDR fallback), hashing service, and raw insert.
+   - Per-site tokens deferred to v1.1.
+3. `A3` Daily aggregate model + service + Celery task.
+   - Add `AnalyticsDailyMetric` model, upsert service, and `site_analytics.aggregate_daily_metrics` Celery task.
+   - Wire beat schedule entry in `base.py`.
+4. `A4` Monthly aggregate model + service + Celery task + prune task.
+   - Add `AnalyticsMonthlyMetric` model, upsert service, and `site_analytics.aggregate_monthly_metrics` Celery task.
+   - Add `site_analytics.prune_old_pageviews` task.
+   - Wire beat schedule entries.
 5. `A5` Admin + operational visibility.
    - Register admin for raw/aggregate models.
    - Add concise task result payloads/counters.
 6. `A6` Retention and hardening.
-   - Add pruning task and tests.
    - Tune bot filtering and optional throttle policy.
 
 ## Validation Plan
@@ -156,12 +164,20 @@
   - Converted this file from generic guidance to a repo-specific living plan.
   - Anchored implementation to existing `qb_site` boundaries and task patterns.
   - No code implementation started yet; all chunks currently pending.
+- 2026-03-25:
+  - Pre-implementation design review; resolved open questions and refined plan:
+    - CSRF: implicit via DRF `authentication_classes = []`, no decorator needed.
+    - Site config: `SITE_ANALYTICS_ALLOWED_SITES` comma-separated env var; per-site tokens deferred to v1.1.
+    - IP extraction: `X-Forwarded-For` (Heroku/proxy) → `REMOTE_ADDR` fallback in hashing service.
+    - Backup policy: raw pageviews truncated, daily/monthly aggregates retained; `backup_policy.py` update required in A1.
+    - `tasks/__init__.py` re-export pattern (consistent with syncer/analyzer) added to A1 scaffold.
+    - `AGENTS.md` creation required in A1.
 
 ## Open Questions
-- Should `site` configuration live in DB (admin-editable) or settings/env (static)?
+- ~~Should `site` configuration live in DB (admin-editable) or settings/env (static)?~~ Resolved: settings/env (`SITE_ANALYTICS_ALLOWED_SITES`) for v1.
 - Do we need per-path monthly aggregates in v1, or can we defer to v1.1?
 - What default retention window is acceptable for privacy/compliance expectations?
-- Should endpoint auth be required for all sites from day one, or optional during bootstrap?
+- ~~Should endpoint auth be required for all sites from day one, or optional during bootstrap?~~ Resolved: no per-site tokens in v1; `SITE_ANALYTICS_ALLOWED_SITES` allowlist is the only gate.
 
 ## References
 - `docs/design-decisions/README.md`
