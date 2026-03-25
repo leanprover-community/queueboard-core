@@ -183,7 +183,7 @@ def _from_snapshot(
         labels=labels,
         assignee_logins=assignees,
         ci_status=ci_status,
-        ci_requires_success=rules.require_ci_success,
+        ci_requires_success=_ci_missing_is_failure(rules),
         on_queue=on_queue,
         off_queue_reasons=off_queue_reasons,
         queue_since=queue_since,
@@ -304,7 +304,7 @@ def _from_db(
         labels=labels,
         assignee_logins=assignees,
         ci_status=ci_status,
-        ci_requires_success=rules.require_ci_success,
+        ci_requires_success=_ci_missing_is_failure(rules),
         on_queue=on_queue,
         off_queue_reasons=off_queue_reasons,
         queue_since=queue_since,
@@ -314,6 +314,23 @@ def _from_db(
         snapshot_is_stale=snapshot_is_stale,
         source="db",
     )
+
+
+# ---------------------------------------------------------------------------
+# CI display helpers
+# ---------------------------------------------------------------------------
+
+_NO_REQUIRED_FAILURES = "no_required_failures"
+
+
+def _ci_missing_is_failure(rules: QueueRules) -> bool:
+    """Return True only when a missing CI status should be treated as a failure.
+
+    In ALL_REQUIRED_SUCCESS mode every required context must explicitly pass, so
+    missing data is a failure.  In NO_REQUIRED_FAILURES mode the gate only trips
+    on explicit required-context failures, so missing data is a pass.
+    """
+    return rules.require_ci_success and rules.ci_gating_mode != _NO_REQUIRED_FAILURES
 
 
 # ---------------------------------------------------------------------------

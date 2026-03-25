@@ -423,6 +423,57 @@ class GetPrQueueInfoDbTests(TestCase):
         self.assertEqual(dep.state, "merged")
 
 
+class CiRequiresSuccessTests(TestCase):
+    """ci_requires_success should be False in NO_REQUIRED_FAILURES mode."""
+
+    def setUp(self) -> None:
+        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master")
+
+    def test_no_required_failures_mode_missing_ci_is_pass(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            is_active=True,
+            require_ci_success=True,
+            ci_gating_mode="no_required_failures",
+        )
+        _mk_pr(self.repo, 1)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertFalse(info.ci_requires_success)
+
+    def test_all_required_success_mode_missing_ci_is_fail(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            is_active=True,
+            require_ci_success=True,
+            ci_gating_mode="all_required_success",
+        )
+        _mk_pr(self.repo, 1)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertTrue(info.ci_requires_success)
+
+    def test_no_ci_gating_missing_ci_is_pass(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            is_active=True,
+            require_ci_success=False,
+        )
+        _mk_pr(self.repo, 1)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertFalse(info.ci_requires_success)
+
+
 class OffQueueReasonsTests(TestCase):
     def _rules(self, *, required: set[str] | None = None, forbidden: set[str] | None = None) -> QueueRules:
         return QueueRules(
