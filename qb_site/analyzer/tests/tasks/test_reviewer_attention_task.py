@@ -196,7 +196,7 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertIn("Total queue time: 16d", kwargs["content"])
         self.assertIn("since <time:", kwargs["content"])
         self.assertIn("`unassign #<number>`", kwargs["content"])
-        self.assertIn("`assigned_prs`", kwargs["content"])
+        self.assertIn("`assigned-prs`", kwargs["content"])
         self.assertIn("`prefs`", kwargs["content"])
 
     @override_settings(

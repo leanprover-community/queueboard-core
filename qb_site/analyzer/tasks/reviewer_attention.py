@@ -365,7 +365,7 @@ def _render_reviewer_message(
 
     lines.append("Tips:")
     lines.append("- Unassign yourself: `unassign #<number>`")
-    lines.append("- See all your assigned PRs: `assigned_prs`")
+    lines.append("- See all your assigned PRs: `assigned-prs`")
     lines.append("- Change notification and auto-assignment settings: `prefs`")
 
     return "\n".join(lines).strip()
