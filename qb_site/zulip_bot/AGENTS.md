@@ -17,7 +17,7 @@ cd qb_site/zulip_bot/frontend && npm test
 ```
 
 ## Command Architecture Notes
-- Commands live in `commands/`: `assign`, `unassign`, `assigned_prs`, `pr-info`, `prefs`, `help`, `echo`, `register_test`.
+- Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `pr-info`, `prefs`, `help`, `echo`, `register_test`.
 - `pr-info`: parses GitHub PR links from Zulip `rendered_content`, reacts with 👀, then sends one stream message per PR (up to 10) with queue info sourced from `analyzer.services.pr_info`.
 - Assignment command flow (all under `services/`) is split for clarity:
   - parse: `assignment_command_parser.py`,

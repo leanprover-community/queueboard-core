@@ -32,7 +32,7 @@ in this general-purpose module:
   ``revision_heads`` when ``pr.head_sha`` is absent; that is snapshot-specific
   machinery.
 
-If ``FailInessential`` support is ever needed in ``pr-info`` or ``assigned_prs``,
+If ``FailInessential`` support is ever needed in ``pr-info`` or ``assigned-prs``,
 that would be a good time to revisit unification.
 """
 
