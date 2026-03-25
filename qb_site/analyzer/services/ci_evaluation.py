@@ -11,6 +11,29 @@ Public surface
   DB queries regardless of how many PRs are passed.
 - ``check_run_ci_status(cr)`` / ``status_context_ci_status(sc)`` — per-row helpers.
 - ``context_aggregate_status(check_runs, status_contexts)`` — aggregate one context name.
+
+Relationship to queueboard_snapshot.py
+---------------------------------------
+``queueboard_snapshot.py`` contains its own copies of the low-level matching
+helpers (``_check_run_status``, ``_status_context_status``,
+``_context_status_from_matches``) that are functionally equivalent to the ones
+here.  They have intentionally not been unified because the snapshot builder's
+``_ci_status_for_pr`` has several snapshot-specific concerns that do not belong
+in this general-purpose module:
+
+- **FailInessential detection** — when all *required* contexts pass but GitHub's
+  overall rollup still shows failure (meaning non-required checks are failing),
+  the snapshot returns ``CIStatus.FailInessential``.  This module does not model
+  that case.
+- **CIStatus enum** — the snapshot builder uses the ``CIStatus`` ``StrEnum``
+  throughout its internals; this module returns plain strings to avoid the
+  dependency.
+- **Head SHA resolution** — the snapshot builder falls back through
+  ``revision_heads`` when ``pr.head_sha`` is absent; that is snapshot-specific
+  machinery.
+
+If ``FailInessential`` support is ever needed in ``pr-info`` or ``assigned_prs``,
+that would be a good time to revisit unification.
 """
 
 from __future__ import annotations
