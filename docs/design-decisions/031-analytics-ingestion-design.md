@@ -112,13 +112,13 @@
 - `site` taxonomy must remain stable; renames need explicit backfill/mapping handling.
 
 ## Implementation Plan (Chunks)
-1. `A1` App scaffold + settings wiring.
+1. `A1` ✓ App scaffold + settings wiring.
    - Create `site_analytics` app and add to `INSTALLED_APPS`.
    - Add `AnalyticsPageView` raw model and initial migration.
    - Add env settings: `SITE_ANALYTICS_HASH_SALT`, `SITE_ANALYTICS_ALLOWED_SITES` (comma-separated slugs), `SITE_ANALYTICS_RETENTION_DAYS`, task period vars.
    - Update `scripts/backup_policy.py` with the three new tables.
    - Create `qb_site/site_analytics/AGENTS.md` (and `CLAUDE.md`).
-2. `A2` Raw ingestion endpoint + validation.
+2. `A2` ✓ Raw ingestion endpoint + validation.
    - Add `POST /api/v1/analytics/collect` route and view.
    - Implement payload validation, site allowlist check, IP extraction (X-Forwarded-For → REMOTE_ADDR fallback), hashing service, and raw insert.
    - Per-site tokens deferred to v1.1.
@@ -172,6 +172,13 @@
     - Backup policy: raw pageviews truncated, daily/monthly aggregates retained; `backup_policy.py` update required in A1.
     - `tasks/__init__.py` re-export pattern (consistent with syncer/analyzer) added to A1 scaffold.
     - `AGENTS.md` creation required in A1.
+  - `A1` implemented: app scaffold, `AnalyticsPageView` model, settings, backup policy entry, `repo_check_compose.sh` wiring, AGENTS.md.
+    - No significant deviations from plan. `validate_backup_policy.py` passes without a live DB (uses Django app registry).
+  - `A2` implemented: hashing service, bot-filter service, `POST /api/v1/analytics/collect` view, URL wiring, `.env.example` entries, service + endpoint tests.
+    - Subtlety — field separator in hash: the design specified `sha256(ip + ua + month + salt)` with implicit concatenation, which is collision-prone (e.g. `"ab" + "c"` vs `"a" + "bc"`). Implemented with `|` pipe separators between all four fields. This is a privacy-contract detail: any future reimplementation must use the same separator or old and new hashes will diverge for the same visitor.
+    - Subtlety — bot traffic response: bots return `204` (same as success) rather than a distinct status code so detection heuristics are not leaked to callers.
+    - Subtlety — field truncation: `path`, `referrer`, and `user_agent` are silently truncated to their model `max_length` before insert rather than rejected, since truncation is preferable to dropping the event entirely for slightly over-long paths.
+    - Subtlety — empty `SITE_ANALYTICS_ALLOWED_SITES`: an unconfigured (empty) allowlist rejects all requests with `400`; this is intentional opt-in behaviour that prevents accidental data collection before sites are explicitly registered.
 
 ## Open Questions
 - ~~Should `site` configuration live in DB (admin-editable) or settings/env (static)?~~ Resolved: settings/env (`SITE_ANALYTICS_ALLOWED_SITES`) for v1.
