@@ -53,6 +53,7 @@ jobs:
       id: generate-dashboard-api-rs1
       env:
         QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+        QUEUEBOARD_ANALYTICS_SITE: ${{ secrets.QUEUEBOARD_ANALYTICS_SITE }}
       run: |
         uv run python -m queueboard.dashboard \
           --api \
@@ -64,6 +65,7 @@ jobs:
       id: generate-dashboard-api-rs2
       env:
         QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+        QUEUEBOARD_ANALYTICS_SITE: ${{ secrets.QUEUEBOARD_ANALYTICS_SITE }}
       run: |
         uv run python -m queueboard.dashboard \
           --api \
@@ -75,6 +77,7 @@ jobs:
       id: generate-dashboard-api-rs3
       env:
         QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+        QUEUEBOARD_ANALYTICS_SITE: ${{ secrets.QUEUEBOARD_ANALYTICS_SITE }}
       run: |
         uv run python -m queueboard.dashboard \
           --api \
