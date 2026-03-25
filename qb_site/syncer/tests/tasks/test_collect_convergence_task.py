@@ -149,6 +149,44 @@ class TestCollectConvergenceTask(TestCase):
         assert older.discovery_lag_seconds is not None
         self.assertLess(newer.discovery_lag_seconds, older.discovery_lag_seconds)
 
+    def test_discovery_catchup_lag_populated_when_continuation_has_success_cutoff(self) -> None:
+        now = timezone.now()
+        watermark = now - timezone.timedelta(days=10)
+        target = now - timezone.timedelta(minutes=30)
+        RepoDiscoveryState.objects.create(
+            repository=self.repo,
+            last_successful_cutoff_at=watermark,
+            continuation_cutoff_at=watermark,
+            continuation_cursor="CUR-CATCH",
+            continuation_success_cutoff=target,
+            last_attempted_at=now - timezone.timedelta(minutes=1),
+            last_successful_at=now - timezone.timedelta(days=10),
+        )
+
+        collect_syncer_convergence_task.apply().get()
+        snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        expected = int((target - watermark).total_seconds())
+        self.assertIsNotNone(snap.discovery_catchup_lag_seconds)
+        assert snap.discovery_catchup_lag_seconds is not None
+        self.assertAlmostEqual(snap.discovery_catchup_lag_seconds, expected, delta=5)
+
+    def test_discovery_catchup_lag_null_when_no_continuation_success_cutoff(self) -> None:
+        now = timezone.now()
+        RepoDiscoveryState.objects.create(
+            repository=self.repo,
+            last_successful_cutoff_at=now - timezone.timedelta(minutes=30),
+            last_attempted_at=now - timezone.timedelta(minutes=1),
+            last_successful_at=now - timezone.timedelta(minutes=1),
+        )
+
+        collect_syncer_convergence_task.apply().get()
+        snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        self.assertIsNone(snap.discovery_catchup_lag_seconds)
+
     def test_head_contexts_include_commit_scoped_rows(self) -> None:
         now = timezone.now()
         pr_with_commit_ci = PullRequest.objects.create(

@@ -24,12 +24,15 @@
   - `continuation_cutoff_at`: fixed cutoff for in-progress catch-up sequence.
   - `continuation_cursor`: GraphQL cursor to resume from.
   - `continuation_started_at`: when current continuation sequence began.
+  - `continuation_success_cutoff`: the `fresh_base_cutoff` captured when the fresh
+    scan spawned this continuation; used as the watermark target when the continuation
+    completes (see Stale-Watermark Trap below).
   - `last_attempted_at`: last discovery attempt timestamp.
   - `last_successful_at`: last successful full-scan timestamp.
 - Helper transitions:
   - `mark_attempted()`
-  - `set_continuation(cutoff_at, cursor)`
-  - `mark_success(cutoff_at)` (also clears continuation fields).
+  - `set_continuation(cutoff_at, cursor, success_cutoff=None)`
+  - `mark_success(cutoff_at)` (also clears all continuation fields).
 
 ### Backfill Seed Semantics
 - Timeline/commit backfill completion flags are seeded from bundle pageInfo with monotone semantics.
@@ -60,11 +63,13 @@
      - fresh mode computes:
        - `base_cutoff` (target boundary): current sliding-window cutoff,
        - `scan_start_cutoff` (query start): `min(base_cutoff, last_successful_cutoff_at - overlap)`.
-     - continuation mode uses fixed persisted continuation cutoff.
+     - continuation mode uses fixed persisted continuation cutoff; `success_cutoff`
+       is taken from `continuation_success_cutoff` (set by the originating fresh run).
   4. Run structured discovery.
   5. Persist state transition:
      - complete scan (`reached_cutoff` or no `next_cursor`): `mark_success`,
-     - incomplete scan: `set_continuation`.
+     - incomplete scan: `set_continuation`; fresh/fresh_recovery runs pass
+       `fresh_base_cutoff` as `success_cutoff` so it is stored for later use.
   6. Enqueue `sync_pr` tasks under existing dynamic batch/rate budget rules.
   7. Schedule continuation when needed.
 
@@ -97,6 +102,9 @@
 ## Observability
 - `SyncerConvergenceSnapshot` includes discovery diagnostics:
   - `discovery_lag_seconds`
+  - `discovery_catchup_lag_seconds`: seconds between `last_successful_cutoff_at` and
+    `continuation_success_cutoff`; non-null only while a catch-up continuation is
+    active.  Should trend toward zero as the catch-up makes progress.
   - `discovery_continuation_active`
   - `discovery_last_attempted_at`
   - `discovery_last_successful_at`
@@ -122,7 +130,9 @@
 - This change prevents future misses from outages/cap pressure, but does not retroactively recover updates already missed before rollout.
   - For one-time deeper catch-up, use existing `sync_repo --since ...` workflows.
 - Schema changes:
-  - `syncer` migrations `0028` (discovery state) and `0029` (convergence observability).
+  - `syncer` migrations `0028` (discovery state), `0029` (convergence observability),
+    and `0038` (stale-watermark fix: `continuation_success_cutoff` +
+    `discovery_catchup_lag_seconds`).
 
 ## Consequences
 - Pros:
@@ -138,6 +148,26 @@
   - It may expand where a fresh scan starts.
   - It must not anchor successful watermark advancement to an ever-older cutoff.
 - If watermark advancement incorrectly uses overlap-expanded scan start, discovery lag can drift upward despite successful runs; the implemented design avoids this by advancing to fresh `base_cutoff`.
+
+## Stale-Watermark Trap (and Fix)
+- When `last_successful_cutoff_at` falls far behind `now() - lookback_minutes`, the
+  overlap logic (`min(base_cutoff, watermark - overlap)`) forces every fresh scan to
+  cover the entire stale gap.  With a finite discovery limit that gap exceeds one
+  batch, spawning a continuation.
+- **Bug (pre-fix):** continuation mode set `success_cutoff = continuation_cutoff_at`
+  (the old scan boundary).  So even after successfully paginating through the entire
+  gap, `mark_success` set the watermark back to the stale date — immediately spawning
+  another giant continuation.  The watermark could never escape.
+- **Fix:** when a fresh (or fresh_recovery) run starts a continuation it stores
+  `fresh_base_cutoff` in `continuation_success_cutoff`.  Continuation-mode batches
+  inherit this value unchanged.  When the continuation finally completes, `mark_success`
+  uses `continuation_success_cutoff` as the new watermark, advancing it to near-now.
+- The `discovery_catchup_lag_seconds` snapshot field makes this backlog visible in
+  the admin: it reports `continuation_success_cutoff - last_successful_cutoff_at` while
+  a catch-up is running, and becomes null once it completes.
+- Schema change: migration `0038` adds `continuation_success_cutoff` to
+  `RepoDiscoveryState` and `discovery_catchup_lag_seconds` to
+  `SyncerConvergenceSnapshot`.
 
 ## Out of Scope
 - Queue isolation / dedicated GitHub queue strategy changes.

@@ -18,6 +18,12 @@ class SyncerConvergenceSnapshot(models.Model):
     harvest_jobs_open = models.IntegerField(default=0)
     history_cursor_completed = models.BooleanField(default=False)
     discovery_lag_seconds = models.IntegerField(null=True, blank=True)
+    # When a catch-up continuation is in progress, the number of seconds between
+    # last_successful_cutoff_at and continuation_success_cutoff — i.e. how much
+    # watermark advancement the running continuation still needs to deliver.
+    # Null when no catch-up continuation is active.  Should trend toward zero
+    # as the continuation makes progress and reaches zero on completion.
+    discovery_catchup_lag_seconds = models.IntegerField(null=True, blank=True)
     discovery_continuation_active = models.BooleanField(default=False)
     discovery_last_attempted_at = models.DateTimeField(null=True, blank=True)
     discovery_last_successful_at = models.DateTimeField(null=True, blank=True)

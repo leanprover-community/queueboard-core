@@ -63,6 +63,10 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
         discovery_continuation_active = bool(
             discovery_state and discovery_state.continuation_cutoff_at is not None and discovery_state.continuation_cursor
         )
+        discovery_catchup_lag_seconds = None
+        if discovery_state and discovery_state.continuation_success_cutoff is not None and discovery_cutoff is not None:
+            delta = (discovery_state.continuation_success_cutoff - discovery_cutoff).total_seconds()
+            discovery_catchup_lag_seconds = max(0, int(delta))
 
         engagement_missing = qs.filter(engagement_synced_at__isnull=True).count()
         engagement_incomplete = (
@@ -97,6 +101,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             harvest_jobs_open=harvest_open,
             history_cursor_completed=history_completed,
             discovery_lag_seconds=discovery_lag_seconds,
+            discovery_catchup_lag_seconds=discovery_catchup_lag_seconds,
             discovery_continuation_active=discovery_continuation_active,
             discovery_last_attempted_at=discovery_state.last_attempted_at if discovery_state else None,
             discovery_last_successful_at=discovery_state.last_successful_at if discovery_state else None,
@@ -115,6 +120,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                 "harvest_open": harvest_open,
                 "history_completed": history_completed,
                 "discovery_lag_seconds": discovery_lag_seconds,
+                "discovery_catchup_lag_seconds": discovery_catchup_lag_seconds,
                 "discovery_continuation_active": discovery_continuation_active,
                 "discovery_last_attempted_at": (
                     discovery_state.last_attempted_at.isoformat()

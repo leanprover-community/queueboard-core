@@ -21,6 +21,13 @@ class RepoDiscoveryState(TimestampedModel):
     # Start time for the current continuation sequence.
     continuation_started_at = models.DateTimeField(null=True, blank=True)
 
+    # Intended watermark target when a continuation was started by a fresh scan.
+    # Set to fresh_base_cutoff on the fresh run that starts a continuation; preserved
+    # across subsequent continuation batches; cleared on mark_success.  When a
+    # continuation completes, the watermark advances to this value instead of the
+    # (older) continuation_cutoff_at, so the system escapes a stale-watermark trap.
+    continuation_success_cutoff = models.DateTimeField(null=True, blank=True)
+
     # Most recent attempted discovery run for this repository.
     last_attempted_at = models.DateTimeField(null=True, blank=True)
     # Most recent successful full cutoff scan completion.
@@ -34,18 +41,21 @@ class RepoDiscoveryState(TimestampedModel):
         self.last_attempted_at = timezone.now()
         self.save(update_fields=["last_attempted_at", "updated_at"])
 
-    def set_continuation(self, *, cutoff_at, cursor: str | None) -> None:
+    def set_continuation(self, *, cutoff_at, cursor: str | None, success_cutoff=None) -> None:
         now = timezone.now()
         if self.continuation_started_at is None:
             self.continuation_started_at = now
         self.continuation_cutoff_at = cutoff_at
         self.continuation_cursor = cursor
         self.last_attempted_at = now
+        if success_cutoff is not None:
+            self.continuation_success_cutoff = success_cutoff
         self.save(
             update_fields=[
                 "continuation_started_at",
                 "continuation_cutoff_at",
                 "continuation_cursor",
+                "continuation_success_cutoff",
                 "last_attempted_at",
                 "updated_at",
             ]
@@ -59,6 +69,7 @@ class RepoDiscoveryState(TimestampedModel):
         self.continuation_cutoff_at = None
         self.continuation_cursor = None
         self.continuation_started_at = None
+        self.continuation_success_cutoff = None
         self.save(
             update_fields=[
                 "last_successful_cutoff_at",
@@ -67,6 +78,7 @@ class RepoDiscoveryState(TimestampedModel):
                 "continuation_cutoff_at",
                 "continuation_cursor",
                 "continuation_started_at",
+                "continuation_success_cutoff",
                 "updated_at",
             ]
         )

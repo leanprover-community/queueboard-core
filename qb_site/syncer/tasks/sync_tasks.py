@@ -602,7 +602,10 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             mode = "continuation"
             effective_cutoff = state.continuation_cutoff_at
             discovery_after = state.continuation_cursor
-            success_cutoff = effective_cutoff
+            # Use the success_cutoff stored when the fresh scan spawned this continuation
+            # (fresh_base_cutoff at that time), so completing the catch-up advances the
+            # watermark to near-now rather than to the stale continuation_cutoff_at.
+            success_cutoff = state.continuation_success_cutoff or effective_cutoff
         else:
             mode = "fresh"
             fresh_base_cutoff = _compute_base_fresh_cutoff()
@@ -669,6 +672,11 @@ def sync_repo_since_task(  # type: ignore[no-redef]
         scan_complete = bool(discovery.reached_cutoff or discovery.next_cursor is None)
         if scan_complete:
             state.mark_success(cutoff_at=success_cutoff)
+        elif mode in ("fresh", "fresh_recovery"):
+            # Store fresh_base_cutoff as the intended watermark target so that when this
+            # continuation chain eventually completes it advances to near-now, not to the
+            # stale continuation_cutoff_at that would re-trap the watermark.
+            state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor, success_cutoff=fresh_base_cutoff)
         else:
             state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor)
 
