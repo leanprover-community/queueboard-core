@@ -9,12 +9,14 @@
   - `api`: DRF views/serializers for queueboard surfaces.
   - `zulip_bot`: Zulip webhook/command integration and policies.
   - `console`: GitHub-OAuth reviewer console for accepting/declining assignment proposals (design doc 050).
+  - `site_analytics`: privacy-preserving pageview ingestion and aggregation for static/funder-facing sites.
 - Keep new modules inside the owning app (`models/`, `services/`, `tasks/`, `management/commands/`, `tests/`).
 - App-specific guidance:
   - `qb_site/api/AGENTS.md` for public API endpoints, common patterns, and authentication notes.
   - `qb_site/syncer/AGENTS.md` for ingestion, discovery/backfill, and sync admin workflows.
   - `qb_site/analyzer/AGENTS.md` for revision/queue/dependency sweeps and analytics models.
   - `qb_site/zulip_bot/AGENTS.md` for webhook/command/policy/registration behavior.
+  - `qb_site/site_analytics/AGENTS.md` for pageview ingestion, aggregation tasks, and privacy rules.
 
 ## Core Commands
 ```bash

@@ -1,0 +1,47 @@
+# Site Analytics Guidelines
+
+## Scope
+- `qb_site/site_analytics/` implements privacy-preserving pageview ingestion and aggregation for static/funder-facing sites.
+- Raw events in `AnalyticsPageView`; aggregate reporting in `AnalyticsDailyMetric` and `AnalyticsMonthlyMetric` (added in A3/A4).
+- Design record: `docs/design-decisions/031-analytics-ingestion-design.md`.
+
+## Module Layout
+- `models/pageview.py` — `AnalyticsPageView` raw event rows (immutable after insert).
+- `models/daily_metric.py` — `AnalyticsDailyMetric` (added in A3).
+- `models/monthly_metric.py` — `AnalyticsMonthlyMetric` (added in A4).
+- `services/` — hashing, bot filtering, aggregation logic.
+- `tasks/` — periodic Celery tasks for aggregation and pruning.
+- `tests/` — unit and integration tests.
+- API ingestion view: `qb_site/api/views/analytics_collect.py` (added in A2).
+
+## Key Settings (all env-overridable)
+- `SITE_ANALYTICS_HASH_SALT` — required secret for visitor hash; empty string disables hashing safety checks in dev.
+- `SITE_ANALYTICS_ALLOWED_SITES` — comma-separated site slugs; unknown slugs rejected with `400`.
+- `SITE_ANALYTICS_RETENTION_DAYS` — raw pageview retention window (default 540 days / ~18 months).
+- `SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS` — beat period for daily aggregation task (default 3600).
+- `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` — beat period for monthly aggregation task (default 86400).
+- `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` — beat period for retention pruning task (default 86400).
+
+## Task Surface
+Celery task names (as registered via `@shared_task(name=…)`):
+
+- `site_analytics.aggregate_daily_metrics` — idempotent upsert of daily pageview/unique-visitor counts (added in A3).
+- `site_analytics.aggregate_monthly_metrics` — idempotent upsert of monthly metrics; recomputes current + previous month (added in A4).
+- `site_analytics.prune_old_pageviews` — deletes raw rows older than `SITE_ANALYTICS_RETENTION_DAYS` (added in A4).
+
+## Privacy Invariants
+- Raw IP addresses are never stored.
+- `visitor_month_hash = sha256(ip + normalized_user_agent + YYYY-MM + salt)`.
+- IP is extracted from `X-Forwarded-For` (Heroku / reverse-proxy header) falling back to `REMOTE_ADDR`.
+- Changing hashing semantics requires an explicit migration/versioning note in the design doc.
+
+## Backup Policy
+- `site_analytics_analyticspageview` → TRUNCATE (raw rows contain visitor hashes; excluded from public backup).
+- `site_analytics_analyticsdailymetric`, `site_analytics_analyticsmonthlymetric` → RETAIN (aggregate-only, safe to share).
+- Update `scripts/backup_policy.py` whenever adding or removing tables.
+
+## Testing
+```bash
+uv run python qb_site/manage.py test site_analytics
+bash scripts/repo_check_compose.sh
+```

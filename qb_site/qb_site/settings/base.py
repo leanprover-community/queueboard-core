@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "api",
     "zulip_bot",
     "console",
+    "site_analytics",
 ]
 
 MIDDLEWARE = [
@@ -519,6 +520,16 @@ ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS = int(os.getenv("ARCHIVE_IMPORT_MAX_TRANSI
 ARCHIVE_RESYNC_PER_TICK = int(os.getenv("ARCHIVE_RESYNC_PER_TICK", 0))
 ARCHIVE_RESYNC_TICK_SECONDS = int(os.getenv("ARCHIVE_RESYNC_TICK_SECONDS", 600))
 ARCHIVE_RESYNC_MIN_RATE_REMAINING = int(os.getenv("ARCHIVE_RESYNC_MIN_RATE_REMAINING", 2500))
+
+# Site analytics settings
+SITE_ANALYTICS_HASH_SALT = os.getenv("SITE_ANALYTICS_HASH_SALT", "")
+SITE_ANALYTICS_ALLOWED_SITES: list[str] = [
+    s.strip() for s in os.getenv("SITE_ANALYTICS_ALLOWED_SITES", "").split(",") if s.strip()
+]
+SITE_ANALYTICS_RETENTION_DAYS = int(os.getenv("SITE_ANALYTICS_RETENTION_DAYS", 540))
+SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS", 3600))
+SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS", 86400))
+SITE_ANALYTICS_PRUNE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_PRUNE_PERIOD_SECONDS", 86400))
 
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.

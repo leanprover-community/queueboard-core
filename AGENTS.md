@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `src/queueboard/` contains the legacy Python data pipeline: GraphQL queries under `queries/`, HTML assets in `static/`, and scripts like `dashboard.py`, `process.py`, and `suggest_reviewer.py`.
-- `qb_site/` hosts the Django codebase; apps live in `qb_site/{core,syncer,analyzer,api,zulip_bot}/` and share settings from `qb_site/qb_site/settings/`.
+- `qb_site/` hosts the Django codebase; apps live in `qb_site/{core,syncer,analyzer,api,zulip_bot,site_analytics}/` and share settings from `qb_site/qb_site/settings/`.
 - `scripts/` provides operational helpers; `test/` stores fixture JSON for dashboard regression checks; `docs/` captures architecture plans/decisions.
 
 ## Build, Test, and Development Commands
@@ -68,7 +68,7 @@ Notes
 ## Keeping AGENTS.md Files Updated
 - Every directory with significant logic has its own `AGENTS.md` (mirrored as `CLAUDE.md`).
   Current locations: root, `qb_site/`, `qb_site/syncer/`, `qb_site/analyzer/`,
-  `qb_site/zulip_bot/`, `qb_site/console/`, `src/queueboard/`.
+  `qb_site/zulip_bot/`, `qb_site/console/`, `qb_site/site_analytics/`, `src/queueboard/`.
 - When you add, rename, or remove management commands, Celery tasks, key services, or
   directory structure, update the relevant `AGENTS.md` in the same commit/PR.
 - When you add a new app or significant sub-directory, create a matching `AGENTS.md`
