@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from analyzer.models import PRDependency, PRQueueWindow, QueueSnapshot
+from analyzer.services.ci_evaluation import ci_status_for_pr
 from analyzer.services.queue_rules import QueueRules, default_rule_set_for_repo, load_rules_for_repo
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
@@ -215,7 +216,9 @@ def _from_db(
         PRLabel.objects.filter(pull_request=pr).select_related("label_def").values_list("label_def__name", flat=True)
     )
     assignees: list[str] = list(pr.assignees or [])
-    ci_status: str = pr.head_ci_state or "missing"
+
+    rules = load_rules_for_repo(repository)
+    ci_status: str = ci_status_for_pr(pr, rules, repository)
 
     # Queue timing: find the latest cycle across active rule sets for this repo.
     queue_windows = (
@@ -282,7 +285,6 @@ def _from_db(
 
     state = "merged" if pr.merged_at else pr.state
 
-    rules = load_rules_for_repo(repository)
     off_queue_reasons: list[str] = []
     if not on_queue and state == "open":
         label_set = {lbl.lower() for lbl in labels}

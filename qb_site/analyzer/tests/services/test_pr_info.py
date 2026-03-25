@@ -14,6 +14,8 @@ from analyzer.services.queue_rules import QueueRules
 from core.models import Repository, User
 from analyzer.models import PRDependency
 from syncer.models import LabelDef, PRLabel, PullRequest
+from syncer.models.commit_check_run import CommitCheckRun
+from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus
 
 
 def _dt(year: int, month: int, day: int, hour: int = 0) -> datetime:
@@ -33,6 +35,7 @@ def _mk_pr(
     created_at: datetime | None = None,
     updated_at: datetime | None = None,
     ci_state: str | None = None,
+    head_sha: str | None = None,
 ) -> PullRequest:
     now = _dt(2026, 3, 1)
     return PullRequest.objects.create(
@@ -59,6 +62,7 @@ def _mk_pr(
         commenters=[],
         files=[],
         head_ci_state=ci_state,
+        head_sha=head_sha,
     )
 
 
@@ -421,6 +425,89 @@ class GetPrQueueInfoDbTests(TestCase):
         dep = info.dependencies[0]
         self.assertEqual(dep.number, 78)
         self.assertEqual(dep.state, "merged")
+
+
+class CiStatusFromRulesetTests(TestCase):
+    """DB path derives ci_status from required-context check run data, not head_ci_state."""
+
+    SHA = "abc123def456"
+
+    def setUp(self) -> None:
+        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master")
+
+    def _rule_set(self, contexts: list[str]) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            is_active=True,
+            is_default=True,
+            require_ci_success=True,
+            ci_gating_mode="all_required_success",
+            required_ci_contexts=contexts,
+        )
+
+    def _check_run(self, name: str, conclusion: str) -> None:
+        now = _dt(2026, 3, 1)
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            head_sha=self.SHA,
+            name=name,
+            status=CheckRunStatus.COMPLETED,
+            conclusion=conclusion,
+            gh_completed_at=now,
+        )
+
+    def test_no_required_contexts_returns_pass(self) -> None:
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            is_active=True,
+            require_ci_success=False,
+        )
+        _mk_pr(self.repo, 1, head_sha=self.SHA)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertEqual(info.ci_status, "pass")
+
+    def test_passing_check_run_returns_pass(self) -> None:
+        self._rule_set(["build"])
+        self._check_run("build / lint", CheckRunConclusion.SUCCESS)
+        _mk_pr(self.repo, 1, head_sha=self.SHA)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertEqual(info.ci_status, "pass")
+
+    def test_failing_check_run_returns_fail(self) -> None:
+        self._rule_set(["build"])
+        self._check_run("build / lint", CheckRunConclusion.FAILURE)
+        _mk_pr(self.repo, 1, head_sha=self.SHA)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertEqual(info.ci_status, "fail")
+
+    def test_missing_check_run_returns_missing(self) -> None:
+        self._rule_set(["build"])
+        _mk_pr(self.repo, 1, head_sha=self.SHA)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertEqual(info.ci_status, "missing")
+
+    def test_no_head_sha_returns_missing(self) -> None:
+        self._rule_set(["build"])
+        _mk_pr(self.repo, 1, head_sha=None)
+
+        info = get_pr_queue_info("o", "r", 1)
+
+        assert info is not None
+        self.assertEqual(info.ci_status, "missing")
 
 
 class CiRequiresSuccessTests(TestCase):
