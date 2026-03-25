@@ -117,7 +117,12 @@ class TestAssignedPrsCommand(TestCase):
         self.assertIn("```spoiler On Queue (1)", kwargs["content"])
         self.assertIn("```spoiler Maintainer Merged (0)", kwargs["content"])
         self.assertIn("```spoiler Not On Queue (0)", kwargs["content"])
-        self.assertIn("PR #123", kwargs["content"])
+        self.assertIn("[#123]", kwargs["content"])
+        self.assertIn("github.com/leanprover-community/mathlib4/pull/123", kwargs["content"])
+        self.assertIn("By ", kwargs["content"])
+        self.assertIn("CI:", kwargs["content"])
+        self.assertIn("Created:", kwargs["content"])
+        self.assertIn("Updated:", kwargs["content"])
         self.assertIn("Assigned:", kwargs["content"])
         self.assertRegex(
             kwargs["content"],
@@ -201,7 +206,7 @@ class TestAssignedPrsCommand(TestCase):
         kwargs = mock_send.call_args.kwargs
         self.assertIn("```spoiler On Queue (0)", kwargs["content"])
         self.assertIn("```spoiler Maintainer Merged (1)", kwargs["content"])
-        self.assertIn("PR #124", kwargs["content"])
+        self.assertIn("[#124]", kwargs["content"])
 
     def test_shows_human_friendly_auto_unassign_status(self) -> None:
         user = User.objects.create(github_login="alice", zulip_user_id=101)

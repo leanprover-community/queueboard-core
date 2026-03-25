@@ -1,18 +1,21 @@
 """CI status evaluation against a QueueRules required-context list.
 
-This module provides single-PR CI evaluation that mirrors the logic used by
-the batch snapshot builder in ``queueboard_snapshot.py``.  Keeping it here
-makes it easy to reuse without pulling in the full snapshot machinery.
+This module provides single-PR and batch CI evaluation that mirrors the logic
+used by the batch snapshot builder in ``queueboard_snapshot.py``.  Keeping it
+here makes it easy to reuse without pulling in the full snapshot machinery.
 
 Public surface
 --------------
-- ``ci_status_for_pr(pr, rules, repository)`` — primary entry point.
+- ``ci_status_for_pr(pr, rules, repository)`` — single-PR entry point.
+- ``batch_ci_statuses_for_repo(prs, rules, repository)`` — batch entry point; two
+  DB queries regardless of how many PRs are passed.
 - ``check_run_ci_status(cr)`` / ``status_context_ci_status(sc)`` — per-row helpers.
 - ``context_aggregate_status(check_runs, status_contexts)`` — aggregate one context name.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from django.db.models import Q
@@ -132,6 +135,15 @@ def ci_status_for_pr(pr: PullRequest, rules: QueueRules, repository: Repository)
         .values("name", "state", "head_sha", "gh_created_at")
     )
 
+    return _evaluate_required_contexts(required_contexts, check_runs, status_contexts)
+
+
+def _evaluate_required_contexts(
+    required_contexts: list[str],
+    check_runs: list[dict],
+    status_contexts: list[dict],
+) -> str:
+    """Evaluate a list of required contexts against pre-fetched check run / status data."""
     any_fail = False
     any_running = False
     any_missing = False
@@ -156,3 +168,62 @@ def ci_status_for_pr(pr: PullRequest, rules: QueueRules, repository: Repository)
     if any_running:
         return "running"
     return "pass"
+
+
+def batch_ci_statuses_for_repo(
+    prs: list[PullRequest],
+    rules: QueueRules,
+    repository: Repository,
+) -> dict[int, str]:
+    """Evaluate CI status for multiple PRs in the same repo with two DB queries.
+
+    Returns ``{pr_number: ci_status_string}``.  PRs without a ``head_sha``
+    return ``"missing"``; PRs in a repo with no CI gating return ``"pass"``.
+    """
+    if not rules.require_ci_success or not rules.required_ci_contexts:
+        return {pr.number: "pass" for pr in prs}
+
+    required_contexts = list(rules.required_ci_contexts)
+
+    sha_to_pr_numbers: dict[str, list[int]] = defaultdict(list)
+    no_sha: list[int] = []
+    for pr in prs:
+        if pr.head_sha:
+            sha_to_pr_numbers[pr.head_sha].append(pr.number)
+        else:
+            no_sha.append(pr.number)
+
+    head_shas = set(sha_to_pr_numbers)
+    if not head_shas:
+        return {n: "missing" for n in no_sha}
+
+    name_filter = Q()
+    for ctx in required_contexts:
+        name_filter |= Q(name__icontains=ctx)
+
+    check_runs_by_sha: dict[str, list[dict]] = defaultdict(list)
+    for cr in (
+        CommitCheckRun.objects.filter(repository=repository, head_sha__in=head_shas)
+        .filter(name_filter)
+        .values("name", "status", "conclusion", "head_sha", "gh_started_at", "gh_completed_at")
+    ):
+        check_runs_by_sha[cr["head_sha"]].append(cr)
+
+    status_contexts_by_sha: dict[str, list[dict]] = defaultdict(list)
+    for sc in (
+        CommitStatusContext.objects.filter(repository=repository, head_sha__in=head_shas)
+        .filter(name_filter)
+        .values("name", "state", "head_sha", "gh_created_at")
+    ):
+        status_contexts_by_sha[sc["head_sha"]].append(sc)
+
+    result: dict[int, str] = {n: "missing" for n in no_sha}
+    for sha, pr_numbers in sha_to_pr_numbers.items():
+        ci_status = _evaluate_required_contexts(
+            required_contexts,
+            check_runs_by_sha.get(sha, []),
+            status_contexts_by_sha.get(sha, []),
+        )
+        for pr_number in pr_numbers:
+            result[pr_number] = ci_status
+    return result

@@ -295,7 +295,7 @@ def _from_db(
     off_queue_reasons: list[str] = []
     if not on_queue and state == "open":
         label_set = {lbl.lower() for lbl in labels}
-        off_queue_reasons = _off_queue_reasons_from_labels(label_set, rules, ci_status, pr.is_draft)
+        off_queue_reasons = off_queue_reasons_from_labels(label_set, rules, ci_status, pr.is_draft)
 
     return PRQueueInfo(
         owner=owner,
@@ -378,10 +378,10 @@ def _off_queue_reasons_from_snapshot(
 
     label_names_lc = {lbl["name"].lower() for lbl in pr_data.get("labels", [])}
     ci_status: str = pr_data.get("ci_status") or "missing"
-    return _off_queue_reasons_from_labels(label_names_lc, rules, ci_status, False)
+    return off_queue_reasons_from_labels(label_names_lc, rules, ci_status, False)
 
 
-def _off_queue_reasons_from_labels(
+def off_queue_reasons_from_labels(
     label_names_lc: set[str],
     rules: QueueRules,
     ci_status: str,

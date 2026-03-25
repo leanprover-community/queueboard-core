@@ -8,7 +8,7 @@ from analyzer.models import PRQueueWindow, QueueRuleSet
 from analyzer.models.queue_snapshot import QueueSnapshot
 from analyzer.services.pr_info import (
     get_pr_queue_info,
-    _off_queue_reasons_from_labels,
+    off_queue_reasons_from_labels,
 )
 from analyzer.services.queue_rules import QueueRules
 from core.models import Repository, User
@@ -571,36 +571,36 @@ class OffQueueReasonsTests(TestCase):
         )
 
     def test_draft_pr(self) -> None:
-        reasons = _off_queue_reasons_from_labels(set(), self._rules(), "pass", is_draft=True)
+        reasons = off_queue_reasons_from_labels(set(), self._rules(), "pass", is_draft=True)
         self.assertEqual(reasons, ["draft PR"])
 
     def test_awaiting_author_label(self) -> None:
-        reasons = _off_queue_reasons_from_labels({"awaiting-author"}, self._rules(), "pass", False)
+        reasons = off_queue_reasons_from_labels({"awaiting-author"}, self._rules(), "pass", False)
         self.assertIn("awaiting author", reasons)
 
     def test_blocked_by_label(self) -> None:
-        reasons = _off_queue_reasons_from_labels({"blocked-by-other-pr"}, self._rules(), "pass", False)
+        reasons = off_queue_reasons_from_labels({"blocked-by-other-pr"}, self._rules(), "pass", False)
         self.assertIn("blocked-by label present", reasons)
 
     def test_ready_to_merge_label(self) -> None:
-        reasons = _off_queue_reasons_from_labels({"ready-to-merge"}, self._rules(), "pass", False)
+        reasons = off_queue_reasons_from_labels({"ready-to-merge"}, self._rules(), "pass", False)
         self.assertIn("labeled ready-to-merge", reasons)
 
     def test_missing_required_label(self) -> None:
         rules = self._rules(required={"t-algebra"})
-        reasons = _off_queue_reasons_from_labels({"awaiting-review"}, rules, "pass", False)
+        reasons = off_queue_reasons_from_labels({"awaiting-review"}, rules, "pass", False)
         self.assertTrue(any("missing required label" in r for r in reasons))
 
     def test_ci_not_passing_when_gated(self) -> None:
         rules = QueueRules(require_open=True, require_not_draft=True, require_ci_success=True)
-        reasons = _off_queue_reasons_from_labels(set(), rules, "fail", False)
+        reasons = off_queue_reasons_from_labels(set(), rules, "fail", False)
         self.assertTrue(any("CI not passing" in r for r in reasons))
 
     def test_no_known_reason_falls_back(self) -> None:
-        reasons = _off_queue_reasons_from_labels(set(), self._rules(), "pass", False)
+        reasons = off_queue_reasons_from_labels(set(), self._rules(), "pass", False)
         self.assertEqual(reasons, ["not queue-labeled"])
 
     def test_multiple_reasons_combined(self) -> None:
-        reasons = _off_queue_reasons_from_labels({"awaiting-author", "wip"}, self._rules(), "pass", False)
+        reasons = off_queue_reasons_from_labels({"awaiting-author", "wip"}, self._rules(), "pass", False)
         self.assertIn("awaiting author", reasons)
         self.assertIn("labeled WIP", reasons)
