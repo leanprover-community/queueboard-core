@@ -468,10 +468,9 @@ def _make_html_header(analytics_host: str = "") -> str:
 
 
 def _make_analytics_snippet(host: str, site: str) -> str:
-    """Return the privacy notice paragraph and pageview tracking <script> block for injection before </body>."""
+    """Return the pageview tracking <script> block for injection before </body>."""
     endpoint = f"{host.rstrip('/')}/api/v1/analytics/collect"
-    notice = '<p class="analytics-notice">This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored).</p>'
-    script = (
+    return (
         "<script>\n"
         "(function () {\n"
         f"  var endpoint = '{endpoint}';\n"
@@ -488,7 +487,6 @@ def _make_analytics_snippet(host: str, site: str) -> str:
         "})();\n"
         "</script>"
     )
-    return f"{notice}\n{script}"
 
 
 GH_PAGES_DIR = "gh-pages"
