@@ -1,4 +1,32 @@
-Here is the main workflow in the `queueboard` repo, which queries data and generates the dashboard from an API endpoint in a deployed version of the `qb_site/` Django project in this repo (`queueboard-core`).
+This document describes the main GitHub Actions workflow used in the sibling
+[`queueboard`](https://github.com/leanprover-community/queueboard) repo.
+The workflow runs every 8 minutes, fetches fresh PR metadata from a deployed
+instance of `qb_site/` (the Django backend in this repo), generates static
+dashboard HTML, and publishes it to GitHub Pages.
+
+## How it works
+
+1. **Checkout** — checks out `queueboard-core` (this repo) to get scripts,
+   GraphQL query templates, and the `queueboard` Python package.
+2. **Fetch + generate** — calls `python -m queueboard.dashboard --api` three
+   times, once per rule set (different queue-classification rules for
+   experimentation). Each run downloads JSON payloads from the backend API and
+   renders a set of HTML dashboard pages into `gh-pages/<rule-set-dir>/`.
+3. **Deploy** — uploads the `gh-pages/` tree as a Pages artifact and deploys
+   it if the run is on the `master` branch and all three generation steps
+   succeeded.
+
+## Required repository secrets
+
+| Secret | Purpose |
+|---|---|
+| `QUEUEBOARD_API_BASE_URL` | Base URL of the deployed `qb_site` instance (e.g. `https://queueboard.example.com`). Used both to fetch API payloads and as the analytics endpoint host. |
+| `QUEUEBOARD_ANALYTICS_SITE` | Site slug registered in `SITE_ANALYTICS_ALLOWED_SITES` on the server (e.g. `queueboard`). When set, a privacy-preserving analytics snippet is injected into every generated page. Omit to disable analytics. |
+
+If `QUEUEBOARD_ANALYTICS_SITE` is absent (secret not configured), the snippet
+is silently omitted and all other workflow behaviour is unchanged.
+
+## Workflow YAML
 
 ```yaml
 name: Update PR metadata
