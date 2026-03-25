@@ -55,6 +55,8 @@ class PRQueueInfo:
     snapshot_generated_at: datetime | None
     snapshot_is_stale: bool
 
+    has_ruleset: bool  # False when no active QueueRuleSet exists for the repo
+
     source: str  # "snapshot" or "db"
 
 
@@ -98,6 +100,7 @@ def get_pr_queue_info(owner: str, repo_name: str, pr_number: int) -> PRQueueInfo
                 snapshot_generated_at=snapshot_generated_at,
                 snapshot_is_stale=snapshot_is_stale,
                 repository=repository,
+                has_ruleset=rule_set is not None,
             )
 
     return _from_db(
@@ -107,6 +110,7 @@ def get_pr_queue_info(owner: str, repo_name: str, pr_number: int) -> PRQueueInfo
         repository=repository,
         snapshot_generated_at=snapshot_generated_at,
         snapshot_is_stale=snapshot_is_stale,
+        has_ruleset=rule_set is not None,
     )
 
 
@@ -120,6 +124,7 @@ def _from_snapshot(
     snapshot_generated_at: datetime | None,
     snapshot_is_stale: bool,
     repository: Repository,
+    has_ruleset: bool,
 ) -> PRQueueInfo:
     dashboards: dict[str, list[int]] = (snapshot_payload.get("lists") or {}).get("dashboards", {})
     on_queue = pr_number in dashboards.get("Queue", [])
@@ -192,6 +197,7 @@ def _from_snapshot(
         dependencies=dependencies,
         snapshot_generated_at=snapshot_generated_at,
         snapshot_is_stale=snapshot_is_stale,
+        has_ruleset=has_ruleset,
         source="snapshot",
     )
 
@@ -204,6 +210,7 @@ def _from_db(
     repository: Repository,
     snapshot_generated_at: datetime | None,
     snapshot_is_stale: bool,
+    has_ruleset: bool,
 ) -> PRQueueInfo | None:
     try:
         pr = PullRequest.objects.select_related("author").get(repository=repository, number=pr_number)
@@ -314,6 +321,7 @@ def _from_db(
         dependencies=dependencies,
         snapshot_generated_at=snapshot_generated_at,
         snapshot_is_stale=snapshot_is_stale,
+        has_ruleset=has_ruleset,
         source="db",
     )
 

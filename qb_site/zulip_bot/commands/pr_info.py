@@ -190,7 +190,9 @@ def _format_pr_info(info: PRQueueInfo, mention_map: dict[str, str], now: datetim
     lines.append("")
 
     # Queue status.
-    if info.on_queue:
+    if not info.has_ruleset and info.state == "open":
+        lines.append("⚠️ No queue ruleset is configured for this repository — queue status unavailable.")
+    elif info.on_queue:
         since_str = format_since_timestamp(info.queue_since, now=now) if info.queue_since else "unknown"
         total_str = format_compact_duration(info.total_queue_seconds) if info.total_queue_seconds is not None else "unknown"
         lines.append(f"**On queue** since {since_str}  ·  Total queue time: {total_str}")

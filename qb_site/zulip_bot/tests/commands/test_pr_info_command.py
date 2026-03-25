@@ -63,6 +63,7 @@ def _make_pr_info(
     queue_since: datetime | None = None,
     snapshot_generated_at: datetime | None = None,
     snapshot_is_stale: bool = False,
+    has_ruleset: bool = True,
 ) -> PRQueueInfo:
     return PRQueueInfo(
         owner="leanprover-community",
@@ -88,6 +89,7 @@ def _make_pr_info(
         dependencies=[],
         snapshot_generated_at=snapshot_generated_at or _dt(2026, 3, 1, 12),
         snapshot_is_stale=snapshot_is_stale,
+        has_ruleset=has_ruleset,
         source="snapshot",
     )
 
@@ -239,6 +241,24 @@ class FormatPrInfoTests(TestCase):
         self.assertTrue(any(line.startswith("By ") for line in lines))
         self.assertTrue(any(line.startswith("Created: ") for line in lines))
         self.assertTrue(any(line.startswith("Updated: ") for line in lines))
+
+    def test_no_ruleset_open_pr_shows_warning_not_queue_status(self) -> None:
+        info = _make_pr_info(state="open", has_ruleset=False)
+        text = _format_pr_info(info, {}, self._now())
+        self.assertIn("No queue ruleset is configured", text)
+        self.assertNotIn("Not on queue", text)
+        self.assertNotIn("On queue", text)
+
+    def test_no_ruleset_merged_pr_no_warning_shows_state(self) -> None:
+        info = _make_pr_info(state="merged", on_queue=False, has_ruleset=False)
+        text = _format_pr_info(info, {}, self._now())
+        self.assertNotIn("No queue ruleset is configured", text)
+        self.assertIn("Not on queue", text)
+
+    def test_has_ruleset_no_warning(self) -> None:
+        info = _make_pr_info(state="open", has_ruleset=True)
+        text = _format_pr_info(info, {}, self._now())
+        self.assertNotIn("No queue ruleset is configured", text)
 
     def test_dependency_link_included(self) -> None:
         dep = DependencyInfo(
