@@ -123,3 +123,22 @@ class AnalyticsCollectViewTests(TestCase):
     def test_empty_allowed_sites_rejects_all(self):
         resp = self._post({"site": "test-site", "path": "/about"})
         self.assertEqual(resp.status_code, 400)
+
+    # --- empty UA hardening flag ---
+
+    def test_empty_ua_allowed_by_default(self):
+        resp = self._post({"site": "test-site", "path": "/"})  # no HTTP_USER_AGENT
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.count(), 1)
+
+    @override_settings(SITE_ANALYTICS_REJECT_EMPTY_UA=True)
+    def test_empty_ua_dropped_when_flag_enabled(self):
+        resp = self._post({"site": "test-site", "path": "/"})
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.count(), 0)
+
+    @override_settings(SITE_ANALYTICS_REJECT_EMPTY_UA=True)
+    def test_non_empty_ua_accepted_when_flag_enabled(self):
+        resp = self._post({"site": "test-site", "path": "/"}, HTTP_USER_AGENT="Mozilla/5.0")
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.count(), 1)

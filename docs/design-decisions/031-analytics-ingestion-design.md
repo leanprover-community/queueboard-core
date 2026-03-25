@@ -132,7 +132,7 @@
 5. `A5` ✓ Admin + operational visibility.
    - Register admin for raw/aggregate models.
    - Add concise task result payloads/counters.
-6. `A6` Retention and hardening.
+6. `A6` ✓ Retention and hardening.
    - Tune bot filtering and optional throttle policy.
 
 ## Validation Plan
@@ -188,6 +188,7 @@
     - Subtlety — index name length limit: Django enforces a 30-character limit on `Index` names. `sa_monthlymetric_site_month_idx` (31 chars) triggered `models.E034` at `makemigrations` time. Renamed to `sa_monthly_site_month_idx`. The daily metric constraint name `sa_dailymetric_site_date_unique` (31 chars) is a `UniqueConstraint` name, not an `Index` name, so Django does not enforce the same limit for it.
     - Subtlety — prune task does not touch aggregate tables: `prune_old_pageviews` only deletes `AnalyticsPageView` rows. The daily/monthly aggregate tables are never pruned automatically; they are the durable reporting record.
   - `A5` implemented: Django admin for all three models. All three admin classes disable add/change/delete permissions to enforce immutability of analytics data through the admin UI.
+  - `A6` implemented: `SITE_ANALYTICS_REJECT_EMPTY_UA` settings flag (default off) to drop requests with no `User-Agent` header; wired into the collect view before the existing bot-filter check.
 
 ## Open Questions
 - ~~Should `site` configuration live in DB (admin-editable) or settings/env (static)?~~ Resolved: settings/env (`SITE_ANALYTICS_ALLOWED_SITES`) for v1.

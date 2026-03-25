@@ -530,6 +530,8 @@ SITE_ANALYTICS_RETENTION_DAYS = int(os.getenv("SITE_ANALYTICS_RETENTION_DAYS", 5
 SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS", 3600))
 SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS", 86400))
 SITE_ANALYTICS_PRUNE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_PRUNE_PERIOD_SECONDS", 86400))
+# Reject requests with an empty User-Agent header (stricter bot hardening).
+SITE_ANALYTICS_REJECT_EMPTY_UA = env_bool(os.getenv("SITE_ANALYTICS_REJECT_EMPTY_UA"), False)
 
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.

@@ -44,6 +44,10 @@ class AnalyticsCollectView(APIView):
         if site not in allowed_sites:
             return Response({"detail": "unknown site"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Reject empty UA when the stricter hardening flag is enabled.
+        if not user_agent and settings.SITE_ANALYTICS_REJECT_EMPTY_UA:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
         # Silently drop bot traffic rather than returning an error, to avoid
         # leaking information about detection heuristics.
         if is_bot(user_agent):
