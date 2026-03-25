@@ -174,3 +174,9 @@ span.label {
 .qb-filter-option span {
   font-size: 0.95rem;
 }
+
+.analytics-notice {
+  margin-top: 2rem;
+  font-size: 0.8rem;
+  color: #888;
+}

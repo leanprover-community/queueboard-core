@@ -78,8 +78,9 @@
 1. Add the site slug to `SITE_ANALYTICS_ALLOWED_SITES` (comma-separated, no spaces).
 2. Deploy/restart the web dyno so the new slug is live.
 3. Add the tracking snippet to the site (see below).
-4. Verify events appear in the Django admin under `AnalyticsPageView`.
-5. After one aggregation cycle, check `AnalyticsDailyMetric` for counts.
+4. Add a visible privacy notice to the site informing visitors that anonymous visit counts are collected (no cookies, no IP addresses stored). See the snippet notes below for the recommended wording.
+5. Verify events appear in the Django admin under `AnalyticsPageView`.
+6. After one aggregation cycle, check `AnalyticsDailyMetric` for counts.
 
 ### Static-site tracking snippet
 
@@ -115,6 +116,7 @@ Replace `YOUR_QUEUEBOARD_HOST` and `YOUR_SITE_SLUG` before deploying.
 - `sendBeacon` is preferred: it survives page unload and does not block navigation.
 - No cookies, no persistent identifiers, no third-party scripts.
 - The endpoint returns `204` for all non-error outcomes (success, bot drop, unknown UA) so the response body is never read.
+- **Disclosure requirement:** Sites using this snippet must inform visitors that anonymous visit counts are collected. The recommended notice text is: *"This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored)."* The queueboard dashboard injects this notice automatically alongside the snippet; other sites should add equivalent wording to their footer or privacy statement.
 
 ### Migrations
 - `0001_initial` — `AnalyticsPageView`
