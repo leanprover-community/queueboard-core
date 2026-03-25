@@ -766,3 +766,8 @@ if ANALYZER_AREA_STATS_PERIOD_SECONDS > 0:
             "fanout": True,
         },
     }
+if SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["site_analytics_aggregate_daily"] = {
+        "task": "site_analytics.aggregate_daily_metrics",
+        "schedule": SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS,
+    }

@@ -6,6 +6,7 @@ from __future__ import annotations
 # We include implicit Django auth M2M tables and django_migrations explicitly.
 BACKUP_TABLES: tuple[str, ...] = (
     "site_analytics_analyticspageview",
+    "site_analytics_analyticsdailymetric",
     "analyzer_analyzerconvergencesnapshot",
     "analyzer_areastatssnapshot",
     "analyzer_assignmentproposal",
@@ -107,6 +108,7 @@ TRUNCATE_TABLES: tuple[str, ...] = (
 
 # Tables retained in sanitized dump.
 RETAIN_TABLES: tuple[str, ...] = (
+    "site_analytics_analyticsdailymetric",
     "core_repository",
     "core_user",
     "syncer_pullrequest",

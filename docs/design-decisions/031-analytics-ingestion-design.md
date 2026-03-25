@@ -122,7 +122,7 @@
    - Add `POST /api/v1/analytics/collect` route and view.
    - Implement payload validation, site allowlist check, IP extraction (X-Forwarded-For → REMOTE_ADDR fallback), hashing service, and raw insert.
    - Per-site tokens deferred to v1.1.
-3. `A3` Daily aggregate model + service + Celery task.
+3. `A3` ✓ Daily aggregate model + service + Celery task.
    - Add `AnalyticsDailyMetric` model, upsert service, and `site_analytics.aggregate_daily_metrics` Celery task.
    - Wire beat schedule entry in `base.py`.
 4. `A4` Monthly aggregate model + service + Celery task + prune task.
@@ -179,6 +179,10 @@
     - Subtlety — bot traffic response: bots return `204` (same as success) rather than a distinct status code so detection heuristics are not leaked to callers.
     - Subtlety — field truncation: `path`, `referrer`, and `user_agent` are silently truncated to their model `max_length` before insert rather than rejected, since truncation is preferable to dropping the event entirely for slightly over-long paths.
     - Subtlety — empty `SITE_ANALYTICS_ALLOWED_SITES`: an unconfigured (empty) allowlist rejects all requests with `400`; this is intentional opt-in behaviour that prevents accidental data collection before sites are explicitly registered.
+  - `A3` implemented: `AnalyticsDailyMetric` model, `aggregate_daily_metrics` service, `site_analytics.aggregate_daily_metrics` Celery task, beat schedule entry, backup policy entry (`RETAIN_TABLES`), tests.
+    - Subtlety — rolling window default (`days_back=2`): recomputes today and yesterday on every run so events arriving near UTC midnight or during a prior task run are never missed. The task is fully idempotent: each call overwrites aggregates with a fresh count, so retries and overlapping runs are harmless.
+    - Subtlety — preserve aggregates when raw rows are gone: if raw pageviews have been pruned (by the A4 retention task) but an aggregate row already exists, the service leaves the existing row in place rather than zeroing it. Zeroing would silently destroy reporting data after the retention window passes.
+    - Subtlety — `__date` lookup and UTC: Django's `occurred_at__date=d` with `USE_TZ=True` and `TIME_ZONE=UTC` correctly evaluates the date boundary at UTC midnight in PostgreSQL. Covered by `test_date_boundary_is_utc`.
 
 ## Open Questions
 - ~~Should `site` configuration live in DB (admin-editable) or settings/env (static)?~~ Resolved: settings/env (`SITE_ANALYTICS_ALLOWED_SITES`) for v1.
