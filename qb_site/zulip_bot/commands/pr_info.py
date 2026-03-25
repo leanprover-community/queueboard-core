@@ -24,6 +24,7 @@ _URL_RE = re.compile(r"https://github\.com/([^/\s\"]+)/([^/\s\"]+)/pull/(\d+)")
     name="pr-info",
     description="Show queue info for one or more GitHub PR links (up to 10). Zulip linkifiers also work.",
     response_mode=ResponseMode.STREAM,
+    aliases=("pr_info",),
 )
 def pr_info_command(context: CommandContext, args: str) -> CommandResult:
     refs = _parse_pr_refs(context, args)

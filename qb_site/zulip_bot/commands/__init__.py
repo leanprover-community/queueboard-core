@@ -40,20 +40,26 @@ class CommandDefinition:
     description: str
     handler: CommandHandler
     response_mode: ResponseMode
+    aliases: tuple[str, ...] = ()
 
 
 _COMMANDS: dict[str, CommandDefinition] = {}
 
 
-def register_command(*, name: str, description: str, response_mode: ResponseMode) -> Callable[[CommandHandler], CommandHandler]:
+def register_command(
+    *, name: str, description: str, response_mode: ResponseMode, aliases: tuple[str, ...] = ()
+) -> Callable[[CommandHandler], CommandHandler]:
     def decorator(handler: CommandHandler) -> CommandHandler:
         definition = CommandDefinition(
             name=name,
             description=description,
             handler=handler,
             response_mode=response_mode,
+            aliases=aliases,
         )
         _COMMANDS[name] = definition
+        for alias in aliases:
+            _COMMANDS[alias] = definition
         return handler
 
     return decorator
@@ -64,4 +70,10 @@ def get_command(name: str) -> CommandDefinition | None:
 
 
 def list_commands() -> list[CommandDefinition]:
-    return sorted(_COMMANDS.values(), key=lambda cmd: cmd.name)
+    """Return deduplicated command definitions sorted by canonical name.
+
+    Aliases share the same ``CommandDefinition`` object; deduplication ensures
+    each command appears exactly once regardless of how many aliases it has.
+    """
+    unique = {cmd.name: cmd for cmd in _COMMANDS.values()}
+    return sorted(unique.values(), key=lambda cmd: cmd.name)

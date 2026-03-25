@@ -32,7 +32,7 @@ class TestAssignedPrsCommand(TestCase):
             stream_id=None,
             topic=None,
             is_private=True,
-            allowed_command_names=frozenset({"assigned_prs"}),
+            allowed_command_names=frozenset({"assigned-prs"}),
         )
 
     def test_returns_error_when_sender_missing(self) -> None:
