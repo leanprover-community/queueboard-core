@@ -142,3 +142,16 @@ class AnalyticsCollectViewTests(TestCase):
         resp = self._post({"site": "test-site", "path": "/"}, HTTP_USER_AGENT="Mozilla/5.0")
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(AnalyticsPageView.objects.count(), 1)
+
+    # --- CORS ---
+
+    def test_post_response_includes_cors_header(self):
+        resp = self._post({"site": "test-site", "path": "/"}, HTTP_USER_AGENT="Mozilla/5.0")
+        self.assertEqual(resp["Access-Control-Allow-Origin"], "*")
+
+    def test_options_preflight_returns_204_with_cors_headers(self):
+        resp = self.client.options(URL)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp["Access-Control-Allow-Origin"], "*")
+        self.assertIn("POST", resp["Access-Control-Allow-Methods"])
+        self.assertIn("Content-Type", resp["Access-Control-Allow-Headers"])
