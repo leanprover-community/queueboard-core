@@ -78,8 +78,9 @@
 1. Add the site slug to `SITE_ANALYTICS_ALLOWED_SITES` (comma-separated, no spaces).
 2. Deploy/restart the web dyno so the new slug is live.
 3. Add the tracking snippet to the site (see below).
-4. Verify events appear in the Django admin under `AnalyticsPageView`.
-5. After one aggregation cycle, check `AnalyticsDailyMetric` for counts.
+4. Add a visible privacy notice to the site informing visitors that anonymous visit counts are collected (no cookies, no IP addresses stored). See disclosure notes below.
+5. Verify events appear in the Django admin under `AnalyticsPageView`.
+6. After one aggregation cycle, check `AnalyticsDailyMetric` for counts.
 
 ### Static-site tracking snippet
 
@@ -115,6 +116,18 @@ Replace `YOUR_QUEUEBOARD_HOST` and `YOUR_SITE_SLUG` before deploying.
 - `sendBeacon` is preferred: it survives page unload and does not block navigation.
 - No cookies, no persistent identifiers, no third-party scripts.
 - The endpoint returns `204` for all non-error outcomes (success, bot drop, unknown UA) so the response body is never read.
+
+### Disclosure and privacy regulations
+
+This system is designed to minimise regulatory obligations, but the picture is nuanced enough to warrant documentation. *This section is informational, not legal advice.*
+
+**ePrivacy Directive (EU, [2002/58/EC](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:02002L0058-20091219) Art. 5(3)) and UK PECR (SI 2003/2426 Reg. 6)** — these rules require consent for *storing information in, or gaining access to information already stored in, the user's terminal equipment*. This system performs server-side hash computation on data transmitted in the HTTP request (IP address from the network layer, `User-Agent` header) and writes nothing to the user's device (no cookies, no localStorage, no fingerprinting scripts). The [EDPB Guidelines 2/2023 on the Technical Scope of Art. 5(3)](https://www.edpb.europa.eu/our-work-tools/our-documents/guidelines/guidelines-22023-technical-scope-art-53-eprivacy-directive_en) (adopted October 2024) take a broad view: they state that gaining access to IP addresses triggers Art. 5(3) "in cases where this information originates from the terminal equipment of a subscriber or user." Whether passively transmitted HTTP request metadata (as opposed to data actively read from device storage) falls under this scope is not conclusively settled. The [ICO's guidance on storage and access technologies](https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/guidance-on-the-use-of-storage-and-access-technologies/) defines PECR Regulation 6 as covering technologies that "store information on a user's device or gain access to information on a user's device." On balance, a system that neither stores nor reads from the device is likely outside the scope of Art. 5(3) / Reg. 6, but this is an area of evolving regulatory interpretation.
+
+**GDPR / UK GDPR ([Regulation 2016/679](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32016R0679))** — whether GDPR applies turns on whether the monthly rotating hash constitutes "personal data" under Art. 4(1). Recital 26 excludes "anonymous information" from GDPR's scope, and provides a "means reasonably likely" test: whether identification is feasible given "all objective factors, such as the costs of and the amount of time required for identification, taking into consideration the available technology." The CJEU's ruling in [*Breyer v. Bundesrepublik Deutschland* (C-582/14, 2016)](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:62014CJ0582) established that dynamic IP addresses can constitute personal data, but only where the controller has "the legal means which enable it to identify the data subject with additional data which the internet service provider has about that person." In this system the raw IP is never stored and the salt is secret and rotated monthly, which is a strong argument for anonymity under Recital 26. The cautious position treats the hash as pseudonymous personal data; in that case, Art. 6(1)(f) legitimate interests is the appropriate lawful basis for coarse usage analytics — **no consent is required** — but Art. 13 transparency obligations apply, meaning visitors must be able to find information about the processing (e.g., via a linked privacy statement or footer notice).
+
+**[CNIL guidance](https://www.cnil.fr/fr/cookies-solutions-pour-les-outils-de-mesure-daudience) (France)** — the CNIL's framework for consent-exempt analytics covers tools that use short-lived identifiers with immediate IP anonymisation, provided the data is used solely for audience measurement, does not enable cross-site tracking, and is retained for no more than 25 months. This system satisfies those conditions. The CNIL still expects users to be informed of the tracking (e.g., via the site's privacy policy), even for consent-exempt tools.
+
+**Practical position:** No consent banner is required. As a matter of good practice — and to satisfy GDPR Art. 13 under the cautious reading that the hash is personal data — sites using this snippet should make a brief privacy notice accessible to visitors. The recommended notice text is: *"This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored)."* The queueboard dashboard injects this notice automatically alongside the snippet; other sites should add equivalent wording to their footer or privacy statement.
 
 ### Migrations
 - `0001_initial` — `AnalyticsPageView`
