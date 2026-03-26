@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from unittest import mock
 
 from django.test import TestCase, override_settings
 
@@ -86,7 +87,13 @@ class AggregateMonthlyMetricsServiceTests(TestCase):
         metric = AnalyticsMonthlyMetric.objects.get(site="s1", month=MAR_START)
         self.assertEqual(metric.pageviews, 99)  # preserved, not zeroed
 
-    def test_task_returns_summary_dict(self):
+    @mock.patch("django.utils.timezone.now")
+    def test_task_returns_summary_dict(self, mock_now):
+        # Pin the clock so the task's default date=timezone.now().date() matches
+        # the pageview date, avoiding midnight-boundary flakiness.
+        mock_now.return_value = datetime.datetime(
+            MAR_2026.year, MAR_2026.month, MAR_2026.day, 12, 0, 0, tzinfo=datetime.timezone.utc
+        )
         _pv("s1", "/", MAR_2026, "h1")
         result = aggregate_monthly_metrics_task(months_back=1)
         self.assertIn("upserted", result)
@@ -96,7 +103,12 @@ class AggregateMonthlyMetricsServiceTests(TestCase):
 
 @_SALT
 class PruneOldPageviewsTests(TestCase):
-    def test_prunes_rows_older_than_retention(self):
+    # Pin the clock so hardcoded dates remain "old" or "recent" as intended.
+    _NOW = datetime.datetime(2026, 3, 25, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+    @mock.patch("django.utils.timezone.now")
+    def test_prunes_rows_older_than_retention(self, mock_now):
+        mock_now.return_value = self._NOW
         old = _pv("s1", "/old", datetime.date(2023, 1, 1))
         recent = _pv("s1", "/new", datetime.date(2026, 3, 1))
 
@@ -106,7 +118,9 @@ class PruneOldPageviewsTests(TestCase):
         self.assertTrue(AnalyticsPageView.objects.filter(pk=recent.pk).exists())
         self.assertEqual(result["deleted"], 1)
 
-    def test_no_rows_deleted_when_all_recent(self):
+    @mock.patch("django.utils.timezone.now")
+    def test_no_rows_deleted_when_all_recent(self, mock_now):
+        mock_now.return_value = self._NOW
         _pv("s1", "/", datetime.date(2026, 3, 24))
         result = prune_old_pageviews(retention_days=30)
         self.assertEqual(result["deleted"], 0)
@@ -117,8 +131,10 @@ class PruneOldPageviewsTests(TestCase):
         self.assertIn("cutoff", result)
         self.assertEqual(result["retention_days"], 90)
 
+    @mock.patch("django.utils.timezone.now")
     @override_settings(SITE_ANALYTICS_RETENTION_DAYS=7)
-    def test_uses_settings_default_when_not_specified(self):
+    def test_uses_settings_default_when_not_specified(self, mock_now):
+        mock_now.return_value = self._NOW
         _pv("s1", "/", datetime.date(2026, 3, 1))
         result = prune_old_pageviews()
         self.assertEqual(result["retention_days"], 7)
