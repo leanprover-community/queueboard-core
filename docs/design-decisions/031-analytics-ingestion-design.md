@@ -7,7 +7,7 @@
 - Operational constraint: ingestion endpoint must be fast, resilient, and callable from third-party static sites (CORS required).
 
 ## Decision
-- New Django app `site_analytics` with three models, a REST ingestion endpoint, and three Celery periodic tasks.
+- New Django app `site_analytics` with four models, a REST ingestion endpoint, and four Celery periodic tasks.
 - Site allowlist (`SITE_ANALYTICS_ALLOWED_SITES`) gates ingestion; no per-site auth tokens in v1.
 - Reporting reads from aggregate tables only; raw rows are bounded-retention scratch space.
 
@@ -21,6 +21,7 @@
   - Fields: `site`, `date` (UTC), `pageviews`, `unique_visitors`.
 - `AnalyticsMonthlyMetric` — monthly aggregate per site; unique on `(site, month)`.
   - Fields: `site`, `month` (UTC first-of-month `DateField`, e.g. `2026-03-01`), `pageviews`, `unique_visitors`.
+- `SiteAnalyticsSalt` — single live row holding the current month's visitor-hash salt; previous row deleted on rotation.
 
 ### Ingestion endpoint
 - `POST /api/v1/analytics/collect` — view in `api/views/analytics_collect.py`.
@@ -32,12 +33,12 @@
 - No CSRF enforcement: DRF `authentication_classes = []` / `permission_classes = []`.
 
 ### Privacy
-- Raw IP not stored. `visitor_month_hash = sha256(ip | normalized_ua | YYYY-MM | salt)`.
+- Raw IP not stored. `visitor_month_hash = sha256(ip | normalized_ua | salt)`.
 - Fields joined with `|` to prevent cross-field hash collisions.
 - UA is lowercased before hashing so casing variation in the same browser does not inflate unique-visitor counts.
 - IP extracted from `X-Forwarded-For` (leftmost address; set by Heroku routing and most reverse proxies), falling back to `REMOTE_ADDR` for direct connections.
-- `month_key` is UTC `YYYY-MM`; cross-month correlation is impossible by construction.
-- Salt from `SITE_ANALYTICS_HASH_SALT` env var. **Changing the salt or separator invalidates all historical hashes.**
+- Cross-month correlation is prevented by monthly salt rotation: the salt is replaced at the start of each month and the old value discarded, so hashes from different months are unlinkable even with knowledge of the current salt (forward secrecy against salt leakage).
+- Salt is stored in `SiteAnalyticsSalt` (DB, one live row). `SITE_ANALYTICS_HASH_SALT` env var is the fallback until the first rotation task runs. **Changing the separator invalidates all historical hashes.**
 
 ### Bot filtering
 - Substring denylist in `site_analytics/services/bot_filter.py` matched against lowercased UA.
@@ -48,15 +49,17 @@
 - `site_analytics.aggregate_daily_metrics` (default: hourly) — upserts `AnalyticsDailyMetric` for a rolling `days_back=2` window so events near UTC midnight are never missed. Fully idempotent.
 - `site_analytics.aggregate_monthly_metrics` (default: daily) — upserts `AnalyticsMonthlyMetric` for a rolling `months_back=2` window.
 - `site_analytics.prune_old_pageviews` (default: daily) — deletes `AnalyticsPageView` rows older than the retention cutoff. Aggregate tables are never pruned.
+- `site_analytics.rotate_salt` (monthly, midnight UTC on the 1st) — generates a new random salt, saves it to `SiteAnalyticsSalt`, and deletes the previous row atomically.
 - All three tasks preserve existing aggregate rows when the corresponding raw rows have been pruned, to avoid silently zeroing out reporting data after the retention window.
 
 ### Backup policy
 - `site_analytics_analyticspageview` → `TRUNCATE_TABLES` (raw rows contain visitor hashes).
 - `site_analytics_analyticsdailymetric`, `site_analytics_analyticsmonthlymetric` → `RETAIN_TABLES` (aggregate-only, safe to share publicly).
+- `site_analytics_siteanalyticssalt` → `TRUNCATE_TABLES` (contains the live secret; must never appear in sanitized backups).
 
 ## Invariants
 - Reporting reads must come from aggregate tables, not raw pageview scans.
-- Hashing semantics (field separator `|`, UA normalization, month key format, salt) are part of the privacy contract; any change requires an explicit migration note and bumps all historical hashes.
+- Hashing semantics (field separator `|`, UA normalization, salt source) are part of the privacy contract; any change requires an explicit migration note and bumps all historical hashes.
 - Aggregation tasks must remain idempotent and safe under retries and overlapping runs.
 - All date/time boundaries use UTC. `occurred_at__date=d` with `USE_TZ=True` and `TIME_ZONE=UTC` evaluates at UTC midnight in PostgreSQL.
 - `site` slugs must remain stable; renames require an explicit backfill of both raw rows and aggregate tables.
@@ -133,6 +136,7 @@ This system is designed to minimise regulatory obligations, but the picture is n
 - `0001_initial` — `AnalyticsPageView`
 - `0002_analyticsdailymetric` — `AnalyticsDailyMetric`
 - `0003_analyticsmonthlymetric` — `AnalyticsMonthlyMetric`
+- `0004_siteanalyticssalt` — `SiteAnalyticsSalt`
 
 ## Consequences
 - Adds ~48 DB tables to backup scope (three new, classified in policy).

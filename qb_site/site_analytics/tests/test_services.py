@@ -6,8 +6,9 @@ from unittest.mock import MagicMock
 
 from django.test import TestCase, override_settings
 
+from site_analytics.models.salt import SiteAnalyticsSalt
 from site_analytics.services.bot_filter import is_bot
-from site_analytics.services.hashing import compute_visitor_month_hash, get_client_ip
+from site_analytics.services.hashing import _reset_salt_cache, compute_visitor_hash, get_client_ip
 
 
 class GetClientIpTests(TestCase):
@@ -47,37 +48,58 @@ class GetClientIpTests(TestCase):
 
 
 @override_settings(SITE_ANALYTICS_HASH_SALT="test-salt")
-class ComputeVisitorMonthHashTests(TestCase):
+class ComputeVisitorHashTests(TestCase):
+    def setUp(self):
+        # Ensure each test starts with a cold cache so DB state is respected.
+        _reset_salt_cache()
+
     def test_returns_64_char_hex(self):
-        result = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
+        result = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
         self.assertEqual(len(result), 64)
         self.assertTrue(all(c in "0123456789abcdef" for c in result))
 
     def test_deterministic(self):
-        a = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
-        b = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
+        a = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+        b = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
         self.assertEqual(a, b)
 
-    def test_different_month_keys_produce_different_hashes(self):
-        a = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
-        b = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-04")
-        self.assertNotEqual(a, b)
-
     def test_different_ips_produce_different_hashes(self):
-        a = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
-        b = compute_visitor_month_hash("1.2.3.5", "Mozilla/5.0", "2026-03")
+        a = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+        b = compute_visitor_hash("1.2.3.5", "Mozilla/5.0")
         self.assertNotEqual(a, b)
 
     def test_ua_normalized_case_insensitive(self):
-        a = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
-        b = compute_visitor_month_hash("1.2.3.4", "MOZILLA/5.0", "2026-03")
+        a = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+        b = compute_visitor_hash("1.2.3.4", "MOZILLA/5.0")
         self.assertEqual(a, b)
 
-    @override_settings(SITE_ANALYTICS_HASH_SALT="other-salt")
-    def test_different_salts_produce_different_hashes(self):
-        a = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
-        with self.settings(SITE_ANALYTICS_HASH_SALT="test-salt"):
-            b = compute_visitor_month_hash("1.2.3.4", "Mozilla/5.0", "2026-03")
+    def test_falls_back_to_settings_salt_when_no_db_row(self):
+        # No SiteAnalyticsSalt row — should use SITE_ANALYTICS_HASH_SALT.
+        self.assertEqual(SiteAnalyticsSalt.objects.count(), 0)
+        a = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+        self.assertEqual(len(a), 64)
+
+    def test_db_salt_takes_precedence_over_settings_salt(self):
+        # Hash with settings salt only.
+        hash_settings = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+
+        # Insert a DB salt and reset cache so it's picked up.
+        SiteAnalyticsSalt.objects.create(salt="db-salt-value")
+        _reset_salt_cache()
+
+        hash_db = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+        self.assertNotEqual(hash_settings, hash_db)
+
+    def test_different_db_salts_produce_different_hashes(self):
+        SiteAnalyticsSalt.objects.create(salt="salt-one")
+        _reset_salt_cache()
+        a = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+
+        SiteAnalyticsSalt.objects.all().delete()
+        SiteAnalyticsSalt.objects.create(salt="salt-two")
+        _reset_salt_cache()
+        b = compute_visitor_hash("1.2.3.4", "Mozilla/5.0")
+
         self.assertNotEqual(a, b)
 
 

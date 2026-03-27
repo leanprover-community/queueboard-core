@@ -9,13 +9,14 @@
 - `models/pageview.py` — `AnalyticsPageView` raw event rows (immutable after insert).
 - `models/daily_metric.py` — `AnalyticsDailyMetric` (added in A3).
 - `models/monthly_metric.py` — `AnalyticsMonthlyMetric` (added in A4).
+- `models/salt.py` — `SiteAnalyticsSalt` single-row table holding the current month's hash salt.
 - `services/` — hashing, bot filtering, aggregation logic.
-- `tasks/` — periodic Celery tasks for aggregation and pruning.
+- `tasks/` — periodic Celery tasks for aggregation, pruning, and salt rotation.
 - `tests/` — unit and integration tests.
 - API ingestion view: `qb_site/api/views/analytics_collect.py` (added in A2).
 
 ## Key Settings (all env-overridable)
-- `SITE_ANALYTICS_HASH_SALT` — required secret for visitor hash; empty string disables hashing safety checks in dev.
+- `SITE_ANALYTICS_HASH_SALT` — fallback salt used until the first `rotate_salt` task runs and writes a DB salt. Required on first deploy; thereafter the `SiteAnalyticsSalt` DB row takes precedence.
 - `SITE_ANALYTICS_ALLOWED_SITES` — comma-separated site slugs; unknown slugs rejected with `400`.
 - `SITE_ANALYTICS_RETENTION_DAYS` — raw pageview retention window (default 540 days / ~18 months).
 - `SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS` — beat period for daily aggregation task (default 3600).
@@ -28,10 +29,12 @@ Celery task names (as registered via `@shared_task(name=…)`):
 - `site_analytics.aggregate_daily_metrics` — idempotent upsert of daily pageview/unique-visitor counts (added in A3).
 - `site_analytics.aggregate_monthly_metrics` — idempotent upsert of monthly metrics; recomputes current + previous month (added in A4).
 - `site_analytics.prune_old_pageviews` — deletes raw rows older than `SITE_ANALYTICS_RETENTION_DAYS` (added in A4).
+- `site_analytics.rotate_salt` — generates a new random visitor-hash salt and discards the previous one; runs at midnight UTC on the 1st of each month.
 
 ## Privacy Invariants
 - Raw IP addresses are never stored.
-- `visitor_month_hash = sha256(ip + normalized_user_agent + YYYY-MM + salt)`.
+- `visitor_month_hash = sha256(ip | normalized_user_agent | salt)` where `salt` is the current month's randomly generated value from `SiteAnalyticsSalt`.
+- The salt is replaced at month start and the old value deleted, so hashes from different months are unlinkable even with knowledge of the current salt (forward secrecy).
 - IP is extracted from `X-Forwarded-For` (Heroku / reverse-proxy header) falling back to `REMOTE_ADDR`.
 - Changing hashing semantics requires an explicit migration/versioning note in the design doc.
 

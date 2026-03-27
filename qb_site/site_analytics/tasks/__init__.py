@@ -7,9 +7,11 @@ from site_analytics.tasks.aggregate_monthly import (  # noqa: F401
     aggregate_monthly_metrics_task,
     prune_old_pageviews_task,
 )
+from site_analytics.tasks.rotate_salt import rotate_salt_task  # noqa: F401
 
 __all__ = [
     "aggregate_daily_metrics_task",
     "aggregate_monthly_metrics_task",
     "prune_old_pageviews_task",
+    "rotate_salt_task",
 ]

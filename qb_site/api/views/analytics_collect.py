@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 
 from site_analytics.models import AnalyticsPageView
 from site_analytics.services.bot_filter import is_bot
-from site_analytics.services.hashing import compute_visitor_month_hash, get_client_ip
+from site_analytics.services.hashing import compute_visitor_hash, get_client_ip
 
 # Hard caps to guard against oversized payloads hitting DB column limits.
 _PATH_MAX = 2000
@@ -76,8 +76,7 @@ class AnalyticsCollectView(APIView):
             return _cors(Response(status=status.HTTP_204_NO_CONTENT))
 
         now = timezone.now()
-        month_key = now.strftime("%Y-%m")
-        visitor_month_hash = compute_visitor_month_hash(get_client_ip(request), user_agent, month_key)
+        visitor_month_hash = compute_visitor_hash(get_client_ip(request), user_agent)
 
         AnalyticsPageView.objects.create(
             site=site,

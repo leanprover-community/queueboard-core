@@ -6,6 +6,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from site_analytics.models import AnalyticsPageView
+from site_analytics.services.hashing import _reset_salt_cache
 
 _ALLOWED = override_settings(
     SITE_ANALYTICS_ALLOWED_SITES=["test-site"],
@@ -19,6 +20,7 @@ URL = "/api/v1/analytics/collect"
 class AnalyticsCollectViewTests(TestCase):
     def setUp(self) -> None:
         self.client = APIClient()
+        _reset_salt_cache()
 
     def _post(self, data: dict, **kwargs) -> object:
         return self.client.post(URL, data, format="json", **kwargs)
