@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from django.test import TestCase
+from django.utils import timezone
 
-from core.models.repository import Repository
 from core.models import User
 from syncer.services.sub.pull_request_sync import upsert_pull_request
+from syncer.services.pr_sync_service import PRSyncService
 from syncer.models import PullRequest
-from syncer.tests.factories import make_repo
+from syncer.tests.factories import make_repo, make_pr
 
 
 class TestPullRequestSync(TestCase):
@@ -51,6 +52,88 @@ class TestPullRequestSync(TestCase):
         pr.refresh_from_db()
         self.assertEqual(pr.title, "Second")
         self.assertEqual(pr.head_sha, "def456")
+
+    def test_upsert_does_not_advance_last_synced_at_for_existing_pr(self) -> None:
+        """upsert_pull_request must not advance last_synced_at for existing PRs.
+
+        last_synced_at is used by the sync skip check: if it were advanced here
+        (before engagement fields like assignees are saved), a task failure between
+        the two saves would leave the PR with stale assignees permanently — all
+        retries would see gh_updated <= last_synced_at and skip the full bundle.
+        last_synced_at is now advanced only inside sync_pull_request_bundle, after
+        engagement fields are also written.
+        """
+        bundle = {
+            "number": 10,
+            "state": "OPEN",
+            "isDraft": False,
+            "title": "Original title",
+            "body": "",
+            "createdAt": "2025-01-01T00:00:00Z",
+            "updatedAt": "2025-01-01T01:00:00Z",
+            "baseRefName": "master",
+            "headRefName": "branch",
+            "headRefOid": "aaa111",
+            "headRepositoryOwner": {"login": "org"},
+            "headRepository": {"name": "repo"},
+            "additions": 0,
+            "deletions": 0,
+            "changedFiles": 0,
+            "author": {"login": "alice"},
+        }
+        upsert_pull_request(bundle, self.repo)
+        pr = PullRequest.objects.get(repository=self.repo, number=10)
+        original_last_synced_at = pr.last_synced_at
+
+        bundle["title"] = "Updated title"
+        upsert_pull_request(bundle, self.repo)
+        pr.refresh_from_db()
+
+        self.assertEqual(pr.last_synced_at, original_last_synced_at)
+        self.assertEqual(pr.title, "Updated title")
+
+    def test_sync_pull_request_bundle_advances_last_synced_at(self) -> None:
+        """sync_pull_request_bundle must advance last_synced_at after saving engagement fields."""
+        t_before = timezone.now()
+        pr = make_pr(self.repo, 20)
+        pr.last_synced_at = t_before
+        pr.save(update_fields=["last_synced_at"])
+
+        bundle = {
+            "number": 20,
+            "state": "OPEN",
+            "isDraft": False,
+            "title": pr.title,
+            "body": "",
+            "createdAt": "2025-01-01T00:00:00Z",
+            "updatedAt": "2025-01-01T01:00:00Z",
+            "baseRefName": "master",
+            "headRefName": "branch",
+            "headRefOid": "bbb222",
+            "headRepositoryOwner": {"login": "org"},
+            "headRepository": {"name": "repo"},
+            "additions": 0,
+            "deletions": 0,
+            "changedFiles": 0,
+            "author": {"login": "alice"},
+            "labels": {"nodes": []},
+            "timelineItems": {"nodes": []},
+            "commits": {"nodes": []},
+            "files": {"nodes": [], "pageInfo": {"hasNextPage": False}, "totalCount": 0},
+            "assignees": {
+                "nodes": [{"login": "bob"}],
+                "pageInfo": {"hasNextPage": False},
+                "totalCount": 1,
+            },
+            "reviews": {"nodes": [], "pageInfo": {"hasNextPage": False}, "totalCount": 0},
+            "comments": {"nodes": [], "pageInfo": {"hasNextPage": False}, "totalCount": 0},
+            "reviewThreads": {"nodes": [], "pageInfo": {"hasNextPage": False}, "totalCount": 0},
+        }
+        PRSyncService().sync_pull_request_bundle(self.repo, bundle)
+        pr.refresh_from_db()
+
+        self.assertGreater(pr.last_synced_at, t_before)
+        self.assertEqual(pr.assignees, ["bob"])
 
     def test_author_upsert_with_node_id_and_metadata(self) -> None:
         bundle = {

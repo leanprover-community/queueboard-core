@@ -94,9 +94,11 @@ def upsert_pull_request(bundle: Dict[str, Any], repo: Repository) -> PullRequest
         created = True
         return PullRequestUpsertResult(pr=pr, created=True, updated_fields=tuple(core_values.keys()))
 
-    # Existing: update only changed fields, then bump last_synced_at
+    # Existing: update only changed core fields.
+    # Note: last_synced_at is intentionally NOT advanced here. It is advanced only
+    # after engagement fields (assignees, files, reviews, etc.) are also saved, in
+    # sync_pull_request_bundle. Advancing it early would cause the skip check to
+    # treat the PR as fully up-to-date even if engagement fields were never written
+    # (e.g. due to a task failure between the two saves).
     updated, fields = update_if_changed(pr, core_values)
-    # Always refresh last_synced_at to mark successful ingest
-    pr.last_synced_at = timezone.now()
-    pr.save(update_fields=["last_synced_at", "updated_at"])
     return PullRequestUpsertResult(pr=pr, created=False, updated_fields=fields)

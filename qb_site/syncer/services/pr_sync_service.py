@@ -251,8 +251,12 @@ class PRSyncService:
         if "engagement_synced_at" not in update_fields:
             pr_obj.engagement_synced_at = now_ts
             update_fields.append("engagement_synced_at")
+        # Advance last_synced_at here, after all engagement fields are prepared, so
+        # that the skip check never sees a PR as up-to-date when assignees (or other
+        # engagement data) were not yet persisted.
+        pr_obj.last_synced_at = now_ts
         if update_fields or ci_update_fields:
-            pr_obj.save(update_fields=update_fields + ci_update_fields + ["updated_at"])
+            pr_obj.save(update_fields=update_fields + ci_update_fields + ["updated_at", "last_synced_at"])
 
         result = {
             "labels_created": lab_res.created,
