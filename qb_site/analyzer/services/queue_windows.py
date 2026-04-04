@@ -879,6 +879,29 @@ def who_was_on_queue_at(*, repo: Repository, at: datetime, prs: Optional[Iterabl
     return [pr for pr in qs if is_on_queue_at(pr, at=at)]
 
 
+def _attribution_kwargs(attr: Optional[WindowAttribution], prefix: str) -> dict[str, object]:
+    """Return model field kwargs for an open or close WindowAttribution.
+
+    ``prefix`` is either ``"opened_by"`` or ``"closed_by"``.  When ``attr`` is
+    None (open window, closed_by side) all fields are None.
+    """
+    if attr is None:
+        return {
+            f"{prefix}_event_type": None,
+            f"{prefix}_timeline_event": None,
+            f"{prefix}_check_run": None,
+            f"{prefix}_status_context": None,
+            f"{prefix.replace('_by', '')}_at_head_sha": None,
+        }
+    return {
+        f"{prefix}_event_type": attr.event_type,
+        f"{prefix}_timeline_event": attr.timeline_event,
+        f"{prefix}_check_run": attr.check_run,
+        f"{prefix}_status_context": attr.status_context,
+        f"{prefix.replace('_by', '')}_at_head_sha": attr.head_sha,
+    }
+
+
 def rebuild_queue_windows_for_ruleset(
     *,
     pr: PullRequest,
@@ -950,6 +973,9 @@ def rebuild_queue_windows_for_ruleset(
         if end is not None:
             duration_seconds = int((end - start).total_seconds())
         cumulative_seconds += duration_seconds
+        opened_kwargs = _attribution_kwargs(w.opened_by, "opened_by")
+        closed_kwargs = _attribution_kwargs(w.closed_by, "closed_by")
+
         obj = existing_by_start.pop(start, None)
         if obj is None:
             to_create.append(
@@ -963,6 +989,8 @@ def rebuild_queue_windows_for_ruleset(
                     cumulative_seconds_closed=cumulative_seconds,
                     window_count=window_count,
                     first_on_queue_ts=first_on_queue_ts,
+                    **opened_kwargs,
+                    **closed_kwargs,
                 )
             )
             continue
@@ -986,6 +1014,24 @@ def rebuild_queue_windows_for_ruleset(
         if obj.first_on_queue_ts != first_on_queue_ts:
             obj.first_on_queue_ts = first_on_queue_ts
             changed = True
+        # Attribution fields: always overwrite since they reflect the current
+        # computation. Compare by FK id to avoid unnecessary updates.
+        for field, val in {**opened_kwargs, **closed_kwargs}.items():
+            if field.endswith("_id"):
+                continue  # skipped; we set the object field, not the _id field
+            cur = getattr(obj, field)
+            # For FK fields Django exposes both .field (object) and .field_id (int).
+            # Compare by id to avoid fetching the related object.
+            if hasattr(obj, f"{field}_id"):
+                cur_id = getattr(obj, f"{field}_id")
+                new_id = val.pk if val is not None else None
+                if cur_id != new_id:
+                    setattr(obj, field, val)
+                    changed = True
+            else:
+                if cur != val:
+                    setattr(obj, field, val)
+                    changed = True
         if changed:
             to_update.append(obj)
 
@@ -1001,6 +1047,16 @@ def rebuild_queue_windows_for_ruleset(
                 "cumulative_seconds_closed",
                 "window_count",
                 "first_on_queue_ts",
+                "opened_by_event_type",
+                "opened_by_timeline_event",
+                "opened_by_check_run",
+                "opened_by_status_context",
+                "opened_at_head_sha",
+                "closed_by_event_type",
+                "closed_by_timeline_event",
+                "closed_by_check_run",
+                "closed_by_status_context",
+                "closed_at_head_sha",
             ],
             batch_size=200,
         )

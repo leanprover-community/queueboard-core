@@ -188,18 +188,47 @@ happened to be satisfied or unsatisfied at the boundary.
      status context, head_sha on both sides, HEAD_PUSHED at revision boundary, no windows when
      CI missing).
 
-3. **W3 — Persist attribution in `rebuild_queue_windows_for_ruleset`**
-   - Pass attribution fields through to the upsert/bulk_create/bulk_update path.
-   - Confirm existing windows without attribution (pre-migration) are overwritten correctly on
-     next rebuild.
-   - Tests: DB-level assertions on the ten new columns after `rebuild_queue_windows_for_ruleset`.
+3. **W3 — Persist attribution in `rebuild_queue_windows_for_ruleset`** ✅
+   - Added `_attribution_kwargs(attr, prefix)` helper to unpack a `WindowAttribution` into
+     model field kwargs, handling FK object comparison via `_id` fields to avoid unnecessary
+     DB fetches.
+   - Updated `to_create` path to pass `**opened_kwargs, **closed_kwargs` into `PRQueueWindow()`.
+   - Updated changed-detection loop to compare FK fields by id; attribution fields always
+     overwritten since they reflect the current computation.
+   - Extended `bulk_update` field list with all ten attribution columns.
+   - Tests in `test_queue_window_attribution_persist.py` (11 cases): INITIAL_STATE open window,
+     required/forbidden label FKs, PR_CLOSED, CI_PASSED/CI_FAILED via check run and status
+     context, HEAD_PUSHED, overwrite on re-rebuild, pre-migration null rows overwritten.
 
-4. **W4 — Rebuild-on-deletion in expire task**
-   - In `expire_stale_ci_for_repo_task`, before each CI deletion pass, query `PRQueueWindow` for
-     rows referencing the to-be-deleted IDs.
-   - For affected PRs: mark build state stale AND enqueue `rebuild_queue_windows_for_pr` directly.
+4. **W4 — Rebuild-on-deletion in expire task + sweep staleness extension**
+
+   *4a — Expire task (rebuild-on-deletion):*
+   - In `expire_stale_ci_for_repo_task`, before each CI deletion pass, query `PRQueueWindow`
+     for rows referencing the to-be-deleted IDs.
+   - For affected PRs: mark build state stale AND enqueue `rebuild_queue_windows_for_pr`
+     directly (defence in depth per I2).
    - Cover all four passes.
-   - Tests: integration test verifying stale-marking and enqueue before/after deletion.
+
+   *4b — Sweep staleness extension:*
+   - Add `attribution_backfill` `Exists` subquery detecting windows where
+     `opened_by_event_type IS NULL` (pre-migration) or a CI event type has both CI FKs null
+     (post-W4 partial failure).
+   - Add `has_attribution_backfill=Exists(attribution_backfill)` annotation and
+     `Q(has_attribution_backfill=True)` to the `needs_rebuild` prefilter.
+   - Add `has_attribution_backfill: bool` parameter to `_is_ruleset_stale_for_pr`; return
+     `True` when set.
+   - Batch-query `attribution_backfill_pairs` in `_process_batch` (same pattern as
+     `rollup_backfill_pairs`) and thread into `_is_ruleset_stale_for_pr`.
+   - Update `collect_convergence.py` to include attribution backfill pairs in `windows_stale`
+     (per the sync comment in both files).
+   - Performance: `Exists` and batch queries both filter first on `pull_request_id` (leftmost
+     index column of `prqwin_pr_ruleset_from_idx`), so cost is O(windows per PR) not a table
+     scan. Steady-state overhead is negligible once all windows have `opened_by_event_type` set.
+   - Transition: during initial backfill after deploy, `windows_stale` in convergence metrics
+     will be elevated until the sweep works through all PRs at `max_prs_per_repo` per run —
+     this is the correct observable behaviour; no manual intervention needed.
+   - Tests: integration tests for expire-task rebuild-on-deletion (stale-marking + enqueue
+     before/after deletion); sweep staleness tests for attribution backfill condition.
 
 5. **W5 — Tests** (rolled into each chunk above)
 
@@ -254,7 +283,11 @@ happened to be satisfied or unsatisfied at the boundary.
 - 2026-04-04: W1 complete — model, migration, doc 038 update. W2 complete — attribution
   computation in `_queue_windows_with_rules` with `WindowAttribution` / `AttributedQueueWindow`
   dataclasses and two new helpers. Tests for W2 in `test_queue_window_attribution.py` (18
-  cases). Implementation plan restructured to roll tests into each chunk.
+  cases). Implementation plan restructured to roll tests into each chunk. W3 complete —
+  attribution persisted in `rebuild_queue_windows_for_ruleset` via `_attribution_kwargs` helper;
+  tests in `test_queue_window_attribution_persist.py` (11 cases). W4 plan updated to fold in
+  sweep staleness extension (attribution backfill condition covering pre-migration null
+  `event_type` and post-expire-task CI FK inconsistency).
 
 ## Finalization Notes
 - After implementation, collapse into a concise ADR capturing the final schema, the invariants
