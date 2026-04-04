@@ -178,8 +178,18 @@ class QueueRuleSetAdmin(admin.ModelAdmin):
 
 @admin.register(PRQueueWindow)
 class PRQueueWindowAdmin(ReadOnlyAdmin):
-    list_display = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
-    list_filter = ("rule_set", "pull_request__repository")
+    list_display = (
+        "pull_request",
+        "rule_set",
+        "from_ts",
+        "to_ts",
+        "cycle_index",
+        "opened_by_event_type",
+        "closed_by_event_type",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = ("rule_set", "pull_request__repository", "opened_by_event_type", "closed_by_event_type")
     search_fields = (
         "pull_request__number",
         "rule_set__version",
@@ -187,8 +197,39 @@ class PRQueueWindowAdmin(ReadOnlyAdmin):
         "pull_request__repository__name",
     )
     date_hierarchy = "from_ts"
-    raw_id_fields = ("pull_request", "rule_set")
-    readonly_fields = ("pull_request", "rule_set", "from_ts", "to_ts", "cycle_index", "created_at", "updated_at")
+    raw_id_fields = (
+        "pull_request",
+        "rule_set",
+        "opened_by_timeline_event",
+        "opened_by_check_run",
+        "opened_by_status_context",
+        "closed_by_timeline_event",
+        "closed_by_check_run",
+        "closed_by_status_context",
+    )
+    readonly_fields = (
+        "pull_request",
+        "rule_set",
+        "from_ts",
+        "to_ts",
+        "cycle_index",
+        "duration_seconds_closed",
+        "cumulative_seconds_closed",
+        "window_count",
+        "first_on_queue_ts",
+        "opened_by_event_type",
+        "opened_by_timeline_event",
+        "opened_by_check_run",
+        "opened_by_status_context",
+        "opened_at_head_sha",
+        "closed_by_event_type",
+        "closed_by_timeline_event",
+        "closed_by_check_run",
+        "closed_by_status_context",
+        "closed_at_head_sha",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(PRQueueWindowBuildState)
