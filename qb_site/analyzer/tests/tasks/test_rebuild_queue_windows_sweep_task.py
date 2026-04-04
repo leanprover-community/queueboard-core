@@ -4,6 +4,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.models.queue_window import QueueWindowEventType
 from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
 from core.models import Repository
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
@@ -137,6 +138,8 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             windows_built_at=old_built_at,
             last_status="rebuilt",
         )
+        from analyzer.models.queue_window import QueueWindowEventType
+
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
@@ -145,6 +148,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         # Bump ruleset updated_at so the sweep considers this PR stale, but the rebuild is a no-op.
         self.rule_set.updated_at = timezone.now()
@@ -183,6 +187,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         inactive = QueueRuleSet.objects.create(
             repository=self.repo,
@@ -280,6 +285,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -289,6 +295,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         # state_one is up-to-date: windows_built_at is after gh_updated_at so it is
         # not stale under the gh_updated_at staleness check.
@@ -410,6 +417,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -419,6 +427,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
 
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
@@ -472,6 +481,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -599,6 +609,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -608,6 +619,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
 
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()

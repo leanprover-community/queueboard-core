@@ -113,14 +113,13 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
                     "test-stream-cmd": {"allowed_groups": ["all"], "allowed_contexts": ["all"]},
                 }
             ):
-                result = self._post_payload(
-                    self._payload(content="test-stream-cmd", message_type="private")
-                )
+                result = self._post_payload(self._payload(content="test-stream-cmd", message_type="private"))
             self.assertEqual(result["status"], 200)
             self.assertEqual(result["json"]["type"], "private")
             self.assertEqual(result["json"]["content"], "stream-reply")
         finally:
             from zulip_bot.commands import _COMMANDS  # type: ignore[attr-defined]
+
             _COMMANDS.pop("test-stream-cmd", None)
 
     @override_settings(

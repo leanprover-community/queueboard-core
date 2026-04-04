@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from core.models import Repository
 from analyzer.models import PRQueueWindow, QueueRuleSet, PRRevision
+from analyzer.models.queue_window import QueueWindowEventType
 from analyzer.services.queue_rules import QueueRules, load_rules_for_repo, rules_for_rule_set
 from syncer.models import (
     CommitCheckRun,
@@ -21,6 +22,27 @@ from syncer.models import (
 
 QueueWindow = Tuple[datetime, Optional[datetime]]
 CIState = str  # "pass" | "fail" | "running" | "missing"
+
+
+@dataclass
+class WindowAttribution:
+    """Attribution for a single queue-window boundary (open or close)."""
+
+    event_type: Optional[str]  # QueueWindowEventType value
+    timeline_event: Optional["PRTimelineEvent"] = None
+    check_run: Optional["CommitCheckRun"] = None
+    status_context: Optional["CommitStatusContext"] = None
+    head_sha: Optional[str] = None
+
+
+@dataclass
+class AttributedQueueWindow:
+    """Queue window with attribution for the opening and closing events."""
+
+    from_ts: datetime
+    to_ts: Optional[datetime]
+    opened_by: WindowAttribution
+    closed_by: Optional[WindowAttribution]  # None while the window is still open
 
 
 @dataclass
@@ -285,7 +307,84 @@ def _ci_required_contexts_state(pr: PullRequest, rules: QueueRules, at: datetime
     return "pass"
 
 
-def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: datetime) -> List[QueueWindow]:
+def _timeline_event_type(ev: "PRTimelineEvent", rules: "QueueRules") -> str:
+    """Map a PRTimelineEvent to a QueueWindowEventType value given the active rules."""
+    if ev.type == PRTimelineEventType.LABELED:
+        name = _normalize_label(ev.label_name or "")
+        if rules.required_labels and name in rules.required_labels:
+            return QueueWindowEventType.REQUIRED_LABEL_ADDED
+        if rules.forbidden_labels and name in rules.forbidden_labels:
+            return QueueWindowEventType.FORBIDDEN_LABEL_ADDED
+        return QueueWindowEventType.UNKNOWN
+    if ev.type == PRTimelineEventType.UNLABELED:
+        name = _normalize_label(ev.label_name or "")
+        if rules.required_labels and name in rules.required_labels:
+            return QueueWindowEventType.REQUIRED_LABEL_REMOVED
+        if rules.forbidden_labels and name in rules.forbidden_labels:
+            return QueueWindowEventType.FORBIDDEN_LABEL_REMOVED
+        return QueueWindowEventType.UNKNOWN
+    if ev.type == PRTimelineEventType.READY_FOR_REVIEW:
+        return QueueWindowEventType.DRAFT_CONVERTED
+    if ev.type == PRTimelineEventType.CONVERT_TO_DRAFT:
+        return QueueWindowEventType.CONVERTED_TO_DRAFT
+    if ev.type == PRTimelineEventType.REOPENED:
+        return QueueWindowEventType.PR_OPENED
+    if ev.type == PRTimelineEventType.CLOSED:
+        return QueueWindowEventType.PR_CLOSED
+    return QueueWindowEventType.UNKNOWN
+
+
+def _determine_ci_boundary_attribution(
+    *,
+    rules: "QueueRules",
+    pre_rev: Optional["PRRevision"],
+    cur_rev: Optional["PRRevision"],
+    pre_ci_ok: Optional[bool],
+    new_ci_ok: bool,
+    last_tl_ev: Optional["PRTimelineEvent"],
+    last_cr: Optional["CommitCheckRun"],
+    last_sc: Optional["CommitStatusContext"],
+    head_sha: Optional[str],
+) -> WindowAttribution:
+    """Determine what caused a queue-eligibility flip at a CI-path boundary.
+
+    Priority:
+    1. CI eligibility changed and there is a CI event → CI attribution.
+    2. Timeline event present → derive type from the event kind and active rules.
+    3. Revision changed (no timeline-event FK available) → HEAD_PUSHED.
+    4. CI changed but no CI event (e.g. revision cleared CI state) → CI attribution.
+    5. Fallback → UNKNOWN.
+    """
+    ci_changed = pre_ci_ok is not None and new_ci_ok != pre_ci_ok
+
+    # 1. CI eligibility changed and we have a CI event.
+    if ci_changed and (last_cr is not None or last_sc is not None):
+        ci_type = QueueWindowEventType.CI_PASSED if new_ci_ok else QueueWindowEventType.CI_FAILED
+        if last_cr is not None:
+            return WindowAttribution(event_type=ci_type, check_run=last_cr, head_sha=head_sha)
+        return WindowAttribution(event_type=ci_type, status_context=last_sc, head_sha=head_sha)
+
+    # 2. Timeline event present.
+    if last_tl_ev is not None:
+        return WindowAttribution(
+            event_type=_timeline_event_type(last_tl_ev, rules),
+            timeline_event=last_tl_ev,
+            head_sha=head_sha,
+        )
+
+    # 3. Revision changed (HEAD_PUSHED; no FK since HEAD_FORCE_PUSHED is not in timeline_events).
+    if cur_rev is not pre_rev:
+        return WindowAttribution(event_type=QueueWindowEventType.HEAD_PUSHED, head_sha=head_sha)
+
+    # 4. CI changed but no CI event (e.g. old CI state invalidated by a boundary transition).
+    if ci_changed:
+        ci_type = QueueWindowEventType.CI_PASSED if new_ci_ok else QueueWindowEventType.CI_FAILED
+        return WindowAttribution(event_type=ci_type, head_sha=head_sha)
+
+    return WindowAttribution(event_type=QueueWindowEventType.UNKNOWN, head_sha=head_sha)
+
+
+def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: datetime) -> List[AttributedQueueWindow]:
     timeline_events = list(_iter_state_events(pr))
     state = _initial_state(pr, created_as_draft=_created_as_draft(pr, timeline_events))
     t0 = pr.gh_created_at
@@ -294,7 +393,10 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
     if not rules.require_ci_success:
         current_on = rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=True)
         current_start: Optional[datetime] = t0 if current_on else None
-        windows: List[QueueWindow] = []
+        current_opened_by: Optional[WindowAttribution] = (
+            WindowAttribution(event_type=QueueWindowEventType.INITIAL_STATE) if current_on else None
+        )
+        windows: List[AttributedQueueWindow] = []
 
         for ev in timeline_events:
             ts = ev.occurred_at
@@ -321,10 +423,25 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             new_on = rules.is_on_queue(is_open=state.is_open, is_draft=state.is_draft, labels=state.labels, ci_ok=True)
             if current_on and not new_on:
                 if current_start is not None and current_start < ts:
-                    windows.append((current_start, ts))
+                    windows.append(
+                        AttributedQueueWindow(
+                            from_ts=current_start,
+                            to_ts=ts,
+                            opened_by=current_opened_by,
+                            closed_by=WindowAttribution(
+                                event_type=_timeline_event_type(ev, rules),
+                                timeline_event=ev,
+                            ),
+                        )
+                    )
                 current_start = None
+                current_opened_by = None
             elif not current_on and new_on:
                 current_start = ts
+                current_opened_by = WindowAttribution(
+                    event_type=_timeline_event_type(ev, rules),
+                    timeline_event=ev,
+                )
             current_on = new_on
 
         end = None
@@ -335,9 +452,23 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
         if current_on and current_start is not None:
             if end is None:
                 if current_start < as_of:
-                    windows.append((current_start, None))
+                    windows.append(
+                        AttributedQueueWindow(
+                            from_ts=current_start,
+                            to_ts=None,
+                            opened_by=current_opened_by,
+                            closed_by=None,
+                        )
+                    )
             elif current_start < end:
-                windows.append((current_start, end))
+                windows.append(
+                    AttributedQueueWindow(
+                        from_ts=current_start,
+                        to_ts=end,
+                        opened_by=current_opened_by,
+                        closed_by=WindowAttribution(event_type=QueueWindowEventType.PR_CLOSED),
+                    )
+                )
 
         return windows
 
@@ -455,7 +586,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             for ctx in matched:
                 _merge_latest_for_ctx(per_head[ctx], name=name_norm, ts=ts, ci_state=ci_state, source=source)
 
-    windows: List[QueueWindow] = []
+    windows: List[AttributedQueueWindow] = []
     event_idx = 0
     rev_idx = 0
     current_rev: PRRevision | None = None
@@ -463,8 +594,15 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
     sc_idx = 0
     current_on: Optional[bool] = None
     current_start: Optional[datetime] = None
+    current_opened_by: Optional[WindowAttribution] = None
+    _prev_ci_ok: Optional[bool] = None
 
     for t in times:
+        # Capture pre-boundary state for attribution determination.
+        _pre_rev = current_rev
+        _last_tl_ev: Optional[PRTimelineEvent] = None
+        _last_cr: Optional[CommitCheckRun] = None
+        _last_sc: Optional[CommitStatusContext] = None
         while event_idx < len(timeline_events) and timeline_events[event_idx].occurred_at <= t:
             ev = timeline_events[event_idx]
             event_idx += 1
@@ -484,6 +622,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 state.is_open = True
             elif ev.type == PRTimelineEventType.CLOSED:
                 state.is_open = False
+            _last_tl_ev = ev
 
         while rev_idx < len(revisions) and revisions[rev_idx].from_ts <= t:
             current_rev = revisions[rev_idx]
@@ -503,6 +642,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 ci_state=_check_run_state(cr),
                 source="check_run",
             )
+            _last_cr = cr
 
         while sc_idx < len(statuses) and statuses[sc_idx].gh_created_at <= t:
             sc = statuses[sc_idx]
@@ -514,6 +654,7 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 ci_state=_status_context_state(sc),
                 source="status_context",
             )
+            _last_sc = sc
 
         if closed_ts is not None and t >= closed_ts:
             state.is_open = False
@@ -527,24 +668,61 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                     head_sha = current_rev.head_sha or None
                 if not head_sha:
                     ci_state = "missing"
+                    _new_ci_ok = _ci_state_is_eligible(rules, ci_state)
                     new_on = rules.is_on_queue(
                         is_open=state.is_open,
                         is_draft=state.is_draft,
                         labels=state.labels,
-                        ci_ok=_ci_state_is_eligible(rules, ci_state),
+                        ci_ok=_new_ci_ok,
                     )
                     if current_on is None:
                         current_on = new_on
                         if new_on:
                             current_start = t
+                            current_opened_by = WindowAttribution(
+                                event_type=QueueWindowEventType.INITIAL_STATE,
+                                head_sha=None,
+                            )
+                        _prev_ci_ok = _new_ci_ok
                         continue
                     if current_on and not new_on:
+                        _attr = _determine_ci_boundary_attribution(
+                            rules=rules,
+                            pre_rev=_pre_rev,
+                            cur_rev=current_rev,
+                            pre_ci_ok=_prev_ci_ok,
+                            new_ci_ok=_new_ci_ok,
+                            last_tl_ev=_last_tl_ev,
+                            last_cr=_last_cr,
+                            last_sc=_last_sc,
+                            head_sha=None,
+                        )
                         if current_start is not None and current_start < t:
-                            windows.append((current_start, t))
+                            windows.append(
+                                AttributedQueueWindow(
+                                    from_ts=current_start,
+                                    to_ts=t,
+                                    opened_by=current_opened_by,
+                                    closed_by=_attr,
+                                )
+                            )
                         current_start = None
+                        current_opened_by = None
                     elif not current_on and new_on:
                         current_start = t
+                        current_opened_by = _determine_ci_boundary_attribution(
+                            rules=rules,
+                            pre_rev=_pre_rev,
+                            cur_rev=current_rev,
+                            pre_ci_ok=_prev_ci_ok,
+                            new_ci_ok=_new_ci_ok,
+                            last_tl_ev=_last_tl_ev,
+                            last_cr=_last_cr,
+                            last_sc=_last_sc,
+                            head_sha=None,
+                        )
                     current_on = new_on
+                    _prev_ci_ok = _new_ci_ok
                     continue
 
             any_missing = False
@@ -569,27 +747,69 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 elif any_running:
                     ci_state = "running"
 
+        _new_ci_ok = _ci_state_is_eligible(rules, ci_state)
+        # Head SHA for window attribution: use current revision's SHA when in-window.
+        _window_head_sha: Optional[str] = None
+        if has_revisions and current_rev is not None and (current_rev.to_ts is None or t < current_rev.to_ts):
+            _window_head_sha = current_rev.head_sha or None
+
         new_on = rules.is_on_queue(
             is_open=state.is_open,
             is_draft=state.is_draft,
             labels=state.labels,
-            ci_ok=_ci_state_is_eligible(rules, ci_state),
+            ci_ok=_new_ci_ok,
         )
 
         if current_on is None:
             current_on = new_on
             if new_on:
                 current_start = t
+                current_opened_by = WindowAttribution(
+                    event_type=QueueWindowEventType.INITIAL_STATE,
+                    head_sha=_window_head_sha,
+                )
+            _prev_ci_ok = _new_ci_ok
             continue
 
         if current_on and not new_on:
+            _attr = _determine_ci_boundary_attribution(
+                rules=rules,
+                pre_rev=_pre_rev,
+                cur_rev=current_rev,
+                pre_ci_ok=_prev_ci_ok,
+                new_ci_ok=_new_ci_ok,
+                last_tl_ev=_last_tl_ev,
+                last_cr=_last_cr,
+                last_sc=_last_sc,
+                head_sha=_window_head_sha,
+            )
             if current_start is not None and current_start < t:
-                windows.append((current_start, t))
+                windows.append(
+                    AttributedQueueWindow(
+                        from_ts=current_start,
+                        to_ts=t,
+                        opened_by=current_opened_by,
+                        closed_by=_attr,
+                    )
+                )
             current_start = None
+            current_opened_by = None
         elif not current_on and new_on:
             current_start = t
+            current_opened_by = _determine_ci_boundary_attribution(
+                rules=rules,
+                pre_rev=_pre_rev,
+                cur_rev=current_rev,
+                pre_ci_ok=_prev_ci_ok,
+                new_ci_ok=_new_ci_ok,
+                last_tl_ev=_last_tl_ev,
+                last_cr=_last_cr,
+                last_sc=_last_sc,
+                head_sha=_window_head_sha,
+            )
 
         current_on = new_on
+        _prev_ci_ok = _new_ci_ok
 
     # Close any trailing open window; use None for open-ended windows.
     if current_on and current_start is not None:
@@ -598,9 +818,23 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             end = closed_ts
         if end is None:
             if current_start < as_of:
-                windows.append((current_start, None))
+                windows.append(
+                    AttributedQueueWindow(
+                        from_ts=current_start,
+                        to_ts=None,
+                        opened_by=current_opened_by,
+                        closed_by=None,
+                    )
+                )
         elif current_start < end:
-            windows.append((current_start, end))
+            windows.append(
+                AttributedQueueWindow(
+                    from_ts=current_start,
+                    to_ts=end,
+                    opened_by=current_opened_by,
+                    closed_by=WindowAttribution(event_type=QueueWindowEventType.PR_CLOSED),
+                )
+            )
 
     return windows
 
@@ -610,7 +844,8 @@ def queue_windows_for_pr(pr: PullRequest, *, as_of: Optional[datetime] = None) -
     if as_of is None:
         as_of = timezone.now()
     rules = load_rules_for_repo(pr.repository, at=as_of)
-    return _queue_windows_with_rules(pr, rules=rules, as_of=as_of)
+    attributed = _queue_windows_with_rules(pr, rules=rules, as_of=as_of)
+    return [(w.from_ts, w.to_ts) for w in attributed]
 
 
 def total_queue_time_for_pr(pr: PullRequest, *, as_of: Optional[datetime] = None) -> QueueSummary:
@@ -642,6 +877,29 @@ def who_was_on_queue_at(*, repo: Repository, at: datetime, prs: Optional[Iterabl
     else:
         qs = prs
     return [pr for pr in qs if is_on_queue_at(pr, at=at)]
+
+
+def _attribution_kwargs(attr: Optional[WindowAttribution], prefix: str) -> dict[str, object]:
+    """Return model field kwargs for an open or close WindowAttribution.
+
+    ``prefix`` is either ``"opened_by"`` or ``"closed_by"``.  When ``attr`` is
+    None (open window, closed_by side) all fields are None.
+    """
+    if attr is None:
+        return {
+            f"{prefix}_event_type": None,
+            f"{prefix}_timeline_event": None,
+            f"{prefix}_check_run": None,
+            f"{prefix}_status_context": None,
+            f"{prefix.replace('_by', '')}_at_head_sha": None,
+        }
+    return {
+        f"{prefix}_event_type": attr.event_type,
+        f"{prefix}_timeline_event": attr.timeline_event,
+        f"{prefix}_check_run": attr.check_run,
+        f"{prefix}_status_context": attr.status_context,
+        f"{prefix.replace('_by', '')}_at_head_sha": attr.head_sha,
+    }
 
 
 def rebuild_queue_windows_for_ruleset(
@@ -702,18 +960,22 @@ def rebuild_queue_windows_for_ruleset(
     windows = _queue_windows_with_rules(pr, rules=rules, as_of=as_of)
 
     window_count = len(windows)
-    first_on_queue_ts = windows[0][0] if windows else None
+    first_on_queue_ts = windows[0].from_ts if windows else None
     cumulative_seconds = 0
 
     existing_by_start = {obj.from_ts: obj for obj in PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)}
     to_create: list[PRQueueWindow] = []
     to_update: list[PRQueueWindow] = []
 
-    for cycle_index, (start, end) in enumerate(windows):
+    for cycle_index, w in enumerate(windows):
+        start, end = w.from_ts, w.to_ts
         duration_seconds = 0
         if end is not None:
             duration_seconds = int((end - start).total_seconds())
         cumulative_seconds += duration_seconds
+        opened_kwargs = _attribution_kwargs(w.opened_by, "opened_by")
+        closed_kwargs = _attribution_kwargs(w.closed_by, "closed_by")
+
         obj = existing_by_start.pop(start, None)
         if obj is None:
             to_create.append(
@@ -727,6 +989,8 @@ def rebuild_queue_windows_for_ruleset(
                     cumulative_seconds_closed=cumulative_seconds,
                     window_count=window_count,
                     first_on_queue_ts=first_on_queue_ts,
+                    **opened_kwargs,
+                    **closed_kwargs,
                 )
             )
             continue
@@ -750,6 +1014,24 @@ def rebuild_queue_windows_for_ruleset(
         if obj.first_on_queue_ts != first_on_queue_ts:
             obj.first_on_queue_ts = first_on_queue_ts
             changed = True
+        # Attribution fields: always overwrite since they reflect the current
+        # computation. Compare by FK id to avoid unnecessary updates.
+        for field, val in {**opened_kwargs, **closed_kwargs}.items():
+            if field.endswith("_id"):
+                continue  # skipped; we set the object field, not the _id field
+            cur = getattr(obj, field)
+            # For FK fields Django exposes both .field (object) and .field_id (int).
+            # Compare by id to avoid fetching the related object.
+            if hasattr(obj, f"{field}_id"):
+                cur_id = getattr(obj, f"{field}_id")
+                new_id = val.pk if val is not None else None
+                if cur_id != new_id:
+                    setattr(obj, field, val)
+                    changed = True
+            else:
+                if cur != val:
+                    setattr(obj, field, val)
+                    changed = True
         if changed:
             to_update.append(obj)
 
@@ -765,6 +1047,16 @@ def rebuild_queue_windows_for_ruleset(
                 "cumulative_seconds_closed",
                 "window_count",
                 "first_on_queue_ts",
+                "opened_by_event_type",
+                "opened_by_timeline_event",
+                "opened_by_check_run",
+                "opened_by_status_context",
+                "opened_at_head_sha",
+                "closed_by_event_type",
+                "closed_by_timeline_event",
+                "closed_by_check_run",
+                "closed_by_status_context",
+                "closed_at_head_sha",
             ],
             batch_size=200,
         )

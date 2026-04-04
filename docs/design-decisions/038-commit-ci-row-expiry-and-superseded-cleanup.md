@@ -25,6 +25,10 @@
 
 - There are no FKs pointing into `CommitCheckRun` or `CommitStatusContext` from other models
   (only the `Repository` cascade-delete direction), so bulk deletion is safe.
+  **Note (updated):** `PRQueueWindow` now holds nullable FKs into both `CommitCheckRun` and
+  `CommitStatusContext` for event attribution (see `040-queue-window-event-attribution.md`).
+  These use `on_delete=SET_NULL`, so bulk deletion remains safe, but the expire task must mark
+  affected windows stale and enqueue their PRs for rebuild before deleting rows — see doc 040.
 
 ## Decision
 - Add a periodic cleanup task `syncer.expire_stale_ci_for_repo` (fanned out by

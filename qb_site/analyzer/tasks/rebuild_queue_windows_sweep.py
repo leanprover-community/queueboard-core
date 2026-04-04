@@ -7,10 +7,14 @@ from django.utils import timezone
 from django.db.models import Count, Exists, F, Min, OuterRef, Q
 
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
+from analyzer.models.queue_window import QueueWindowEventType
 from analyzer.services.queue_window_build_state import record_queue_window_build_states
 from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
+
+
+_CI_ATTRIBUTION_TYPES = [QueueWindowEventType.CI_PASSED, QueueWindowEventType.CI_FAILED]
 
 
 def _is_ruleset_stale_for_pr(
@@ -19,6 +23,7 @@ def _is_ruleset_stale_for_pr(
     state: PRRevisionBuildState,
     rs_state: PRQueueWindowBuildState | None,
     has_rollup_backfill: bool,
+    has_attribution_backfill: bool = False,
     pr_gh_updated_at: datetime | None = None,
 ) -> bool:
     """Return whether queue windows are stale for a specific (PR, ruleset) pair.
@@ -42,9 +47,16 @@ def _is_ruleset_stale_for_pr(
     - Ruleset ``updated_at`` changed  → ``min_ruleset_state_windows_built_at < max_ruleset_updated_at``
     - Label/state change (``gh_updated_at``) → ``min_ruleset_state_windows_built_at < gh_updated_at``
     - Rollup fields missing           → ``has_rollup_backfill=True`` (Exists subquery)
+    - Attribution fields missing/inconsistent → ``has_attribution_backfill=True`` (Exists subquery)
+      Covers: pre-migration windows (opened_by_event_type IS NULL) and post-expire-task
+      partial failures (CI event_type with both CI FKs null).
     """
     # Existing windows have missing rollup fields (window_count=0 or first_on_queue_ts=None).
     if has_rollup_backfill:
+        return True
+
+    # Existing windows have missing or inconsistent attribution fields.
+    if has_attribution_backfill:
         return True
 
     # No build-state row yet for this (PR, ruleset) pair.
@@ -99,6 +111,24 @@ def rebuild_queue_windows_sweep_task(
             pull_request=OuterRef("pk"),
             rule_set_id__in=rule_set_ids,
         ).filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+        attribution_backfill = PRQueueWindow.objects.filter(
+            pull_request=OuterRef("pk"),
+            rule_set_id__in=rule_set_ids,
+        ).filter(
+            # Pre-migration: event_type not yet populated.
+            Q(opened_by_event_type__isnull=True)
+            # Post-expire-task partial failure: CI event type but both CI FKs null.
+            | Q(
+                opened_by_event_type__in=_CI_ATTRIBUTION_TYPES,
+                opened_by_check_run__isnull=True,
+                opened_by_status_context__isnull=True,
+            )
+            | Q(
+                closed_by_event_type__in=_CI_ATTRIBUTION_TYPES,
+                closed_by_check_run__isnull=True,
+                closed_by_status_context__isnull=True,
+            )
+        )
 
         pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
         if only_complete_backfill:
@@ -115,6 +145,7 @@ def rebuild_queue_windows_sweep_task(
         pr_qs = pr_qs.annotate(
             has_revisions=Exists(has_revisions),
             has_rollup_backfill=Exists(rollup_backfill),
+            has_attribution_backfill=Exists(attribution_backfill),
         ).filter(has_revisions=True)
         pr_qs = pr_qs.annotate(
             active_ruleset_state_count=Count(
@@ -153,6 +184,8 @@ def rebuild_queue_windows_sweep_task(
             Q(revision_build_state__isnull=True)
             # At least one existing window row is missing rollup fields.
             | Q(has_rollup_backfill=True)
+            # At least one existing window row has missing/inconsistent attribution fields.
+            | Q(has_attribution_backfill=True)
             # Fewer build-state rows than active rulesets — at least one ruleset is missing.
             | Q(active_ruleset_state_count__lt=len(rule_set_ids))
             # At least one build-state row has a null revision_version_built.
@@ -238,6 +271,26 @@ def rebuild_queue_windows_sweep_task(
                 .filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
                 .values_list("pull_request_id", "rule_set_id")
             )
+            attribution_backfill_pairs = set(
+                PRQueueWindow.objects.filter(
+                    pull_request_id__in=pr_ids,
+                    rule_set_id__in=rule_set_ids,
+                )
+                .filter(
+                    Q(opened_by_event_type__isnull=True)
+                    | Q(
+                        opened_by_event_type__in=_CI_ATTRIBUTION_TYPES,
+                        opened_by_check_run__isnull=True,
+                        opened_by_status_context__isnull=True,
+                    )
+                    | Q(
+                        closed_by_event_type__in=_CI_ATTRIBUTION_TYPES,
+                        closed_by_check_run__isnull=True,
+                        closed_by_status_context__isnull=True,
+                    )
+                )
+                .values_list("pull_request_id", "rule_set_id")
+            )
 
             for pr in pr_batch:
                 if repo_prs >= int(max_prs_per_repo):
@@ -257,6 +310,7 @@ def rebuild_queue_windows_sweep_task(
                         state=state,
                         rs_state=existing_rs_states.get(int(rs.id)),
                         has_rollup_backfill=(pr_id, int(rs.id)) in rollup_backfill_pairs,
+                        has_attribution_backfill=(pr_id, int(rs.id)) in attribution_backfill_pairs,
                         pr_gh_updated_at=pr.gh_updated_at,
                     )
                 ]

@@ -28,9 +28,7 @@ class TestCommandRegistry(TestCase):
 
     def _register(self, name: str, aliases: tuple[str, ...] = ()) -> CommandDefinition:
         handler = _make_handler(name)
-        register_command(name=name, description=f"desc for {name}", response_mode=ResponseMode.PRIVATE, aliases=aliases)(
-            handler
-        )
+        register_command(name=name, description=f"desc for {name}", response_mode=ResponseMode.PRIVATE, aliases=aliases)(handler)
         from zulip_bot.commands import get_command
 
         cmd = get_command(name)
