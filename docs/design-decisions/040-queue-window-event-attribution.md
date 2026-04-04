@@ -227,9 +227,12 @@ happened to be satisfied or unsatisfied at the boundary.
      `rollup_backfill_pairs`) and threads into `_is_ruleset_stale_for_pr`.
    - Updated `collect_convergence.py` to include attribution backfill conditions in the
      `rollup_stale_pairs` query (per the sync comment in both files).
-   - Two pre-existing tests fixed: bare `PRQueueWindow.objects.create()` calls without
-     attribution fields now simulate pre-migration rows and were correctly being detected
-     as stale; fixed by populating `opened_by_event_type` in those test setups.
+   - Eight pre-existing tests fixed: bare `PRQueueWindow.objects.create()` calls without
+     attribution fields simulate pre-migration rows and were correctly detected as stale;
+     fixed by populating `opened_by_event_type=QueueWindowEventType.INITIAL_STATE` in
+     test setups that represent already-built (up-to-date) windows.
+     Affected files: `test_rebuild_queue_windows_sweep_task.py` (5 tests) and
+     `test_collect_convergence_task.py` (3 tests).
    - Tests in `analyzer/tests/tasks/test_rebuild_queue_windows_sweep_attribution.py`
      (4 cases): null event_type rebuilt, CI event_type with null FKs rebuilt, correct
      attribution not spuriously rebuilt, closed_by CI FK inconsistency rebuilt.

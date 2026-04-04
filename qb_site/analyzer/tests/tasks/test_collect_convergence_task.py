@@ -11,6 +11,7 @@ from analyzer.models import (
     PRRevisionBuildState,
     QueueRuleSet,
 )
+from analyzer.models.queue_window import QueueWindowEventType
 from analyzer.tasks.collect_convergence import collect_analyzer_convergence_task
 from core.models import Repository
 from syncer.models import CIShaFetchState, CommitCheckRun, PullRequest
@@ -214,6 +215,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -223,6 +225,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
 
         collect_analyzer_convergence_task.apply().get()
@@ -269,6 +272,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -278,6 +282,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
 
         collect_analyzer_convergence_task.apply().get()
@@ -345,6 +350,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
 
         collect_analyzer_convergence_task.apply().get()
