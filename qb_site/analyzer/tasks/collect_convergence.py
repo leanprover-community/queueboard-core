@@ -44,6 +44,9 @@ def collect_analyzer_convergence_task() -> dict:
                 rule_set_id__in=rule_set_ids,
             ).values("pull_request_id", "rule_set_id", "revision_version_built", "windows_built_at")
             rs_state_map = {(int(row["pull_request_id"]), int(row["rule_set_id"])): row for row in rs_state_rows}
+            from analyzer.models.queue_window import QueueWindowEventType as _QWET
+
+            _ci_attribution_types = [_QWET.CI_PASSED, _QWET.CI_FAILED]
             rollup_stale_pairs = set(
                 (
                     int(row["pull_request_id"]),
@@ -53,7 +56,21 @@ def collect_analyzer_convergence_task() -> dict:
                     pull_request_id__in=pr_ids,
                     rule_set_id__in=rule_set_ids,
                 )
-                .filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+                .filter(
+                    Q(window_count=0)
+                    | Q(first_on_queue_ts__isnull=True)
+                    | Q(opened_by_event_type__isnull=True)
+                    | Q(
+                        opened_by_event_type__in=_ci_attribution_types,
+                        opened_by_check_run__isnull=True,
+                        opened_by_status_context__isnull=True,
+                    )
+                    | Q(
+                        closed_by_event_type__in=_ci_attribution_types,
+                        closed_by_check_run__isnull=True,
+                        closed_by_status_context__isnull=True,
+                    )
+                )
                 .values("pull_request_id", "rule_set_id")
                 .distinct()
             )

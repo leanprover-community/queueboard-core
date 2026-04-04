@@ -200,35 +200,39 @@ happened to be satisfied or unsatisfied at the boundary.
      required/forbidden label FKs, PR_CLOSED, CI_PASSED/CI_FAILED via check run and status
      context, HEAD_PUSHED, overwrite on re-rebuild, pre-migration null rows overwritten.
 
-4. **W4 — Rebuild-on-deletion in expire task + sweep staleness extension**
+4. **W4 — Rebuild-on-deletion in expire task + sweep staleness extension** ✅
 
    *4a — Expire task (rebuild-on-deletion):*
-   - In `expire_stale_ci_for_repo_task`, before each CI deletion pass, query `PRQueueWindow`
-     for rows referencing the to-be-deleted IDs.
-   - For affected PRs: mark build state stale AND enqueue `rebuild_queue_windows_for_pr`
-     directly (defence in depth per I2).
-   - Cover all four passes.
+   - Added `_invalidate_queue_windows_for_ci_rows(check_run_ids, status_context_ids)` helper
+     in `sync_tasks.py`. Queries `PRQueueWindow` for rows referencing the given IDs via any
+     of the four CI FK columns, nulls `windows_built_at` on `PRQueueWindowBuildState` for
+     affected `(pr, ruleset)` pairs, then enqueues `process_pr_task.delay(pr_id)` for each
+     affected PR (defence in depth per I2).
+   - Called before each of the four deletion passes with the IDs about to be deleted.
+   - Return dict extended with `prs_invalidated_*` counts for observability.
+   - Tests in `syncer/tests/tasks/test_expire_stale_ci_attribution.py` (6 cases): superseded
+     check run in opened_by/closed_by, stale pending check run, unrelated deletion no-ops,
+     result dict keys, superseded status context.
 
    *4b — Sweep staleness extension:*
-   - Add `attribution_backfill` `Exists` subquery detecting windows where
-     `opened_by_event_type IS NULL` (pre-migration) or a CI event type has both CI FKs null
-     (post-W4 partial failure).
-   - Add `has_attribution_backfill=Exists(attribution_backfill)` annotation and
-     `Q(has_attribution_backfill=True)` to the `needs_rebuild` prefilter.
-   - Add `has_attribution_backfill: bool` parameter to `_is_ruleset_stale_for_pr`; return
-     `True` when set.
-   - Batch-query `attribution_backfill_pairs` in `_process_batch` (same pattern as
-     `rollup_backfill_pairs`) and thread into `_is_ruleset_stale_for_pr`.
-   - Update `collect_convergence.py` to include attribution backfill pairs in `windows_stale`
-     (per the sync comment in both files).
-   - Performance: `Exists` and batch queries both filter first on `pull_request_id` (leftmost
-     index column of `prqwin_pr_ruleset_from_idx`), so cost is O(windows per PR) not a table
-     scan. Steady-state overhead is negligible once all windows have `opened_by_event_type` set.
-   - Transition: during initial backfill after deploy, `windows_stale` in convergence metrics
-     will be elevated until the sweep works through all PRs at `max_prs_per_repo` per run —
-     this is the correct observable behaviour; no manual intervention needed.
-   - Tests: integration tests for expire-task rebuild-on-deletion (stale-marking + enqueue
-     before/after deletion); sweep staleness tests for attribution backfill condition.
+   - Added `_CI_ATTRIBUTION_TYPES` module constant and `attribution_backfill` `Exists`
+     subquery in `rebuild_queue_windows_sweep.py` detecting:
+     (a) `opened_by_event_type IS NULL` (pre-migration windows), and
+     (b) CI event_type with both CI FKs null (post-expire-task partial failure).
+   - Added `has_attribution_backfill=Exists(attribution_backfill)` annotation;
+     `Q(has_attribution_backfill=True)` added to `needs_rebuild` prefilter.
+   - Added `has_attribution_backfill: bool` parameter to `_is_ruleset_stale_for_pr`; returns
+     `True` when set. Docstring updated to document the new staleness source.
+   - Batch-queries `attribution_backfill_pairs` in `_process_batch` (same pattern as
+     `rollup_backfill_pairs`) and threads into `_is_ruleset_stale_for_pr`.
+   - Updated `collect_convergence.py` to include attribution backfill conditions in the
+     `rollup_stale_pairs` query (per the sync comment in both files).
+   - Two pre-existing tests fixed: bare `PRQueueWindow.objects.create()` calls without
+     attribution fields now simulate pre-migration rows and were correctly being detected
+     as stale; fixed by populating `opened_by_event_type` in those test setups.
+   - Tests in `analyzer/tests/tasks/test_rebuild_queue_windows_sweep_attribution.py`
+     (4 cases): null event_type rebuilt, CI event_type with null FKs rebuilt, correct
+     attribution not spuriously rebuilt, closed_by CI FK inconsistency rebuilt.
 
 5. **W5 — Tests** (rolled into each chunk above)
 
@@ -287,7 +291,9 @@ happened to be satisfied or unsatisfied at the boundary.
   attribution persisted in `rebuild_queue_windows_for_ruleset` via `_attribution_kwargs` helper;
   tests in `test_queue_window_attribution_persist.py` (11 cases). W4 plan updated to fold in
   sweep staleness extension (attribution backfill condition covering pre-migration null
-  `event_type` and post-expire-task CI FK inconsistency).
+  `event_type` and post-expire-task CI FK inconsistency). W4 complete — expire task
+  `_invalidate_queue_windows_for_ci_rows` helper + sweep `attribution_backfill` Exists subquery
+  + `collect_convergence.py` sync; pre-existing test fixtures corrected.
 
 ## Finalization Notes
 - After implementation, collapse into a concise ADR capturing the final schema, the invariants

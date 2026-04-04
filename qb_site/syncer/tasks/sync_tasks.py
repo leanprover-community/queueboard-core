@@ -1471,6 +1471,58 @@ def refresh_pending_ci_for_repo_task(  # type: ignore[no-redef]
     }
 
 
+def _invalidate_queue_windows_for_ci_rows(
+    *,
+    check_run_ids: list[int],
+    status_context_ids: list[int],
+) -> int:
+    """Mark PRQueueWindowBuildState stale and enqueue rebuilds for any PRQueueWindow
+    rows whose attribution FKs reference the given about-to-be-deleted CI row IDs.
+
+    Must be called *before* the rows are deleted so the FK lookup still resolves.
+    Returns the number of distinct PR ids affected.
+    """
+    from django.db.models import Q as _Q
+    from analyzer.models import PRQueueWindowBuildState
+    from analyzer.models.queue_window import PRQueueWindow
+
+    if not check_run_ids and not status_context_ids:
+        return 0
+
+    fk_filter = _Q()
+    if check_run_ids:
+        fk_filter |= _Q(opened_by_check_run_id__in=check_run_ids)
+        fk_filter |= _Q(closed_by_check_run_id__in=check_run_ids)
+    if status_context_ids:
+        fk_filter |= _Q(opened_by_status_context_id__in=status_context_ids)
+        fk_filter |= _Q(closed_by_status_context_id__in=status_context_ids)
+
+    affected = PRQueueWindow.objects.filter(fk_filter).values("pull_request_id", "rule_set_id").distinct()
+    affected_rows = list(affected)
+    if not affected_rows:
+        return 0
+
+    affected_pr_ids = list({int(row["pull_request_id"]) for row in affected_rows})
+    affected_pairs = [(int(row["pull_request_id"]), int(row["rule_set_id"])) for row in affected_rows]
+
+    # Mark build state stale for each affected (pr, ruleset) pair so the sweep
+    # catches them even if the direct enqueue below fails.
+    for pr_id_chunk in [affected_pr_ids[i : i + 200] for i in range(0, len(affected_pr_ids), 200)]:
+        ruleset_ids_for_chunk = [rs_id for (p_id, rs_id) in affected_pairs if p_id in set(pr_id_chunk)]
+        PRQueueWindowBuildState.objects.filter(
+            pull_request_id__in=pr_id_chunk,
+            rule_set_id__in=ruleset_ids_for_chunk,
+        ).update(windows_built_at=None)
+
+    # Enqueue direct rebuild for each affected PR (defence in depth).
+    from analyzer.tasks import process_pr_task
+
+    for pr_id in affected_pr_ids:
+        process_pr_task.delay(pr_id)
+
+    return len(affected_pr_ids)
+
+
 @shared_task(name="syncer.expire_stale_ci_for_repo")
 def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
     repo_id: int,
@@ -1485,6 +1537,10 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
     3. Superseded check runs      – older non-latest row per (head_sha, name).
     4. Superseded status contexts – same for CommitStatusContext, but only graphql-keyed rows
                                     (rest_id IS NULL); REST history rows are intentionally multi-row.
+
+    Before each deletion pass, any PRQueueWindow rows whose attribution FKs reference the
+    about-to-be-deleted CI row IDs are marked stale and enqueued for rebuild (see
+    docs/design-decisions/040-queue-window-event-attribution.md, invariant I2).
     """
     from django.db.models import Max
 
@@ -1494,6 +1550,11 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
         stale_pending_days = int(getattr(settings, "SYNCER_CI_STALE_PENDING_DAYS", 30))
     stale_pending_days_int = int(stale_pending_days)
 
+    prs_invalidated_stale_cr = 0
+    prs_invalidated_stale_sc = 0
+    prs_invalidated_superseded_cr = 0
+    prs_invalidated_superseded_sc = 0
+
     # ------------------------------------------------------------------ #
     # Pass 1: stale pending CommitCheckRun rows                           #
     # ------------------------------------------------------------------ #
@@ -1501,13 +1562,16 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
     if stale_pending_days_int > 0:
         cutoff = timezone.now() - timedelta(days=stale_pending_days_int)
         origin = Coalesce("gh_started_at", "gh_completed_at", "created_at")
-        deleted_stale_cr, _ = (
+        stale_cr_ids = list(
             CommitCheckRun.objects.filter(repository=repo)
             .exclude(status="COMPLETED")
             .annotate(origin=origin)
             .filter(origin__lt=cutoff)
-            .delete()
+            .values_list("id", flat=True)
         )
+        prs_invalidated_stale_cr = _invalidate_queue_windows_for_ci_rows(check_run_ids=stale_cr_ids, status_context_ids=[])
+        if stale_cr_ids:
+            deleted_stale_cr, _ = CommitCheckRun.objects.filter(id__in=stale_cr_ids).delete()
 
     # ------------------------------------------------------------------ #
     # Pass 2: stale pending CommitStatusContext rows                      #
@@ -1515,9 +1579,14 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
     deleted_stale_sc = 0
     if stale_pending_days_int > 0:
         cutoff = timezone.now() - timedelta(days=stale_pending_days_int)
-        deleted_stale_sc, _ = (
-            CommitStatusContext.objects.filter(repository=repo, state="PENDING").filter(gh_created_at__lt=cutoff).delete()
+        stale_sc_ids = list(
+            CommitStatusContext.objects.filter(repository=repo, state="PENDING")
+            .filter(gh_created_at__lt=cutoff)
+            .values_list("id", flat=True)
         )
+        prs_invalidated_stale_sc = _invalidate_queue_windows_for_ci_rows(check_run_ids=[], status_context_ids=stale_sc_ids)
+        if stale_sc_ids:
+            deleted_stale_sc, _ = CommitStatusContext.objects.filter(id__in=stale_sc_ids).delete()
 
     # ------------------------------------------------------------------ #
     # Pass 3: superseded CommitCheckRun rows (older non-latest per        #
@@ -1529,7 +1598,13 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
         .annotate(latest_id=Max("id"))
         .values_list("latest_id", flat=True)
     )
-    deleted_superseded_cr, _ = CommitCheckRun.objects.filter(repository=repo).exclude(id__in=latest_cr_ids).delete()
+    superseded_cr_ids = list(
+        CommitCheckRun.objects.filter(repository=repo).exclude(id__in=latest_cr_ids).values_list("id", flat=True)
+    )
+    prs_invalidated_superseded_cr = _invalidate_queue_windows_for_ci_rows(check_run_ids=superseded_cr_ids, status_context_ids=[])
+    deleted_superseded_cr = 0
+    if superseded_cr_ids:
+        deleted_superseded_cr, _ = CommitCheckRun.objects.filter(id__in=superseded_cr_ids).delete()
 
     # ------------------------------------------------------------------ #
     # Pass 4: superseded CommitStatusContext rows (graphql-keyed only)    #
@@ -1540,9 +1615,15 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
         .annotate(latest_id=Max("id"))
         .values_list("latest_id", flat=True)
     )
-    deleted_superseded_sc, _ = (
-        CommitStatusContext.objects.filter(repository=repo, rest_id__isnull=True).exclude(id__in=latest_sc_ids).delete()
+    superseded_sc_ids = list(
+        CommitStatusContext.objects.filter(repository=repo, rest_id__isnull=True)
+        .exclude(id__in=latest_sc_ids)
+        .values_list("id", flat=True)
     )
+    prs_invalidated_superseded_sc = _invalidate_queue_windows_for_ci_rows(check_run_ids=[], status_context_ids=superseded_sc_ids)
+    deleted_superseded_sc = 0
+    if superseded_sc_ids:
+        deleted_superseded_sc, _ = CommitStatusContext.objects.filter(id__in=superseded_sc_ids, rest_id__isnull=True).delete()
 
     return {
         "repo": f"{repo.owner}/{repo.name}",
@@ -1552,6 +1633,10 @@ def expire_stale_ci_for_repo_task(  # type: ignore[no-redef]
         "deleted_stale_pending_status_contexts": deleted_stale_sc,
         "deleted_superseded_check_runs": deleted_superseded_cr,
         "deleted_superseded_status_contexts": deleted_superseded_sc,
+        "prs_invalidated_stale_pending_check_runs": prs_invalidated_stale_cr,
+        "prs_invalidated_stale_pending_status_contexts": prs_invalidated_stale_sc,
+        "prs_invalidated_superseded_check_runs": prs_invalidated_superseded_cr,
+        "prs_invalidated_superseded_status_contexts": prs_invalidated_superseded_sc,
     }
 
 

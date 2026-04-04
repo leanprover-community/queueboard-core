@@ -137,6 +137,8 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             windows_built_at=old_built_at,
             last_status="rebuilt",
         )
+        from analyzer.models.queue_window import QueueWindowEventType
+
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
@@ -145,6 +147,7 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
             cycle_index=0,
             window_count=1,
             first_on_queue_ts=pr.gh_created_at,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
         )
         # Bump ruleset updated_at so the sweep considers this PR stale, but the rebuild is a no-op.
         self.rule_set.updated_at = timezone.now()

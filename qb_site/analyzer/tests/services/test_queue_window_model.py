@@ -293,6 +293,10 @@ class TestPRQueueWindowModel(TestCase):
             occurred_at=_dt(2024, 9, 6),
             label_name="blocked-by-other-PR",
         )
+        from analyzer.models.queue_window import QueueWindowEventType
+        from syncer.models import PRTimelineEvent as _TLE
+
+        ev_unblock = _TLE.objects.get(pull_request=pr, type=PRTimelineEventType.UNLABELED)
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=self.rules,
@@ -303,6 +307,8 @@ class TestPRQueueWindowModel(TestCase):
             cumulative_seconds_closed=0,
             window_count=1,
             first_on_queue_ts=_dt(2024, 9, 6),
+            opened_by_event_type=QueueWindowEventType.FORBIDDEN_LABEL_REMOVED,
+            opened_by_timeline_event=ev_unblock,
         )
 
         res = rebuild_queue_windows_for_ruleset(pr=pr, rule_set=self.rules, as_of=_dt(2024, 9, 20))
