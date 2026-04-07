@@ -159,6 +159,14 @@ def collect_analyzer_convergence_task() -> dict:
             )
         ).count()
 
+        unknown_attribution = (
+            PRQueueWindow.objects.filter(
+                pull_request__repository=repo,
+            )
+            .filter(Q(opened_by_event_type=_QWET.UNKNOWN) | Q(closed_by_event_type=_QWET.UNKNOWN))
+            .count()
+        )
+
         AnalyzerConvergenceSnapshot.objects.create(
             repository=repo,
             collected_at=collected_at,
@@ -169,6 +177,7 @@ def collect_analyzer_convergence_task() -> dict:
             prs_missing_queue_window_rollups=missing_rollups,
             prs_missing_dependency_state=dep_missing,
             prs_stale_dependency_state=dep_stale,
+            windows_unknown_attribution=unknown_attribution,
         )
         rows += 1
         per_repo.append(
@@ -181,6 +190,7 @@ def collect_analyzer_convergence_task() -> dict:
                 "prs_missing_queue_window_rollups": missing_rollups,
                 "prs_missing_dependency_state": dep_missing,
                 "prs_stale_dependency_state": dep_stale,
+                "windows_unknown_attribution": unknown_attribution,
             }
         )
 

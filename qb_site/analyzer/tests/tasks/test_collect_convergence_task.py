@@ -391,3 +391,69 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
         self.assertIsNotNone(snap)
         self.assertEqual(snap.ci_not_checked, 1)
+
+    def test_windows_unknown_attribution_counts_unknown_windows(self) -> None:
+        """windows_unknown_attribution counts PRQueueWindow rows with UNKNOWN event type."""
+        now = timezone.now()
+        pr = self._mk_pr(70)
+
+        # One window with UNKNOWN closed_by — should be counted.
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=now,
+            to_ts=now + timezone.timedelta(hours=1),
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=now,
+            opened_by_event_type=QueueWindowEventType.CI_PASSED,
+            closed_by_event_type=QueueWindowEventType.UNKNOWN,
+        )
+        # One window with UNKNOWN opened_by — should also be counted.
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=now + timezone.timedelta(hours=2),
+            to_ts=None,
+            cycle_index=1,
+            window_count=1,
+            first_on_queue_ts=now + timezone.timedelta(hours=2),
+            opened_by_event_type=QueueWindowEventType.UNKNOWN,
+        )
+        # One window with clean attribution — must not be counted.
+        pr2 = self._mk_pr(71)
+        PRQueueWindow.objects.create(
+            pull_request=pr2,
+            rule_set=self.rule_set,
+            from_ts=now,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=now,
+            opened_by_event_type=QueueWindowEventType.INITIAL_STATE,
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.windows_unknown_attribution, 2)
+
+    def test_windows_unknown_attribution_zero_when_all_clean(self) -> None:
+        """windows_unknown_attribution is 0 when no UNKNOWN windows exist."""
+        now = timezone.now()
+        pr = self._mk_pr(72)
+        PRQueueWindow.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            from_ts=now,
+            to_ts=None,
+            cycle_index=0,
+            window_count=1,
+            first_on_queue_ts=now,
+            opened_by_event_type=QueueWindowEventType.CI_PASSED,
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.windows_unknown_attribution, 0)
