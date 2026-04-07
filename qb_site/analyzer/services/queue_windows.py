@@ -334,6 +334,29 @@ def _timeline_event_type(ev: "PRTimelineEvent", rules: "QueueRules") -> str:
     return QueueWindowEventType.UNKNOWN
 
 
+def _tl_event_significance(ev: "PRTimelineEvent", rules: "QueueRules") -> int:
+    """Priority level for a timeline event in attribution (higher = preferred).
+
+    2 — state/draft change (always decisive)
+    1 — relevant label (required or forbidden)
+    0 — irrelevant (neither required nor forbidden)
+    """
+    if ev.type in (
+        PRTimelineEventType.CLOSED,
+        PRTimelineEventType.REOPENED,
+        PRTimelineEventType.READY_FOR_REVIEW,
+        PRTimelineEventType.CONVERT_TO_DRAFT,
+    ):
+        return 2
+    if ev.type in (PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED):
+        name = _normalize_label(ev.label_name or "")
+        if (rules.required_labels and name in rules.required_labels) or (
+            rules.forbidden_labels and name in rules.forbidden_labels
+        ):
+            return 1
+    return 0
+
+
 def _determine_ci_boundary_attribution(
     *,
     rules: "QueueRules",
@@ -348,35 +371,57 @@ def _determine_ci_boundary_attribution(
 ) -> WindowAttribution:
     """Determine what caused a queue-eligibility flip at a CI-path boundary.
 
-    Priority:
-    1. CI eligibility changed and there is a CI event → CI attribution.
-    2. Timeline event present → derive type from the event kind and active rules.
-    3. Revision changed (no timeline-event FK available) → HEAD_PUSHED.
-    4. CI changed but no CI event (e.g. revision cleared CI state) → CI attribution.
-    5. Fallback → UNKNOWN.
+    Priority (see state machine in docs/design-decisions/040-queue-window-event-attribution.md):
+    1. State/draft timeline event (CLOSED, REOPENED, READY_FOR_REVIEW, CONVERT_TO_DRAFT).
+    2. CI eligibility changed and a CI event row is present → CI attribution with FK.
+    3. Relevant label timeline event (required or forbidden; irrelevant labels skipped).
+    4. Revision changed → HEAD_PUSHED.
+    5. CI changed but no CI event row → CI attribution without FK.
+    6. Fallback → UNKNOWN.
+
+    Prerequisite: the caller must ensure last_tl_ev is the most significant event at this
+    boundary (via _tl_event_significance), not merely the last by insertion order.
     """
     ci_changed = pre_ci_ok is not None and new_ci_ok != pre_ci_ok
 
-    # 1. CI eligibility changed and we have a CI event.
-    if ci_changed and (last_cr is not None or last_sc is not None):
-        ci_type = QueueWindowEventType.CI_PASSED if new_ci_ok else QueueWindowEventType.CI_FAILED
-        if last_cr is not None:
-            return WindowAttribution(event_type=ci_type, check_run=last_cr, head_sha=head_sha)
-        return WindowAttribution(event_type=ci_type, status_context=last_sc, head_sha=head_sha)
-
-    # 2. Timeline event present.
-    if last_tl_ev is not None:
+    # 1. State/draft timeline event — always decisive.
+    if last_tl_ev is not None and last_tl_ev.type in (
+        PRTimelineEventType.CLOSED,
+        PRTimelineEventType.REOPENED,
+        PRTimelineEventType.READY_FOR_REVIEW,
+        PRTimelineEventType.CONVERT_TO_DRAFT,
+    ):
         return WindowAttribution(
             event_type=_timeline_event_type(last_tl_ev, rules),
             timeline_event=last_tl_ev,
             head_sha=head_sha,
         )
 
-    # 3. Revision changed (HEAD_PUSHED; no FK since HEAD_FORCE_PUSHED is not in timeline_events).
+    # 2. CI eligibility changed and we have a CI event.
+    if ci_changed and (last_cr is not None or last_sc is not None):
+        ci_type = QueueWindowEventType.CI_PASSED if new_ci_ok else QueueWindowEventType.CI_FAILED
+        if last_cr is not None:
+            return WindowAttribution(event_type=ci_type, check_run=last_cr, head_sha=head_sha)
+        return WindowAttribution(event_type=ci_type, status_context=last_sc, head_sha=head_sha)
+
+    # 3. Relevant label timeline event (required or forbidden; irrelevant labels are skipped).
+    if last_tl_ev is not None and last_tl_ev.type in (
+        PRTimelineEventType.LABELED,
+        PRTimelineEventType.UNLABELED,
+    ):
+        ev_type = _timeline_event_type(last_tl_ev, rules)
+        if ev_type != QueueWindowEventType.UNKNOWN:
+            return WindowAttribution(
+                event_type=ev_type,
+                timeline_event=last_tl_ev,
+                head_sha=head_sha,
+            )
+
+    # 4. Revision changed (HEAD_PUSHED; no FK since HEAD_FORCE_PUSHED is not in timeline_events).
     if cur_rev is not pre_rev:
         return WindowAttribution(event_type=QueueWindowEventType.HEAD_PUSHED, head_sha=head_sha)
 
-    # 4. CI changed but no CI event (e.g. old CI state invalidated by a boundary transition).
+    # 5. CI changed but no CI event (e.g. old CI state invalidated by a boundary transition).
     if ci_changed:
         ci_type = QueueWindowEventType.CI_PASSED if new_ci_ok else QueueWindowEventType.CI_FAILED
         return WindowAttribution(event_type=ci_type, head_sha=head_sha)
@@ -622,7 +667,8 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                 state.is_open = True
             elif ev.type == PRTimelineEventType.CLOSED:
                 state.is_open = False
-            _last_tl_ev = ev
+            if _last_tl_ev is None or _tl_event_significance(ev, rules) >= _tl_event_significance(_last_tl_ev, rules):
+                _last_tl_ev = ev
 
         while rev_idx < len(revisions) and revisions[rev_idx].from_ts <= t:
             current_rev = revisions[rev_idx]
@@ -686,17 +732,20 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                         _prev_ci_ok = _new_ci_ok
                         continue
                     if current_on and not new_on:
-                        _attr = _determine_ci_boundary_attribution(
-                            rules=rules,
-                            pre_rev=_pre_rev,
-                            cur_rev=current_rev,
-                            pre_ci_ok=_prev_ci_ok,
-                            new_ci_ok=_new_ci_ok,
-                            last_tl_ev=_last_tl_ev,
-                            last_cr=_last_cr,
-                            last_sc=_last_sc,
-                            head_sha=None,
-                        )
+                        if closed_ts is not None and t == closed_ts:
+                            _attr = WindowAttribution(event_type=QueueWindowEventType.PR_CLOSED, head_sha=None)
+                        else:
+                            _attr = _determine_ci_boundary_attribution(
+                                rules=rules,
+                                pre_rev=_pre_rev,
+                                cur_rev=current_rev,
+                                pre_ci_ok=_prev_ci_ok,
+                                new_ci_ok=_new_ci_ok,
+                                last_tl_ev=_last_tl_ev,
+                                last_cr=_last_cr,
+                                last_sc=_last_sc,
+                                head_sha=None,
+                            )
                         if current_start is not None and current_start < t:
                             windows.append(
                                 AttributedQueueWindow(
@@ -772,17 +821,20 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             continue
 
         if current_on and not new_on:
-            _attr = _determine_ci_boundary_attribution(
-                rules=rules,
-                pre_rev=_pre_rev,
-                cur_rev=current_rev,
-                pre_ci_ok=_prev_ci_ok,
-                new_ci_ok=_new_ci_ok,
-                last_tl_ev=_last_tl_ev,
-                last_cr=_last_cr,
-                last_sc=_last_sc,
-                head_sha=_window_head_sha,
-            )
+            if closed_ts is not None and t == closed_ts:
+                _attr = WindowAttribution(event_type=QueueWindowEventType.PR_CLOSED, head_sha=_window_head_sha)
+            else:
+                _attr = _determine_ci_boundary_attribution(
+                    rules=rules,
+                    pre_rev=_pre_rev,
+                    cur_rev=current_rev,
+                    pre_ci_ok=_prev_ci_ok,
+                    new_ci_ok=_new_ci_ok,
+                    last_tl_ev=_last_tl_ev,
+                    last_cr=_last_cr,
+                    last_sc=_last_sc,
+                    head_sha=_window_head_sha,
+                )
             if current_start is not None and current_start < t:
                 windows.append(
                     AttributedQueueWindow(

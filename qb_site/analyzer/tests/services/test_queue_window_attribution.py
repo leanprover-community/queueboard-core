@@ -301,6 +301,33 @@ class TestLabelOnlyAttribution(_Base):
         self.assertIsNone(windows[0].closed_by)
         self.assertIsNone(windows[0].to_ts)
 
+    def test_pr_opened_via_reopened_event(self) -> None:
+        """Window re-opens when a REOPENED event fires; opened_by gets PR_OPENED attribution."""
+        rule_set = self._label_ruleset()
+        pr = self._mk_pr(11)
+        ev_closed = PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CLOSED,
+            occurred_at=_dt(2024, 9, 5),
+        )
+        ev_reopened = PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.REOPENED,
+            occurred_at=_dt(2024, 9, 7),
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        # Window 1: Sep 1 → Sep 5 (initial open → CLOSED).
+        # Window 2: Sep 7 → still open (REOPENED).
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.PR_CLOSED)
+        self.assertEqual(windows[0].closed_by.timeline_event, ev_closed)
+        self.assertEqual(windows[1].opened_by.event_type, QueueWindowEventType.PR_OPENED)
+        self.assertEqual(windows[1].opened_by.timeline_event, ev_reopened)
+        self.assertIsNone(windows[1].closed_by)
+
 
 # ---------------------------------------------------------------------------
 # CI path
@@ -441,3 +468,321 @@ class TestCIPathAttribution(_Base):
         self.assertIsNone(w.closed_by.timeline_event)
         self.assertIsNone(w.closed_by.check_run)
         self.assertIsNone(w.closed_by.status_context)
+
+    def test_head_pushed_opens_window_when_new_sha_ci_already_passed(self) -> None:
+        """HEAD_PUSHED is the opened_by when the new sha's CI was already passing before the revision boundary.
+
+        Scenario: sha2 is a reused commit (or CI ingested before the revision row was created).
+        sha2's check run completed at Sep 5, but the sha2 revision only starts at Sep 6.
+        At the Sep 5 boundary the CI row is consumed into head_ctx_latest but the head is still
+        sha1 so no flip occurs.  At the Sep 6 boundary current_rev advances to sha2, CI is
+        evaluated as passing from head_ctx_latest["sha2"], _last_cr is None (already consumed),
+        and cur_rev != pre_rev → HEAD_PUSHED opens the window.
+        """
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(37)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), _dt(2024, 9, 6), 0)
+        self._add_revision(pr, "sha2", _dt(2024, 9, 6), None, 1)
+        self._mk_check_run("sha1", node_id="CR_sha1_FAIL", conclusion="FAILURE", ts=_dt(2024, 9, 3))
+        # sha2 CI completed one day BEFORE the revision boundary — simulates a reused sha.
+        self._mk_check_run("sha2", node_id="CR_sha2_OK", conclusion="SUCCESS", ts=_dt(2024, 9, 5))
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        # sha1 never passes → no window for sha1.
+        # At Sep 6 (revision boundary), sha2's CI is already passing but the CI row was
+        # consumed at the earlier Sep 5 boundary → HEAD_PUSHED attribution, no CI FK.
+        self.assertEqual(len(windows), 1)
+        w = windows[0]
+        self.assertEqual(w.from_ts, _dt(2024, 9, 6))
+        self.assertEqual(w.opened_by.event_type, QueueWindowEventType.HEAD_PUSHED)
+        self.assertIsNone(w.opened_by.check_run)
+        self.assertIsNone(w.opened_by.timeline_event)
+        self.assertIsNone(w.closed_by)
+
+    def test_pr_closed_at_closed_ts_no_timeline_event_at_boundary(self) -> None:
+        """PR_CLOSED is attributed when closed_ts boundary has no ClosedEvent (GitHub T+1s gap).
+
+        GitHub emits pr.closedAt at T and ClosedEvent.createdAt at T+1s.  The boundary
+        injection uses pr.closed_at (T) so the CLOSED timeline event (T+1s) is never in
+        _last_tl_ev at the boundary.  The fix short-circuits to PR_CLOSED without a
+        timeline FK.
+        """
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(28)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK", conclusion="SUCCESS", ts=_dt(2024, 9, 4))
+        # PR is closed; CLOSED timeline event arrives 1 second after pr.closed_at.
+        closed_at = datetime(2024, 9, 7, 0, 0, 0, tzinfo=dt_timezone.utc)
+        pr.state = "closed"
+        pr.closed_at = closed_at
+        pr.save(update_fields=["state", "closed_at"])
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CLOSED,
+            occurred_at=datetime(2024, 9, 7, 0, 0, 1, tzinfo=dt_timezone.utc),
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        w = windows[0]
+        self.assertEqual(w.to_ts, closed_at)
+        self.assertEqual(w.closed_by.event_type, QueueWindowEventType.PR_CLOSED)
+        self.assertIsNone(w.closed_by.timeline_event)
+
+    def test_pr_merged_at_merged_ts_no_timeline_event_at_boundary(self) -> None:
+        """PR_CLOSED is attributed when merged_at is the closed_ts boundary (no ClosedEvent at T).
+
+        Same as the closed_at variant but uses pr.merged_at (both set to the same instant).
+        """
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(29)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK", conclusion="SUCCESS", ts=_dt(2024, 9, 4))
+        # PR is merged; closed_at and merged_at are both set; CLOSED event is 1s later.
+        merged_at = datetime(2024, 9, 7, 0, 0, 0, tzinfo=dt_timezone.utc)
+        pr.state = "closed"
+        pr.closed_at = merged_at
+        pr.merged_at = merged_at
+        pr.save(update_fields=["state", "closed_at", "merged_at"])
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CLOSED,
+            occurred_at=datetime(2024, 9, 7, 0, 0, 1, tzinfo=dt_timezone.utc),
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        w = windows[0]
+        self.assertEqual(w.to_ts, merged_at)
+        self.assertEqual(w.closed_by.event_type, QueueWindowEventType.PR_CLOSED)
+        self.assertIsNone(w.closed_by.timeline_event)
+
+
+# ---------------------------------------------------------------------------
+# Attribution priority ordering
+# ---------------------------------------------------------------------------
+
+
+class TestAttributionPriority(_Base):
+    """Tests that the state-machine priority ordering is enforced at co-occurring boundaries."""
+
+    def _dt_s(self, y: int, m: int, d: int, h: int = 0, mi: int = 0, s: int = 0) -> "datetime":
+        return datetime(y, m, d, h, mi, s, tzinfo=dt_timezone.utc)
+
+    def test_forbidden_label_not_shadowed_by_irrelevant_label_same_second(self) -> None:
+        """Forbidden-label event at the same second as an irrelevant label must win."""
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            required_label_names=[],
+            forbidden_label_names=["blocked"],
+            required_ci_contexts=["lint"],
+        )
+        pr = self._mk_pr(30)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK_30", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        # Forbidden label event created first (lower id), irrelevant label created after (higher id).
+        ev_blocked = PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+            label_name="blocked",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+            label_name="other",
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.FORBIDDEN_LABEL_ADDED)
+        self.assertEqual(windows[0].closed_by.timeline_event, ev_blocked)
+
+    def test_irrelevant_label_does_not_shadow_ci_failure(self) -> None:
+        """An irrelevant label at the same second as a CI failure must not shadow CI attribution."""
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(31)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK_31", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        cr_fail = self._mk_check_run(
+            "sha1",
+            node_id="CR_FAIL_31",
+            conclusion="FAILURE",
+            ts=self._dt_s(2024, 9, 7, 0, 0, 0),
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+            label_name="other",
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.CI_FAILED)
+        self.assertEqual(windows[0].closed_by.check_run, cr_fail)
+
+    def test_state_change_takes_priority_over_ci_at_same_second(self) -> None:
+        """A CONVERT_TO_DRAFT event at the same second as a CI failure wins over CI."""
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(32)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK_32", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        self._mk_check_run(
+            "sha1",
+            node_id="CR_FAIL_32",
+            conclusion="FAILURE",
+            ts=self._dt_s(2024, 9, 7, 0, 0, 0),
+        )
+        ev_draft = PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CONVERT_TO_DRAFT,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.CONVERTED_TO_DRAFT)
+        self.assertEqual(windows[0].closed_by.timeline_event, ev_draft)
+        self.assertIsNone(windows[0].closed_by.check_run)
+
+    def test_ci_with_fk_takes_priority_over_relevant_label_at_same_second(self) -> None:
+        """CI failure with a FK takes priority over a forbidden-label event at the same second."""
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            required_label_names=[],
+            forbidden_label_names=["blocked"],
+            required_ci_contexts=["lint"],
+        )
+        pr = self._mk_pr(33)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK_33", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        cr_fail = self._mk_check_run(
+            "sha1",
+            node_id="CR_FAIL_33",
+            conclusion="FAILURE",
+            ts=self._dt_s(2024, 9, 7, 0, 0, 0),
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+            label_name="blocked",
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.CI_FAILED)
+        self.assertEqual(windows[0].closed_by.check_run, cr_fail)
+        self.assertIsNone(windows[0].closed_by.timeline_event)
+
+    def test_relevant_label_takes_priority_over_head_pushed_at_same_second(self) -> None:
+        """A forbidden-label event at the same second as a revision boundary wins over HEAD_PUSHED."""
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            required_label_names=[],
+            forbidden_label_names=["blocked"],
+            required_ci_contexts=["lint"],
+        )
+        pr = self._mk_pr(34)
+        boundary = self._dt_s(2024, 9, 7, 0, 0, 0)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), boundary, 0)
+        self._add_revision(pr, "sha2", boundary, None, 1)
+        self._mk_check_run("sha1", node_id="CR_OK_34", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        # sha2 has no CI → ci goes missing at boundary; also "blocked" label added at same second.
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=boundary,
+            label_name="blocked",
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.FORBIDDEN_LABEL_ADDED)
+
+    def test_no_unknown_attribution_when_irrelevant_label_only(self) -> None:
+        """An irrelevant label at a revision boundary must not produce UNKNOWN; HEAD_PUSHED wins."""
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(35)
+        boundary = self._dt_s(2024, 9, 7, 0, 0, 0)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), boundary, 0)
+        self._add_revision(pr, "sha2", boundary, None, 1)
+        self._mk_check_run("sha1", node_id="CR_OK_35", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        # sha2 has no CI → window closes at boundary; irrelevant label fires at same time.
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=boundary,
+            label_name="other",
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.HEAD_PUSHED)
+
+    def test_state_change_takes_priority_over_relevant_label_at_same_second(self) -> None:
+        """A CONVERT_TO_DRAFT event at the same second as a forbidden-label addition wins over the label."""
+        rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=True,
+            required_label_names=[],
+            forbidden_label_names=["blocked"],
+            required_ci_contexts=["lint"],
+        )
+        pr = self._mk_pr(36)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK_36", conclusion="SUCCESS", ts=_dt(2024, 9, 3))
+        ev_draft = PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CONVERT_TO_DRAFT,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=self._dt_s(2024, 9, 7, 0, 0, 0),
+            label_name="blocked",
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0].closed_by.event_type, QueueWindowEventType.CONVERTED_TO_DRAFT)
+        self.assertEqual(windows[0].closed_by.timeline_event, ev_draft)
+        self.assertIsNone(windows[0].closed_by.check_run)

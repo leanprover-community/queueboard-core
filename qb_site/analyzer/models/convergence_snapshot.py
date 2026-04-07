@@ -19,6 +19,7 @@ class AnalyzerConvergenceSnapshot(models.Model):
     prs_missing_queue_window_rollups = models.IntegerField(default=0)
     prs_missing_dependency_state = models.IntegerField(default=0)
     prs_stale_dependency_state = models.IntegerField(default=0)
+    windows_unknown_attribution = models.IntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

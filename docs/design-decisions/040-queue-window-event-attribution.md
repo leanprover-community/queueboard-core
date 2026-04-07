@@ -145,6 +145,188 @@ the sweep.
 `True` immediately when set. The outer prefilter is conservative (SQL `Exists` across all
 rulesets); the inner check is per-ruleset exact.
 
+## State Machine
+
+### States
+
+Queue membership under a given ruleset is a boolean `on_queue`, determined by the conjunction:
+
+```
+E = is_open ∧ ¬is_draft ∧ required_labels_satisfied ∧ ¬forbidden_labels_present ∧ ci_ok
+```
+
+where `ci_ok = True` when `require_ci_success = False`. The replay has two states:
+
+- **OFF_QUEUE** (`E = False`)
+- **ON_QUEUE** (`E = True`)
+
+### Event Taxonomy
+
+Events are classified by which conjunct they can affect:
+
+| Category | Events | Conjunct affected |
+|---|---|---|
+| **S** — open/draft state | `REOPENED`, `CLOSED`, synthetic `closed_ts` | `is_open` |
+| **S** — open/draft state | `READY_FOR_REVIEW`, `CONVERT_TO_DRAFT` | `is_draft` |
+| **L_req** — required label | `LABELED[required]`, `UNLABELED[required]` | `required_labels_satisfied` |
+| **L_fbd** — forbidden label | `LABELED[forbidden]`, `UNLABELED[forbidden]` | `¬forbidden_labels_present` |
+| **CI_E** — CI event | `CommitCheckRun`, `CommitStatusContext` | `ci_ok` (directly) |
+| **R** — revision | new `PRRevision` | `ci_ok` (indirectly, via `head_sha`) |
+| **Synth** — synthetic | `t0` (PR creation), `effective_from` | initial evaluation point only |
+| **I** — irrelevant | `LABELED/UNLABELED[other]`, non-required CI events | none |
+
+Category I events can never change `E`. They may co-occur with meaningful events at the same
+timestamp but must never influence attribution.
+
+### Transitions and Attribution
+
+**OFF_QUEUE → ON_QUEUE**
+
+| Attribution | Triggering category | Notes |
+|---|---|---|
+| `INITIAL_STATE` | Synth (`t0` or `effective_from`) | `E` was already True at the initial evaluation point |
+| `RULESET_EFFECTIVE` | Synth (`effective_from`) | `E` became True at the ruleset boundary (not yet emitted) |
+| `PR_OPENED` | S (`REOPENED`) | `is_open` became True |
+| `DRAFT_CONVERTED` | S (`READY_FOR_REVIEW`) | `is_draft` became False |
+| `REQUIRED_LABEL_ADDED` | L_req (`LABELED[required]`) | missing required label supplied |
+| `FORBIDDEN_LABEL_REMOVED` | L_fbd (`UNLABELED[forbidden]`) | blocking forbidden label removed |
+| `CI_PASSED` | CI_E | `ci_ok` became True via a CI row |
+| `HEAD_PUSHED` | R | new `head_sha`'s CI state is eligible (or CI unknown → later passes) |
+
+**ON_QUEUE → OFF_QUEUE**
+
+| Attribution | Triggering category | Notes |
+|---|---|---|
+| `PR_CLOSED` | S (`CLOSED` event or synthetic `closed_ts`) | `is_open` became False |
+| `CONVERTED_TO_DRAFT` | S (`CONVERT_TO_DRAFT`) | `is_draft` became True |
+| `REQUIRED_LABEL_REMOVED` | L_req (`UNLABELED[required]`) | required label removed |
+| `FORBIDDEN_LABEL_ADDED` | L_fbd (`LABELED[forbidden]`) | forbidden label added |
+| `CI_FAILED` | CI_E | `ci_ok` became False via a CI row |
+| `HEAD_PUSHED` | R | new `head_sha`'s CI state is ineligible or missing |
+
+### Priority Resolution for Co-occurring Events
+
+When multiple event categories arrive at the same boundary timestamp `t`, priority determines
+which is the triggering event (highest to lowest):
+
+| Priority | Category | Rationale |
+|---|---|---|
+| 1 | **S** — state/draft change | Structurally decisive; a closed or drafted PR cannot be on queue regardless of other conditions |
+| 2 | **CI_E** — CI event row present AND `ci_ok` changed | Direct CI gate flip, FK available |
+| 3 | **L_req / L_fbd** — relevant label event | Direct eligibility-set change |
+| 4 | **R** — revision change AND `ci_ok` changed | Indirect CI change via new `head_sha` |
+| 5 | **CI_E** — `ci_ok` changed but no CI row identified | CI change without FK |
+| 6 | **UNKNOWN** | Defensive fallback; should not appear on clean data |
+
+Category I events are never attributed regardless of position in the event stream.
+
+`closed_ts` (the synthetic `is_open = False` boundary from `pr.closed_at / pr.merged_at`) is
+category S, priority 1, even when no `CLOSED` `PRTimelineEvent` row exists at that timestamp.
+
+### Priority Order in `_determine_ci_boundary_attribution`
+
+The boundary loop tracks the most significant event seen at each boundary time via
+`_tl_event_significance`: state/draft changes (significance 2) > relevant label events
+(significance 1) > irrelevant events (significance 0). Only the highest-significance event
+is passed to the attribution function as `last_tl_ev`.
+
+With that guarantee, the function evaluates in this order:
+
+1. **Synthetic close** — caller detected `t == closed_ts` → return `PR_CLOSED` directly,
+   before calling this function.
+2. **State/draft timeline event** — `last_tl_ev` is `CLOSED`, `REOPENED`,
+   `READY_FOR_REVIEW`, or `CONVERT_TO_DRAFT` → return the corresponding type.
+3. **CI changed AND CI row present** — `ci_ok` changed and `last_cr` or `last_sc` is set →
+   return `CI_PASSED` / `CI_FAILED` with FK.
+4. **Relevant label timeline event** — `last_tl_ev` is `LABELED` / `UNLABELED` for a
+   required or forbidden label → return `REQUIRED_LABEL_*` / `FORBIDDEN_LABEL_*`.
+5. **Revision changed** — `cur_rev is not pre_rev` → return `HEAD_PUSHED`.
+6. **CI changed, no CI row** — `ci_ok` changed but no row available → return `CI_PASSED` /
+   `CI_FAILED` without FK.
+7. **UNKNOWN** — fallback; should not fire on clean data (monitored via convergence metric).
+
+An irrelevant label can only reach step 4 when no significant timeline event exists, at which
+point the function correctly falls through to steps 5–7.
+
+### GitHub event model vs. stored events
+
+GitHub's timeline API distinguishes `MergedEvent` and `ClosedEvent`. When a PR is merged,
+GitHub fires **both**; when it is simply closed without merging, only `ClosedEvent` is fired.
+Our GraphQL queries request `ClosedEvent` but not `MergedEvent`. This is intentional:
+`ClosedEvent.createdAt` equals `pr.mergedAt` for merged PRs, so we get the correct timestamp
+for free and do not need a separate `MergedEvent` row.
+
+For merged PRs, `pr.closed_at == pr.merged_at`. `closed_ts = pr.closed_at or pr.merged_at`
+therefore always resolves to the merge timestamp regardless of which field is populated.
+
+GitHub's `pr.closedAt` (stored as `PullRequest.closed_at` / `merged_at`) and
+`ClosedEvent.createdAt` (stored as `PRTimelineEvent.occurred_at`) are generated at slightly
+different instants for the same action. In practice `ClosedEvent.createdAt` is consistently
+**1 second later** than `pr.closedAt`. The `ClosedEvent` is always present in the DB (for
+fully-synced PRs); the timestamps simply do not match.
+
+`pr.closed_at` / `pr.merged_at` on the `PullRequest` row are therefore the **reliable
+source** for the close boundary; `ClosedEvent` is the **preferred but optional** source that
+provides a storable FK.
+
+**Interaction in the replay loop** (the 1-second gap matters):
+- `t = closed_ts` (`pr.closed_at`): `state.is_open` is forced to False; the `CLOSED`
+  timeline event is at `closed_ts + 1s`, so `_last_tl_ev = None`. The call site detects
+  `t == closed_ts` and short-circuits to `PR_CLOSED` before calling
+  `_determine_ci_boundary_attribution`.
+- `t = closed_ts + 1s` (the `CLOSED` event's own boundary): `state.is_open` is already
+  False, `new_on = False`, `current_on = False` — no flip is detected and the event is
+  silently dropped.
+
+The `closed_ts` boundary is therefore never coincident with the `ClosedEvent` boundary.
+`closed_ts` is always the operative boundary; the `CLOSED` timeline event always arrives one
+second too late to provide a timeline FK (hence `closed_by.timeline_event` is always `None`
+for `PR_CLOSED` windows).
+
+### UNKNOWN Attribution Bugs (fixed)
+
+The two root causes diagnosed in production are now fixed. Pre-fix counts are retained for
+historical context.
+
+**Bug A — synthetic `closed_ts` without a `CLOSED` timeline event (390 windows)**:
+`closed_ts` is a category-S event (priority 1) but the old code called
+`_determine_ci_boundary_attribution` with `last_tl_ev = None`, no CI change, and no revision
+change, falling to the UNKNOWN fallback.
+
+*Fix*: both ON→OFF flip sites in the CI path now check `t == closed_ts` first and return
+`PR_CLOSED` directly without entering `_determine_ci_boundary_attribution`.
+
+**Bug B — category-I label event shadowing the real cause (3 853 windows)**:
+Diagnosed from production data (full population): 3 833 windows had a forbidden-label event
+(the actual cause of the flip) AND an irrelevant label event at the same second; 20 windows
+had an irrelevant label event co-occurring with a CI event. In both cases `_last_tl_ev = ev`
+unconditionally overwrote on every iteration, so the irrelevant label (higher DB id, inserted
+later in the same second) ended up as `_last_tl_ev` and `_timeline_event_type` returned
+`UNKNOWN`.
+
+*Fix B1*: `_tl_event_significance(ev, rules) -> int` (2 for state/draft, 1 for relevant label,
+0 for irrelevant) is used in the boundary loop. `_last_tl_ev` is only updated when the
+incoming event has significance ≥ the current `_last_tl_ev`, so the highest-significance event
+always wins.
+
+*Fix B2*: `_determine_ci_boundary_attribution` now handles state/draft events (step 2) and
+relevant label events (step 4) as separate priority checks. An irrelevant label that slips
+through to step 4 is skipped (because `_timeline_event_type` would return UNKNOWN), and the
+function falls through to the CI or revision checks. Fix B2 alone would not have fixed the
+3 833 forbidden-label cases (the forbidden-label event was already gone from `_last_tl_ev`),
+but provides defence in depth for any future slippage.
+
+The old priority order also attributed `CI_FAILED` over `PR_CLOSED` for simultaneous events.
+Under the corrected ordering, state/draft changes (including `closed_ts`) take priority 1.
+
+### Ongoing Attribution Health
+
+`AnalyzerConvergenceSnapshot.windows_unknown_attribution` counts `PRQueueWindow` rows with
+`opened_by_event_type = UNKNOWN` or `closed_by_event_type = UNKNOWN` across all active repos.
+This should be 0 on a correctly-running system. Any future code change that inadvertently
+produces UNKNOWN attribution will be visible in the convergence admin without causing rebuild
+loops.
+
 ## Consequences
 
 - Every new or rebuilt `PRQueueWindow` carries attribution fields identifying the triggering
