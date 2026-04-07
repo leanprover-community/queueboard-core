@@ -5,6 +5,7 @@ from django.utils import timezone
 from django.db.models import Exists, OuterRef, F, Q
 
 from analyzer.models import AnalyzerConvergenceSnapshot, PRQueueWindow, PRQueueWindowBuildState, PRRevision, QueueRuleSet
+from analyzer.models.queue_window import QueueWindowEventType
 from analyzer.services.dependencies import PR_DEPENDENCY_BUILDER_VERSION
 from core.models import Repository
 from syncer.models import CIShaFetchState, CommitCheckRun, CommitStatusContext, PullRequest
@@ -44,9 +45,7 @@ def collect_analyzer_convergence_task() -> dict:
                 rule_set_id__in=rule_set_ids,
             ).values("pull_request_id", "rule_set_id", "revision_version_built", "windows_built_at")
             rs_state_map = {(int(row["pull_request_id"]), int(row["rule_set_id"])): row for row in rs_state_rows}
-            from analyzer.models.queue_window import QueueWindowEventType as _QWET
-
-            _ci_attribution_types = [_QWET.CI_PASSED, _QWET.CI_FAILED]
+            _ci_attribution_types = [QueueWindowEventType.CI_PASSED, QueueWindowEventType.CI_FAILED]
             rollup_stale_pairs = set(
                 (
                     int(row["pull_request_id"]),
@@ -163,7 +162,7 @@ def collect_analyzer_convergence_task() -> dict:
             PRQueueWindow.objects.filter(
                 pull_request__repository=repo,
             )
-            .filter(Q(opened_by_event_type=_QWET.UNKNOWN) | Q(closed_by_event_type=_QWET.UNKNOWN))
+            .filter(Q(opened_by_event_type=QueueWindowEventType.UNKNOWN) | Q(closed_by_event_type=QueueWindowEventType.UNKNOWN))
             .count()
         )
 
