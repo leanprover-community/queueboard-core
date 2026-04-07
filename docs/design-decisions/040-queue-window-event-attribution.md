@@ -225,10 +225,12 @@ category S, priority 1, even when no `CLOSED` `PRTimelineEvent` row exists at th
 
 ### Correct Priority Order in `_determine_ci_boundary_attribution`
 
-Derived from the table above, the function should evaluate in this order:
+Prerequisite: **Fix B1** must be applied to the boundary loop so that `last_tl_ev` always
+holds the most significant event at the boundary (state/draft > relevant label > irrelevant).
+With that guarantee, the function evaluates in this order:
 
-1. **Synthetic close** — caller detected `t == closed_ts` with no `CLOSED` timeline event →
-   return `PR_CLOSED`.
+1. **Synthetic close** — caller detected `t == closed_ts` → return `PR_CLOSED` directly,
+   before calling this function.
 2. **State/draft timeline event** — `last_tl_ev` is `CLOSED`, `REOPENED`,
    `READY_FOR_REVIEW`, or `CONVERT_TO_DRAFT` → return the corresponding type.
 3. **CI changed AND CI row present** — `ci_ok` changed and `last_cr` or `last_sc` is set →
@@ -240,8 +242,9 @@ Derived from the table above, the function should evaluate in this order:
    `CI_FAILED` without FK.
 7. **UNKNOWN** — fallback.
 
-Steps 2 and 4 together replace the current monolithic "timeline event present" check, which
-called `_timeline_event_type` and silently returned `UNKNOWN` for category-I labels.
+Steps 2 and 4 together replace the current monolithic "timeline event present" check (Fix B2).
+With Fix B1 in place, an irrelevant label can only reach step 4 when no significant event
+exists, at which point the function correctly falls through to steps 5–7.
 
 ### GitHub event model vs. stored events
 
@@ -285,11 +288,30 @@ call site detects `t == closed_ts` and handles this directly before calling
 `_determine_ci_boundary_attribution`, returning `PR_CLOSED`.
 
 **Bug B — category-I label event shadowing the real cause (~3 800 windows)**:
-The current priority "2. timeline event present" fires before "3. revision changed" and "4. CI
-changed without row". When an irrelevant `LABELED`/`UNLABELED` event co-occurs with a
-CI/revision flip, `last_tl_ev` is set and `_timeline_event_type` returns `UNKNOWN` for the
-irrelevant label. Fix: split the timeline event check into steps 2 (state/draft) and 4
-(relevant label only), with CI and revision checks in between.
+Diagnosed from production data (300-window sample): 296 windows have a forbidden-label event
+(the actual cause of the flip) AND an irrelevant label event at the same second; 4 windows
+have an irrelevant label event co-occurring with a CI event. In both cases `_last_tl_ev = ev`
+unconditionally overwrites on every iteration, so the irrelevant label (higher DB id, inserted
+later in the same second) ends up as `_last_tl_ev` and `_timeline_event_type` returns
+`UNKNOWN`.
+
+Two coordinated fixes are required:
+
+*Fix B1 — track the most significant event, not just the last.*
+Change `_last_tl_ev = ev` in the boundary loop to prefer higher-significance events:
+state/draft changes > relevant label events > irrelevant events. This ensures that when a
+forbidden label and an irrelevant label land at the same second, `_last_tl_ev` holds the
+forbidden label.
+
+*Fix B2 — skip irrelevant events in `_determine_ci_boundary_attribution`.*
+After Fix B1, `_last_tl_ev` will only be an irrelevant label when no significant timeline
+event was present. Fix B2 handles the residual case (4 CI co-occurrence windows) and provides
+defence in depth: even if an irrelevant label slips through, the function falls through to the
+CI or revision check rather than returning `UNKNOWN`.
+
+Fix B2 alone is insufficient for the 296 forbidden-label cases: if `_last_tl_ev` is the
+irrelevant label and the forbidden-label event is discarded, the function can never produce the
+correct attribution regardless of priority order.
 
 Note also that the current priority 1 ("CI changed AND CI row present") fires before checking
 for a state/draft timeline event. This means a simultaneous `CI_FAILED` and `CLOSED` event
