@@ -441,3 +441,65 @@ class TestCIPathAttribution(_Base):
         self.assertIsNone(w.closed_by.timeline_event)
         self.assertIsNone(w.closed_by.check_run)
         self.assertIsNone(w.closed_by.status_context)
+
+    def test_pr_closed_at_closed_ts_no_timeline_event_at_boundary(self) -> None:
+        """PR_CLOSED is attributed when closed_ts boundary has no ClosedEvent (GitHub T+1s gap).
+
+        GitHub emits pr.closedAt at T and ClosedEvent.createdAt at T+1s.  The boundary
+        injection uses pr.closed_at (T) so the CLOSED timeline event (T+1s) is never in
+        _last_tl_ev at the boundary.  The fix short-circuits to PR_CLOSED without a
+        timeline FK.
+        """
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(28)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK", conclusion="SUCCESS", ts=_dt(2024, 9, 4))
+        # PR is closed; CLOSED timeline event arrives 1 second after pr.closed_at.
+        closed_at = datetime(2024, 9, 7, 0, 0, 0, tzinfo=dt_timezone.utc)
+        pr.state = "closed"
+        pr.closed_at = closed_at
+        pr.save(update_fields=["state", "closed_at"])
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CLOSED,
+            occurred_at=datetime(2024, 9, 7, 0, 0, 1, tzinfo=dt_timezone.utc),
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        w = windows[0]
+        self.assertEqual(w.to_ts, closed_at)
+        self.assertEqual(w.closed_by.event_type, QueueWindowEventType.PR_CLOSED)
+        self.assertIsNone(w.closed_by.timeline_event)
+
+    def test_pr_merged_at_merged_ts_no_timeline_event_at_boundary(self) -> None:
+        """PR_CLOSED is attributed when merged_at is the closed_ts boundary (no ClosedEvent at T).
+
+        Same as the closed_at variant but uses pr.merged_at (both set to the same instant).
+        """
+        rule_set = self._ci_ruleset()
+        pr = self._mk_pr(29)
+        self._add_revision(pr, "sha1", _dt(2024, 9, 1), None, 0)
+        self._mk_check_run("sha1", node_id="CR_OK", conclusion="SUCCESS", ts=_dt(2024, 9, 4))
+        # PR is merged; closed_at and merged_at are both set; CLOSED event is 1s later.
+        merged_at = datetime(2024, 9, 7, 0, 0, 0, tzinfo=dt_timezone.utc)
+        pr.state = "closed"
+        pr.closed_at = merged_at
+        pr.merged_at = merged_at
+        pr.save(update_fields=["state", "closed_at", "merged_at"])
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.CLOSED,
+            occurred_at=datetime(2024, 9, 7, 0, 0, 1, tzinfo=dt_timezone.utc),
+        )
+        rules = rules_for_rule_set(rule_set)
+
+        windows = _queue_windows_with_rules(pr, rules=rules, as_of=_dt(2024, 9, 10))
+
+        self.assertEqual(len(windows), 1)
+        w = windows[0]
+        self.assertEqual(w.to_ts, merged_at)
+        self.assertEqual(w.closed_by.event_type, QueueWindowEventType.PR_CLOSED)
+        self.assertIsNone(w.closed_by.timeline_event)

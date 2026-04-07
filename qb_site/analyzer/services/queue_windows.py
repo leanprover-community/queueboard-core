@@ -686,17 +686,20 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
                         _prev_ci_ok = _new_ci_ok
                         continue
                     if current_on and not new_on:
-                        _attr = _determine_ci_boundary_attribution(
-                            rules=rules,
-                            pre_rev=_pre_rev,
-                            cur_rev=current_rev,
-                            pre_ci_ok=_prev_ci_ok,
-                            new_ci_ok=_new_ci_ok,
-                            last_tl_ev=_last_tl_ev,
-                            last_cr=_last_cr,
-                            last_sc=_last_sc,
-                            head_sha=None,
-                        )
+                        if closed_ts is not None and t == closed_ts:
+                            _attr = WindowAttribution(event_type=QueueWindowEventType.PR_CLOSED, head_sha=None)
+                        else:
+                            _attr = _determine_ci_boundary_attribution(
+                                rules=rules,
+                                pre_rev=_pre_rev,
+                                cur_rev=current_rev,
+                                pre_ci_ok=_prev_ci_ok,
+                                new_ci_ok=_new_ci_ok,
+                                last_tl_ev=_last_tl_ev,
+                                last_cr=_last_cr,
+                                last_sc=_last_sc,
+                                head_sha=None,
+                            )
                         if current_start is not None and current_start < t:
                             windows.append(
                                 AttributedQueueWindow(
@@ -772,17 +775,20 @@ def _queue_windows_with_rules(pr: PullRequest, *, rules: QueueRules, as_of: date
             continue
 
         if current_on and not new_on:
-            _attr = _determine_ci_boundary_attribution(
-                rules=rules,
-                pre_rev=_pre_rev,
-                cur_rev=current_rev,
-                pre_ci_ok=_prev_ci_ok,
-                new_ci_ok=_new_ci_ok,
-                last_tl_ev=_last_tl_ev,
-                last_cr=_last_cr,
-                last_sc=_last_sc,
-                head_sha=_window_head_sha,
-            )
+            if closed_ts is not None and t == closed_ts:
+                _attr = WindowAttribution(event_type=QueueWindowEventType.PR_CLOSED, head_sha=_window_head_sha)
+            else:
+                _attr = _determine_ci_boundary_attribution(
+                    rules=rules,
+                    pre_rev=_pre_rev,
+                    cur_rev=current_rev,
+                    pre_ci_ok=_prev_ci_ok,
+                    new_ci_ok=_new_ci_ok,
+                    last_tl_ev=_last_tl_ev,
+                    last_cr=_last_cr,
+                    last_sc=_last_sc,
+                    head_sha=_window_head_sha,
+                )
             if current_start is not None and current_start < t:
                 windows.append(
                     AttributedQueueWindow(
