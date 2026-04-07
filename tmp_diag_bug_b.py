@@ -19,8 +19,9 @@ bug_b_qs = (
     PRQueueWindow.objects.filter(closed_by_event_type="UNKNOWN", to_ts__isnull=False)
     .exclude(Q(pull_request__closed_at=F("to_ts")) | Q(pull_request__merged_at=F("to_ts")))
     .select_related("pull_request", "pull_request__repository", "rule_set")
-    .order_by("id")[:300]
+    .order_by("id")
 )
+print(f"Total Bug B windows: {bug_b_qs.count()}")
 
 co_occurrence = Counter()
 label_relevance = Counter()
