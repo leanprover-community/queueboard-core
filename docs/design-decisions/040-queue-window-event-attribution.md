@@ -287,9 +287,9 @@ None`, no CI change, and no revision change, so it falls to the UNKNOWN fallback
 call site detects `t == closed_ts` and handles this directly before calling
 `_determine_ci_boundary_attribution`, returning `PR_CLOSED`.
 
-**Bug B — category-I label event shadowing the real cause (~3 800 windows)**:
-Diagnosed from production data (300-window sample): 296 windows have a forbidden-label event
-(the actual cause of the flip) AND an irrelevant label event at the same second; 4 windows
+**Bug B — category-I label event shadowing the real cause (3 853 windows)**:
+Diagnosed from production data (full population): 3 833 windows have a forbidden-label event
+(the actual cause of the flip) AND an irrelevant label event at the same second; 20 windows
 have an irrelevant label event co-occurring with a CI event. In both cases `_last_tl_ev = ev`
 unconditionally overwrites on every iteration, so the irrelevant label (higher DB id, inserted
 later in the same second) ends up as `_last_tl_ev` and `_timeline_event_type` returns
