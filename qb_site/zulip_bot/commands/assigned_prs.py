@@ -28,7 +28,6 @@ _NO_REQUIRED_FAILURES = "no_required_failures"
     name="assigned-prs",
     description="Show your assigned open PRs with queue-time status.",
     response_mode=ResponseMode.PRIVATE,
-    aliases=("assigned_prs",),
 )
 def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
     del args
