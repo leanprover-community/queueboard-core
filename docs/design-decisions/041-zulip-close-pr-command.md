@@ -125,10 +125,10 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
 
 ## Implementation Plan
 
-### Commit 1 (this doc)
+### Commit 1 (this doc) ✓
 - Add `docs/design-decisions/041-zulip-close-pr-command.md`.
 
-### Commit 2 (implementation)
+### Commit 2 (implementation) ✓
 - New files:
   - `qb_site/zulip_bot/commands/close_pr.py`
   - `qb_site/zulip_bot/services/close_pr_links.py`
@@ -140,8 +140,15 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
   - `qb_site/zulip_bot/urls.py` — add `close-pr/<str:token>/`
   - `qb_site/zulip_bot/AGENTS.md` / `CLAUDE.md` — document new command and settings
   - `docs/github_app_setup.md` — add new app permissions and `close_pr` operation
+- Also included two follow-up fixes:
+  - `fix(zulip_bot): normalise underscores to hyphens in command name parser` — so
+    `close_pr`, `assigned_prs`, `pr_info` variants resolve to the canonical hyphenated names
+    without per-command aliases.
+  - `fix(zulip_bot): fix two test_close_pr_form assertions` — missing
+    `ZULIP_CLOSE_PR_MUTATIONS_ENABLED` override in one test and a wrong error-substring check
+    in another.
 
-### Commit 3 (follow-up: custom close message)
+### Commit 3 (follow-up: custom close message) — not yet started
 - Add textarea to confirmation form for optional close message.
 - Add pre-written close message templates (rendered as selectable buttons/options).
 - On submit, post the message as a PR comment (`POST /repos/{owner}/{repo}/issues/{number}/comments`)
@@ -167,5 +174,54 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
   - End-to-end: issue command → receive link → open form → submit → PR closed → DM received →
     log thread updated.
 
+## Operational Deployment Notes
+
+### Before enabling in production
+1. **Update the `queueboard-assignment` GitHub App** (manual step in the GitHub UI):
+   - Upgrade `Pull requests` from Read-only to **Read and write**.
+   - Add `Members: Read` as a new org-level permission.
+   - After saving, GitHub will ask any installation admins to approve the expanded permissions.
+     Existing `assign`/`unassign` operations continue with the old token scope until approved,
+     so coordinate approval with minimal downtime.
+2. **Update `GITHUB_APP_TOKEN_CONFIG`** to include `close_pr` in the `operation_app_map` and
+   in the `queueboard-assignment` app's `operations` list. See `docs/github_app_setup.md` for
+   the full example config.
+3. **Add `ZULIP_REPO_LOG`** to settings/env for each repo you want audit-log posts in Zulip:
+   ```json
+   {
+     "leanprover-community/mathlib4": {
+       "stream": "mathlib4",
+       "topic": "bot actions"
+     }
+   }
+   ```
+   If a repo has no entry, closes still work but a WARNING is logged and no Zulip log post is
+   sent. The setting is intentionally generic for reuse by future operations.
+4. **Add `ZULIP_CLOSE_PR_MUTATIONS_ENABLED = True`** to enable actual PR closes. Without this
+   flag the form renders and validates but the POST returns a preflight-only message and does not
+   call GitHub. Useful for end-to-end smoke testing without side effects.
+5. **Optional token settings** (all have reasonable defaults):
+   - `ZULIP_CLOSE_PR_TOKEN_SECRET` (falls back to `SECRET_KEY`)
+   - `ZULIP_CLOSE_PR_TOKEN_SALT` (default: `"zulip_bot.close_pr"`)
+   - `ZULIP_CLOSE_PR_TOKEN_TTL_SECONDS` (default: `1800`)
+   - `ZULIP_CLOSE_PR_URL_BASE` (falls back to relative path)
+
+### Manual verification checklist (after app permissions are updated)
+- [ ] `GET /repos/{owner}/{repo}/collaborators/{username}/permission` returns `{"permission":
+  "none"}` for a non-collaborator (not 404).
+- [ ] `GET /repos/{owner}/{repo}/collaborators/{username}/permission` returns `"write"` for a
+  user with the `maintain` role.
+- [ ] `PATCH /repos/{owner}/{repo}/pulls/{number}` with `{"state": "closed"}` succeeds using
+  the updated `queueboard-assignment` installation token.
+- [ ] End-to-end: issue `close-pr <pr-url>` in Zulip → receive private link → open form →
+  confirm → PR closed on GitHub → DM received → log thread updated in Zulip.
+- [ ] Issue command as a non-collaborator who is not the PR author → receive "you don't have
+  permission" private message, no link issued.
+- [ ] Issue command for an already-closed PR → receive "PR is not open" private message.
+- [ ] Open confirmation link after TTL expires → see 403 invalid-token page.
+
 ## Progress Notes
-- 2026-04-12: Design doc written; implementation not yet started.
+- 2026-04-12: Design doc written.
+- 2026-04-12: Implementation complete (commits 1 and 2 landed on `close-pr-command` branch).
+  All unit tests pass under Compose. GitHub App permission upgrade and production env vars are
+  the remaining manual steps before the feature can be enabled.
