@@ -71,6 +71,7 @@ class TestClosePRFormGet(TestCase):
         self.assertTemplateUsed(response, "zulip_bot/close_pr_invalid.html")
         self.assertIn("invalid", response.context["reason"])
 
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_valid_open_pr_shows_confirmation_form(self) -> None:
         with _patch_pr_details(_open_pr("Fix the thing")):
             response = self.client.get(_url(_token()))
@@ -130,7 +131,7 @@ class TestClosePRFormPost(TestCase):
             response = self.client.post(_url(_token()))
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["success"])
-        self.assertIn("permission_denied", response.context["close_error"] or "")
+        self.assertIn("permission denied", response.context["close_error"] or "")
 
     @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_post_actions_called_with_claims_and_title(self) -> None:
