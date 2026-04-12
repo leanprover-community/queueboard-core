@@ -25,6 +25,19 @@ class TestPayloadParser(SimpleTestCase):
         self.assertEqual(parsed.name, "help")
         self.assertEqual(parsed.args, "")
 
+    def test_parse_command_normalizes_underscores_to_hyphens(self) -> None:
+        parsed = parse_command("close_pr https://github.com/org/repo/pull/1")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.name, "close-pr")
+
+    def test_parse_command_normalizes_underscores_preserves_args(self) -> None:
+        parsed = parse_command("assigned_prs")
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.name, "assigned-prs")
+        self.assertEqual(parsed.args, "")
+
     def test_parse_command_returns_none_when_only_mention(self) -> None:
         self.assertIsNone(parse_command("@**queueboard-bot**"))
 

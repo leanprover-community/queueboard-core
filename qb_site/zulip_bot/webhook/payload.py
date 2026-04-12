@@ -102,7 +102,7 @@ def parse_command(message_content: str) -> ParsedCommand | None:
         content = content[1:]
 
     parts = content.split(maxsplit=1)
-    name = parts[0].lower()
+    name = parts[0].lower().replace("_", "-")
     args = parts[1] if len(parts) > 1 else ""
     return ParsedCommand(name=name, args=args)
 
