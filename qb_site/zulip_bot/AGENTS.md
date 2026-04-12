@@ -17,19 +17,25 @@ cd qb_site/zulip_bot/frontend && npm test
 ```
 
 ## Command Architecture Notes
-- Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `pr-info`, `prefs`, `help`, `echo`, `register_test`.
+- Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `pr-info`, `prefs`, `help`, `echo`, `register_test`, `close-pr`.
 - `pr-info`: parses GitHub PR links from Zulip `rendered_content`, reacts with 👀, then sends one stream message per PR (up to 10) with queue info sourced from `analyzer.services.pr_info`.
 - Assignment command flow (all under `services/`) is split for clarity:
   - parse: `assignment_command_parser.py`,
   - validate: `assignment_validation.py`,
   - preflight/mutation orchestration: `assignment_execution.py` + `assignment_preflight.py`.
+- `close-pr` command: checks GitHub permission at command time, then issues a short-lived private link to a confirmation form. Services: `close_pr_links.py` (token), `close_pr_execution.py` (permission check + GitHub mutation). Feature flag: `ZULIP_CLOSE_PR_MUTATIONS_ENABLED`. Uses operation `close_pr` via the GitHub App token system.
 - Keep user-facing command responses explicit and safe for partial failures.
 - Prefer private failure responses for sensitive mutation/policy errors.
 
 ## Policy and Safety Notes
 - Command availability and context restrictions are controlled by `ZULIP_COMMAND_POLICY`.
-- Mutation paths are feature-flagged (`ZULIP_ASSIGNMENT_MUTATIONS_ENABLED`) and depend on GitHub operation-token services.
+- Mutation paths are feature-flagged (`ZULIP_ASSIGNMENT_MUTATIONS_ENABLED`, `ZULIP_CLOSE_PR_MUTATIONS_ENABLED`) and depend on GitHub operation-token services.
 - Do not log secrets/tokens or raw sensitive payload fragments.
+
+## Per-Repo Zulip Log
+- `ZULIP_REPO_LOG` is a JSON setting mapping `"owner/repo"` to `{"stream": "...", "topic": "..."}`.
+- Used by `close-pr` (and intended for future operations) to post an audit log entry after a mutation.
+- If a repo has no entry, the log post is skipped and a WARNING is emitted.
 
 ## Registration and Preferences
 - Registration-link/state behavior is in `services/`:
@@ -37,7 +43,8 @@ cd qb_site/zulip_bot/frontend && npm test
   - `registration_oauth_state.py`,
   - `registration_linking.py`,
   - `registration_bootstrap.py` (initial bootstrap helpers),
-  - `prefs_links.py` (preference deep-link generation).
+  - `prefs_links.py` (preference deep-link generation),
+  - `close_pr_links.py` (close-PR confirmation link generation).
 - Zulip prefs form/UI behavior spans Django forms/views and `frontend/` tests; keep behavior parity across backend validation and frontend affordances.
 
 ## Testing Expectations

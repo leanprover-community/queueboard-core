@@ -4,6 +4,7 @@ This guide covers how to create and configure GitHub Apps for Queueboard's opera
 
 ## Scope and Current Token Policy
 - Assignment commands (`assign_pr`, `unassign_pr`) require GitHub App installation tokens.
+- Close-PR command (`close_pr`) requires a GitHub App installation token with `Pull requests: Read and write` and `Members: Read` (org-level).
 - Syncer operations (`syncer_repo_discovery`, `syncer_pr_read`, `syncer_ci_read`) try GitHub App tokens first and fall back to `GH_TOKEN`/`GITHUB_TOKEN` when no app token is available.
 - Runtime config is loaded from `GITHUB_APP_TOKEN_CONFIG` (JSON object).
 
@@ -34,13 +35,13 @@ Notes:
 
 Set only the permissions needed by each operation set.
 
-### App A: `queueboard-assignment` (assign/unassign)
+### App A: `queueboard-assignment` (assign/unassign/close-pr)
 - Repository permissions:
   - `Issues: Read and write` (required for `POST/DELETE /repos/{owner}/{repo}/issues/{number}/assignees`)
-  - `Pull requests: Read-only` (required for live precondition checks on PR state/assignees)
+  - `Pull requests: Read and write` (required for close-PR mutation via `PATCH /repos/{owner}/{repo}/pulls/{number}`; also used for live precondition checks on PR state/assignees)
   - `Metadata: Read-only` (baseline repository visibility/lookup behavior)
 - Organization permissions:
-  - none required
+  - `Members: Read` (required for `GET /repos/{owner}/{repo}/collaborators/{username}/permission` to check if a user has write/admin access)
 
 ### App B: `queueboard-syncer-read` (syncer read operations)
 - Repository permissions:
@@ -96,6 +97,7 @@ Example (two-app config):
   "operation_app_map": {
     "assign_pr": "queueboard-assignment",
     "unassign_pr": "queueboard-assignment",
+    "close_pr": "queueboard-assignment",
     "syncer_repo_discovery": "queueboard-syncer-read",
     "syncer_pr_read": "queueboard-syncer-read",
     "syncer_ci_read": "queueboard-syncer-read"
@@ -106,7 +108,7 @@ Example (two-app config):
       "app_id": 123456,
       "private_key_path": "/run/secrets/queueboard-assignment.pem",
       "installation_lookup": "repo",
-      "operations": ["assign_pr", "unassign_pr"]
+      "operations": ["assign_pr", "unassign_pr", "close_pr"]
     },
     {
       "name": "queueboard-syncer-read",

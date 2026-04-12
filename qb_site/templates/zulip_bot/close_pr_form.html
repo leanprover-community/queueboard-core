@@ -1,0 +1,78 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard — close pull request</title>
+  <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Close Pull Request</h1>
+      <p class="meta">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</p>
+      {% if pr_title %}
+        <p class="meta">{{ pr_title }}</p>
+      {% endif %}
+    </section>
+
+    {% if success %}
+      <section class="card">
+        <div class="callout">
+          Pull request <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong> has been closed.
+          The close was attributed to the bot. A confirmation has been sent to you via Zulip DM.
+        </div>
+      </section>
+
+    {% elif mutations_disabled %}
+      <section class="card">
+        <div class="callout">
+          Preflight check passed — your account has permission to close this PR.
+          However, mutations are currently disabled on this server
+          (<code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set).
+          Contact an administrator to enable the close-PR mutation.
+        </div>
+      </section>
+
+    {% elif not pr_is_open %}
+      <section class="card">
+        <div class="callout">
+          This pull request is already closed or merged. No action is needed.
+        </div>
+      </section>
+
+    {% elif close_error %}
+      <section class="card">
+        <div class="status status-error" role="alert">
+          The pull request could not be closed: {{ close_error }}
+        </div>
+        <p>Please try again or contact an administrator.</p>
+      </section>
+
+    {% else %}
+      <section class="card">
+        <p>
+          You are about to close pull request
+          <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong>{% if pr_title %}: <em>{{ pr_title }}</em>{% endif %}.
+        </p>
+        <p>
+          <strong>This action will be attributed to the bot, not your personal GitHub account.</strong>
+          Closing a pull request is reversible (it can be re-opened), but please confirm you intend to proceed.
+        </p>
+        <form method="post">
+          {% csrf_token %}
+          <button type="submit" class="cta">Close this pull request</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <p class="expires">
+          This link expires at <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time>.
+        </p>
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>
