@@ -190,6 +190,13 @@ if _ZULIP_COMMAND_POLICY_ENV:
     if not isinstance(parsed_policy, dict):
         raise RuntimeError("ZULIP_COMMAND_POLICY env var must be a JSON object")
     ZULIP_COMMAND_POLICY = parsed_policy
+ZULIP_REPO_LOG: dict[str, dict[str, str]] = {}
+_ZULIP_REPO_LOG_ENV = os.getenv("ZULIP_REPO_LOG", "").strip()
+if _ZULIP_REPO_LOG_ENV:
+    parsed_repo_log = json.loads(_ZULIP_REPO_LOG_ENV)
+    if not isinstance(parsed_repo_log, dict):
+        raise RuntimeError("ZULIP_REPO_LOG env var must be a JSON object")
+    ZULIP_REPO_LOG = parsed_repo_log
 
 
 # Celery configuration
