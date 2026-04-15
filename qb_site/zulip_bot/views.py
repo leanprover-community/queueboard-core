@@ -417,9 +417,11 @@ def _close_pr_mutations_enabled() -> bool:
 
 
 def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None) -> None:
-    from core.models import Repository
+    from core.models import Repository, User
 
     pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
+    pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/pull/{claims.pr_number}"
+    pr_link = f"[{pr_ref}]({pr_url})"
     title_part = f' ("{pr_title}")' if pr_title else ""
 
     # 1. Best-effort sync.
@@ -436,7 +438,7 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None) -> None:
             )
 
     # 2. Best-effort DM to invoker.
-    dm_content = f"Pull request `{pr_ref}`{title_part} has been closed. The close was attributed to the bot."
+    dm_content = f"Pull request {pr_link}{title_part} has been closed. The close was attributed to the bot."
     try:
         ZulipClient().send_direct_message(to=[claims.zulip_user_id], content=dm_content)
     except ZulipApiError:
@@ -448,7 +450,13 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None) -> None:
     # 3. Best-effort log post.
     log_target = _resolve_repo_log_target(owner=claims.pr_owner, repo=claims.pr_repo)
     if log_target is not None:
-        log_content = f"Closed PR `{pr_ref}`{title_part} (via bot, requested by Zulip user {claims.zulip_user_id})."
+        user = User.objects.filter(zulip_user_id=claims.zulip_user_id).only("zulip_full_name").first()
+        zulip_full_name = user.zulip_full_name if user and user.zulip_full_name else None
+        if zulip_full_name:
+            requester = f"@_**{zulip_full_name}|{claims.zulip_user_id}**"
+        else:
+            requester = f"`{claims.github_login}`"
+        log_content = f"Closed PR {pr_link}{title_part} (via bot, requested by {requester})."
         try:
             ZulipClient().send_stream_message(
                 stream=log_target["stream"],
