@@ -20,20 +20,18 @@
 
     {% if success %}
       <section class="card">
-        <div class="callout">
-          Pull request <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong> has been closed.
-          The close was attributed to the bot. A confirmation has been sent to you via Zulip DM.
-        </div>
-      </section>
-
-    {% elif mutations_disabled %}
-      <section class="card">
-        <div class="callout">
-          Preflight check passed — your account has permission to close this PR.
-          However, mutations are currently disabled on this server
-          (<code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set).
-          Contact an administrator to enable the close-PR mutation.
-        </div>
+        {% if preflight_only %}
+          <div class="callout">
+            Dry-run complete — the pull request was <strong>not</strong> closed
+            (<code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set).
+            Post-actions (sync enqueue, Zulip DM, log post) were triggered normally.
+          </div>
+        {% else %}
+          <div class="callout">
+            Pull request <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong> has been closed.
+            The close was attributed to the bot. A confirmation has been sent to you via Zulip DM.
+          </div>
+        {% endif %}
       </section>
 
     {% elif not pr_is_open %}
@@ -53,6 +51,13 @@
 
     {% else %}
       <section class="card">
+        {% if mutations_disabled %}
+          <div class="callout">
+            <strong>Dry-run mode:</strong> <code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set.
+            Submitting will trigger all post-actions (sync enqueue, Zulip DM, log post) but will
+            <strong>not</strong> close the pull request.
+          </div>
+        {% endif %}
         <p>
           You are about to close pull request
           <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong>{% if pr_title %}: <em>{{ pr_title }}</em>{% endif %}.

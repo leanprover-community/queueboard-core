@@ -109,12 +109,14 @@ class TestClosePRFormGet(TestCase):
 
 
 class TestClosePRFormPost(TestCase):
-    def test_mutations_disabled_shows_preflight_message(self) -> None:
-        with _patch_pr_details(_open_pr()), _patch_close() as mock_close:
+    def test_mutations_disabled_skips_close_but_runs_post_actions(self) -> None:
+        with _patch_pr_details(_open_pr()), _patch_close() as mock_close, _patch_post_actions() as mock_post:
             response = self.client.post(_url(_token()))
         mock_close.assert_not_called()
+        mock_post.assert_called_once()
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["mutations_disabled"])
+        self.assertTrue(response.context["success"])
+        self.assertTrue(response.context["preflight_only"])
 
     @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_successful_close(self) -> None:

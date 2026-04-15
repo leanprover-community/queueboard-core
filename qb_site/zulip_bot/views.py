@@ -388,24 +388,22 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         "expires_at_iso": expires_at_utc.isoformat(),
         "mutations_disabled": not mutations_enabled,
         "success": False,
+        "preflight_only": False,
         "close_error": None,
     }
 
     if request.method == "POST":
-        if not mutations_enabled:
-            response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
-            response["Cache-Control"] = "no-store"
-            return response
-
-        try:
-            close_pull_request(owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number)
-        except ClosePRError as exc:
-            context["close_error"] = exc.message
-            response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
-            response["Cache-Control"] = "no-store"
-            return response
+        if mutations_enabled:
+            try:
+                close_pull_request(owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number)
+            except ClosePRError as exc:
+                context["close_error"] = exc.message
+                response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+                response["Cache-Control"] = "no-store"
+                return response
 
         context["success"] = True
+        context["preflight_only"] = not mutations_enabled
         _enqueue_close_pr_post_actions(claims=claims, pr_title=pr_title)
 
     response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
