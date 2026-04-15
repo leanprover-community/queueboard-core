@@ -197,7 +197,20 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
 3. **Update `GITHUB_APP_TOKEN_CONFIG`** to include `close_pr` (→ `queueboard-assignment`) and
    `check_collaborator_permission` (→ `queueboard-org-read`) in the `operation_app_map`, and add
    both apps to the `apps` list. See `docs/github_app_setup.md` for the full example config.
-3. **Add `ZULIP_REPO_LOG`** to settings/env for each repo you want audit-log posts in Zulip:
+4. **Add `close-pr` to `ZULIP_COMMAND_POLICY`**. Without a policy entry the command is silently
+   ignored for all users. Restrict `allowed_groups` to the Zulip group(s) whose members should be
+   able to invoke the command (GitHub permission is still checked at runtime). Allow both DM and
+   stream contexts so the command can be used from either:
+   ```json
+   {
+     "close-pr": {
+       "allowed_groups": [<maintainers_group_id>],
+       "allowed_contexts": ["dm", "stream:*"]
+     }
+   }
+   ```
+   Use `manage.py zulip_policy` to build and validate the JSON before setting the env var.
+5. **Add `ZULIP_REPO_LOG`** to settings/env for each repo you want audit-log posts in Zulip:
    ```json
    {
      "leanprover-community/mathlib4": {
@@ -208,10 +221,10 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
    ```
    If a repo has no entry, closes still work but a WARNING is logged and no Zulip log post is
    sent. The setting is intentionally generic for reuse by future operations.
-4. **Add `ZULIP_CLOSE_PR_MUTATIONS_ENABLED = True`** to enable actual PR closes. Without this
-   flag the form renders and validates but the POST returns a preflight-only message and does not
-   call GitHub. Useful for end-to-end smoke testing without side effects.
-5. **Optional token settings** (all have reasonable defaults):
+6. **Add `ZULIP_CLOSE_PR_MUTATIONS_ENABLED = True`** to enable actual PR closes. Without this
+   flag the form renders and the POST runs all post-actions (sync enqueue, DM, log post) but does
+   not call GitHub — useful for end-to-end smoke testing without closing the PR.
+7. **Optional token settings** (all have reasonable defaults):
    - `ZULIP_CLOSE_PR_TOKEN_SECRET` (falls back to `SECRET_KEY`)
    - `ZULIP_CLOSE_PR_TOKEN_SALT` (default: `"zulip_bot.close_pr"`)
    - `ZULIP_CLOSE_PR_TOKEN_TTL_SECONDS` (default: `1800`)
