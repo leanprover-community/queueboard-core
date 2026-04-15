@@ -37,7 +37,7 @@ class ClosePRTokenInvalid(ClosePRTokenError):
 
 def build_close_pr_link(*, claims: ClosePRLinkClaims) -> str:
     token = issue_close_pr_token(claims=claims)
-    url_base = getattr(settings, "ZULIP_CLOSE_PR_URL_BASE", "").strip().rstrip("/")
+    url_base = getattr(settings, "ZULIP_PREFS_URL_BASE", "").strip().rstrip("/")
     path = f"/api/zulip/close-pr/{quote(token, safe='')}/"
     if url_base:
         return f"{url_base}{path}"
