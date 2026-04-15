@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 _GITHUB_API_BASE = "https://api.github.com"
 _CLOSE_PR_OPERATION = "close_pr"
+_CHECK_COLLABORATOR_PERMISSION_OPERATION = "check_collaborator_permission"
 
 
 class PermissionOutcome(str, Enum):
@@ -87,7 +88,8 @@ def check_close_pr_permission(
             pr_title=pr.title,
         )
 
-    collab_permission = _fetch_collaborator_permission(token=token, owner=owner, repo=repo, github_login=github_login)
+    member_token = _get_member_check_token(owner=owner, repo=repo) or token
+    collab_permission = _fetch_collaborator_permission(token=member_token, owner=owner, repo=repo, github_login=github_login)
     if collab_permission in {"write", "admin"}:
         return PermissionCheckResult(
             outcome=PermissionOutcome.PERMITTED,
@@ -158,6 +160,14 @@ def close_pull_request(*, owner: str, repo: str, number: int) -> None:
 def _get_token(*, owner: str, repo: str) -> str | None:
     return resolve_github_app_operation_token(
         operation=_CLOSE_PR_OPERATION,
+        owner=owner,
+        repo=repo,
+    )
+
+
+def _get_member_check_token(*, owner: str, repo: str) -> str | None:
+    return resolve_github_app_operation_token(
+        operation=_CHECK_COLLABORATOR_PERMISSION_OPERATION,
         owner=owner,
         repo=repo,
     )

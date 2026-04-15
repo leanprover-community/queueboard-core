@@ -14,7 +14,10 @@
   Read-only`. Closing a PR via `PATCH /repos/{owner}/{repo}/pulls/{number}` requires `Pull requests:
   Read and write`. Checking a user's collaborator permission via
   `GET /repos/{owner}/{repo}/collaborators/{username}/permission` requires `Members: Read` (org-level).
-  Both permissions must be added to the `queueboard-assignment` app.
+  To limit blast radius, a separate `queueboard-org-read` app carries `Members: Read` and handles
+  the `check_collaborator_permission` operation; `queueboard-assignment` only needs `Pull requests:
+  Read and write` (no org-level permissions). The close-PR code falls back to the `close_pr` token
+  if `check_collaborator_permission` is not mapped, for single-app setups.
 
 ## Goals / Non-Goals
 - Goals:
@@ -105,8 +108,13 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
 ### GitHub App Changes (manual)
 - Add to `queueboard-assignment`:
   - `Pull requests: Read and write` (upgrade from read-only)
-  - `Members: Read` (org-level permission, new)
-- Update `docs/github_app_setup.md` and `GITHUB_APP_TOKEN_CONFIG` operation map to include `close_pr`.
+- Create new app `queueboard-org-read`:
+  - `Metadata: Read-only` (baseline)
+  - `Members: Read` (org-level permission)
+  - Install on the org with owner-level installation lookup
+- Update `docs/github_app_setup.md` and `GITHUB_APP_TOKEN_CONFIG` operation map to include
+  `close_pr` (→ `queueboard-assignment`) and `check_collaborator_permission`
+  (→ `queueboard-org-read`).
 
 ## Subtleties / Invariants
 - Permission check uses the GitHub App token, not the user's personal token. The close itself is also
@@ -179,13 +187,16 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
 ### Before enabling in production
 1. **Update the `queueboard-assignment` GitHub App** (manual step in the GitHub UI):
    - Upgrade `Pull requests` from Read-only to **Read and write**.
-   - Add `Members: Read` as a new org-level permission.
    - After saving, GitHub will ask any installation admins to approve the expanded permissions.
      Existing `assign`/`unassign` operations continue with the old token scope until approved,
      so coordinate approval with minimal downtime.
-2. **Update `GITHUB_APP_TOKEN_CONFIG`** to include `close_pr` in the `operation_app_map` and
-   in the `queueboard-assignment` app's `operations` list. See `docs/github_app_setup.md` for
-   the full example config.
+2. **Create the `queueboard-org-read` GitHub App** (manual step):
+   - Set `Metadata: Read-only` and org-level `Members: Read`.
+   - Install on the org (owner-level installation).
+   - Generate a private key and store it in your secret store.
+3. **Update `GITHUB_APP_TOKEN_CONFIG`** to include `close_pr` (→ `queueboard-assignment`) and
+   `check_collaborator_permission` (→ `queueboard-org-read`) in the `operation_app_map`, and add
+   both apps to the `apps` list. See `docs/github_app_setup.md` for the full example config.
 3. **Add `ZULIP_REPO_LOG`** to settings/env for each repo you want audit-log posts in Zulip:
    ```json
    {
