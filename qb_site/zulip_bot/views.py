@@ -444,7 +444,13 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
                 response["Cache-Control"] = "no-store"
                 return response
 
-        _enqueue_close_pr_post_actions(claims=claims, pr_title=pr_title, close_message=close_message)
+        pr_author_login = pr_details.author_login if pr_details else None
+        _enqueue_close_pr_post_actions(
+            claims=claims,
+            pr_title=pr_title,
+            pr_author_login=pr_author_login,
+            close_message=close_message,
+        )
 
         # PRG: redirect to GET so a browser refresh replays the safe GET, not this POST.
         param = "preflight=1" if not mutations_enabled else "closed=1"
@@ -495,7 +501,9 @@ def _close_pr_mutations_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, close_message: str) -> None:
+def _enqueue_close_pr_post_actions(
+    *, claims, pr_title: str | None, pr_author_login: str | None, close_message: str
+) -> None:
     from core.models import Repository, User
 
     pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
@@ -538,7 +546,8 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, close_messag
             requester = f"`{claims.github_login}`"
         now = datetime.now(dt_timezone.utc)
         closed_at = f"{now.strftime('%b')} {now.day}, {now.year}, {now.strftime('%H:%M')} UTC"
-        log_content = f"PR {pr_link}{title_part} was closed by {requester} on {closed_at}.{quote_block}"
+        author_part = f" (author: [{pr_author_login}](https://github.com/{pr_author_login}))" if pr_author_login else ""
+        log_content = f"PR {pr_link}{title_part}{author_part} was closed by {requester} on {closed_at}.{quote_block}"
         try:
             ZulipClient().send_stream_message(
                 stream=log_target["stream"],
