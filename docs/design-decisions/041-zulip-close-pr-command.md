@@ -228,7 +228,7 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
    - `ZULIP_CLOSE_PR_TOKEN_SECRET` (falls back to `SECRET_KEY`)
    - `ZULIP_CLOSE_PR_TOKEN_SALT` (default: `"zulip_bot.close_pr"`)
    - `ZULIP_CLOSE_PR_TOKEN_TTL_SECONDS` (default: `1800`)
-   - `ZULIP_CLOSE_PR_URL_BASE` (falls back to relative path)
+   - `ZULIP_PREFS_URL_BASE` (shared with prefs/registration links; falls back to relative path)
 
 ### Manual verification checklist (after app permissions are updated)
 - [ ] `GET /repos/{owner}/{repo}/collaborators/{username}/permission` returns `{"permission":
