@@ -16,38 +16,36 @@
       <p class="meta">
         <a href="{{ pr_url }}" class="meta-link" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a>
       </p>
-      {% if pr_title %}
-        <p class="meta">{{ pr_title }}</p>
-      {% endif %}
     </section>
 
-    {% if pr_author_login or pr_opened_at or pr_labels or pr_body %}
-      <section class="card pr-info">
-        {% if pr_author_login or pr_opened_at or pr_updated_at %}
-          <div class="pr-meta-row">
-            {% if pr_author_login %}
-              <span>By <a href="https://github.com/{{ pr_author_login }}" target="_blank" rel="noopener noreferrer">@{{ pr_author_login }}</a></span>
-            {% endif %}
-            {% if pr_opened_at %}
-              <span>Opened {{ pr_opened_at }}</span>
-            {% endif %}
-            {% if pr_updated_at and pr_updated_at != pr_opened_at %}
-              <span>Updated {{ pr_updated_at }}</span>
-            {% endif %}
-          </div>
-        {% endif %}
-        {% if pr_labels %}
-          <div class="pr-labels">
-            {% for label in pr_labels %}
-              <span class="pr-label"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
-            {% endfor %}
-          </div>
-        {% endif %}
-        {% if pr_body %}
-          <div class="pr-body">{{ pr_body|truncatechars:1000 }}</div>
-        {% endif %}
-      </section>
-    {% endif %}
+    <section class="card pr-card">
+      {% if pr_title %}
+        <h2 class="pr-title">{{ pr_title }}</h2>
+      {% endif %}
+      {% if pr_author_login or pr_opened_at or pr_updated_at %}
+        <div class="pr-meta-row">
+          {% if pr_author_login %}
+            <span>By <a href="https://github.com/{{ pr_author_login }}" target="_blank" rel="noopener noreferrer">@{{ pr_author_login }}</a></span>
+          {% endif %}
+          {% if pr_opened_at %}
+            <span>Opened <time class="ts" data-iso="{{ pr_opened_at_iso }}">{{ pr_opened_at }}</time></span>
+          {% endif %}
+          {% if pr_updated_at %}
+            <span>Updated <time class="ts" data-iso="{{ pr_updated_at_iso }}">{{ pr_updated_at }}</time></span>
+          {% endif %}
+        </div>
+      {% endif %}
+      {% if pr_labels %}
+        <div class="pr-labels">
+          {% for label in pr_labels %}
+            <span class="pr-label"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if pr_body %}
+        <div class="pr-body">{{ pr_body }}</div>
+      {% endif %}
+    </section>
 
     {% if success %}
       <section class="card">
@@ -86,11 +84,7 @@
             <strong>not</strong> close the pull request.
           </div>
         {% endif %}
-        <p>
-          You are about to close pull request
-          <strong><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a></strong>{% if pr_title %}: <em>{{ pr_title }}</em>{% endif %}.
-        </p>
-        <p>
+        <p class="attribution-notice">
           <strong>This action will be attributed to the bot, not your personal GitHub account.</strong>
           Closing a pull request is reversible (it can be re-opened), but please confirm you intend to proceed.
         </p>

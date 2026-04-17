@@ -7,8 +7,16 @@
   text-decoration: underline;
 }
 
-.pr-info {
+.pr-card {
   margin-bottom: 16px;
+}
+
+.pr-title {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.35;
 }
 
 .pr-meta-row {
@@ -49,8 +57,6 @@
 
 .pr-body {
   white-space: pre-wrap;
-  overflow-y: auto;
-  max-height: 180px;
   font-size: 0.88rem;
   color: var(--muted);
   margin: 0;
@@ -77,6 +83,11 @@
 
 .countdown strong {
   color: var(--ink);
+}
+
+.attribution-notice {
+  margin: 0 0 14px;
+  font-size: 0.95rem;
 }
 
 .card a:not(.cta) {

@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
 
-import { mountClosePrForm } from "../../static/zulip_bot/close_pr_form.js";
+import { formatTimestamp, mountClosePrForm } from "../../static/zulip_bot/close_pr_form.js";
+
+describe("formatTimestamp", () => {
+  it("returns the original string for invalid ISO input", () => {
+    expect(formatTimestamp("not-a-date")).toBe("not-a-date");
+  });
+
+  it("includes '(X days ago)' for a past timestamp", () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const result = formatTimestamp(twoDaysAgo);
+    expect(result).toContain("2 days ago");
+  });
+
+  it("omits the ago suffix for future timestamps", () => {
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const result = formatTimestamp(future);
+    expect(result).not.toContain("ago");
+  });
+});
 
 describe("mountClosePrForm", () => {
   function buildDom(expUnix) {
     document.body.innerHTML = `
+      <section class="pr-card">
+        <time class="ts" data-iso="2020-01-01T00:00:00Z">Jan 1, 2020</time>
+      </section>
       <form id="close-pr-form" data-exp-unix="${expUnix}" data-exp-iso="1970-01-01T00:00:01Z">
         <button id="close-pr-submit" type="submit">Close this pull request</button>
         <button type="button" class="preset-btn" data-body="preset text">My Preset</button>
@@ -30,8 +51,7 @@ describe("mountClosePrForm", () => {
   it("enables submit when link is not yet expired", () => {
     buildDom(Math.floor(Date.now() / 1000) + 3600);
     const unmount = mountClosePrForm(document);
-    const submit = document.getElementById("close-pr-submit");
-    expect(submit.disabled).toBe(false);
+    expect(document.getElementById("close-pr-submit").disabled).toBe(false);
     unmount();
   });
 
@@ -39,8 +59,15 @@ describe("mountClosePrForm", () => {
     buildDom(Math.floor(Date.now() / 1000) + 3600);
     const unmount = mountClosePrForm(document);
     document.querySelector(".preset-btn").click();
-    const textarea = document.getElementById("close_message");
-    expect(textarea.value).toBe("preset text");
+    expect(document.getElementById("close_message").value).toBe("preset text");
+    unmount();
+  });
+
+  it("formats .ts time elements on mount", () => {
+    buildDom(Math.floor(Date.now() / 1000) + 3600);
+    const unmount = mountClosePrForm(document);
+    const timeEl = document.querySelector("time.ts");
+    expect(timeEl.textContent).toContain("ago");
     unmount();
   });
 });
