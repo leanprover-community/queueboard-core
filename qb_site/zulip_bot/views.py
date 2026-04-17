@@ -125,7 +125,7 @@ def webhook(request: HttpRequest) -> HttpResponse:
         context = replace(context, allowed_command_names=allowed_names)
 
         command_content = context.message_content
-        if not context.is_private:
+        if not context.is_private or has_leading_bot_mention(command_content, parsed_payload.payload):
             command_content = strip_leading_bot_mention(command_content, parsed_payload.payload)
 
         parsed_command = parse_command(command_content)
