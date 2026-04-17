@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from django.conf import settings
@@ -10,6 +11,9 @@ from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, regi
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, _parse_single_pr_ref
 from zulip_bot.services.close_pr_execution import PermissionOutcome, check_close_pr_permission
 from zulip_bot.services.close_pr_links import ClosePRLinkClaims, build_close_pr_link
+from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
+
+logger = logging.getLogger(__name__)
 
 
 @register_command(
@@ -83,7 +87,13 @@ def close_pr_command(context: CommandContext, args: str) -> CommandResult:
             response_mode=ResponseMode.PRIVATE,
         )
 
-    # PERMITTED — issue the confirmation link.
+    # PERMITTED — react to acknowledge, then issue the confirmation link.
+    if context.message_id is not None:
+        try:
+            ZulipClient().add_reaction(message_id=context.message_id, emoji_name="eyes")
+        except ZulipApiError:
+            logger.warning("close_pr_reaction_failed", extra={"message_id": context.message_id})
+
     link = build_close_pr_link(
         claims=ClosePRLinkClaims(
             zulip_user_id=context.sender_id,

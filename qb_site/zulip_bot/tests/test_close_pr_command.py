@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
@@ -79,15 +79,19 @@ class TestClosePRCommand(TestCase):
             result = close_pr_command(_context(), _PR_URL)
         self.assertIn("does not have permission to close", result.content)
 
-    def test_permitted_issues_link(self) -> None:
+    @patch("zulip_bot.commands.close_pr.ZulipClient")
+    def test_permitted_issues_link(self, MockZulipClient: MagicMock) -> None:
+        mock_client = MockZulipClient.return_value
         with self._patch_permission(PermissionCheckResult(outcome=PermissionOutcome.PERMITTED, pr_title="Great PR")):
             result = close_pr_command(_context(), _PR_URL)
         self.assertIn("confirm closing PR", result.content)
         self.assertIn("Great PR", result.content)
         self.assertIn("attributed to the bot", result.content)
         self.assertIn("/api/zulip/close-pr/", result.content)
+        mock_client.add_reaction.assert_called_once_with(message_id=555, emoji_name="eyes")
 
-    def test_permitted_link_includes_expiry(self) -> None:
+    @patch("zulip_bot.commands.close_pr.ZulipClient")
+    def test_permitted_link_includes_expiry(self, MockZulipClient: MagicMock) -> None:
         with self._patch_permission(PermissionCheckResult(outcome=PermissionOutcome.PERMITTED)):
             result = close_pr_command(_context(), _PR_URL)
         self.assertIn("<time:", result.content)
