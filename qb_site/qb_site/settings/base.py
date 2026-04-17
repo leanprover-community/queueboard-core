@@ -168,6 +168,7 @@ ZULIP_REGISTRATION_OAUTH_STATE_SALT = os.getenv("ZULIP_REGISTRATION_OAUTH_STATE_
 ZULIP_REGISTRATION_OAUTH_STATE_TTL_SECONDS = int(os.getenv("ZULIP_REGISTRATION_OAUTH_STATE_TTL_SECONDS", 600))
 ZULIP_ASSIGNMENT_SUCCESS_EMOJI = os.getenv("ZULIP_ASSIGNMENT_SUCCESS_EMOJI", "thumbs_up")
 ZULIP_ASSIGNMENT_MUTATIONS_ENABLED = os.getenv("ZULIP_ASSIGNMENT_MUTATIONS_ENABLED", "")
+ZULIP_CLOSE_PR_MUTATIONS_ENABLED = os.getenv("ZULIP_CLOSE_PR_MUTATIONS_ENABLED", "")
 GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
 GITHUB_OAUTH_CLIENT_SECRET = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
 GITHUB_OAUTH_REDIRECT_URI = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "")
@@ -190,6 +191,13 @@ if _ZULIP_COMMAND_POLICY_ENV:
     if not isinstance(parsed_policy, dict):
         raise RuntimeError("ZULIP_COMMAND_POLICY env var must be a JSON object")
     ZULIP_COMMAND_POLICY = parsed_policy
+ZULIP_REPO_LOG: dict[str, dict[str, str]] = {}
+_ZULIP_REPO_LOG_ENV = os.getenv("ZULIP_REPO_LOG", "").strip()
+if _ZULIP_REPO_LOG_ENV:
+    parsed_repo_log = json.loads(_ZULIP_REPO_LOG_ENV)
+    if not isinstance(parsed_repo_log, dict):
+        raise RuntimeError("ZULIP_REPO_LOG env var must be a JSON object")
+    ZULIP_REPO_LOG = parsed_repo_log
 
 
 # Celery configuration

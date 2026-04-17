@@ -1,0 +1,122 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard — close pull request</title>
+  <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/close_pr_form.css' %}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Close Pull Request</h1>
+      <p class="meta">
+        <a href="{{ pr_url }}" class="meta-link" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a>
+      </p>
+    </section>
+
+    <section class="card pr-card">
+      {% if pr_title %}
+        <h2 class="pr-title"><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_title }}</a></h2>
+      {% endif %}
+      {% if pr_author_login or pr_opened_at or pr_updated_at %}
+        <div class="pr-meta-row">
+          {% if pr_author_login %}
+            <span>By <a href="https://github.com/{{ pr_author_login }}" target="_blank" rel="noopener noreferrer">@{{ pr_author_login }}</a></span>
+          {% endif %}
+          {% if pr_opened_at %}
+            <span>Opened <time class="ts" data-iso="{{ pr_opened_at_iso }}">{{ pr_opened_at }}</time></span>
+          {% endif %}
+          {% if pr_updated_at %}
+            <span>Updated <time class="ts" data-iso="{{ pr_updated_at_iso }}">{{ pr_updated_at }}</time></span>
+          {% endif %}
+        </div>
+      {% endif %}
+      {% if pr_labels %}
+        <div class="pr-labels">
+          {% for label in pr_labels %}
+            <span class="pr-label"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if pr_body %}
+        <div class="pr-body">{{ pr_body }}</div>
+      {% endif %}
+    </section>
+
+    {% if success %}
+      <section class="card">
+        {% if preflight_only %}
+          <div class="callout">
+            Dry-run complete — the pull request was <strong>not</strong> closed
+            (<code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set).
+            Post-actions (sync enqueue, Zulip DM, log post) were triggered normally.
+          </div>
+        {% else %}
+          <div class="callout">
+            Pull request <strong><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a></strong> has been closed.
+            The close was attributed to the bot. A confirmation has been sent to you via Zulip DM.
+          </div>
+        {% endif %}
+      </section>
+
+    {% elif not pr_is_open %}
+      <section class="card">
+        <div class="callout">
+          This pull request is already closed or merged — if you closed it just now, you're done.
+          If it was closed by someone else, no further action is needed.
+        </div>
+      </section>
+
+    {% else %}
+      <section class="card">
+        {% if close_error %}
+          <div class="status status-error" role="alert">
+            {{ close_error }}
+          </div>
+        {% endif %}
+        {% if mutations_disabled %}
+          <div class="callout">
+            <strong>Dry-run mode:</strong> <code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set.
+            Submitting will trigger all post-actions (sync enqueue, Zulip DM, log post) but will
+            <strong>not</strong> close the pull request.
+          </div>
+        {% endif %}
+        <p class="attribution-notice">
+          <strong>This action will be attributed to the bot, not your personal GitHub account.</strong>
+          Closing a pull request is reversible (it can be re-opened), but please confirm you intend to proceed.
+        </p>
+        <form method="post" id="close-pr-form" data-exp-unix="{{ expires_at_unix }}" data-exp-iso="{{ expires_at_iso }}">
+          {% csrf_token %}
+          <div class="message-field">
+            {% if presets %}
+              <div class="preset-bar">
+                <span class="preset-label">Presets:</span>
+                {% for preset in presets %}
+                  <button type="button" class="preset-btn" data-body="{{ preset.body }}">{{ preset.name }}</button>
+                {% endfor %}
+              </div>
+            {% endif %}
+            <label class="message-label" for="close_message">
+              Close message <span class="optional">(optional — posted as a GitHub comment before closing)</span>
+            </label>
+            <textarea id="close_message" name="close_message" class="message-textarea" rows="5"
+              placeholder="Leave a message explaining why this PR is being closed…">{{ close_message }}</textarea>
+          </div>
+          <button type="submit" class="cta" id="close-pr-submit">Close this pull request</button>
+        </form>
+      </section>
+
+      <section class="countdown" aria-live="polite">
+        <strong id="close-pr-countdown-label">Expires in:</strong>
+        <span id="close-pr-countdown-text">calculating…</span>
+        <span>Expires at: <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time></span>
+      </section>
+    {% endif %}
+  </main>
+  <script type="module" src="{% static 'zulip_bot/close_pr_form.js' %}"></script>
+</body>
+</html>

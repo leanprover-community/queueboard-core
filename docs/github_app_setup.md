@@ -4,13 +4,19 @@ This guide covers how to create and configure GitHub Apps for Queueboard's opera
 
 ## Scope and Current Token Policy
 - Assignment commands (`assign_pr`, `unassign_pr`) require GitHub App installation tokens.
+- Close-PR command (`close_pr`) requires a GitHub App installation token with `Pull requests: Read and write` and `Members: Read` (org-level).
 - Syncer operations (`syncer_repo_discovery`, `syncer_pr_read`, `syncer_ci_read`) try GitHub App tokens first and fall back to `GH_TOKEN`/`GITHUB_TOKEN` when no app token is available.
 - Runtime config is loaded from `GITHUB_APP_TOKEN_CONFIG` (JSON object).
 
 ## Recommended App Layout
-- Use two apps (recommended):
-  - `queueboard-assignment`: minimal write permissions for assignee mutations.
+- Use three apps (recommended):
+  - `queueboard-assignment`: minimal write permissions for assignee mutations and PR closes.
+  - `queueboard-org-read`: org-level read permission for collaborator/membership checks.
   - `queueboard-syncer-read`: read-only permissions for sync/discovery.
+- Keeping `queueboard-org-read` separate avoids granting org-level `Members: Read` to the
+  assignment app, limiting blast radius. If you prefer simplicity, `queueboard-assignment` can
+  cover `check_collaborator_permission` as well — the code falls back to the `close_pr` token
+  when `check_collaborator_permission` is not mapped.
 - One app for all operations also works, but increases blast radius and over-permission risk.
 
 ## 1) Create GitHub Apps Under the Organization
@@ -34,15 +40,20 @@ Notes:
 
 Set only the permissions needed by each operation set.
 
-### App A: `queueboard-assignment` (assign/unassign)
+### App A: `queueboard-assignment` (assign/unassign/close-pr)
 - Repository permissions:
   - `Issues: Read and write` (required for `POST/DELETE /repos/{owner}/{repo}/issues/{number}/assignees`)
-  - `Pull requests: Read-only` (required for live precondition checks on PR state/assignees)
+  - `Pull requests: Read and write` (required for close-PR mutation via `PATCH /repos/{owner}/{repo}/pulls/{number}`; also used for live precondition checks on PR state/assignees)
   - `Metadata: Read-only` (baseline repository visibility/lookup behavior)
-- Organization permissions:
-  - none required
+- Organization permissions: none (collaborator checks are delegated to `queueboard-org-read`)
 
-### App B: `queueboard-syncer-read` (syncer read operations)
+### App B: `queueboard-org-read` (collaborator/membership checks)
+- Repository permissions:
+  - `Metadata: Read-only` (baseline)
+- Organization permissions:
+  - `Members: Read` (required for `GET /repos/{owner}/{repo}/collaborators/{username}/permission`)
+
+### App C: `queueboard-syncer-read` (syncer read operations)
 - Repository permissions:
   - If Queueboard only targets public repositories, you can leave repository permissions at `No access`.
   - Recommended default (safer when repo visibility or API usage changes):
@@ -87,7 +98,7 @@ Set these values in `.env` or your deployment secret manager:
     - `private_key` (PEM string; use `\\n` escapes in env JSON; preferred for current Heroku deployment), or
     - `private_key_path` (path to PEM file visible to the process)
 
-Example (two-app config):
+Example (three-app config):
 
 ```json
 {
@@ -96,6 +107,8 @@ Example (two-app config):
   "operation_app_map": {
     "assign_pr": "queueboard-assignment",
     "unassign_pr": "queueboard-assignment",
+    "close_pr": "queueboard-assignment",
+    "check_collaborator_permission": "queueboard-org-read",
     "syncer_repo_discovery": "queueboard-syncer-read",
     "syncer_pr_read": "queueboard-syncer-read",
     "syncer_ci_read": "queueboard-syncer-read"
@@ -106,7 +119,16 @@ Example (two-app config):
       "app_id": 123456,
       "private_key_path": "/run/secrets/queueboard-assignment.pem",
       "installation_lookup": "repo",
-      "operations": ["assign_pr", "unassign_pr"]
+      "operations": ["assign_pr", "unassign_pr", "close_pr"]
+    },
+    {
+      "name": "queueboard-org-read",
+      "app_id": 345678,
+      "private_key_path": "/run/secrets/queueboard-org-read.pem",
+      "installation_lookup": "owner",
+      "installation_owner_type": "org",
+      "installation_owner": "leanprover-community",
+      "operations": ["check_collaborator_permission"]
     },
     {
       "name": "queueboard-syncer-read",
@@ -120,6 +142,11 @@ Example (two-app config):
   ]
 }
 ```
+
+Note: if `check_collaborator_permission` is not present in `operation_app_map` (e.g. during a
+phased rollout or single-app setup), the close-PR command falls back to using the `close_pr`
+token for the collaborator check — but that requires `queueboard-assignment` to also have
+`Members: Read`.
 
 Helper command for generating/maintaining this JSON:
 

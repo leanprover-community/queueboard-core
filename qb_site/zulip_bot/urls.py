@@ -10,4 +10,5 @@ urlpatterns = [
     path("register/<str:token>/github/", views.register_github_start, name="zulip-register-github-start"),
     path("register/github/callback/", views.register_github_callback, name="zulip-register-github-callback"),
     path("prefs/<str:token>/", views.prefs_form, name="zulip-prefs-form"),
+    path("close-pr/<str:token>/", views.close_pr_form, name="zulip-close-pr-form"),
 ]

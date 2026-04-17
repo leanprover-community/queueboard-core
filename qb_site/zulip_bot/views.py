@@ -21,6 +21,7 @@ from syncer.models import LabelDef
 from zulip_bot.commands import CommandResult, ResponseMode, get_command
 from zulip_bot.commands import assign as _assign  # noqa: F401
 from zulip_bot.commands import assigned_prs as _assigned_prs  # noqa: F401
+from zulip_bot.commands import close_pr as _close_pr  # noqa: F401
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
@@ -30,6 +31,13 @@ from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
+from zulip_bot.services.close_pr_execution import ClosePRError, fetch_pr_details_for_form, close_pull_request, post_pr_comment
+from zulip_bot.services.close_pr_presets import load_close_pr_presets
+from zulip_bot.services.close_pr_links import (
+    ClosePRTokenExpired,
+    ClosePRTokenInvalid,
+    validate_close_pr_token,
+)
 from zulip_bot.services.prefs_links import (
     PrefsLinkClaims,
     PrefsTokenExpired,
@@ -345,6 +353,234 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
             "dm_sent": dm_sent,
         },
         status=200,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
+    try:
+        claims = validate_close_pr_token(token)
+    except ClosePRTokenExpired:
+        return _close_pr_invalid_response(request, reason="expired")
+    except ClosePRTokenInvalid:
+        return _close_pr_invalid_response(request, reason="invalid")
+
+    from datetime import datetime, timezone as dt_timezone
+
+    expires_at_utc = datetime.fromtimestamp(claims.exp, tz=dt_timezone.utc)
+
+    # Fetch live PR details for display.
+    pr_details = fetch_pr_details_for_form(
+        owner=claims.pr_owner,
+        repo=claims.pr_repo,
+        number=claims.pr_number,
+    )
+    pr_title = pr_details.title if pr_details else None
+    pr_is_open = pr_details.is_open if pr_details else True  # assume open if fetch fails; POST will verify
+
+    pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/pull/{claims.pr_number}"
+    mutations_enabled = _close_pr_mutations_enabled()
+    context: dict = {
+        "pr_owner": claims.pr_owner,
+        "pr_repo": claims.pr_repo,
+        "pr_number": claims.pr_number,
+        "pr_url": pr_url,
+        "pr_title": pr_title,
+        "pr_is_open": pr_is_open,
+        "pr_author_login": pr_details.author_login if pr_details else None,
+        "pr_body": pr_details.body if pr_details else None,
+        "pr_opened_at": _fmt_date(pr_details.opened_at) if pr_details else None,
+        "pr_opened_at_iso": pr_details.opened_at if pr_details else None,
+        "pr_updated_at": _fmt_date(pr_details.updated_at) if pr_details else None,
+        "pr_updated_at_iso": pr_details.updated_at if pr_details else None,
+        "pr_labels": _label_badge_context(pr_details.labels) if pr_details else [],
+        "expires_at_iso": expires_at_utc.isoformat(),
+        "expires_at_unix": claims.exp,
+        "mutations_disabled": not mutations_enabled,
+        "success": False,
+        "preflight_only": False,
+        "close_error": None,
+        "close_message": "",
+        "presets": load_close_pr_presets(),
+    }
+
+    # PRG: success redirect sets these params so the GET can show the right state.
+    if request.GET.get("closed") == "1":
+        context["success"] = True
+    elif request.GET.get("preflight") == "1":
+        context["success"] = True
+        context["preflight_only"] = True
+
+    if request.method == "POST":
+        close_message = request.POST.get("close_message", "").strip()
+        context["close_message"] = close_message
+
+        # Guard against browser-refresh re-POST: if the PR is already closed, do nothing.
+        if not pr_is_open:
+            response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+            response["Cache-Control"] = "no-store"
+            return response
+
+        if mutations_enabled:
+            if close_message:
+                try:
+                    post_pr_comment(
+                        owner=claims.pr_owner,
+                        repo=claims.pr_repo,
+                        number=claims.pr_number,
+                        body=close_message,
+                    )
+                except ClosePRError as exc:
+                    context["close_error"] = f"Could not post comment: {exc.message}"
+                    response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+                    response["Cache-Control"] = "no-store"
+                    return response
+            try:
+                close_pull_request(owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number)
+            except ClosePRError as exc:
+                context["close_error"] = exc.message
+                response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+                response["Cache-Control"] = "no-store"
+                return response
+
+        _enqueue_close_pr_post_actions(claims=claims, pr_title=pr_title, close_message=close_message)
+
+        # PRG: redirect to GET so a browser refresh replays the safe GET, not this POST.
+        param = "preflight=1" if not mutations_enabled else "closed=1"
+        response = HttpResponseRedirect(f"{request.path}?{param}")
+        response["Cache-Control"] = "no-store"
+        return response
+
+    response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _fmt_date(iso: str | None) -> str | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
+    except ValueError:
+        return iso
+
+
+def _label_text_color(hex6: str) -> str:
+    try:
+        r, g, b = int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16)
+        return "#0f172a" if 0.299 * r + 0.587 * g + 0.114 * b > 160 else "#f8fafc"
+    except (ValueError, IndexError):
+        return "#0f172a"
+
+
+def _label_badge_context(labels: tuple) -> list[dict]:
+    result = []
+    for name, color in labels:
+        if not name:
+            continue
+        result.append(
+            {
+                "name": name,
+                "bg": f"#{color}" if color else None,
+                "text": _label_text_color(color) if color else "#0f172a",
+            }
+        )
+    return result
+
+
+def _close_pr_mutations_enabled() -> bool:
+    value = str(getattr(settings, "ZULIP_CLOSE_PR_MUTATIONS_ENABLED", "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, close_message: str) -> None:
+    from core.models import Repository, User
+
+    pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
+    pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/pull/{claims.pr_number}"
+    pr_link = f"[{pr_ref}]({pr_url})"
+    title_part = f' ("{pr_title}")' if pr_title else ""
+    quote_block = f"\n```quote\n{close_message}\n```" if close_message else ""
+
+    # 1. Best-effort sync.
+    repository = Repository.objects.filter(owner=claims.pr_owner, name=claims.pr_repo).only("id").first()
+    if repository is not None:
+        try:
+            from syncer.tasks.sync_tasks import sync_pr_task
+
+            sync_pr_task.delay(repository.id, claims.pr_number)
+        except Exception:
+            logger.warning(
+                "close_pr_post_action_sync_enqueue_failed",
+                extra={"owner": claims.pr_owner, "repo": claims.pr_repo, "number": claims.pr_number},
+            )
+
+    # 2. Best-effort DM to invoker.
+    dm_content = f"Pull request {pr_link}{title_part} has been closed.{quote_block}"
+    try:
+        ZulipClient().send_direct_message(to=[claims.zulip_user_id], content=dm_content)
+    except ZulipApiError:
+        logger.warning(
+            "close_pr_dm_failed",
+            extra={"zulip_user_id": claims.zulip_user_id, "pr_ref": pr_ref},
+        )
+
+    # 3. Best-effort log post.
+    log_target = _resolve_repo_log_target(owner=claims.pr_owner, repo=claims.pr_repo)
+    if log_target is not None:
+        user = User.objects.filter(zulip_user_id=claims.zulip_user_id).only("zulip_full_name").first()
+        zulip_full_name = user.zulip_full_name if user and user.zulip_full_name else None
+        if zulip_full_name:
+            requester = f"@_**{zulip_full_name}|{claims.zulip_user_id}**"
+        else:
+            requester = f"`{claims.github_login}`"
+        now = datetime.now(dt_timezone.utc)
+        closed_at = f"{now.strftime('%b')} {now.day}, {now.year}, {now.strftime('%H:%M')} UTC"
+        log_content = f"PR {pr_link}{title_part} was closed by {requester} on {closed_at}.{quote_block}"
+        try:
+            ZulipClient().send_stream_message(
+                stream=log_target["stream"],
+                topic=log_target["topic"],
+                content=log_content,
+            )
+        except ZulipApiError:
+            logger.warning(
+                "close_pr_log_post_failed",
+                extra={"owner": claims.pr_owner, "repo": claims.pr_repo, "pr_ref": pr_ref},
+            )
+
+
+def _resolve_repo_log_target(*, owner: str, repo: str) -> dict | None:
+    raw = getattr(settings, "ZULIP_REPO_LOG", None)
+    if not isinstance(raw, dict):
+        return None
+    key = f"{owner}/{repo}"
+    entry = raw.get(key)
+    if not isinstance(entry, dict):
+        logger.warning(
+            "close_pr_no_repo_log_configured",
+            extra={"owner": owner, "repo": repo},
+        )
+        return None
+    stream = str(entry.get("stream") or "").strip()
+    topic = str(entry.get("topic") or "").strip()
+    if not stream or not topic:
+        logger.warning(
+            "close_pr_repo_log_missing_stream_or_topic",
+            extra={"owner": owner, "repo": repo},
+        )
+        return None
+    return {"stream": stream, "topic": topic}
+
+
+def _close_pr_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
+    response = TemplateResponse(
+        request,
+        "zulip_bot/close_pr_invalid.html",
+        {"reason": reason},
+        status=403,
     )
     response["Cache-Control"] = "no-store"
     return response
