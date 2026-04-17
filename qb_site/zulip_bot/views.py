@@ -31,7 +31,8 @@ from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
-from zulip_bot.services.close_pr_execution import ClosePRError, fetch_pr_details_for_form, close_pull_request
+from zulip_bot.services.close_pr_execution import ClosePRError, fetch_pr_details_for_form, close_pull_request, post_pr_comment
+from zulip_bot.services.close_pr_presets import load_close_pr_presets
 from zulip_bot.services.close_pr_links import (
     ClosePRTokenExpired,
     ClosePRTokenInvalid,
@@ -390,10 +391,28 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         "success": False,
         "preflight_only": False,
         "close_error": None,
+        "close_message": "",
+        "presets": load_close_pr_presets(),
     }
 
     if request.method == "POST":
+        close_message = request.POST.get("close_message", "").strip()
+        context["close_message"] = close_message
+
         if mutations_enabled:
+            if close_message:
+                try:
+                    post_pr_comment(
+                        owner=claims.pr_owner,
+                        repo=claims.pr_repo,
+                        number=claims.pr_number,
+                        body=close_message,
+                    )
+                except ClosePRError as exc:
+                    context["close_error"] = f"Could not post comment: {exc.message}"
+                    response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+                    response["Cache-Control"] = "no-store"
+                    return response
             try:
                 close_pull_request(owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number)
             except ClosePRError as exc:

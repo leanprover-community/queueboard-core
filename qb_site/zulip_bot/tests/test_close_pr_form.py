@@ -7,6 +7,7 @@ from django.urls import reverse
 
 from zulip_bot.services.close_pr_execution import ClosePRError, LivePRDetails
 from zulip_bot.services.close_pr_links import ClosePRLinkClaims, issue_close_pr_token
+from zulip_bot.services.close_pr_presets import load_close_pr_presets
 
 
 def _token(
@@ -50,8 +51,18 @@ def _patch_close(*, raises: ClosePRError | None = None):
     return patch("zulip_bot.views.close_pull_request")
 
 
+def _patch_post_comment(*, raises: ClosePRError | None = None):
+    if raises:
+        return patch("zulip_bot.views.post_pr_comment", side_effect=raises)
+    return patch("zulip_bot.views.post_pr_comment")
+
+
 def _patch_post_actions():
     return patch("zulip_bot.views._enqueue_close_pr_post_actions")
+
+
+def _patch_presets(presets=None):
+    return patch("zulip_bot.views.load_close_pr_presets", return_value=presets or [])
 
 
 class TestClosePRFormGet(TestCase):
@@ -152,6 +163,102 @@ class TestClosePRFormPost(TestCase):
         with patch("zulip_bot.services.close_pr_links.time.time", return_value=1_700_000_000 + 1_900):
             response = self.client.post(_url(tok))
         self.assertEqual(response.status_code, 403)
+
+
+class TestClosePRFormPostWithMessage(TestCase):
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_close_message_posts_comment_before_close(self) -> None:
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_post_comment() as mock_comment,
+            _patch_close() as mock_close,
+            _patch_post_actions(),
+        ):
+            response = self.client.post(_url(_token()), data={"close_message": "Superseded by #1000."})
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["success"])
+        mock_comment.assert_called_once()
+        mock_close.assert_called_once()
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_comment_failure_shows_error_and_skips_close(self) -> None:
+        error = ClosePRError(code="permission_denied", message="GitHub permission denied when posting comment.")
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_post_comment(raises=error),
+            _patch_close() as mock_close,
+            _patch_post_actions(),
+        ):
+            response = self.client.post(_url(_token()), data={"close_message": "Some message."})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["success"])
+        self.assertIn("permission denied", response.context["close_error"] or "")
+        mock_close.assert_not_called()
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_empty_message_skips_comment(self) -> None:
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_post_comment() as mock_comment,
+            _patch_close(),
+            _patch_post_actions(),
+        ):
+            response = self.client.post(_url(_token()), data={"close_message": ""})
+        self.assertTrue(response.context["success"])
+        mock_comment.assert_not_called()
+
+    def test_mutations_disabled_skips_comment_even_with_message(self) -> None:
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_post_comment() as mock_comment,
+            _patch_close() as mock_close,
+            _patch_post_actions(),
+        ):
+            response = self.client.post(_url(_token()), data={"close_message": "Some message."})
+        self.assertTrue(response.context["success"])
+        self.assertTrue(response.context["preflight_only"])
+        mock_comment.assert_not_called()
+        mock_close.assert_not_called()
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_close_message_preserved_in_context_on_error(self) -> None:
+        error = ClosePRError(code="github_transient", message="GitHub API temporarily failed.")
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_post_comment(),
+            _patch_close(raises=error),
+            _patch_post_actions(),
+        ):
+            response = self.client.post(_url(_token()), data={"close_message": "My message."})
+        self.assertFalse(response.context["success"])
+        self.assertEqual(response.context["close_message"], "My message.")
+
+
+class TestClosePRPresets(TestCase):
+    def test_load_presets_returns_list(self) -> None:
+        presets = load_close_pr_presets()
+        self.assertIsInstance(presets, list)
+
+    def test_presets_have_name_and_body(self) -> None:
+        presets = load_close_pr_presets()
+        for preset in presets:
+            self.assertIn("name", preset)
+            self.assertIn("body", preset)
+            self.assertTrue(preset["name"])
+            self.assertTrue(preset["body"])
+
+    def test_presets_passed_to_template_context(self) -> None:
+        sample = [{"name": "Superseded", "body": "This PR is superseded."}]
+        with _patch_presets(sample), _patch_pr_details(_open_pr()):
+            response = self.client.get(_url(_token()))
+        self.assertEqual(response.context["presets"], sample)
+
+    def test_preset_buttons_rendered_in_template(self) -> None:
+        sample = [{"name": "Stale", "body": "Closing as stale."}]
+        with _patch_presets(sample), _patch_pr_details(_open_pr()):
+            response = self.client.get(_url(_token()))
+        self.assertContains(response, "Stale")
+        self.assertContains(response, "Closing as stale.")
 
 
 class TestRepoLogResolution(TestCase):

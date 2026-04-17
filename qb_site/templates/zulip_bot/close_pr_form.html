@@ -7,6 +7,7 @@
   <title>Queueboard — close pull request</title>
   <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
   <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/close_pr_form.css' %}">
 </head>
 <body>
   <main class="page">
@@ -41,16 +42,13 @@
         </div>
       </section>
 
-    {% elif close_error %}
-      <section class="card">
-        <div class="status status-error" role="alert">
-          The pull request could not be closed: {{ close_error }}
-        </div>
-        <p>Please try again or contact an administrator.</p>
-      </section>
-
     {% else %}
       <section class="card">
+        {% if close_error %}
+          <div class="status status-error" role="alert">
+            {{ close_error }}
+          </div>
+        {% endif %}
         {% if mutations_disabled %}
           <div class="callout">
             <strong>Dry-run mode:</strong> <code>ZULIP_CLOSE_PR_MUTATIONS_ENABLED</code> is not set.
@@ -68,6 +66,21 @@
         </p>
         <form method="post">
           {% csrf_token %}
+          <div class="message-field">
+            {% if presets %}
+              <div class="preset-bar">
+                <span class="preset-label">Presets:</span>
+                {% for preset in presets %}
+                  <button type="button" class="preset-btn" data-body="{{ preset.body }}">{{ preset.name }}</button>
+                {% endfor %}
+              </div>
+            {% endif %}
+            <label class="message-label" for="close_message">
+              Close message <span class="optional">(optional — posted as a GitHub comment before closing)</span>
+            </label>
+            <textarea id="close_message" name="close_message" class="message-textarea" rows="5"
+              placeholder="Leave a message explaining why this PR is being closed…">{{ close_message }}</textarea>
+          </div>
           <button type="submit" class="cta">Close this pull request</button>
         </form>
       </section>
@@ -79,5 +92,12 @@
       </section>
     {% endif %}
   </main>
+  <script>
+    document.querySelectorAll('.preset-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        document.getElementById('close_message').value = btn.getAttribute('data-body');
+      });
+    });
+  </script>
 </body>
 </html>

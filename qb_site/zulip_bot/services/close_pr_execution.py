@@ -106,6 +106,44 @@ def check_close_pr_permission(
     )
 
 
+def post_pr_comment(*, owner: str, repo: str, number: int, body: str) -> None:
+    """Post a comment on a pull request before closing it.
+
+    Uses the close_pr operation token (Issues: Read and write already granted).
+    Raises ClosePRError on failure.
+    """
+    token = _get_token(owner=owner, repo=repo)
+    if not token:
+        raise ClosePRError(
+            code="token_unavailable",
+            message="GitHub App token for close_pr is not available for this repository.",
+        )
+
+    api_base = _api_base_url()
+    url = f"{api_base}/repos/{owner}/{repo}/issues/{number}/comments"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        response = requests.post(url, json={"body": body}, headers=headers, timeout=20)
+    except requests.RequestException as exc:
+        raise ClosePRError(code="request_failed", message=f"GitHub request failed: {exc}") from exc
+
+    if response.status_code < 400:
+        return
+
+    details = _safe_json(response)
+    if response.status_code in {401, 403}:
+        raise ClosePRError(code="permission_denied", message="GitHub permission denied when posting comment.")
+    if response.status_code == 404:
+        raise ClosePRError(code="pr_not_found", message="Pull request not found on GitHub.")
+    if response.status_code >= 500:
+        raise ClosePRError(code="github_transient", message="GitHub API temporarily failed.")
+    raise ClosePRError(code="github_error", message=f"GitHub API error when posting comment: {details}")
+
+
 def fetch_pr_details_for_form(*, owner: str, repo: str, number: int) -> LivePRDetails | None:
     """Fetch PR details for display on the confirmation form.
 

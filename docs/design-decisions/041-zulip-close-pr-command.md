@@ -156,12 +156,21 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
     `ZULIP_CLOSE_PR_MUTATIONS_ENABLED` override in one test and a wrong error-substring check
     in another.
 
-### Commit 3 (follow-up: custom close message) — not yet started
-- Add textarea to confirmation form for optional close message.
-- Add pre-written close message templates (rendered as selectable buttons/options).
-- On submit, post the message as a PR comment (`POST /repos/{owner}/{repo}/issues/{number}/comments`)
-  before closing. No additional GitHub App permissions required (`Issues: Read and write` already
-  granted).
+### Commit 3 (follow-up: custom close message) ✓
+- Textarea on confirmation form for an optional close message.
+- Preset buttons load pre-written messages into the textarea. Presets are stored as `.md` files in
+  `qb_site/zulip_bot/close_pr_presets/`; the first `# Heading` line becomes the button label, the
+  remainder becomes the body. Files are sorted by filename so numbering controls display order. No
+  code change required to add or edit presets.
+- On submit, if a message is provided it is posted as a PR comment
+  (`POST /repos/{owner}/{repo}/issues/{number}/comments`) before the PR is closed. If the comment
+  post fails, an inline error is shown and the PR is not closed (user can retry or clear the
+  message). No additional GitHub App permissions required (`Issues: Read and write` already granted).
+- New service: `qb_site/zulip_bot/services/close_pr_presets.py` (`load_close_pr_presets`).
+- New execution helper: `post_pr_comment` in `close_pr_execution.py`.
+- New CSS: `qb_site/zulip_bot/static/zulip_bot/close_pr_form.css`.
+- The error state now renders inline in the form (rather than a dead-end page) so the user's
+  typed message is preserved for retry.
 
 ## Validation Plan
 - Tests:
@@ -249,3 +258,4 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
 - 2026-04-12: Implementation complete (commits 1 and 2 landed on `close-pr-command` branch).
   All unit tests pass under Compose. GitHub App permission upgrade and production env vars are
   the remaining manual steps before the feature can be enabled.
+- 2026-04-17: Commit 3 complete — optional close message with markdown presets added.
