@@ -77,6 +77,13 @@ export function mountClosePrForm(root = document) {
     update();
     if (submitButton.disabled) {
       event.preventDefault();
+      return;
+    }
+    const textarea = root.getElementById("close_message");
+    if (textarea && !textarea.value.trim()) {
+      if (!window.confirm("No close message will be posted as a comment. Close this pull request without a comment?")) {
+        event.preventDefault();
+      }
     }
   });
 

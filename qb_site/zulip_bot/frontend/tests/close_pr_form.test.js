@@ -63,6 +63,27 @@ describe("mountClosePrForm", () => {
     unmount();
   });
 
+  it("confirms before submitting with empty close message", () => {
+    buildDom(Math.floor(Date.now() / 1000) + 3600);
+    let confirmed = false;
+    window.confirm = () => { confirmed = true; return false; };
+    const unmount = mountClosePrForm(document);
+    document.getElementById("close-pr-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(confirmed).toBe(true);
+    unmount();
+  });
+
+  it("does not confirm when close message is present", () => {
+    buildDom(Math.floor(Date.now() / 1000) + 3600);
+    let confirmed = false;
+    window.confirm = () => { confirmed = true; return true; };
+    const unmount = mountClosePrForm(document);
+    document.getElementById("close_message").value = "some message";
+    document.getElementById("close-pr-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    expect(confirmed).toBe(false);
+    unmount();
+  });
+
   it("formats .ts time elements on mount", () => {
     buildDom(Math.floor(Date.now() / 1000) + 3600);
     const unmount = mountClosePrForm(document);

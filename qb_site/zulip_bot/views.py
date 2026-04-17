@@ -444,7 +444,7 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
                 response["Cache-Control"] = "no-store"
                 return response
 
-        _enqueue_close_pr_post_actions(claims=claims, pr_title=pr_title)
+        _enqueue_close_pr_post_actions(claims=claims, pr_title=pr_title, close_message=close_message)
 
         # PRG: redirect to GET so a browser refresh replays the safe GET, not this POST.
         param = "preflight=1" if not mutations_enabled else "closed=1"
@@ -495,13 +495,14 @@ def _close_pr_mutations_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None) -> None:
+def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, close_message: str) -> None:
     from core.models import Repository, User
 
     pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
     pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/pull/{claims.pr_number}"
     pr_link = f"[{pr_ref}]({pr_url})"
     title_part = f' ("{pr_title}")' if pr_title else ""
+    quote_block = f"\n```quote\n{close_message}\n```" if close_message else ""
 
     # 1. Best-effort sync.
     repository = Repository.objects.filter(owner=claims.pr_owner, name=claims.pr_repo).only("id").first()
@@ -517,7 +518,7 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None) -> None:
             )
 
     # 2. Best-effort DM to invoker.
-    dm_content = f"Pull request {pr_link}{title_part} has been closed. The close was attributed to the bot."
+    dm_content = f"Pull request {pr_link}{title_part} has been closed.{quote_block}"
     try:
         ZulipClient().send_direct_message(to=[claims.zulip_user_id], content=dm_content)
     except ZulipApiError:
@@ -535,7 +536,9 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None) -> None:
             requester = f"@_**{zulip_full_name}|{claims.zulip_user_id}**"
         else:
             requester = f"`{claims.github_login}`"
-        log_content = f"Closed PR {pr_link}{title_part} (via bot, requested by {requester})."
+        now = datetime.now(dt_timezone.utc)
+        closed_at = f"{now.strftime('%b')} {now.day}, {now.year}, {now.strftime('%H:%M')} UTC"
+        log_content = f"PR {pr_link}{title_part} was closed by {requester} on {closed_at}.{quote_block}"
         try:
             ZulipClient().send_stream_message(
                 stream=log_target["stream"],
