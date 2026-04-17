@@ -121,21 +121,32 @@ class TestClosePRFormGet(TestCase):
 
 class TestClosePRFormPost(TestCase):
     def test_mutations_disabled_skips_close_but_runs_post_actions(self) -> None:
+        tok = _token()
         with _patch_pr_details(_open_pr()), _patch_close() as mock_close, _patch_post_actions() as mock_post:
-            response = self.client.post(_url(_token()))
+            response = self.client.post(_url(tok))
         mock_close.assert_not_called()
         mock_post.assert_called_once()
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["success"])
-        self.assertTrue(response.context["preflight_only"])
+        # Successful POST redirects (PRG); follow redirect to check success state.
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("preflight=1", response["Location"])
+        with _patch_pr_details(_open_pr()):
+            get_response = self.client.get(response["Location"])
+        self.assertTrue(get_response.context["success"])
+        self.assertTrue(get_response.context["preflight_only"])
 
     @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_successful_close(self) -> None:
+        tok = _token()
         with _patch_pr_details(_open_pr()), _patch_close(), _patch_post_actions() as mock_post:
-            response = self.client.post(_url(_token()))
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["success"])
+            response = self.client.post(_url(tok))
         mock_post.assert_called_once()
+        # Successful POST redirects (PRG).
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("closed=1", response["Location"])
+        with _patch_pr_details(_closed_pr()):
+            get_response = self.client.get(response["Location"])
+        self.assertTrue(get_response.context["success"])
+        self.assertFalse(get_response.context["preflight_only"])
 
     @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_github_close_error_shown_in_template(self) -> None:
@@ -157,6 +168,22 @@ class TestClosePRFormPost(TestCase):
         self.assertEqual(kwargs["pr_title"], "The Title")
 
     @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_refresh_repost_on_closed_pr_skips_mutations(self) -> None:
+        tok = _token()
+        with (
+            _patch_pr_details(_closed_pr()),
+            _patch_close() as mock_close,
+            _patch_post_comment() as mock_comment,
+            _patch_post_actions() as mock_post,
+        ):
+            response = self.client.post(_url(tok))
+        mock_comment.assert_not_called()
+        mock_close.assert_not_called()
+        mock_post.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["pr_is_open"])
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_expired_token_on_post_returns_403(self) -> None:
         with patch("zulip_bot.services.close_pr_links.time.time", return_value=1_700_000_000):
             tok = _token()
@@ -175,8 +202,7 @@ class TestClosePRFormPostWithMessage(TestCase):
             _patch_post_actions(),
         ):
             response = self.client.post(_url(_token()), data={"close_message": "Superseded by #1000."})
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.context["success"])
+        self.assertEqual(response.status_code, 302)
         mock_comment.assert_called_once()
         mock_close.assert_called_once()
 
@@ -204,7 +230,7 @@ class TestClosePRFormPostWithMessage(TestCase):
             _patch_post_actions(),
         ):
             response = self.client.post(_url(_token()), data={"close_message": ""})
-        self.assertTrue(response.context["success"])
+        self.assertEqual(response.status_code, 302)
         mock_comment.assert_not_called()
 
     def test_mutations_disabled_skips_comment_even_with_message(self) -> None:
@@ -215,8 +241,8 @@ class TestClosePRFormPostWithMessage(TestCase):
             _patch_post_actions(),
         ):
             response = self.client.post(_url(_token()), data={"close_message": "Some message."})
-        self.assertTrue(response.context["success"])
-        self.assertTrue(response.context["preflight_only"])
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("preflight=1", response["Location"])
         mock_comment.assert_not_called()
         mock_close.assert_not_called()
 

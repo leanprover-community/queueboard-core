@@ -405,9 +405,22 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         "presets": load_close_pr_presets(),
     }
 
+    # PRG: success redirect sets these params so the GET can show the right state.
+    if request.GET.get("closed") == "1":
+        context["success"] = True
+    elif request.GET.get("preflight") == "1":
+        context["success"] = True
+        context["preflight_only"] = True
+
     if request.method == "POST":
         close_message = request.POST.get("close_message", "").strip()
         context["close_message"] = close_message
+
+        # Guard against browser-refresh re-POST: if the PR is already closed, do nothing.
+        if not pr_is_open:
+            response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+            response["Cache-Control"] = "no-store"
+            return response
 
         if mutations_enabled:
             if close_message:
@@ -431,9 +444,13 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
                 response["Cache-Control"] = "no-store"
                 return response
 
-        context["success"] = True
-        context["preflight_only"] = not mutations_enabled
         _enqueue_close_pr_post_actions(claims=claims, pr_title=pr_title)
+
+        # PRG: redirect to GET so a browser refresh replays the safe GET, not this POST.
+        param = "preflight=1" if not mutations_enabled else "closed=1"
+        response = HttpResponseRedirect(f"{request.path}?{param}")
+        response["Cache-Control"] = "no-store"
+        return response
 
     response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
     response["Cache-Control"] = "no-store"
