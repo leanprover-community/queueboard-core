@@ -37,6 +37,10 @@ class LivePRDetails:
     title: str
     is_open: bool
     author_login: str
+    body: str | None = None
+    opened_at: str | None = None
+    updated_at: str | None = None
+    labels: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -238,7 +242,22 @@ def _fetch_pr_details(*, token: str, owner: str, repo: str, number: int) -> Live
     merged_at = payload.get("merged_at")
     is_open = state == "open" and not merged_at
     author_login = str((payload.get("user") or {}).get("login") or "").strip()
-    return LivePRDetails(title=title, is_open=is_open, author_login=author_login)
+    body = str(payload.get("body") or "").strip() or None
+    opened_at = str(payload.get("created_at") or "").strip() or None
+    updated_at = str(payload.get("updated_at") or "").strip() or None
+    raw_labels = payload.get("labels") if isinstance(payload.get("labels"), list) else []
+    labels: tuple[tuple[str, str], ...] = tuple(
+        (str(lbl.get("name", "")), str(lbl.get("color", ""))) for lbl in raw_labels if isinstance(lbl, dict) and lbl.get("name")
+    )
+    return LivePRDetails(
+        title=title,
+        is_open=is_open,
+        author_login=author_login,
+        body=body,
+        opened_at=opened_at,
+        updated_at=updated_at,
+        labels=labels,
+    )
 
 
 def _fetch_collaborator_permission(*, token: str, owner: str, repo: str, github_login: str) -> str:

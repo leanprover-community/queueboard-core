@@ -13,11 +13,41 @@
   <main class="page">
     <section class="hero">
       <h1>Close Pull Request</h1>
-      <p class="meta">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</p>
+      <p class="meta">
+        <a href="{{ pr_url }}" class="meta-link" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a>
+      </p>
       {% if pr_title %}
         <p class="meta">{{ pr_title }}</p>
       {% endif %}
     </section>
+
+    {% if pr_author_login or pr_opened_at or pr_labels or pr_body %}
+      <section class="card pr-info">
+        {% if pr_author_login or pr_opened_at or pr_updated_at %}
+          <div class="pr-meta-row">
+            {% if pr_author_login %}
+              <span>By <a href="https://github.com/{{ pr_author_login }}" target="_blank" rel="noopener noreferrer">@{{ pr_author_login }}</a></span>
+            {% endif %}
+            {% if pr_opened_at %}
+              <span>Opened {{ pr_opened_at }}</span>
+            {% endif %}
+            {% if pr_updated_at and pr_updated_at != pr_opened_at %}
+              <span>Updated {{ pr_updated_at }}</span>
+            {% endif %}
+          </div>
+        {% endif %}
+        {% if pr_labels %}
+          <div class="pr-labels">
+            {% for label in pr_labels %}
+              <span class="pr-label"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if pr_body %}
+          <div class="pr-body">{{ pr_body|truncatechars:1000 }}</div>
+        {% endif %}
+      </section>
+    {% endif %}
 
     {% if success %}
       <section class="card">
@@ -29,7 +59,7 @@
           </div>
         {% else %}
           <div class="callout">
-            Pull request <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong> has been closed.
+            Pull request <strong><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a></strong> has been closed.
             The close was attributed to the bot. A confirmation has been sent to you via Zulip DM.
           </div>
         {% endif %}
@@ -58,13 +88,13 @@
         {% endif %}
         <p>
           You are about to close pull request
-          <strong>{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</strong>{% if pr_title %}: <em>{{ pr_title }}</em>{% endif %}.
+          <strong><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a></strong>{% if pr_title %}: <em>{{ pr_title }}</em>{% endif %}.
         </p>
         <p>
           <strong>This action will be attributed to the bot, not your personal GitHub account.</strong>
           Closing a pull request is reversible (it can be re-opened), but please confirm you intend to proceed.
         </p>
-        <form method="post">
+        <form method="post" id="close-pr-form" data-exp-unix="{{ expires_at_unix }}" data-exp-iso="{{ expires_at_iso }}">
           {% csrf_token %}
           <div class="message-field">
             {% if presets %}
@@ -81,23 +111,17 @@
             <textarea id="close_message" name="close_message" class="message-textarea" rows="5"
               placeholder="Leave a message explaining why this PR is being closed…">{{ close_message }}</textarea>
           </div>
-          <button type="submit" class="cta">Close this pull request</button>
+          <button type="submit" class="cta" id="close-pr-submit">Close this pull request</button>
         </form>
       </section>
 
-      <section class="card">
-        <p class="expires">
-          This link expires at <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time>.
-        </p>
+      <section class="countdown" aria-live="polite">
+        <strong id="close-pr-countdown-label">Expires in:</strong>
+        <span id="close-pr-countdown-text">calculating…</span>
+        <span>Expires at: <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time></span>
       </section>
     {% endif %}
   </main>
-  <script>
-    document.querySelectorAll('.preset-btn').forEach(function(btn) {
-      btn.addEventListener('click', function() {
-        document.getElementById('close_message').value = btn.getAttribute('data-body');
-      });
-    });
-  </script>
+  <script type="module" src="{% static 'zulip_bot/close_pr_form.js' %}"></script>
 </body>
 </html>

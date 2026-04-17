@@ -379,14 +379,22 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     pr_title = pr_details.title if pr_details else None
     pr_is_open = pr_details.is_open if pr_details else True  # assume open if fetch fails; POST will verify
 
+    pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/pull/{claims.pr_number}"
     mutations_enabled = _close_pr_mutations_enabled()
     context: dict = {
         "pr_owner": claims.pr_owner,
         "pr_repo": claims.pr_repo,
         "pr_number": claims.pr_number,
+        "pr_url": pr_url,
         "pr_title": pr_title,
         "pr_is_open": pr_is_open,
+        "pr_author_login": pr_details.author_login if pr_details else None,
+        "pr_body": pr_details.body if pr_details else None,
+        "pr_opened_at": _fmt_date(pr_details.opened_at) if pr_details else None,
+        "pr_updated_at": _fmt_date(pr_details.updated_at) if pr_details else None,
+        "pr_labels": _label_badge_context(pr_details.labels) if pr_details else [],
         "expires_at_iso": expires_at_utc.isoformat(),
+        "expires_at_unix": claims.exp,
         "mutations_disabled": not mutations_enabled,
         "success": False,
         "preflight_only": False,
@@ -428,6 +436,39 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
     response["Cache-Control"] = "no-store"
     return response
+
+
+def _fmt_date(iso: str | None) -> str | None:
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
+    except ValueError:
+        return iso
+
+
+def _label_text_color(hex6: str) -> str:
+    try:
+        r, g, b = int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16)
+        return "#0f172a" if 0.299 * r + 0.587 * g + 0.114 * b > 160 else "#f8fafc"
+    except (ValueError, IndexError):
+        return "#0f172a"
+
+
+def _label_badge_context(labels: tuple) -> list[dict]:
+    result = []
+    for name, color in labels:
+        if not name:
+            continue
+        result.append(
+            {
+                "name": name,
+                "bg": f"#{color}" if color else None,
+                "text": _label_text_color(color) if color else "#0f172a",
+            }
+        )
+    return result
 
 
 def _close_pr_mutations_enabled() -> bool:
