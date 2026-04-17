@@ -20,7 +20,7 @@
 
     <section class="card pr-card">
       {% if pr_title %}
-        <h2 class="pr-title">{{ pr_title }}</h2>
+        <h2 class="pr-title"><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_title }}</a></h2>
       {% endif %}
       {% if pr_author_login or pr_opened_at or pr_updated_at %}
         <div class="pr-meta-row">
