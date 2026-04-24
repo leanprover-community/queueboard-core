@@ -619,7 +619,15 @@ def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     current_label_names = fetch_current_pr_label_names_from_db(
         owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number
     )
-    has_db_labels = bool(current_label_names)
+    # Check PR existence rather than label-set emptiness: a tracked PR with no labels
+    # applied is distinct from a plain issue that is not tracked in PRLabel at all.
+    from syncer.models import PullRequest as _PullRequest
+
+    has_db_labels = _PullRequest.objects.filter(
+        repository__owner=claims.pr_owner,
+        repository__name=claims.pr_repo,
+        number=claims.pr_number,
+    ).exists()
 
     pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/issues/{claims.pr_number}"
     mutations_enabled = _label_pr_mutations_enabled()

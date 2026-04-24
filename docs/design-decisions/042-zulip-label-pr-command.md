@@ -232,13 +232,20 @@ Example addition to `operation_app_map`:
   is a PR or plain issue. The form view determines this at render time by checking `PRLabel` in the
   DB. GitHub's URL redirect (browser-side) is irrelevant — the parser accepts both `/pull/NNN` and
   `/issues/NNN` and extracts the same tuple either way.
+- **`has_db_labels` checks `PullRequest` existence, not label-set emptiness**: A tracked PR with no
+  labels applied must not trigger the "current labels unavailable" notice — only plain issues absent
+  from the `PullRequest` table should. The view queries `PullRequest.objects.filter(...).exists()`
+  rather than `bool(current_label_names)` to make this distinction correctly.
+- **`label_pr_form.js` imports from `close_pr_form.js`**: The `formatTimestamp` helper is re-exported
+  from `close_pr_form.js` and imported by `label_pr_form.js` to avoid duplication. Both files also
+  import `getExpiryState`/`formatRemaining` from `prefs_form.js`.
 
 ## Implementation Plan
 
 ### Commit 1 (this doc)
 - Add `docs/design-decisions/042-zulip-label-pr-command.md`.
 
-### Commit 2: `label-pr` command, form, and shared template/CSS refactor
+### Commit 2: `label-pr` command, form, and shared template/CSS refactor ✓
 - New files:
   - `qb_site/zulip_bot/commands/label_pr.py`
   - `qb_site/zulip_bot/services/label_pr_links.py`
@@ -334,3 +341,6 @@ Example addition to `operation_app_map`:
 - 2026-04-24: Design doc written and revised: added issue URL support for `label-pr`, triage-role
   limitation note, shared template partial and CSS factoring plan, close-pr log label mention, and
   plain-issue DB caveat.
+- 2026-04-24: Commit 2 complete. Post-implementation notes added: `has_db_labels` must query
+  `PullRequest` existence (not label-set emptiness) to avoid false notices on label-free PRs;
+  `label_pr_form.js` imports `formatTimestamp` from `close_pr_form.js`.
