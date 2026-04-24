@@ -121,6 +121,12 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
   performed by the GitHub App. The invoker's personal GitHub identity is never exposed.
 - The collaborator permission endpoint returns `permission: "none"` for users with no access (not 404).
   `maintain` role maps to `permission: "write"` in this endpoint's response.
+- **Known limitation (triage role):** In org-owned repos, users with the GitHub `triage` role can
+  close PRs but the collaborator permission endpoint's `permission` field returns `"read"` for them
+  (it does not distinguish `triage` from plain read). As a result, triage users are currently denied
+  by `close-pr`. A future change could also inspect the `role_name` field in the API response to
+  grant access. This is a known limitation, not a correctness bug; the current check errs on the
+  side of caution.
 - If `check_close_pr_permission` can't obtain a GitHub App token (app not installed on repo, config
   missing), the command fails privately with a clear message — same behavior as assignment mutations.
 - The form token embeds `github_login` at issuance time. If the user's GitHub login changes between
