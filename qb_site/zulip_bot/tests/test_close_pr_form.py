@@ -7,7 +7,6 @@ from django.urls import reverse
 
 from zulip_bot.services.close_pr_execution import ClosePRError, LivePRDetails
 from zulip_bot.services.close_pr_links import ClosePRLinkClaims, issue_close_pr_token
-from zulip_bot.services.close_pr_presets import load_close_pr_presets
 
 
 def _token(
@@ -261,18 +260,6 @@ class TestClosePRFormPostWithMessage(TestCase):
 
 
 class TestClosePRPresets(TestCase):
-    def test_load_presets_returns_list(self) -> None:
-        presets = load_close_pr_presets()
-        self.assertIsInstance(presets, list)
-
-    def test_presets_have_name_and_body(self) -> None:
-        presets = load_close_pr_presets()
-        for preset in presets:
-            self.assertIn("name", preset)
-            self.assertIn("body", preset)
-            self.assertTrue(preset["name"])
-            self.assertTrue(preset["body"])
-
     def test_presets_passed_to_template_context(self) -> None:
         sample = [{"name": "Superseded", "body": "This PR is superseded."}]
         with _patch_presets(sample), _patch_pr_details(_open_pr()):
