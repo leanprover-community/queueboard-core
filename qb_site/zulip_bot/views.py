@@ -24,6 +24,7 @@ from zulip_bot.commands import assigned_prs as _assigned_prs  # noqa: F401
 from zulip_bot.commands import close_pr as _close_pr  # noqa: F401
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
+from zulip_bot.commands import label_pr as _label_pr  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.commands import register_test as _register_test  # noqa: F401
 from zulip_bot.commands import pr_info as _pr_info  # noqa: F401
@@ -37,6 +38,18 @@ from zulip_bot.services.close_pr_links import (
     ClosePRTokenExpired,
     ClosePRTokenInvalid,
     validate_close_pr_token,
+)
+from zulip_bot.services.label_pr_execution import (
+    LabelPRError,
+    fetch_issue_details_for_form,
+    fetch_repo_labels_from_db,
+    fetch_current_pr_label_names_from_db,
+    set_pr_labels,
+)
+from zulip_bot.services.label_pr_links import (
+    LabelPRTokenExpired,
+    LabelPRTokenInvalid,
+    validate_label_pr_token,
 )
 from zulip_bot.services.prefs_links import (
     PrefsLinkClaims,
@@ -501,9 +514,7 @@ def _close_pr_mutations_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _enqueue_close_pr_post_actions(
-    *, claims, pr_title: str | None, pr_author_login: str | None, close_message: str
-) -> None:
+def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, pr_author_login: str | None, close_message: str) -> None:
     from core.models import Repository, User
 
     pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
@@ -582,6 +593,194 @@ def _resolve_repo_log_target(*, owner: str, repo: str) -> dict | None:
         )
         return None
     return {"stream": stream, "topic": topic}
+
+
+def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
+    try:
+        claims = validate_label_pr_token(token)
+    except LabelPRTokenExpired:
+        return _label_pr_invalid_response(request, reason="expired")
+    except LabelPRTokenInvalid:
+        return _label_pr_invalid_response(request, reason="invalid")
+
+    from datetime import datetime, timezone as dt_timezone
+
+    expires_at_utc = datetime.fromtimestamp(claims.exp, tz=dt_timezone.utc)
+
+    issue_details = fetch_issue_details_for_form(
+        owner=claims.pr_owner,
+        repo=claims.pr_repo,
+        number=claims.pr_number,
+    )
+    pr_title = issue_details.title if issue_details else None
+    pr_is_open = issue_details.is_open if issue_details else True
+
+    repo_labels = fetch_repo_labels_from_db(owner=claims.pr_owner, repo=claims.pr_repo)
+    current_label_names = fetch_current_pr_label_names_from_db(
+        owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number
+    )
+    has_db_labels = bool(current_label_names)
+
+    pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/issues/{claims.pr_number}"
+    mutations_enabled = _label_pr_mutations_enabled()
+    context: dict = {
+        "pr_owner": claims.pr_owner,
+        "pr_repo": claims.pr_repo,
+        "pr_number": claims.pr_number,
+        "pr_url": pr_url,
+        "pr_title": pr_title,
+        "pr_is_open": pr_is_open,
+        "pr_author_login": issue_details.author_login if issue_details else None,
+        "pr_body": issue_details.body if issue_details else None,
+        "pr_opened_at": _fmt_date(issue_details.opened_at) if issue_details else None,
+        "pr_opened_at_iso": issue_details.opened_at if issue_details else None,
+        "pr_updated_at": _fmt_date(issue_details.updated_at) if issue_details else None,
+        "pr_updated_at_iso": issue_details.updated_at if issue_details else None,
+        "pr_labels": _label_badge_context(issue_details.labels) if issue_details else [],
+        "expires_at_iso": expires_at_utc.isoformat(),
+        "expires_at_unix": claims.exp,
+        "mutations_disabled": not mutations_enabled,
+        "success": False,
+        "preflight_only": False,
+        "label_error": None,
+        "available_labels": _available_label_context(repo_labels, current_label_names),
+        "has_db_labels": has_db_labels,
+    }
+
+    if request.GET.get("saved") == "1":
+        context["success"] = True
+    elif request.GET.get("preflight") == "1":
+        context["success"] = True
+        context["preflight_only"] = True
+
+    if request.method == "POST":
+        if not pr_is_open:
+            response = TemplateResponse(request, "zulip_bot/label_pr_form.html", context, status=200)
+            response["Cache-Control"] = "no-store"
+            return response
+
+        selected_labels = request.POST.getlist("selected_labels")
+
+        if mutations_enabled:
+            try:
+                set_pr_labels(
+                    owner=claims.pr_owner,
+                    repo=claims.pr_repo,
+                    number=claims.pr_number,
+                    label_names=selected_labels,
+                )
+            except LabelPRError as exc:
+                context["label_error"] = exc.message
+                response = TemplateResponse(request, "zulip_bot/label_pr_form.html", context, status=200)
+                response["Cache-Control"] = "no-store"
+                return response
+
+        _enqueue_label_pr_post_actions(claims=claims, pr_title=pr_title, selected_labels=selected_labels)
+
+        param = "preflight=1" if not mutations_enabled else "saved=1"
+        response = HttpResponseRedirect(f"{request.path}?{param}")
+        response["Cache-Control"] = "no-store"
+        return response
+
+    response = TemplateResponse(request, "zulip_bot/label_pr_form.html", context, status=200)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _label_pr_mutations_enabled() -> bool:
+    value = str(getattr(settings, "ZULIP_LABEL_PR_MUTATIONS_ENABLED", "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _available_label_context(label_defs: list, current_names: set[str]) -> list[dict]:
+    lower_current = {n.lower() for n in current_names}
+    result = []
+    for lbl in label_defs:
+        result.append(
+            {
+                "name": lbl.name,
+                "bg": f"#{lbl.color}" if lbl.color else None,
+                "text": _label_text_color(lbl.color) if lbl.color else "#0f172a",
+                "checked": lbl.name.lower() in lower_current,
+            }
+        )
+    return result
+
+
+def _enqueue_label_pr_post_actions(*, claims, pr_title: str | None, selected_labels: list[str]) -> None:
+    from core.models import Repository, User
+
+    pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
+    pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/issues/{claims.pr_number}"
+    pr_link = f"[{pr_ref}]({pr_url})"
+    title_part = f' ("{pr_title}")' if pr_title else ""
+    if selected_labels:
+        label_list = ", ".join(f"`{name}`" for name in sorted(selected_labels))
+        label_part = f" Labels set: {label_list}."
+    else:
+        label_part = " All labels removed."
+
+    # 1. Best-effort sync (PR only; skipped if not tracked in DB).
+    repository = Repository.objects.filter(owner=claims.pr_owner, name=claims.pr_repo).only("id").first()
+    if repository is not None:
+        try:
+            from syncer.models import PullRequest
+            from syncer.tasks.sync_tasks import sync_pr_task
+
+            if PullRequest.objects.filter(repository=repository, number=claims.pr_number).exists():
+                sync_pr_task.delay(repository.id, claims.pr_number)
+        except Exception:
+            logger.warning(
+                "label_pr_post_action_sync_enqueue_failed",
+                extra={"owner": claims.pr_owner, "repo": claims.pr_repo, "number": claims.pr_number},
+            )
+
+    # 2. Best-effort DM to invoker.
+    dm_content = f"Labels on {pr_link}{title_part} have been updated.{label_part}"
+    try:
+        ZulipClient().send_direct_message(to=[claims.zulip_user_id], content=dm_content)
+    except ZulipApiError:
+        logger.warning(
+            "label_pr_dm_failed",
+            extra={"zulip_user_id": claims.zulip_user_id, "pr_ref": pr_ref},
+        )
+
+    # 3. Best-effort log post.
+    log_target = _resolve_repo_log_target(owner=claims.pr_owner, repo=claims.pr_repo)
+    if log_target is not None:
+        from core.models import User
+
+        user = User.objects.filter(zulip_user_id=claims.zulip_user_id).only("zulip_full_name").first()
+        zulip_full_name = user.zulip_full_name if user and user.zulip_full_name else None
+        if zulip_full_name:
+            requester = f"@_**{zulip_full_name}|{claims.zulip_user_id}**"
+        else:
+            requester = f"`{claims.github_login}`"
+        now = datetime.now(dt_timezone.utc)
+        changed_at = f"{now.strftime('%b')} {now.day}, {now.year}, {now.strftime('%H:%M')} UTC"
+        log_content = f"Labels on {pr_link}{title_part} were updated by {requester} on {changed_at}.{label_part}"
+        try:
+            ZulipClient().send_stream_message(
+                stream=log_target["stream"],
+                topic=log_target["topic"],
+                content=log_content,
+            )
+        except ZulipApiError:
+            logger.warning(
+                "label_pr_log_post_failed",
+                extra={"owner": claims.pr_owner, "repo": claims.pr_repo, "pr_ref": pr_ref},
+            )
+
+
+def _label_pr_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
+    response = TemplateResponse(
+        request,
+        "zulip_bot/label_pr_invalid.html",
+        {"reason": reason},
+        status=403,
+    )
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 def _close_pr_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:

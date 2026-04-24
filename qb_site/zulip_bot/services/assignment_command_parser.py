@@ -8,6 +8,10 @@ GITHUB_PR_URL_RE = re.compile(
     r"https?://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>\d+)(?:[/?#][^\s]*)?",
     re.IGNORECASE,
 )
+GITHUB_ISSUE_OR_PR_URL_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/(?:pull|issues)/(?P<number>\d+)(?:[/?#][^\s]*)?",
+    re.IGNORECASE,
+)
 RAW_ZULIP_MENTION_RE = re.compile(r"@\*\*(?P<label>.+?)\*\*")
 RAW_ZULIP_SILENT_MENTION_RE = re.compile(r"@_\*\*(?P<label>.+?)\*\*")
 RAW_PR_LINKIFIER_TOKEN_RE = re.compile(r"(?:^|\s)(?:#\d+|[A-Za-z0-9_.-]+#\d+)(?=$|\s)")
@@ -176,6 +180,51 @@ def _extract_pr_refs(content: str) -> set[GitHubPullRequestRef]:
             )
         )
     return refs
+
+
+def _extract_issue_or_pr_refs(content: str) -> set[GitHubPullRequestRef]:
+    refs: set[GitHubPullRequestRef] = set()
+    for match in GITHUB_ISSUE_OR_PR_URL_RE.finditer(content):
+        refs.add(
+            GitHubPullRequestRef(
+                owner=match.group("owner"),
+                repo=match.group("repo"),
+                number=int(match.group("number")),
+            )
+        )
+    return refs
+
+
+def _parse_single_issue_or_pr_ref(*, args: str, rendered_content: str | None) -> GitHubPullRequestRef:
+    """Like _parse_single_pr_ref but also accepts issue URLs (/issues/NNN).
+
+    GitHub automatically redirects between /pull/ and /issues/ URLs in the browser,
+    so users may paste either form. The extracted (owner, repo, number) tuple is the
+    same either way; which kind of item it is is determined downstream via the API.
+    """
+    matches: set[GitHubPullRequestRef] = set()
+    matches.update(_extract_issue_or_pr_refs(args))
+    if rendered_content:
+        extractor = _RenderedContentExtractor()
+        extractor.feed(rendered_content)
+        for href in extractor.hrefs:
+            matches.update(_extract_issue_or_pr_refs(href))
+
+    if not matches:
+        raise AssignmentCommandParseError(
+            code="missing_pr",
+            message="No GitHub pull request or issue link found. Include exactly one PR or issue URL.",
+        )
+
+    if len(matches) > 1:
+        sorted_refs = sorted(matches, key=lambda r: (r.owner.lower(), r.repo.lower(), r.number))
+        refs = ", ".join(f"{ref.owner}/{ref.repo}#{ref.number}" for ref in sorted_refs)
+        raise AssignmentCommandParseError(
+            code="ambiguous_pr",
+            message=f"Found multiple PR/issue references: {refs}. Include only one.",
+        )
+
+    return next(iter(matches))
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,109 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard — edit labels</title>
+  <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/label_pr_form.css' %}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Edit Labels</h1>
+      <p class="meta">
+        <a href="{{ pr_url }}" class="meta-link" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a>
+      </p>
+    </section>
+
+    <section class="card pr-card">
+      {% include "zulip_bot/partials/_pr_card.html" %}
+    </section>
+
+    {% if success %}
+      <section class="card">
+        {% if preflight_only %}
+          <div class="callout">
+            Dry-run complete — labels were <strong>not</strong> changed
+            (<code>ZULIP_LABEL_PR_MUTATIONS_ENABLED</code> is not set).
+            Post-actions (sync enqueue, Zulip DM, log post) were triggered normally.
+          </div>
+        {% else %}
+          <div class="callout">
+            Labels on <strong><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_owner }}/{{ pr_repo }}#{{ pr_number }}</a></strong> have been updated.
+            The change was attributed to the bot. A confirmation has been sent to you via Zulip DM.
+          </div>
+        {% endif %}
+      </section>
+
+    {% elif not pr_is_open %}
+      <section class="card">
+        <div class="callout">
+          This issue/PR is already closed — labels cannot be edited on a closed issue/PR via this form.
+        </div>
+      </section>
+
+    {% else %}
+      <section class="card">
+        {% if label_error %}
+          <div class="status status-error" role="alert">
+            {{ label_error }}
+          </div>
+        {% endif %}
+        {% if mutations_disabled %}
+          <div class="callout">
+            <strong>Dry-run mode:</strong> <code>ZULIP_LABEL_PR_MUTATIONS_ENABLED</code> is not set.
+            Submitting will trigger all post-actions (sync enqueue, Zulip DM, log post) but will
+            <strong>not</strong> update labels.
+          </div>
+        {% endif %}
+        {% if not has_db_labels %}
+          <div class="status status-warn" role="note">
+            Current labels are not available in the database for this item. All repo labels are shown
+            below; any labels already on this issue/PR will remain unless explicitly included in your
+            selection.
+          </div>
+        {% endif %}
+        <p class="attribution-notice">
+          <strong>This action will be attributed to the bot, not your personal GitHub account.</strong>
+          The selected labels will <strong>replace</strong> all existing labels on this issue/PR.
+        </p>
+        <form method="post" id="label-pr-form" data-exp-unix="{{ expires_at_unix }}" data-exp-iso="{{ expires_at_iso }}">
+          {% csrf_token %}
+          <div class="label-picker">
+            <div class="label-picker-toolbar">
+              <span class="picker-count" id="label-picker-count"></span>
+              <button type="button" class="picker-action-btn" id="label-select-all">Select all</button>
+              <button type="button" class="picker-action-btn" id="label-clear-all">Clear all</button>
+            </div>
+            {% if available_labels %}
+              <ul class="label-list" role="list">
+                {% for label in available_labels %}
+                  <li class="label-list-item">
+                    <label class="label-checkbox-row">
+                      <input type="checkbox" name="selected_labels" value="{{ label.name }}"{% if label.checked %} checked{% endif %}>
+                      <span class="label-chip"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
+                    </label>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="picker-empty">No labels are defined for this repository yet.</p>
+            {% endif %}
+          </div>
+          <button type="submit" class="cta" id="label-pr-submit">Save labels</button>
+        </form>
+      </section>
+
+      <section class="countdown" aria-live="polite">
+        <strong id="label-pr-countdown-label">Expires in:</strong>
+        <span id="label-pr-countdown-text">calculating…</span>
+        <span>Expires at: <time datetime="{{ expires_at_iso }}">{{ expires_at_iso }}</time></span>
+      </section>
+    {% endif %}
+  </main>
+  <script type="module" src="{% static 'zulip_bot/label_pr_form.js' %}"></script>
+</body>
+</html>
