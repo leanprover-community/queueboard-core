@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
   <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
   <link rel="stylesheet" href="{% static 'zulip_bot/close_pr_form.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/label_pr_form.css' %}">
 </head>
 <body>
   <main class="page">
@@ -81,6 +82,21 @@
             <textarea id="close_message" name="close_message" class="message-textarea" rows="5"
               placeholder="Leave a message explaining why this PR is being closed…">{{ close_message }}</textarea>
           </div>
+          {% if available_labels %}
+          <div class="label-picker">
+            <p class="message-label">Add labels <span class="optional">(optional — added alongside closing, does not remove existing labels)</span></p>
+            <ul class="label-list">
+              {% for label in available_labels %}
+              <li class="label-list-item">
+                <label class="label-checkbox-row">
+                  <input type="checkbox" name="selected_labels" value="{{ label.name }}">
+                  <span class="label-chip" {% if label.bg %}style="background:{{ label.bg }};color:{{ label.text }};border-color:{{ label.bg }}"{% endif %}>{{ label.name }}</span>
+                </label>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
           <button type="submit" class="cta" id="close-pr-submit">Close this pull request</button>
         </form>
       </section>

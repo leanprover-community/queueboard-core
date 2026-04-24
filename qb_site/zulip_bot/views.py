@@ -32,7 +32,13 @@ from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
-from zulip_bot.services.close_pr_execution import ClosePRError, fetch_pr_details_for_form, close_pull_request, post_pr_comment
+from zulip_bot.services.close_pr_execution import (
+    add_pr_labels,
+    ClosePRError,
+    fetch_pr_details_for_form,
+    close_pull_request,
+    post_pr_comment,
+)
 from zulip_bot.services.close_pr_presets import load_close_pr_presets
 from zulip_bot.services.close_pr_links import (
     ClosePRTokenExpired,
@@ -394,6 +400,7 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
 
     pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/pull/{claims.pr_number}"
     mutations_enabled = _close_pr_mutations_enabled()
+    repo_labels = fetch_repo_labels_from_db(owner=claims.pr_owner, repo=claims.pr_repo)
     context: dict = {
         "pr_owner": claims.pr_owner,
         "pr_repo": claims.pr_repo,
@@ -416,6 +423,7 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         "close_error": None,
         "close_message": "",
         "presets": load_close_pr_presets(),
+        "available_labels": _available_label_context(repo_labels, set()),
     }
 
     # PRG: success redirect sets these params so the GET can show the right state.
@@ -427,6 +435,7 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
 
     if request.method == "POST":
         close_message = request.POST.get("close_message", "").strip()
+        selected_labels = request.POST.getlist("selected_labels")
         context["close_message"] = close_message
 
         # Guard against browser-refresh re-POST: if the PR is already closed, do nothing.
@@ -449,6 +458,19 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
                     response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
                     response["Cache-Control"] = "no-store"
                     return response
+            if selected_labels:
+                try:
+                    add_pr_labels(
+                        owner=claims.pr_owner,
+                        repo=claims.pr_repo,
+                        number=claims.pr_number,
+                        label_names=selected_labels,
+                    )
+                except ClosePRError as exc:
+                    context["close_error"] = f"Could not add labels: {exc.message}"
+                    response = TemplateResponse(request, "zulip_bot/close_pr_form.html", context, status=200)
+                    response["Cache-Control"] = "no-store"
+                    return response
             try:
                 close_pull_request(owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number)
             except ClosePRError as exc:
@@ -463,6 +485,7 @@ def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
             pr_title=pr_title,
             pr_author_login=pr_author_login,
             close_message=close_message,
+            selected_labels=selected_labels,
         )
 
         # PRG: redirect to GET so a browser refresh replays the safe GET, not this POST.
@@ -514,7 +537,9 @@ def _close_pr_mutations_enabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, pr_author_login: str | None, close_message: str) -> None:
+def _enqueue_close_pr_post_actions(
+    *, claims, pr_title: str | None, pr_author_login: str | None, close_message: str, selected_labels: list[str]
+) -> None:
     from core.models import Repository, User
 
     pr_ref = f"{claims.pr_owner}/{claims.pr_repo}#{claims.pr_number}"
@@ -522,6 +547,10 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, pr_author_lo
     pr_link = f"[{pr_ref}]({pr_url})"
     title_part = f' ("{pr_title}")' if pr_title else ""
     quote_block = f"\n```quote\n{close_message}\n```" if close_message else ""
+    labels_part = ""
+    if selected_labels:
+        label_list = ", ".join(f"`{lbl}`" for lbl in selected_labels)
+        labels_part = f"\nLabels added: {label_list}."
 
     # 1. Best-effort sync.
     repository = Repository.objects.filter(owner=claims.pr_owner, name=claims.pr_repo).only("id").first()
@@ -537,7 +566,7 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, pr_author_lo
             )
 
     # 2. Best-effort DM to invoker.
-    dm_content = f"Pull request {pr_link}{title_part} has been closed.{quote_block}"
+    dm_content = f"Pull request {pr_link}{title_part} has been closed.{labels_part}{quote_block}"
     try:
         ZulipClient().send_direct_message(to=[claims.zulip_user_id], content=dm_content)
     except ZulipApiError:
@@ -558,7 +587,7 @@ def _enqueue_close_pr_post_actions(*, claims, pr_title: str | None, pr_author_lo
         now = datetime.now(dt_timezone.utc)
         closed_at = f"{now.strftime('%b')} {now.day}, {now.year}, {now.strftime('%H:%M')} UTC"
         author_part = f" (author: [{pr_author_login}](https://github.com/{pr_author_login}))" if pr_author_login else ""
-        log_content = f"PR {pr_link}{title_part}{author_part} was closed by {requester} on {closed_at}.{quote_block}"
+        log_content = f"PR {pr_link}{title_part}{author_part} was closed by {requester} on {closed_at}.{labels_part}{quote_block}"
         try:
             ZulipClient().send_stream_message(
                 stream=log_target["stream"],
