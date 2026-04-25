@@ -6,8 +6,10 @@
   applies to label management: maintainers sometimes need to add or change labels on PRs as a moderation
   action, and should be able to do so without their personal GitHub identity being visible.
 - Label data is already synced into the database: `LabelDef` (per-repo label catalog) and `PRLabel`
-  (label-to-PR attachment). This makes it straightforward to populate a label picker from DB state
-  rather than hitting the GitHub API at form-render time.
+  (label-to-PR attachment). This makes it straightforward to populate the label *catalog* in the
+  picker from DB state. The *current* label set is read live from the GitHub API at form-render
+  time, since `set_pr_labels` uses `PUT` (full replacement) and a stale snapshot would risk
+  silently dropping labels that exist on GitHub.
 - Label mutations (`POST` or `PUT /repos/{owner}/{repo}/issues/{number}/labels`) require `Issues:
   Read and write`. This permission is already granted to the `queueboard-assignment` app (used by
   `close-pr` for posting PR comments). No new GitHub App or permission upgrade is needed.
@@ -22,14 +24,15 @@
   - Require explicit confirmation before any mutation (same secure-link + form pattern as `close-pr`).
   - Embed a label-picker in the `close-pr` form so users can optionally add labels when closing a PR
     (add-only, not full replacement).
-  - Read available labels from the database (`LabelDef`) rather than the GitHub API at form time.
+  - Read the available-label catalog from the database (`LabelDef`); read the *current* label set
+    live from GitHub at form-render time so that PUT-based replacement is safe.
   - Log label mutations to the per-repo Zulip log (`ZULIP_REPO_LOG`) alongside close-PR events.
 - Non-goals:
   - Removing labels via `close-pr` (the `label-pr` form supports full replacement, so removing by
     unchecking is covered, but `close-pr` label integration is add-only).
   - Creating or deleting label definitions (only applying existing ones).
-  - `label-pr` on issues where current label state is unavailable in DB: the form still works but
-    shows an empty pre-selection with a notice (see Subtleties).
+  - `label-pr` when the live GitHub fetch fails: the form refuses to render the picker, since
+    PUT replacement against unknown current state could drop labels (see Subtleties).
 
 ## Proposed Design
 
@@ -40,8 +43,9 @@
 - File: `qb_site/zulip_bot/commands/label_pr.py`
 - Response mode: `PRIVATE`
 - Supports both pull request URLs (`/pull/NNN`) and issue URLs (`/issues/NNN`). The GitHub API for
-  label mutations and permission checks works identically for both; the only difference is that the
-  DB-sourced current-label pre-selection is unavailable for plain issues (see Subtleties).
+  label mutations, permission checks, and the live `GET /issues/{number}` fetch (used for the
+  current label set) all work identically for PRs and plain issues, so the form behaves the same
+  for both.
 - Flow:
   1. Parse exactly one PR or issue URL (extend `_parse_single_pr_ref` logic from `close_pr.py` to
      also match `/issues/NNN` paths).
@@ -89,11 +93,10 @@
 - `fetch_repo_labels_from_db(owner, repo)` → `list[LabelDef]`
   - Reads `LabelDef.objects.filter(repository__owner=owner, repository__name=repo).order_by("name")`.
   - Returns DB-side label catalog for the repo; used to populate the form's checkbox list.
-- `fetch_current_pr_label_names_from_db(owner, repo, number)` → `set[str]`
-  - Reads `PRLabel` joins to get current labels on the PR from the DB. Used to pre-check boxes in
-    the form; not authoritative vs. live GitHub state, but acceptable for a short-lived form.
-  - Returns an empty set for plain issues (not tracked in `PRLabel`); the form shows an empty
-    pre-selection with a notice: "Current labels unavailable for issues — select all labels to apply."
+- The *current* label set on the issue/PR is read live from `LiveIssueDetails.labels` (returned
+  by `fetch_issue_details_for_form` above) and used to drive checkbox pre-selection. The DB
+  (`PRLabel`) is **not** consulted for current state, because it lags GitHub and is empty for
+  plain issues; using it as the source of truth for a `PUT` replacement risks silent label loss.
 - `set_pr_labels(owner, repo, number, label_names)` → None, raises `LabelPRError`
   - `PUT /repos/{owner}/{repo}/issues/{number}/labels` with the full desired set.
   - Uses `label_pr` operation token (`queueboard-assignment`).
@@ -103,12 +106,17 @@
 - URL: `label-pr/<str:token>/` → `views.label_pr_form`
 - View behavior:
   - Validate token; show `label_pr_invalid.html` (HTTP 403) on expiry/invalid.
-  - Fetch live issue/PR details (title, state) from GitHub to display in form.
-  - Fetch available labels from DB (`fetch_repo_labels_from_db`) and current label set from DB
-    (`fetch_current_pr_label_names_from_db`; empty with notice for plain issues).
-  - **GET**: render label-picker form (checkboxes, one per `LabelDef`, pre-checked for current labels).
-    If issue/PR is already closed, show informational message without submit button.
-  - **POST**: if `ZULIP_LABEL_PR_MUTATIONS_ENABLED` is off, show preflight-only message. Otherwise:
+  - Fetch live issue/PR details from GitHub (`fetch_issue_details_for_form`) for both the
+    metadata card and current label state. If the fetch fails, render an error card and refuse
+    to show the picker — a `PUT` replacement against unknown current state could drop labels.
+  - Fetch the available-label catalog from DB (`fetch_repo_labels_from_db`).
+  - Pre-check boxes whose name matches a label on `LiveIssueDetails.labels` (case-insensitive).
+    Any live label that is not in the `LabelDef` catalog is appended to the picker as an extra
+    pre-checked row, so the user can see it and PUT replacement does not silently drop it.
+  - **GET**: render label-picker form. If issue/PR is already closed, show informational
+    message without submit button. If the live fetch failed, show error card with no form.
+  - **POST**: refuse to mutate when the live fetch failed or the issue/PR is closed. Otherwise,
+    if `ZULIP_LABEL_PR_MUTATIONS_ENABLED` is off, show preflight-only message; else:
     1. Set labels via execution service (`PUT /repos/{owner}/{repo}/issues/{number}/labels`).
     2. Enqueue `sync_pr_task.delay(repository_id, pr_number)` best-effort (skipped for plain issues
        not tracked in the DB; logged at DEBUG).
@@ -120,8 +128,12 @@
 #### Template: `label_pr_form.html`
 - Extends a shared base template (see below) for common page structure and PR/issue metadata.
 - Label picker: a scrollable checkbox list showing all `LabelDef` entries for the repo, with label
-  color badges. Current labels are pre-checked. If no DB-sourced current labels exist (plain issue),
-  displays a notice. User can check/uncheck freely; submit sends the full desired set.
+  color badges. Boxes are pre-checked when the label name appears in the live label set returned
+  by `fetch_issue_details_for_form` (case-insensitive). Any live label not present in the catalog
+  is rendered as an additional pre-checked row at the bottom of the list. User can check/uncheck
+  freely; submit sends the full desired set.
+- If the live GitHub fetch failed, the form is replaced with an error card explaining that
+  labels cannot be edited safely without a confirmed current set; no submit button is shown.
 - "Select all" / "Clear all" convenience buttons (JavaScript, no server round-trip).
 - JavaScript warning before submitting with zero labels checked: "This will remove all labels."
 - Success and error states rendered inline (same template, conditional blocks).
@@ -195,24 +207,34 @@ Example addition to `operation_app_map`:
 ```
 
 ## Subtleties / Invariants
-- **DB vs. live labels**: Available labels are read from `LabelDef` (DB), not the GitHub API at
-  form-render time. This avoids an extra GitHub API call per form load. DB state may lag GitHub by
-  up to one sync cycle, but this is acceptable — if a label was just created on GitHub and hasn't
-  synced yet, it simply won't appear in the picker. Users can sync manually or wait.
+- **Catalog from DB, current state from live GitHub**: The picker's *catalog* (which labels exist
+  in the repo) is read from `LabelDef` to avoid an extra API call per form load — DB lag here is
+  benign, since a newly-created label simply won't appear in the picker until syncer runs. The
+  *current* label set on the issue/PR is read live from `GET /issues/{number}`, because
+  `set_pr_labels` uses `PUT` (full replacement) and a stale DB snapshot would silently drop labels
+  that exist on GitHub but haven't synced (or aren't tracked, e.g. plain issues).
+- **Live labels not in the catalog**: A label can exist on GitHub but be absent from `LabelDef`
+  (e.g. created on GitHub since the last sync, or never seen because the issue isn't a tracked PR).
+  Such labels are appended to the picker as extra pre-checked rows so the user can see them and
+  PUT replacement does not silently remove them. They render without a color badge since the
+  catalog row that would carry the color is missing.
+- **Live fetch failure refuses the form**: If `fetch_issue_details_for_form` returns `None`, the
+  view does not render the picker (and POST refuses to mutate). Without a confirmed current label
+  set, a `PUT` could replace unknown state — there is no safe default action.
 - **Full replacement vs. add-only**: `label-pr` uses `PUT` (full replacement), which is why the
   form pre-checks current labels. `close-pr` integration uses `POST` (add-only), since users aren't
   expected to manage the full label set while closing. Both approaches are safe with the GitHub API.
-- **Race conditions on label state**: Between token issuance and form submission, another user may
-  change labels. For `label-pr` (full replacement), the submitted set wins — expected for a label
-  management tool. For `close-pr` (add-only), new labels added by others are preserved.
+- **Race conditions on label state**: Between the form-render fetch and form submission, another
+  user may change labels. For `label-pr` (full replacement), the submitted set wins — expected for
+  a label management tool, and the TTL is short enough to bound the window. For `close-pr`
+  (add-only), new labels added by others are preserved.
 - **Empty selection in `label-pr`**: Submitting with zero boxes checked sends `PUT []`, removing all
   labels. The form warns via JavaScript before proceeding. This is intentional — `label-pr` is a
   full label editor.
-- **Plain issues vs. PRs**: `label-pr` accepts issue URLs in addition to PR URLs. The GitHub label
-  and permission APIs work identically for both. The only limitation is that `PRLabel` only tracks
-  PR labels, so `fetch_current_pr_label_names_from_db` returns an empty set for plain issues — the
-  form shows no pre-checked boxes and displays a notice. Available labels (from `LabelDef`) are
-  unaffected. Sync enqueue after mutation is skipped for plain issues (not tracked in DB).
+- **Plain issues vs. PRs**: `label-pr` accepts issue URLs in addition to PR URLs. The GitHub
+  `/issues/{number}` endpoint and label/permission APIs all work identically for both, so the form
+  behaves the same way. Sync enqueue after mutation is skipped for plain issues (not tracked in
+  the `PullRequest` table).
 - **Triage role limitation**: In org-owned repos, users with the GitHub `triage` role can apply
   labels and close issues/PRs, but the collaborator permission endpoint's `permission` field returns
   `"read"` for them (it does not distinguish `triage` from plain read). As a result, triage users
@@ -229,13 +251,9 @@ Example addition to `operation_app_map`:
   between token issuance and submission, the embedded login is used for attribution. Acceptable
   given the short TTL.
 - **No `kind` field in token**: The token stores `(owner, repo, number)` but not whether the item
-  is a PR or plain issue. The form view determines this at render time by checking `PRLabel` in the
-  DB. GitHub's URL redirect (browser-side) is irrelevant — the parser accepts both `/pull/NNN` and
-  `/issues/NNN` and extracts the same tuple either way.
-- **`has_db_labels` checks `PullRequest` existence, not label-set emptiness**: A tracked PR with no
-  labels applied must not trigger the "current labels unavailable" notice — only plain issues absent
-  from the `PullRequest` table should. The view queries `PullRequest.objects.filter(...).exists()`
-  rather than `bool(current_label_names)` to make this distinction correctly.
+  is a PR or plain issue. The form view does not need to distinguish — the live
+  `/issues/{number}` fetch and the `PUT /labels` endpoint work identically for both. The parser
+  accepts `/pull/NNN` and `/issues/NNN` interchangeably and extracts the same tuple.
 - **`label_pr_form.js` imports from `close_pr_form.js`**: The `formatTimestamp` helper is re-exported
   from `close_pr_form.js` and imported by `label_pr_form.js` to avoid duplication. Both files also
   import `getExpiryState`/`formatRemaining` from `prefs_form.js`.
@@ -279,15 +297,17 @@ Example addition to `operation_app_map`:
     denied for non-collaborator; issue/PR closed; token unavailable.
   - `fetch_repo_labels_from_db`: returns correct `LabelDef` list for known repo; empty list for
     unknown repo.
-  - `fetch_current_pr_label_names_from_db`: correct set for tracked PR; empty set for plain issue.
   - `set_pr_labels`: successful PUT; GitHub error; token unavailable.
   - `add_pr_labels` (close-pr integration): successful POST; GitHub error; empty selection no-ops.
   - Command handler (PR URL): no linked user; no GitHub login; not permitted; permitted; PR not open.
   - Command handler (issue URL): same cases; issue URL parsing works alongside PR URL parsing.
-  - `label_pr_form` view (GET): valid open PR (labels pre-checked); valid open issue (empty
-    pre-selection + notice); already-closed; expired token; invalid token.
+  - `label_pr_form` view (GET): valid open PR (live labels pre-checked); valid open issue (live
+    labels pre-checked); live labels outside the `LabelDef` catalog rendered as extra rows;
+    case-insensitive name matching; already-closed; live fetch failure (error card, no form);
+    expired token; invalid token.
   - `label_pr_form` view (POST): successful label set with sync + DM + log; mutations disabled
-    preflight; GitHub error on set; empty selection (proceeds after JS warning).
+    preflight; GitHub error on set; empty selection (proceeds after JS warning); live fetch
+    failure refuses to mutate.
   - `close_pr_form` view (POST with labels): label add succeeds before close; label add fails
     (inline error, no close); no labels selected (close proceeds normally).
   - Log message content: close without labels includes no label mention; close with labels includes
@@ -299,7 +319,7 @@ Example addition to `operation_app_map`:
   - Verify `POST /repos/{owner}/{repo}/issues/{number}/labels` with the `close_pr` token succeeds.
   - End-to-end `label-pr` on a PR: issue command → receive link → open form → adjust labels →
     submit → labels updated on GitHub → DB sync enqueued → DM received → log thread updated.
-  - End-to-end `label-pr` on a plain issue: empty pre-selection notice shown; submit updates labels.
+  - End-to-end `label-pr` on a plain issue: live labels pre-checked from GitHub; submit updates labels.
   - End-to-end `close-pr` with labels: receive link → open form → select labels + optional message
     → submit → labels added, PR closed → DM and log include label mention.
   - Issue `label-pr` as read-only collaborator → receive private "permission denied" message.
@@ -330,7 +350,7 @@ Example addition to `operation_app_map`:
 - [ ] `PUT /repos/{owner}/{repo}/issues/{number}/labels` succeeds with `queueboard-assignment` token.
 - [ ] `POST /repos/{owner}/{repo}/issues/{number}/labels` succeeds with `queueboard-assignment` token.
 - [ ] End-to-end `label-pr` on a PR (command → link → form → adjust labels → submit → labels updated).
-- [ ] End-to-end `label-pr` on a plain issue (empty pre-selection notice shown; submit works).
+- [ ] End-to-end `label-pr` on a plain issue (live labels pre-checked from GitHub; submit works).
 - [ ] End-to-end `close-pr` with label selection (select labels → submit → labels added + PR closed;
       log and DM include label mention).
 - [ ] Non-write-access user receives permission denied message for `label-pr`.
@@ -341,10 +361,16 @@ Example addition to `operation_app_map`:
 - 2026-04-24: Design doc written and revised: added issue URL support for `label-pr`, triage-role
   limitation note, shared template partial and CSS factoring plan, close-pr log label mention, and
   plain-issue DB caveat.
-- 2026-04-24: Commit 2 complete. Post-implementation notes added: `has_db_labels` must query
-  `PullRequest` existence (not label-set emptiness) to avoid false notices on label-free PRs;
-  `label_pr_form.js` imports `formatTimestamp` from `close_pr_form.js`.
+- 2026-04-24: Commit 2 complete. Post-implementation note: `label_pr_form.js` imports
+  `formatTimestamp` from `close_pr_form.js`.
 - 2026-04-24: Commit 3 complete. `close_pr_form.html` loads `label_pr_form.css` for shared picker
   styles. `ZULIP_LABEL_PR_MUTATIONS_ENABLED` env var wiring was found missing from `base.py` and
   fixed (settings must always be declared in both `base.py` and `.env.example`). Label picker is
   hidden when no `LabelDef` rows exist for the repo (syncer must have run).
+- 2026-04-24: Switched current-label pre-selection from DB (`PRLabel`) to live GitHub state
+  (`LiveIssueDetails.labels`). Original DB-based design caused silent data loss on plain issues
+  (DB always empty) and on tracked PRs whenever syncer lagged: PUT replacement against a stale
+  empty/partial set would drop labels that exist on GitHub. Side effects: removed
+  `fetch_current_pr_label_names_from_db` and the `has_db_labels` `PullRequest`-existence check;
+  live labels not in `LabelDef` are now appended to the picker as extra pre-checked rows; live
+  fetch failure now refuses to render the form (no safe default for a PUT against unknown state).

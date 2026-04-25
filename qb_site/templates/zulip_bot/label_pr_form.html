@@ -38,6 +38,15 @@
         {% endif %}
       </section>
 
+    {% elif not pr_details_available %}
+      <section class="card">
+        <div class="status status-error" role="alert">
+          Could not fetch the current state of this issue/PR from GitHub. Labels cannot be edited
+          safely without knowing the existing label set, since saving replaces all labels. Please
+          try again in a moment.
+        </div>
+      </section>
+
     {% elif not pr_is_open %}
       <section class="card">
         <div class="callout">
@@ -59,16 +68,10 @@
             <strong>not</strong> update labels.
           </div>
         {% endif %}
-        {% if not has_db_labels %}
-          <div class="status status-warn" role="note">
-            Current labels are not available in the database for this item. All repo labels are shown
-            below; any labels already on this issue/PR will remain unless explicitly included in your
-            selection.
-          </div>
-        {% endif %}
         <p class="attribution-notice">
           <strong>This action will be attributed to the bot, not your personal GitHub account.</strong>
-          The selected labels will <strong>replace</strong> all existing labels on this issue/PR.
+          The selected labels will <strong>replace</strong> all existing labels on this issue/PR —
+          unchecking a box removes that label.
         </p>
         <form method="post" id="label-pr-form" data-exp-unix="{{ expires_at_unix }}" data-exp-iso="{{ expires_at_iso }}">
           {% csrf_token %}

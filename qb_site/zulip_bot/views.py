@@ -49,7 +49,6 @@ from zulip_bot.services.label_pr_execution import (
     LabelPRError,
     fetch_issue_details_for_form,
     fetch_repo_labels_from_db,
-    fetch_current_pr_label_names_from_db,
     set_pr_labels,
 )
 from zulip_bot.services.label_pr_links import (
@@ -645,18 +644,11 @@ def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     pr_is_open = issue_details.is_open if issue_details else True
 
     repo_labels = fetch_repo_labels_from_db(owner=claims.pr_owner, repo=claims.pr_repo)
-    current_label_names = fetch_current_pr_label_names_from_db(
-        owner=claims.pr_owner, repo=claims.pr_repo, number=claims.pr_number
-    )
-    # Check PR existence rather than label-set emptiness: a tracked PR with no labels
-    # applied is distinct from a plain issue that is not tracked in PRLabel at all.
-    from syncer.models import PullRequest as _PullRequest
-
-    has_db_labels = _PullRequest.objects.filter(
-        repository__owner=claims.pr_owner,
-        repository__name=claims.pr_repo,
-        number=claims.pr_number,
-    ).exists()
+    # Use the live label set from GitHub as the source of truth for pre-selection.
+    # The DB (PRLabel) lags and is empty for plain issues, but `set_pr_labels` uses
+    # PUT which replaces the full set — pre-checking from a stale source would
+    # silently drop labels that exist on GitHub.
+    current_label_names: set[str] = {name for name, _ in issue_details.labels if name} if issue_details else set()
 
     pr_url = f"https://github.com/{claims.pr_owner}/{claims.pr_repo}/issues/{claims.pr_number}"
     mutations_enabled = _label_pr_mutations_enabled()
@@ -667,6 +659,7 @@ def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         "pr_url": pr_url,
         "pr_title": pr_title,
         "pr_is_open": pr_is_open,
+        "pr_details_available": issue_details is not None,
         "pr_author_login": issue_details.author_login if issue_details else None,
         "pr_body": issue_details.body if issue_details else None,
         "pr_opened_at": _fmt_date(issue_details.opened_at) if issue_details else None,
@@ -681,7 +674,6 @@ def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         "preflight_only": False,
         "label_error": None,
         "available_labels": _available_label_context(repo_labels, current_label_names),
-        "has_db_labels": has_db_labels,
     }
 
     if request.GET.get("saved") == "1":
@@ -691,7 +683,9 @@ def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
         context["preflight_only"] = True
 
     if request.method == "POST":
-        if not pr_is_open:
+        # Refuse to mutate when we don't have a confirmed current label set:
+        # a PUT replacement against unknown state could silently drop labels.
+        if issue_details is None or not pr_is_open:
             response = TemplateResponse(request, "zulip_bot/label_pr_form.html", context, status=200)
             response["Cache-Control"] = "no-store"
             return response
@@ -730,7 +724,8 @@ def _label_pr_mutations_enabled() -> bool:
 
 
 def _available_label_context(label_defs: list, current_names: set[str]) -> list[dict]:
-    lower_current = {n.lower() for n in current_names}
+    lower_current = {n.lower() for n in current_names if n}
+    catalog_lower = {lbl.name.lower() for lbl in label_defs}
     result = []
     for lbl in label_defs:
         result.append(
@@ -739,6 +734,19 @@ def _available_label_context(label_defs: list, current_names: set[str]) -> list[
                 "bg": f"#{lbl.color}" if lbl.color else None,
                 "text": _label_text_color(lbl.color) if lbl.color else "#0f172a",
                 "checked": lbl.name.lower() in lower_current,
+            }
+        )
+    # Live labels that aren't in the repo's LabelDef catalog must still be rendered
+    # (and pre-checked) so the user can see them and PUT replacement doesn't silently
+    # drop them. Sorted for stable ordering after the catalog rows.
+    extras = sorted(name for name in current_names if name and name.lower() not in catalog_lower)
+    for name in extras:
+        result.append(
+            {
+                "name": name,
+                "bg": None,
+                "text": "#0f172a",
+                "checked": True,
             }
         )
     return result

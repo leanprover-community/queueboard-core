@@ -105,22 +105,6 @@ def fetch_repo_labels_from_db(*, owner: str, repo: str) -> list:
     )
 
 
-def fetch_current_pr_label_names_from_db(*, owner: str, repo: str, number: int) -> set[str]:
-    """Return the set of label names currently on the PR in the DB.
-
-    Returns an empty set for plain issues (not tracked in PRLabel).
-    """
-    from syncer.models import PRLabel
-
-    return set(
-        PRLabel.objects.filter(
-            pull_request__repository__owner=owner,
-            pull_request__repository__name=repo,
-            pull_request__number=number,
-        ).values_list("label_def__name", flat=True)
-    )
-
-
 def set_pr_labels(*, owner: str, repo: str, number: int, label_names: list[str]) -> None:
     """Replace all labels on an issue/PR with the given set.
 
