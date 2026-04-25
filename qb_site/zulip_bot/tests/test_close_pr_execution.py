@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 from zulip_bot.services.close_pr_execution import (
     ClosePRError,
     PermissionOutcome,
+    add_pr_labels,
     check_close_pr_permission,
     close_pull_request,
 )
@@ -235,4 +236,53 @@ class TestClosePullRequest(SimpleTestCase):
         with self._patch_token(), self._patch_patch(response):
             with self.assertRaises(ClosePRError) as cm:
                 close_pull_request(owner="leanprover-community", repo="mathlib4", number=1)
+        self.assertEqual(cm.exception.code, "github_transient")
+
+
+class TestAddPRLabels(SimpleTestCase):
+    def _patch_token(self, token: str | None = "test-token"):
+        return patch(
+            "zulip_bot.services.close_pr_execution.resolve_github_app_operation_token",
+            return_value=token,
+        )
+
+    def _patch_post(self, response):
+        return patch("zulip_bot.services.close_pr_execution.requests.post", return_value=response)
+
+    def test_empty_selection_no_ops(self) -> None:
+        with self._patch_token(), patch("zulip_bot.services.close_pr_execution.requests.post") as mock_post:
+            add_pr_labels(owner="leanprover-community", repo="mathlib4", number=1, label_names=[])
+        mock_post.assert_not_called()
+
+    def test_success(self) -> None:
+        response = _make_response(status_code=200, json_data=[])
+        with self._patch_token(), self._patch_post(response):
+            add_pr_labels(owner="leanprover-community", repo="mathlib4", number=1, label_names=["bug"])
+
+    def test_token_unavailable(self) -> None:
+        with self._patch_token(None):
+            with self.assertRaises(ClosePRError) as cm:
+                add_pr_labels(owner="leanprover-community", repo="mathlib4", number=1, label_names=["bug"])
+        self.assertEqual(cm.exception.code, "token_unavailable")
+
+    def test_permission_denied(self) -> None:
+        response = _make_response(status_code=403)
+        with self._patch_token(), self._patch_post(response):
+            with self.assertRaises(ClosePRError) as cm:
+                add_pr_labels(owner="leanprover-community", repo="mathlib4", number=1, label_names=["bug"])
+        self.assertEqual(cm.exception.code, "permission_denied")
+
+    def test_validation_failed(self) -> None:
+        # 422: label name not found in the repo.
+        response = _make_response(status_code=422, json_data={"message": "Validation Failed"})
+        with self._patch_token(), self._patch_post(response):
+            with self.assertRaises(ClosePRError) as cm:
+                add_pr_labels(owner="leanprover-community", repo="mathlib4", number=1, label_names=["no-such-label"])
+        self.assertEqual(cm.exception.code, "validation_failed")
+
+    def test_github_transient_error(self) -> None:
+        response = _make_response(status_code=503)
+        with self._patch_token(), self._patch_post(response):
+            with self.assertRaises(ClosePRError) as cm:
+                add_pr_labels(owner="leanprover-community", repo="mathlib4", number=1, label_names=["bug"])
         self.assertEqual(cm.exception.code, "github_transient")

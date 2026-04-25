@@ -60,6 +60,12 @@ def _patch_post_actions():
     return patch("zulip_bot.views._enqueue_close_pr_post_actions")
 
 
+def _patch_add_labels(*, raises: ClosePRError | None = None):
+    if raises:
+        return patch("zulip_bot.views.add_pr_labels", side_effect=raises)
+    return patch("zulip_bot.views.add_pr_labels")
+
+
 def _patch_presets(presets=None):
     return patch("zulip_bot.views.load_close_pr_presets", return_value=presets or [])
 
@@ -310,3 +316,63 @@ class TestRepoLogResolution(TestCase):
 
         result = _resolve_repo_log_target(owner="leanprover-community", repo="mathlib4")
         self.assertIsNone(result)
+
+
+class TestClosePRFormWithLabels(TestCase):
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_selected_labels_passed_to_add_pr_labels(self) -> None:
+        tok = _token(pr_number=42)
+        with _patch_pr_details(_open_pr()), _patch_add_labels() as mock_add, _patch_close(), _patch_post_actions():
+            self.client.post(_url(tok), data={"selected_labels": ["stale", "wont-fix"]})
+        mock_add.assert_called_once_with(
+            owner="leanprover-community",
+            repo="mathlib4",
+            number=42,
+            label_names=["stale", "wont-fix"],
+        )
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_label_error_shown_and_close_skipped(self) -> None:
+        # If label addition fails, the error is surfaced and the PR is not closed.
+        error = ClosePRError(code="validation_failed", message="GitHub rejected the label request.")
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_add_labels(raises=error),
+            _patch_close() as mock_close,
+            _patch_post_actions(),
+        ):
+            response = self.client.post(_url(_token()), data={"selected_labels": ["no-such-label"]})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["success"])
+        self.assertIn("Could not add labels", response.context["close_error"] or "")
+        mock_close.assert_not_called()
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_no_labels_skips_add_pr_labels(self) -> None:
+        with _patch_pr_details(_open_pr()), _patch_add_labels() as mock_add, _patch_close(), _patch_post_actions():
+            self.client.post(_url(_token()))
+        mock_add.assert_not_called()
+
+    @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
+    def test_post_actions_receive_selected_labels(self) -> None:
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_add_labels(),
+            _patch_close(),
+            _patch_post_actions() as mock_post,
+        ):
+            self.client.post(_url(_token()), data={"selected_labels": ["stale"]})
+        self.assertEqual(mock_post.call_args.kwargs["selected_labels"], ["stale"])
+
+    def test_mutations_disabled_passes_labels_to_post_actions(self) -> None:
+        # Even in preflight mode, selected labels should be forwarded to post-actions for logging.
+        with (
+            _patch_pr_details(_open_pr()),
+            _patch_add_labels() as mock_add,
+            _patch_close() as mock_close,
+            _patch_post_actions() as mock_post,
+        ):
+            self.client.post(_url(_token()), data={"selected_labels": ["stale"]})
+        mock_add.assert_not_called()
+        mock_close.assert_not_called()
+        self.assertEqual(mock_post.call_args.kwargs["selected_labels"], ["stale"])
