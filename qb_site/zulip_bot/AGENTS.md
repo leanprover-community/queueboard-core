@@ -23,7 +23,7 @@ cd qb_site/zulip_bot/frontend && npm test
   - parse: `assignment_command_parser.py`,
   - validate: `assignment_validation.py`,
   - preflight/mutation orchestration: `assignment_execution.py` + `assignment_preflight.py`.
-- `close-pr` command: checks GitHub permission at command time, then issues a short-lived private link to a confirmation form. Services: `close_pr_links.py` (token), `close_pr_execution.py` (permission check + GitHub mutation). Feature flag: `ZULIP_CLOSE_PR_MUTATIONS_ENABLED`. Uses operation `close_pr` via the GitHub App token system.
+- `close-pr` command: checks GitHub permission at command time, then issues a short-lived private link to a confirmation form. Services: `close_pr_links.py` (token), `close_pr_execution.py` (permission check + `close_pull_request` + `add_pr_labels` + `post_pr_comment`). Feature flag: `ZULIP_CLOSE_PR_MUTATIONS_ENABLED`. Uses operation `close_pr` via the GitHub App token system. The confirmation form includes an optional add-only label picker (checkboxes from `LabelDef` DB, none pre-checked); selected labels are POSTed to GitHub before closing and mentioned in the DM/log.
 - `label-pr` command: same secure-link pattern as `close-pr`. Accepts both `/pull/NNN` and `/issues/NNN` URLs. Requires write/admin collaborator access (no author exception). Services: `label_pr_links.py` (token), `label_pr_execution.py` (permission check + `PUT /issues/{number}/labels`). Feature flag: `ZULIP_LABEL_PR_MUTATIONS_ENABLED`. Uses operation `label_pr` (mapped to `queueboard-assignment`). Current label pre-selection comes from `PRLabel` DB; empty for plain issues (notice shown). URL parsing for both PR and issue URLs is in `assignment_command_parser._parse_single_issue_or_pr_ref`.
 - Keep user-facing command responses explicit and safe for partial failures.
 - Prefer private failure responses for sensitive mutation/policy errors.
@@ -35,7 +35,7 @@ cd qb_site/zulip_bot/frontend && npm test
 
 ## Per-Repo Zulip Log
 - `ZULIP_REPO_LOG` is a JSON setting mapping `"owner/repo"` to `{"stream": "...", "topic": "..."}`.
-- Used by `close-pr` (and intended for future operations) to post an audit log entry after a mutation.
+- Used by both `close-pr` and `label-pr` to post an audit log entry after a mutation.
 - If a repo has no entry, the log post is skipped and a WARNING is emitted.
 
 ## Registration and Preferences

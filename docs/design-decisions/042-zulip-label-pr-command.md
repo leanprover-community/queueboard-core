@@ -264,7 +264,7 @@ Example addition to `operation_app_map`:
   - `qb_site/zulip_bot/AGENTS.md` / `CLAUDE.md` — document new command and settings
   - `docs/github_app_setup.md` — document `label_pr` operation mapping
 
-### Commit 3: Label picker in `close-pr` form
+### Commit 3: Label picker in `close-pr` form ✓
 - Modified files:
   - `qb_site/zulip_bot/services/close_pr_execution.py` — add `add_pr_labels` helper
   - `qb_site/zulip_bot/views.py` — extend `close_pr_form` to load labels from DB and handle
@@ -344,3 +344,7 @@ Example addition to `operation_app_map`:
 - 2026-04-24: Commit 2 complete. Post-implementation notes added: `has_db_labels` must query
   `PullRequest` existence (not label-set emptiness) to avoid false notices on label-free PRs;
   `label_pr_form.js` imports `formatTimestamp` from `close_pr_form.js`.
+- 2026-04-24: Commit 3 complete. `close_pr_form.html` loads `label_pr_form.css` for shared picker
+  styles. `ZULIP_LABEL_PR_MUTATIONS_ENABLED` env var wiring was found missing from `base.py` and
+  fixed (settings must always be declared in both `base.py` and `.env.example`). Label picker is
+  hidden when no `LabelDef` rows exist for the repo (syncer must have run).
