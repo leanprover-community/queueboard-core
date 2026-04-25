@@ -80,6 +80,28 @@
   border: 1px solid transparent;
 }
 
+.label-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-family: inherit;
+  margin-bottom: 6px;
+}
+
+.label-filter-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.label-filter-input::placeholder {
+  color: var(--muted);
+}
+
 .picker-empty {
   padding: 16px;
   color: var(--muted);

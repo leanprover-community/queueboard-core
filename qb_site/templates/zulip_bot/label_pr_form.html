@@ -79,6 +79,7 @@
               <button type="button" class="picker-action-btn" id="label-clear-all">Clear all</button>
             </div>
             {% if available_labels %}
+              <input type="text" class="label-filter-input" id="label-filter-input" placeholder="Filter labels…" autocomplete="off">
               <ul class="label-list" role="list">
                 {% for label in available_labels %}
                   <li class="label-list-item">

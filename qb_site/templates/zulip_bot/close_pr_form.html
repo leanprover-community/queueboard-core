@@ -85,6 +85,7 @@
           {% if available_labels %}
           <div class="label-picker">
             <p class="message-label">Add labels <span class="optional">(optional — added alongside closing, does not remove existing labels)</span></p>
+            <input type="text" class="label-filter-input" id="label-filter-input" placeholder="Filter labels…" autocomplete="off">
             <ul class="label-list">
               {% for label in available_labels %}
               <li class="label-list-item">

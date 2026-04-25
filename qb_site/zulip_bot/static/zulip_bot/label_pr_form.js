@@ -35,6 +35,17 @@ export function mountLabelPrForm(root = document) {
     });
   }
 
+  const filterInput = root.getElementById("label-filter-input");
+  if (filterInput) {
+    filterInput.addEventListener("input", () => {
+      const q = filterInput.value.trim().toLowerCase();
+      for (const item of root.querySelectorAll(".label-list-item")) {
+        const name = (item.querySelector(".label-chip")?.textContent ?? "").toLowerCase();
+        item.hidden = q.length > 0 && !name.includes(q);
+      }
+    });
+  }
+
   const selectAll = root.getElementById("label-select-all");
   const clearAll = root.getElementById("label-clear-all");
   if (selectAll) {
