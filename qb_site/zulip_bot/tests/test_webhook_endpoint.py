@@ -129,9 +129,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     )
     def test_dm_with_leading_bot_mention_strips_mention_and_executes(self) -> None:
         """A DM that starts with @**botname** should have the mention stripped before parsing."""
-        result = self._post_payload(
-            self._payload(content="@**qb-bot** echo hello", message_type="private")
-        )
+        result = self._post_payload(self._payload(content="@**qb-bot** echo hello", message_type="private"))
         self.assertEqual(result["status"], 200)
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn("hello", result["json"]["content"])
@@ -143,9 +141,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     )
     def test_dm_without_mention_still_executes(self) -> None:
         """DMs without a leading mention continue to work as before."""
-        result = self._post_payload(
-            self._payload(content="echo hello", message_type="private")
-        )
+        result = self._post_payload(self._payload(content="echo hello", message_type="private"))
         self.assertEqual(result["status"], 200)
         self.assertEqual(result["json"]["type"], "private")
         self.assertIn("hello", result["json"]["content"])
@@ -157,9 +153,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     )
     def test_dm_with_non_leading_mention_is_not_stripped(self) -> None:
         """A mid-message mention of the bot in a DM is not stripped; the first word becomes the command."""
-        result = self._post_payload(
-            self._payload(content="echo @**qb-bot** hello", message_type="private")
-        )
+        result = self._post_payload(self._payload(content="echo @**qb-bot** hello", message_type="private"))
         self.assertEqual(result["status"], 200)
         # echo command receives "@**qb-bot** hello" as args; the mention is preserved
         self.assertIn("@**qb-bot** hello", result["json"]["content"])

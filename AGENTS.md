@@ -48,6 +48,7 @@ Notes
 - Copy `.env.example` to `.env` for local Django work; supply database credentials, GitHub tokens, and task runner settings as described in `docs/django_backend_plan.md`.
 - Run the stack through `docker compose` against PostgreSQL; we no longer support SQLite fallbacks for quick tests.
 - Keep secrets out of version control—store them in the `.env` file or your chosen secret manager.
+- **When adding a new Django setting backed by an env var**: always add it in both `qb_site/qb_site/settings/base.py` (as `FOO = os.getenv("FOO", ...)`) *and* `.env.example` (with a comment). Omitting either means the setting silently has no effect in production or is undiscoverable for new deployments.
 
 ## Containers & Volumes
 - Code is bind-mounted read-only into containers (`.:/app:ro`) to avoid writes into the repo from inside Docker.

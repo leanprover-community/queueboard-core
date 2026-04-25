@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
   <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
   <link rel="stylesheet" href="{% static 'zulip_bot/close_pr_form.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/label_pr_form.css' %}">
 </head>
 <body>
   <main class="page">
@@ -19,32 +20,7 @@
     </section>
 
     <section class="card pr-card">
-      {% if pr_title %}
-        <h2 class="pr-title"><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_title }}</a></h2>
-      {% endif %}
-      {% if pr_author_login or pr_opened_at or pr_updated_at %}
-        <div class="pr-meta-row">
-          {% if pr_author_login %}
-            <span>By <a href="https://github.com/{{ pr_author_login }}" target="_blank" rel="noopener noreferrer">@{{ pr_author_login }}</a></span>
-          {% endif %}
-          {% if pr_opened_at %}
-            <span>Opened <time class="ts" data-iso="{{ pr_opened_at_iso }}">{{ pr_opened_at }}</time></span>
-          {% endif %}
-          {% if pr_updated_at %}
-            <span>Updated <time class="ts" data-iso="{{ pr_updated_at_iso }}">{{ pr_updated_at }}</time></span>
-          {% endif %}
-        </div>
-      {% endif %}
-      {% if pr_labels %}
-        <div class="pr-labels">
-          {% for label in pr_labels %}
-            <span class="pr-label"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
-          {% endfor %}
-        </div>
-      {% endif %}
-      {% if pr_body %}
-        <div class="pr-body">{{ pr_body }}</div>
-      {% endif %}
+      {% include "zulip_bot/partials/_pr_card.html" %}
     </section>
 
     {% if success %}
@@ -106,6 +82,22 @@
             <textarea id="close_message" name="close_message" class="message-textarea" rows="5"
               placeholder="Leave a message explaining why this PR is being closed…">{{ close_message }}</textarea>
           </div>
+          {% if available_labels %}
+          <div class="label-picker">
+            <p class="message-label">Add labels <span class="optional">(optional — added alongside closing, does not remove existing labels)</span></p>
+            <input type="text" class="label-filter-input" id="label-filter-input" placeholder="Filter labels…" autocomplete="off">
+            <ul class="label-list">
+              {% for label in available_labels %}
+              <li class="label-list-item">
+                <label class="label-checkbox-row">
+                  <input type="checkbox" name="selected_labels" value="{{ label.name }}">
+                  <span class="label-chip" {% if label.bg %}style="background:{{ label.bg }};color:{{ label.text }};border-color:{{ label.bg }}"{% endif %}>{{ label.name }}</span>
+                </label>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
           <button type="submit" class="cta" id="close-pr-submit">Close this pull request</button>
         </form>
       </section>

@@ -5,6 +5,7 @@ This guide covers how to create and configure GitHub Apps for Queueboard's opera
 ## Scope and Current Token Policy
 - Assignment commands (`assign_pr`, `unassign_pr`) require GitHub App installation tokens.
 - Close-PR command (`close_pr`) requires a GitHub App installation token with `Pull requests: Read and write` and `Members: Read` (org-level).
+- Label-PR command (`label_pr`) reuses the same `queueboard-assignment` app; `Issues: Read and write` is already required and covers label mutations.
 - Syncer operations (`syncer_repo_discovery`, `syncer_pr_read`, `syncer_ci_read`) try GitHub App tokens first and fall back to `GH_TOKEN`/`GITHUB_TOKEN` when no app token is available.
 - Runtime config is loaded from `GITHUB_APP_TOKEN_CONFIG` (JSON object).
 
@@ -108,6 +109,7 @@ Example (three-app config):
     "assign_pr": "queueboard-assignment",
     "unassign_pr": "queueboard-assignment",
     "close_pr": "queueboard-assignment",
+    "label_pr": "queueboard-assignment",
     "check_collaborator_permission": "queueboard-org-read",
     "syncer_repo_discovery": "queueboard-syncer-read",
     "syncer_pr_read": "queueboard-syncer-read",
@@ -119,7 +121,7 @@ Example (three-app config):
       "app_id": 123456,
       "private_key_path": "/run/secrets/queueboard-assignment.pem",
       "installation_lookup": "repo",
-      "operations": ["assign_pr", "unassign_pr", "close_pr"]
+      "operations": ["assign_pr", "unassign_pr", "close_pr", "label_pr"]
     },
     {
       "name": "queueboard-org-read",

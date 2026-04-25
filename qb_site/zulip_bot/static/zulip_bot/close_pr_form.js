@@ -64,6 +64,17 @@ export function mountClosePrForm(root = document) {
   update();
   const intervalId = window.setInterval(update, 1000);
 
+  const filterInput = root.getElementById("label-filter-input");
+  if (filterInput) {
+    filterInput.addEventListener("input", () => {
+      const q = filterInput.value.trim().toLowerCase();
+      for (const item of root.querySelectorAll(".label-list-item")) {
+        const name = (item.querySelector(".label-chip")?.textContent ?? "").toLowerCase();
+        item.hidden = q.length > 0 && !name.includes(q);
+      }
+    });
+  }
+
   for (const btn of root.querySelectorAll(".preset-btn")) {
     btn.addEventListener("click", () => {
       const textarea = root.getElementById("close_message");

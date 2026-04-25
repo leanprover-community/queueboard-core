@@ -199,6 +199,48 @@ def close_pull_request(*, owner: str, repo: str, number: int) -> None:
     raise ClosePRError(code="github_error", message=f"GitHub API error when closing pull request: {details}")
 
 
+def add_pr_labels(*, owner: str, repo: str, number: int, label_names: list[str]) -> None:
+    """Add labels to a pull request via POST (does not remove existing labels).
+
+    No-ops if label_names is empty. Raises ClosePRError on failure.
+    """
+    if not label_names:
+        return
+
+    token = _get_token(owner=owner, repo=repo)
+    if not token:
+        raise ClosePRError(
+            code="token_unavailable",
+            message="GitHub App token for close_pr is not available for this repository.",
+        )
+
+    api_base = _api_base_url()
+    url = f"{api_base}/repos/{owner}/{repo}/issues/{number}/labels"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        response = requests.post(url, json={"labels": label_names}, headers=headers, timeout=20)
+    except requests.RequestException as exc:
+        raise ClosePRError(code="request_failed", message=f"GitHub request failed: {exc}") from exc
+
+    if response.status_code < 400:
+        return
+
+    details = _safe_json(response)
+    if response.status_code in {401, 403}:
+        raise ClosePRError(code="permission_denied", message="GitHub permission denied when adding labels.")
+    if response.status_code == 404:
+        raise ClosePRError(code="pr_not_found", message="Pull request not found on GitHub.")
+    if response.status_code == 422:
+        raise ClosePRError(code="validation_failed", message=f"GitHub rejected the label request: {details}")
+    if response.status_code >= 500:
+        raise ClosePRError(code="github_transient", message="GitHub API temporarily failed.")
+    raise ClosePRError(code="github_error", message=f"GitHub API error when adding labels: {details}")
+
+
 def _get_token(*, owner: str, repo: str) -> str | None:
     return resolve_github_app_operation_token(
         operation=_CLOSE_PR_OPERATION,

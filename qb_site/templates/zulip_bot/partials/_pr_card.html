@@ -1,0 +1,26 @@
+{% if pr_title %}
+  <h2 class="pr-title"><a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer">{{ pr_title }}</a></h2>
+{% endif %}
+{% if pr_author_login or pr_opened_at or pr_updated_at %}
+  <div class="pr-meta-row">
+    {% if pr_author_login %}
+      <span>By <a href="https://github.com/{{ pr_author_login }}" target="_blank" rel="noopener noreferrer">@{{ pr_author_login }}</a></span>
+    {% endif %}
+    {% if pr_opened_at %}
+      <span>Opened <time class="ts" data-iso="{{ pr_opened_at_iso }}">{{ pr_opened_at }}</time></span>
+    {% endif %}
+    {% if pr_updated_at %}
+      <span>Updated <time class="ts" data-iso="{{ pr_updated_at_iso }}">{{ pr_updated_at }}</time></span>
+    {% endif %}
+  </div>
+{% endif %}
+{% if pr_labels %}
+  <div class="pr-labels">
+    {% for label in pr_labels %}
+      <span class="pr-label"{% if label.bg %} style="background: {{ label.bg }}; color: {{ label.text }}; border-color: {{ label.bg }}"{% endif %}>{{ label.name }}</span>
+    {% endfor %}
+  </div>
+{% endif %}
+{% if pr_body %}
+  <div class="pr-body">{{ pr_body }}</div>
+{% endif %}

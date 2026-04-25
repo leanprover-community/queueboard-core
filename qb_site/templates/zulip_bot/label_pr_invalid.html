@@ -1,0 +1,25 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queueboard — label PR link unavailable</title>
+  <link rel="stylesheet" href="{% static 'zulip_bot/shared_pages.css' %}">
+  <link rel="stylesheet" href="{% static 'zulip_bot/registration_pages.css' %}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <h1>Label PR link unavailable</h1>
+    </section>
+    <section class="card">
+      {% if reason == "expired" %}
+        <p>This link has expired. Send <code>label-pr &lt;pr-url&gt;</code> to the bot again for a fresh link.</p>
+      {% else %}
+        <p>This link is invalid. Send <code>label-pr &lt;pr-url&gt;</code> to the bot for a fresh link.</p>
+      {% endif %}
+    </section>
+  </main>
+</body>
+</html>

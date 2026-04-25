@@ -4,6 +4,7 @@ from django.test import SimpleTestCase
 
 from zulip_bot.services.assignment_command_parser import (
     AssignmentCommandParseError,
+    _parse_single_issue_or_pr_ref,
     parse_assignment_command_args,
 )
 
@@ -115,3 +116,30 @@ class TestAssignmentCommandParser(SimpleTestCase):
         )
 
         self.assertEqual(parsed.target_user_ids, (777,))
+
+
+class TestParseIssueOrPRRef(SimpleTestCase):
+    """Tests for the issue/PR ref parser used by the label-pr command."""
+
+    def test_accepts_pull_url(self) -> None:
+        ref = _parse_single_issue_or_pr_ref(
+            args="https://github.com/leanprover-community/mathlib4/pull/42",
+            rendered_content=None,
+        )
+        self.assertEqual(ref.owner, "leanprover-community")
+        self.assertEqual(ref.repo, "mathlib4")
+        self.assertEqual(ref.number, 42)
+
+    def test_accepts_issues_url(self) -> None:
+        ref = _parse_single_issue_or_pr_ref(
+            args="https://github.com/leanprover-community/mathlib4/issues/42",
+            rendered_content=None,
+        )
+        self.assertEqual(ref.owner, "leanprover-community")
+        self.assertEqual(ref.repo, "mathlib4")
+        self.assertEqual(ref.number, 42)
+
+    def test_raises_on_no_url(self) -> None:
+        with self.assertRaises(AssignmentCommandParseError) as cm:
+            _parse_single_issue_or_pr_ref(args="no-url-here", rendered_content=None)
+        self.assertEqual(cm.exception.code, "missing_pr")
