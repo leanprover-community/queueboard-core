@@ -106,8 +106,8 @@ class GroupMembershipChecker:
         try:
             self._client = ZulipClient()
             return self._client
-        except ZulipApiError:
-            logger.exception("zulip_client_not_configured")
+        except ZulipApiError as exc:
+            logger.warning("zulip_client_not_configured: %s", exc)
             self._client_unavailable = True
             return None
 

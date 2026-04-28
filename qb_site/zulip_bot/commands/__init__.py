@@ -1,13 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Callable
-
-
-class ResponseMode(str, Enum):
-    STREAM = "stream"
-    PRIVATE = "private"
 
 
 @dataclass(frozen=True)
@@ -26,8 +20,13 @@ class CommandContext:
 
 @dataclass(frozen=True)
 class CommandResult:
-    content: str
-    response_mode: ResponseMode
+    # Set content to the reply text. Zulip always delivers the reply to the same
+    # conversation (stream or DM) as the triggering message — there is no way to
+    # redirect it via the webhook response. Commands that must reach the user
+    # privately regardless of where they were invoked must send a DM proactively
+    # via ZulipClient.send_direct_message() and return response_not_required=True
+    # (see commands/close_pr.py for the canonical example of this pattern).
+    content: str = ""
     response_not_required: bool = False
 
 
@@ -39,22 +38,18 @@ class CommandDefinition:
     name: str
     description: str
     handler: CommandHandler
-    response_mode: ResponseMode
     aliases: tuple[str, ...] = ()
 
 
 _COMMANDS: dict[str, CommandDefinition] = {}
 
 
-def register_command(
-    *, name: str, description: str, response_mode: ResponseMode, aliases: tuple[str, ...] = ()
-) -> Callable[[CommandHandler], CommandHandler]:
+def register_command(*, name: str, description: str, aliases: tuple[str, ...] = ()) -> Callable[[CommandHandler], CommandHandler]:
     def decorator(handler: CommandHandler) -> CommandHandler:
         definition = CommandDefinition(
             name=name,
             description=description,
             handler=handler,
-            response_mode=response_mode,
             aliases=aliases,
         )
         _COMMANDS[name] = definition

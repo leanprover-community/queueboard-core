@@ -16,7 +16,7 @@ from analyzer.services.reviewer_attention_format import (
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PRLabel, PullRequest
-from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
+from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 MAX_MESSAGE_CHARS = 9000
@@ -27,22 +27,17 @@ _NO_REQUIRED_FAILURES = "no_required_failures"
 @register_command(
     name="assigned-prs",
     description="Show your assigned open PRs with queue-time status.",
-    response_mode=ResponseMode.PRIVATE,
 )
 def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
     del args
 
     if context.sender_id is None:
-        return CommandResult(
-            content="Could not determine your Zulip identity from this message.",
-            response_mode=ResponseMode.PRIVATE,
-        )
+        return CommandResult(content="Could not determine your Zulip identity from this message.")
 
     user = User.objects.filter(zulip_user_id=context.sender_id).only("id", "github_login").first()
     if user is None:
         return CommandResult(
-            content="No reviewer profile is linked to your Zulip account yet. Run `prefs` to start registration.",
-            response_mode=ResponseMode.PRIVATE,
+            content="No reviewer profile is linked to your Zulip account yet. Run `prefs` to start registration."
         )
 
     prefs = list(
@@ -51,10 +46,7 @@ def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
         .order_by("repository__owner", "repository__name")
     )
     if not prefs:
-        return CommandResult(
-            content="You do not currently have any reviewer preferences configured.",
-            response_mode=ResponseMode.PRIVATE,
-        )
+        return CommandResult(content="You do not currently have any reviewer preferences configured.")
 
     reports_by_repo_id: dict[int, ReviewerAttentionReport] = {}
     repo_labels_by_repo_id: dict[int, str] = {}
@@ -106,12 +98,9 @@ def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
         for chunk in chunks:
             client.send_direct_message(to=[context.sender_id], content=chunk)
     except ZulipApiError as exc:
-        return CommandResult(
-            content=f"Failed to send assigned PR report via Zulip API: {exc.message}",
-            response_mode=ResponseMode.PRIVATE,
-        )
+        return CommandResult(content=f"Failed to send assigned PR report via Zulip API: {exc.message}")
 
-    return CommandResult(content="", response_mode=ResponseMode.PRIVATE, response_not_required=True)
+    return CommandResult(response_not_required=True)
 
 
 # ---------------------------------------------------------------------------

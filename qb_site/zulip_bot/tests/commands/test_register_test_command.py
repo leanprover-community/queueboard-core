@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
 
@@ -23,11 +24,16 @@ class TestRegisterTestCommand(SimpleTestCase):
             allowed_command_names=frozenset({"register_test"}),
         )
 
-    def test_register_test_returns_link(self) -> None:
+    @patch("zulip_bot.commands.register_test.ZulipClient")
+    def test_register_test_returns_link(self, MockZulipClient: MagicMock) -> None:
+        mock_client = MockZulipClient.return_value
         result = register_test_command(self._context(sender_id=101), "")
-        self.assertIn("[test registration via GitHub OAuth](", result.content)
-        self.assertIn("https://queueboard.example/api/zulip/register/", result.content)
-        self.assertRegex(result.content, re.compile(r"<time:\d+>"))
+        self.assertTrue(result.response_not_required)
+        mock_client.send_direct_message.assert_called_once()
+        dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("[test registration via GitHub OAuth](", dm_content)
+        self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
+        self.assertRegex(dm_content, re.compile(r"<time:\d+>"))
 
     def test_register_test_handles_missing_sender_identity(self) -> None:
         result = register_test_command(self._context(sender_id=None), "")

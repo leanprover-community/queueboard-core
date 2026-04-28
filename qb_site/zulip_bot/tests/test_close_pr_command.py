@@ -10,16 +10,16 @@ from zulip_bot.commands.close_pr import close_pr_command
 from zulip_bot.services.close_pr_execution import PermissionCheckResult, PermissionOutcome
 
 
-def _context(sender_id: int | None = 101) -> CommandContext:
+def _context(sender_id: int | None = 101, *, is_private: bool = True) -> CommandContext:
     return CommandContext(
         sender_id=sender_id,
         sender_email="reviewer@example.com",
         sender_full_name="Reviewer User",
         message_content="close-pr",
         message_id=555,
-        stream_id=None,
-        topic=None,
-        is_private=True,
+        stream_id=None if is_private else 5,
+        topic=None if is_private else "topic",
+        is_private=is_private,
         rendered_content=None,
         allowed_command_names=frozenset({"close-pr"}),
     )
@@ -80,18 +80,37 @@ class TestClosePRCommand(TestCase):
         self.assertIn("does not have permission to close", result.content)
 
     @patch("zulip_bot.commands.close_pr.ZulipClient")
-    def test_permitted_issues_link(self, MockZulipClient: MagicMock) -> None:
+    def test_permitted_sends_link_via_dm(self, MockZulipClient: MagicMock) -> None:
+        """Confirmation link is delivered as a DM, not in the webhook response."""
         mock_client = MockZulipClient.return_value
         with self._patch_permission(PermissionCheckResult(outcome=PermissionOutcome.PERMITTED, pr_title="Great PR")):
             result = close_pr_command(_context(), _PR_URL)
-        self.assertIn("confirm closing PR", result.content)
-        self.assertIn("Great PR", result.content)
-        self.assertIn("attributed to the bot", result.content)
-        self.assertIn("/api/zulip/close-pr/", result.content)
+        self.assertTrue(result.response_not_required)
+        mock_client.send_direct_message.assert_called_once_with(
+            to=[101], content=mock_client.send_direct_message.call_args.kwargs["content"]
+        )
+        dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("confirm closing PR", dm_content)
+        self.assertIn("Great PR", dm_content)
+        self.assertIn("attributed to the bot", dm_content)
+        self.assertIn("/api/zulip/close-pr/", dm_content)
         mock_client.add_reaction.assert_called_once_with(message_id=555, emoji_name="eyes")
 
     @patch("zulip_bot.commands.close_pr.ZulipClient")
     def test_permitted_link_includes_expiry(self, MockZulipClient: MagicMock) -> None:
         with self._patch_permission(PermissionCheckResult(outcome=PermissionOutcome.PERMITTED)):
             result = close_pr_command(_context(), _PR_URL)
-        self.assertIn("<time:", result.content)
+        self.assertTrue(result.response_not_required)
+        dm_content = MockZulipClient.return_value.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("<time:", dm_content)
+
+    @patch("zulip_bot.commands.close_pr.ZulipClient")
+    def test_permitted_from_stream_sends_dm_not_stream_reply(self, MockZulipClient: MagicMock) -> None:
+        """When invoked in a stream, the private link must still be sent via DM."""
+        mock_client = MockZulipClient.return_value
+        with self._patch_permission(PermissionCheckResult(outcome=PermissionOutcome.PERMITTED, pr_title="My PR")):
+            result = close_pr_command(_context(is_private=False), _PR_URL)
+        self.assertTrue(result.response_not_required)
+        mock_client.send_direct_message.assert_called_once()
+        dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("confirm closing PR", dm_content)

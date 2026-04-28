@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from unittest import TestCase
 
-from zulip_bot.commands import CommandContext, CommandDefinition, CommandResult, ResponseMode, register_command
+from zulip_bot.commands import CommandContext, CommandDefinition, CommandResult, register_command
 
 
 def _make_handler(label: str):
     def handler(context: CommandContext, args: str) -> CommandResult:
-        return CommandResult(content=label, response_mode=ResponseMode.PRIVATE)
+        return CommandResult(content=label)
 
     return handler
 
@@ -28,7 +28,7 @@ class TestCommandRegistry(TestCase):
 
     def _register(self, name: str, aliases: tuple[str, ...] = ()) -> CommandDefinition:
         handler = _make_handler(name)
-        register_command(name=name, description=f"desc for {name}", response_mode=ResponseMode.PRIVATE, aliases=aliases)(handler)
+        register_command(name=name, description=f"desc for {name}", aliases=aliases)(handler)
         from zulip_bot.commands import get_command
 
         cmd = get_command(name)

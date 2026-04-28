@@ -18,7 +18,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from core.models import ReviewerPreference, User
 from syncer.models import LabelDef
-from zulip_bot.commands import CommandResult, ResponseMode, get_command
+from zulip_bot.commands import CommandResult, get_command
 from zulip_bot.commands import assign as _assign  # noqa: F401
 from zulip_bot.commands import assigned_prs as _assigned_prs  # noqa: F401
 from zulip_bot.commands import close_pr as _close_pr  # noqa: F401
@@ -137,7 +137,7 @@ def webhook(request: HttpRequest) -> HttpResponse:
         allowed_names = allowed_command_names(context, checker)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("zulip_webhook_unexpected_error")
-        return zulip_response(_unexpected_error_response(exc), ResponseMode.PRIVATE)
+        return zulip_response(_unexpected_error_response(exc))
 
     try:
         context = replace(context, allowed_command_names=allowed_names)
@@ -161,13 +161,10 @@ def webhook(request: HttpRequest) -> HttpResponse:
             return ignored_response()
 
         result = command.handler(context, parsed_command.args)
-        # A STREAM-registered command invoked from a DM must still reply privately;
-        # there is no stream to post to in that context.
-        effective_mode = ResponseMode.PRIVATE if context.is_private else command.response_mode
-        return zulip_response(result, effective_mode)
+        return zulip_response(result)
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("zulip_command_unexpected_error")
-        return zulip_response(_unexpected_error_response(exc), ResponseMode.PRIVATE)
+        return zulip_response(_unexpected_error_response(exc))
 
 
 def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
@@ -986,7 +983,7 @@ def _unexpected_error_response(exc: Exception) -> CommandResult:
         "```\n"
         "````"
     )
-    return CommandResult(content=content, response_mode=ResponseMode.PRIVATE)
+    return CommandResult(content=content)
 
 
 def _error_details(exc: Exception) -> Any:

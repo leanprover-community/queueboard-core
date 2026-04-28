@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
+from zulip_bot.commands import CommandContext, CommandResult
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
 from zulip_bot.services.assignment_validation import validate_assignment_targets
 
@@ -13,10 +13,7 @@ def run_assignment_preflight(*, action: str, context: CommandContext, args: str)
             sender_id=context.sender_id,
         )
     except AssignmentCommandParseError as exc:
-        return CommandResult(
-            content=f"Could not parse `{action}` command: {exc.message}",
-            response_mode=ResponseMode.PRIVATE,
-        )
+        return CommandResult(content=f"Could not parse `{action}` command: {exc.message}")
 
     successes: list[str] = []
     warnings: list[str] = []
@@ -52,4 +49,4 @@ def run_assignment_preflight(*, action: str, context: CommandContext, args: str)
         lines.extend(f"- {entry}" for entry in failures)
     lines.append("GitHub assignment mutation is not enabled yet in this rollout chunk.")
 
-    return CommandResult(content="\n".join(lines), response_mode=ResponseMode.PRIVATE)
+    return CommandResult(content="\n".join(lines))

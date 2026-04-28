@@ -39,7 +39,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
     def test_unknown_command_returns_help(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** unknown", id=12, stream_id=5))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("Unknown command", result["json"]["content"])
         self.assertIn("- help: List supported commands.", result["json"]["content"])
 
@@ -88,39 +87,18 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             "echo": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
         }
     )
-    def test_stream_command_replies_in_stream(self) -> None:
+    def test_command_reply_does_not_include_type_field(self) -> None:
+        """Webhook responses must not include a 'type' field.
+
+        Zulip's outgoing webhook spec does not use a 'type' field to redirect
+        the reply destination — replies always go back to the triggering
+        conversation. Commands that must send private content do so via
+        ZulipClient.send_direct_message() and return response_not_required=True.
+        """
         result = self._post_payload(self._payload(content="@**qb-bot** echo hello", id=50, stream_id=5))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")  # echo is PRIVATE
-
-    @override_settings(
-        ZULIP_COMMAND_POLICY={
-            "echo": {"allowed_groups": ["all"], "allowed_contexts": ["all"]},
-        }
-    )
-    def test_stream_registered_command_invoked_from_dm_replies_privately(self) -> None:
-        """A command registered as STREAM should still reply privately when invoked via DM."""
-        from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
-
-        # Register a temporary STREAM command for this test.
-        @register_command(name="test-stream-cmd", description="test", response_mode=ResponseMode.STREAM)
-        def _test_cmd(ctx: CommandContext, args: str) -> CommandResult:
-            return CommandResult(content="stream-reply", response_mode=ResponseMode.STREAM)
-
-        try:
-            with override_settings(
-                ZULIP_COMMAND_POLICY={
-                    "test-stream-cmd": {"allowed_groups": ["all"], "allowed_contexts": ["all"]},
-                }
-            ):
-                result = self._post_payload(self._payload(content="test-stream-cmd", message_type="private"))
-            self.assertEqual(result["status"], 200)
-            self.assertEqual(result["json"]["type"], "private")
-            self.assertEqual(result["json"]["content"], "stream-reply")
-        finally:
-            from zulip_bot.commands import _COMMANDS  # type: ignore[attr-defined]
-
-            _COMMANDS.pop("test-stream-cmd", None)
+        self.assertIn("hello", result["json"]["content"])
+        self.assertNotIn("type", result["json"])
 
     @override_settings(
         ZULIP_COMMAND_POLICY={
@@ -131,7 +109,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         """A DM that starts with @**botname** should have the mention stripped before parsing."""
         result = self._post_payload(self._payload(content="@**qb-bot** echo hello", message_type="private"))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("hello", result["json"]["content"])
 
     @override_settings(
@@ -143,7 +120,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         """DMs without a leading mention continue to work as before."""
         result = self._post_payload(self._payload(content="echo hello", message_type="private"))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("hello", result["json"]["content"])
 
     @override_settings(
@@ -177,7 +153,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             result = self._post_payload(self._payload(content="help", id=99, message_type="private"))
 
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("An unexpected error occurred", result["json"]["content"])
         self.assertIn('"error_type": "GroupMembershipCheckError"', result["json"]["content"])
         self.assertIn("does not accept bot requests", result["json"]["content"])
@@ -195,7 +170,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             result = self._post_payload(self._payload(content="help", id=100, message_type="private"))
 
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("An unexpected error occurred", result["json"]["content"])
         self.assertIn("```json", result["json"]["content"])
         self.assertIn('"error_type": "RuntimeError"', result["json"]["content"])
@@ -214,7 +188,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             result = self._post_payload(self._payload(content="echo hi", id=101, message_type="private"))
 
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn('"message": "handler exploded"', result["json"]["content"])
         self.assertIn("```json", result["json"]["content"])
 
@@ -223,7 +196,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             "assign": {"allowed_groups": ["all"], "allowed_contexts": ["stream:5"]},
         }
     )
-    def test_assign_command_executes_and_returns_private_preflight_summary(self) -> None:
+    def test_assign_command_executes_and_returns_preflight_summary(self) -> None:
         repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
         user = User.objects.create(zulip_user_id=101, github_login="reviewer")
         ReviewerPreference.objects.create(repository=repo, user=user)
@@ -237,7 +210,6 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         )
 
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("Preflight passed for `assign` on leanprover-community/mathlib4#123.", result["json"]["content"])
 
     @override_settings(
@@ -246,7 +218,7 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
         },
         ZULIP_ASSIGNMENT_MUTATIONS_ENABLED="true",
     )
-    def test_assign_command_clean_success_returns_private_summary_with_assignees(self) -> None:
+    def test_assign_command_clean_success_returns_summary_with_assignees(self) -> None:
         repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
         user = User.objects.create(zulip_user_id=101, github_login="reviewer")
         ReviewerPreference.objects.create(repository=repo, user=user)
@@ -287,6 +259,5 @@ class TestZulipWebhookEndpoint(WebhookTestMixin, TestCase):
             )
 
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("assign succeeded for `reviewer`.", result["json"]["content"])
         self.assertIn("Current assignees: `reviewer`.", result["json"]["content"])

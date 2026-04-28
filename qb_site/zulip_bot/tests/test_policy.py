@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from django.test import TestCase, override_settings
 
 from core.models import Repository, ReviewerPreference, User
@@ -28,7 +30,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_help_command_lists_commands(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** help", id=10, stream_id=5))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertIn("- echo: Repeat the provided text.", result["json"]["content"])
         self.assertIn("- help: List supported commands.", result["json"]["content"])
 
@@ -41,7 +42,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_echo_command_repeats_text(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** echo hello world", id=11, stream_id=5))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hello world")
 
     @override_settings(
@@ -70,7 +70,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_allowed_contexts_all_means_unrestricted(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** echo hi", id=17, stream_id=8))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hi")
 
     @override_settings(
@@ -81,7 +80,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_allowed_groups_all_means_unrestricted(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** echo hi", id=18, stream_id=8))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hi")
 
     @override_settings(
@@ -92,7 +90,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_allowed_user_ids_allows_specific_sender(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** echo hi", id=20, stream_id=8, sender_id=101))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hi")
 
     @override_settings(
@@ -103,7 +100,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_allowed_user_ids_or_allowed_groups(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** echo hi", id=21, stream_id=8, sender_id=101))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertEqual(result["json"]["content"], "hi")
 
     @override_settings(
@@ -125,7 +121,6 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
     def test_help_lists_only_allowed_commands(self) -> None:
         result = self._post_payload(self._payload(content="@**qb-bot** help", id=15, stream_id=5))
         self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
         self.assertNotIn("- echo:", result["json"]["content"])
         self.assertIn("- help:", result["json"]["content"])
 
@@ -135,12 +130,16 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
         },
         ZULIP_PREFS_URL_BASE="https://queueboard.example",
     )
-    def test_prefs_command_via_webhook(self) -> None:
+    @patch("zulip_bot.commands.prefs.ZulipClient")
+    def test_prefs_command_via_webhook(self, MockZulipClient: MagicMock) -> None:
+        """prefs sends a DM with the link and returns response_not_required."""
+        mock_client = MockZulipClient.return_value
         user = User.objects.create(github_login="reviewer", zulip_user_id=101)
         repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
         ReviewerPreference.objects.create(user=user, repository=repo)
 
         result = self._post_payload(self._payload(content="prefs", id=19, message_type="private", sender_id=101))
-        self.assertEqual(result["status"], 200)
-        self.assertEqual(result["json"]["type"], "private")
-        self.assertIn("https://queueboard.example/api/zulip/prefs/", result["json"]["content"])
+        self.assert_ignored(result)
+        mock_client.send_direct_message.assert_called_once()
+        dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("https://queueboard.example/api/zulip/prefs/", dm_content)

@@ -9,7 +9,7 @@ from core.models import Repository
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_operation_tokens import resolve_github_app_operation_token
 from syncer.models import PullRequest, PullRequestState
-from zulip_bot.commands import CommandContext, CommandResult, ResponseMode
+from zulip_bot.commands import CommandContext, CommandResult
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, parse_assignment_command_args
 from zulip_bot.services.assignment_validation import AssignmentTargetValidation, validate_assignment_targets
 
@@ -29,10 +29,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
             sender_id=context.sender_id,
         )
     except AssignmentCommandParseError as exc:
-        return CommandResult(
-            content=f"Could not parse `{action}` command: {exc.message}",
-            response_mode=ResponseMode.PRIVATE,
-        )
+        return CommandResult(content=f"Could not parse `{action}` command: {exc.message}")
 
     successes: list[str] = []
     warnings: list[str] = []
@@ -133,7 +130,7 @@ def run_assignment_command(*, action: str, context: CommandContext, args: str) -
 def _summary_response(*, action: str, successes: list[str], warnings: list[str], failures: list[str]) -> CommandResult:
     del action  # action already reflected in entry lines
     if successes and not warnings and not failures:
-        return CommandResult(content="\n".join(successes), response_mode=ResponseMode.PRIVATE)
+        return CommandResult(content="\n".join(successes))
 
     lines: list[str] = []
     if successes:
@@ -148,7 +145,7 @@ def _summary_response(*, action: str, successes: list[str], warnings: list[str],
             lines.append("")
         lines.append("**Failures:**")
         lines.extend(f"- {entry}" for entry in failures)
-    return CommandResult(content="\n".join(lines), response_mode=ResponseMode.PRIVATE)
+    return CommandResult(content="\n".join(lines))
 
 
 def _load_local_pr(*, owner: str, repo: str, number: int) -> PullRequest | None:

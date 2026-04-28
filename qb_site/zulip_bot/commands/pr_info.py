@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from analyzer.services.pr_info import DependencyInfo, PRQueueInfo, get_pr_queue_info
 from analyzer.services.reviewer_attention_format import format_compact_duration, format_since_timestamp
 from core.models import User
-from zulip_bot.commands import CommandContext, CommandResult, ResponseMode, register_command
+from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,6 @@ _URL_RE = re.compile(r"https://github\.com/([^/\s\"]+)/([^/\s\"]+)/pull/(\d+)")
 @register_command(
     name="pr-info",
     description="Show queue info for one or more GitHub PR links (up to 10). Zulip linkifiers also work.",
-    response_mode=ResponseMode.STREAM,
 )
 def pr_info_command(context: CommandContext, args: str) -> CommandResult:
     refs = _parse_pr_refs(context, args)
@@ -32,7 +31,6 @@ def pr_info_command(context: CommandContext, args: str) -> CommandResult:
             content=(
                 "No GitHub PR links found. Usage: `pr-info https://github.com/<owner>/<repo>/pull/123` or `pr-info #123, #456` (using Zulip linkifiers)"
             ),
-            response_mode=ResponseMode.STREAM,
         )
 
     client = ZulipClient()
@@ -68,7 +66,7 @@ def pr_info_command(context: CommandContext, args: str) -> CommandResult:
             content = _format_pr_info(info, mention_map, now)
         _send_reply(client, context, content)
 
-    return CommandResult(content="", response_mode=ResponseMode.STREAM, response_not_required=True)
+    return CommandResult(response_not_required=True)
 
 
 # ---------------------------------------------------------------------------

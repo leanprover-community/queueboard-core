@@ -18,7 +18,7 @@ cd qb_site/zulip_bot/frontend && npm test
 
 ## Command Architecture Notes
 - Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `pr-info`, `prefs`, `help`, `echo`, `register_test`, `close-pr`, `label-pr`.
-- `pr-info`: parses GitHub PR links from Zulip `rendered_content`, reacts with 👀, then sends one stream message per PR (up to 10) with queue info sourced from `analyzer.services.pr_info`.
+- `pr-info`: parses GitHub PR links from Zulip `rendered_content`, reacts with 👀, then sends one message per PR (up to 10) with queue info sourced from `analyzer.services.pr_info`. Replies in the same conversation as the triggering message.
 - Assignment command flow (all under `services/`) is split for clarity:
   - parse: `assignment_command_parser.py`,
   - validate: `assignment_validation.py`,
@@ -27,6 +27,26 @@ cd qb_site/zulip_bot/frontend && npm test
 - `label-pr` command: same secure-link pattern as `close-pr`. Accepts both `/pull/NNN` and `/issues/NNN` URLs. Requires write/admin collaborator access (no author exception). Services: `label_pr_links.py` (token), `label_pr_execution.py` (permission check + `PUT /issues/{number}/labels`). Feature flag: `ZULIP_LABEL_PR_MUTATIONS_ENABLED`. Uses operation `label_pr` (mapped to `queueboard-assignment`). The picker catalog comes from `LabelDef` in DB; current-label pre-selection comes from the live `GET /issues/{number}` response (because `PUT /labels` replaces the full set, a stale source would silently drop labels). Live labels not in the catalog are appended as extra pre-checked rows; if the live fetch fails, the form refuses to render the picker. URL parsing for both PR and issue URLs is in `assignment_command_parser._parse_single_issue_or_pr_ref`.
 - Keep user-facing command responses explicit and safe for partial failures.
 - Prefer private failure responses for sensitive mutation/policy errors.
+
+## How Command Replies Are Routed
+
+**Zulip outgoing webhook responses always go back to the same conversation as the triggering message** — stream messages get stream replies, DM messages get DM replies. There is no supported mechanism to redirect a webhook response to a different destination via the response body.
+
+This has a critical implication: **never return sensitive content (token links, private URLs) in `CommandResult.content` if the command can be invoked from a stream.** Doing so would expose that content to all stream subscribers.
+
+### Two patterns for replies
+
+**In-place reply** (most commands): return `CommandResult(content="...")`. Zulip delivers the reply wherever the command was invoked. Use this for non-sensitive content where in-stream visibility is acceptable (e.g., `assign`, `unassign`, `pr-info`, error messages).
+
+**Proactive DM** (commands that send private links): call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip does not deliver the webhook response at all; the DM goes to the user regardless of where the command was invoked. Use this whenever the reply contains a private token link or other content that must not appear in a stream.
+
+Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register_test`, `assigned-prs`.
+
+### Adding new commands
+
+- If the command replies with a private link (or any content that must stay private): use the proactive DM pattern. See `commands/close_pr.py` for the canonical example.
+- If the command replies with non-sensitive status text: return `CommandResult(content=...)` directly.
+- The `CommandResult.response_not_required` field is also used by commands that send multiple messages proactively (e.g., `assigned-prs` chunks large reports across several DMs).
 
 ## Policy and Safety Notes
 - Command availability and context restrictions are controlled by `ZULIP_COMMAND_POLICY`.

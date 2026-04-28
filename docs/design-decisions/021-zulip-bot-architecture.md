@@ -104,7 +104,7 @@ ZULIP_COMMAND_POLICY = {
   - `uv run python qb_site/manage.py zulip_policy validate .zulip-policy.local.json`
   - `uv run python qb_site/manage.py zulip_policy sync .zulip-policy.local.json`
   - `uv run python qb_site/manage.py zulip_policy to-env .zulip-policy.local.json --export`
-- Commands that may surface private details should use `ResponseMode.PRIVATE`.
+- Commands that must deliver private content (token links, etc.) must call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip outgoing webhook responses always go back to the triggering conversation (stream or DM); there is no supported redirect via the response body, so returning sensitive content in `CommandResult.content` would expose it in a stream if the command is invoked there. See `commands/close_pr.py` for the canonical example and `zulip_bot/AGENTS.md` for the full pattern description.
 - When adding new commands, update help text by registering the command description.
 - For each new command, add a policy entry when `ZULIP_COMMAND_POLICY` is enabled; otherwise that command is ignored.
 
