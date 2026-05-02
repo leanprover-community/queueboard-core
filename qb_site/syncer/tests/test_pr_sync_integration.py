@@ -650,7 +650,6 @@ class TestPRSyncIntegration(TestCase):
             },
         }
         res1 = svc.sync_pull_request_bundle(self.repo, bundle1, dry_run=False)
-        pr = PullRequest.objects.get(repository=self.repo, number=3)
         self.assertEqual(CommitCheckRun.objects.filter(repository=self.repo, head_sha="h1").count(), 1)
         self.assertEqual(CommitStatusContext.objects.filter(repository=self.repo, head_sha="h1").count(), 1)
         self.assertEqual(res1["checkruns_upserted"], 1)

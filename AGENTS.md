@@ -28,8 +28,9 @@ Notes
 
 ## Coding Style & Naming Conventions
 - Use four-space indentation, explicit imports, and `snake_case` for modules/functions, `PascalCase` for classes, `SCREAMING_SNAKE_CASE` for settings.
-- Treat `ruff` as the source of truth; prefer `ruff --fix` or `uv run ruff format .` for autofixes before committing.
-- Always format files before sending for review using: `uv run ruff format .`.
+- Treat `ruff` as the source of truth. **Before every commit**, both of the following must pass with no errors:
+  - `uv run ruff check .` — zero lint errors required; use `--fix` to auto-resolve what ruff can
+  - `uv run ruff format .` — apply canonical formatting (or `--check` to verify without writing)
 - Add type hints on new public functions, especially in Django services; reuse helpers from `queueboard.util` instead of duplicating logic.
 
 ## Testing Guidelines

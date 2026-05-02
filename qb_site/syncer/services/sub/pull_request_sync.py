@@ -7,7 +7,6 @@ from dateutil import parser as dtparser
 from django.utils import timezone
 
 from core.models.repository import Repository
-from core.models.user import User
 from core.utils.db import update_if_changed
 from .core_entities_sync import upsert_user_from_github
 from syncer.models.pull_request import PullRequest
@@ -65,7 +64,6 @@ def upsert_pull_request(bundle: Dict[str, Any], repo: Repository) -> PullRequest
 
     number = int(bundle.get("number", 0))
     pr = PullRequest.objects.filter(repository=repo, number=number).first()
-    created = False
 
     core_values = {
         "author": author_obj,
@@ -91,7 +89,6 @@ def upsert_pull_request(bundle: Dict[str, Any], repo: Repository) -> PullRequest
         pr = PullRequest(repository=repo, number=number, **core_values)
         pr.last_synced_at = timezone.now()
         pr.save()
-        created = True
         return PullRequestUpsertResult(pr=pr, created=True, updated_fields=tuple(core_values.keys()))
 
     # Existing: update only changed core fields.

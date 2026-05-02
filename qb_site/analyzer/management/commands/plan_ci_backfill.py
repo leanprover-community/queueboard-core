@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 from django.core.management.base import BaseCommand, CommandError
 from django.conf import settings
 
 from core.models import Repository
-from syncer.models import PullRequest
 from analyzer.services.ci_backfill import plan_missing_ci_shas, enqueue_ci_by_shas
 
 

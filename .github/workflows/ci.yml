@@ -37,6 +37,9 @@ jobs:
           uv venv
           uv pip install -e .
 
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
       - name: Run Zulip prefs frontend tests
         working-directory: qb_site/zulip_bot/frontend
         run: |
