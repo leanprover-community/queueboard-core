@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Rate budget coordination helpers using Redis.
 
@@ -46,7 +44,9 @@ Implementation notes
 - Continuation schedules are debounced per repo+resetAt via SETNX with TTL.
 """
 
-from datetime import datetime, timedelta, timezone
+from __future__ import annotations
+
+from datetime import datetime, timezone
 import hashlib
 import json
 import random

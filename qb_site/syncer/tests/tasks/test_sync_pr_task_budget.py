@@ -4,7 +4,6 @@ from unittest import mock
 
 from django.test import TestCase
 
-from core.models import Repository
 from syncer.tasks.sync_tasks import sync_pr_task
 from syncer.tests.factories import make_repo
 

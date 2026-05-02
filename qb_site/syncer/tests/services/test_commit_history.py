@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from core.models import Repository
 from syncer.services.commit_history import harvest_commit_history_shas, harvest_commit_history_with_cursor
-from syncer.models import PullRequest, CommitHistoryHarvest
+from syncer.models import PullRequest
 
 
 class FakeClient:

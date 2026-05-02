@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from django.test import TestCase
-from django.utils import timezone
 
-from core.models.repository import Repository
-from syncer.models import LabelDef, PullRequest, PRLabel
+from syncer.models import LabelDef, PRLabel
 from syncer.services.sub.labels_sync import sync_label_catalog, sync_pr_labels
 from syncer.tests.factories import make_repo, make_pr
 
@@ -20,8 +18,8 @@ class TestLabelsSync(TestCase):
         self.assertEqual(LabelDef.objects.filter(repository=self.repo).count(), 1)
         self.assertGreaterEqual(res.created, 1)
 
-        attach_res = sync_pr_labels(self.pr, ["easy"])  # lower-case
+        sync_pr_labels(self.pr, ["easy"])  # lower-case
         self.assertEqual(PRLabel.objects.filter(pull_request=self.pr).count(), 1)
         # Remove
-        attach_res2 = sync_pr_labels(self.pr, [])
+        sync_pr_labels(self.pr, [])
         self.assertEqual(PRLabel.objects.filter(pull_request=self.pr).count(), 0)

@@ -1,2 +1,5 @@
 line-length = 130
 extend-exclude = ["qb_site/**/migrations"]
+
+[lint.per-file-ignores]
+"qb_site/qb_site/settings/*.py" = ["F405"]

@@ -6,8 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 from django.conf import settings
 
-from core.models import Repository
-from syncer.models import PullRequest, PRTimelineEvent
+from syncer.models import PRTimelineEvent
 from syncer.tasks.sync_tasks import sync_pr_task
 from syncer.tests.factories import make_repo, make_pr
 

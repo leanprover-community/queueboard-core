@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Tuple
 
 from django.db import IntegrityError, models, transaction
 

@@ -68,7 +68,7 @@ class QueueboardSnapshotViewTests(TestCase):
 
     def test_stale_snapshot_triggers_refresh_but_returns_payload(self):
         stale_time = timezone.now() - timedelta(hours=1)
-        snap = self._make_snapshot(expires_at=stale_time - timedelta(minutes=5), generated_at=stale_time)
+        self._make_snapshot(expires_at=stale_time - timedelta(minutes=5), generated_at=stale_time)
 
         with patch("api.views.queueboard_snapshot.build_queueboard_snapshot.delay") as mock_delay:
             mock_delay.return_value.id = "task456"

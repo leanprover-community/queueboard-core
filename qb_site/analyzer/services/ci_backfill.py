@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 from core.models import Repository
 from syncer.models import PullRequest

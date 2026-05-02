@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from django.test import TestCase
 
-from core.models.repository import Repository
-from core.models import User
 from syncer.services.sub.core_entities_sync import upsert_repo_node_id, upsert_user_from_github
 from syncer.tests.factories import make_repo
 
