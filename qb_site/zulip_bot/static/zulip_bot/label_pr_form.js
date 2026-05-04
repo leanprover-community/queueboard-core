@@ -1,6 +1,10 @@
 import { formatRemaining, getExpiryState } from "./prefs_form.js";
 import { formatTimestamp } from "./close_pr_form.js";
 
+function serializeForm(form) {
+  return new URLSearchParams(new FormData(form)).toString();
+}
+
 function formatTimestamps(root) {
   for (const el of root.querySelectorAll("time.ts[data-iso]")) {
     const formatted = formatTimestamp(el.dataset.iso);
@@ -28,12 +32,26 @@ export function mountLabelPrForm(root = document) {
   const checkboxes = form.querySelectorAll('input[type="checkbox"][name="selected_labels"]');
   const countEl = root.getElementById("label-picker-count");
 
+  let dirty = false;
+  const initialSnapshot = serializeForm(form);
+  const updateDirty = () => {
+    dirty = serializeForm(form) !== initialSnapshot;
+  };
+
   if (countEl) updateCount(checkboxes, countEl);
-  for (const cb of checkboxes) {
-    cb.addEventListener("change", () => {
-      if (countEl) updateCount(checkboxes, countEl);
-    });
-  }
+  form.addEventListener("change", () => {
+    if (countEl) updateCount(checkboxes, countEl);
+    updateDirty();
+  });
+
+  const onBeforeUnload = (event) => {
+    if (!dirty || submitButton.disabled) {
+      return;
+    }
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
 
   const filterInput = root.getElementById("label-filter-input");
   if (filterInput) {
@@ -52,12 +70,14 @@ export function mountLabelPrForm(root = document) {
     selectAll.addEventListener("click", () => {
       for (const cb of checkboxes) cb.checked = true;
       if (countEl) updateCount(checkboxes, countEl);
+      updateDirty();
     });
   }
   if (clearAll) {
     clearAll.addEventListener("click", () => {
       for (const cb of checkboxes) cb.checked = false;
       if (countEl) updateCount(checkboxes, countEl);
+      updateDirty();
     });
   }
 
@@ -86,11 +106,16 @@ export function mountLabelPrForm(root = document) {
     if (checked.length === 0) {
       if (!window.confirm("No labels are selected. This will remove all labels from this issue/PR. Continue?")) {
         event.preventDefault();
+        return;
       }
     }
+    dirty = false;
   });
 
-  return () => window.clearInterval(intervalId);
+  return () => {
+    window.clearInterval(intervalId);
+    window.removeEventListener("beforeunload", onBeforeUnload);
+  };
 }
 
 if (typeof window !== "undefined") {

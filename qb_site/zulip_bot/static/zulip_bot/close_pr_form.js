@@ -1,5 +1,9 @@
 import { formatRemaining, getExpiryState } from "./prefs_form.js";
 
+function serializeForm(form) {
+  return new URLSearchParams(new FormData(form)).toString();
+}
+
 function formatAgo(ms) {
   const s = ms / 1000;
   if (s < 60) return `${Math.floor(s)}s ago`;
@@ -49,6 +53,22 @@ export function mountClosePrForm(root = document) {
 
   const expUnix = Number(form.dataset.expUnix || "0");
 
+  let dirty = false;
+  const initialSnapshot = serializeForm(form);
+
+  form.addEventListener("input", () => {
+    dirty = serializeForm(form) !== initialSnapshot;
+  });
+
+  const onBeforeUnload = (event) => {
+    if (!dirty || submitButton.disabled) {
+      return;
+    }
+    event.preventDefault();
+    event.returnValue = "";
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
+
   const update = () => {
     const state = getExpiryState(expUnix);
     if (state.expired) {
@@ -80,6 +100,7 @@ export function mountClosePrForm(root = document) {
       const textarea = root.getElementById("close_message");
       if (textarea) {
         textarea.value = btn.getAttribute("data-body") || "";
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
       }
     });
   }
@@ -94,11 +115,16 @@ export function mountClosePrForm(root = document) {
     if (textarea && !textarea.value.trim()) {
       if (!window.confirm("No close message will be posted as a comment. Close this pull request without a comment?")) {
         event.preventDefault();
+        return;
       }
     }
+    dirty = false;
   });
 
-  return () => window.clearInterval(intervalId);
+  return () => {
+    window.clearInterval(intervalId);
+    window.removeEventListener("beforeunload", onBeforeUnload);
+  };
 }
 
 if (typeof window !== "undefined") {

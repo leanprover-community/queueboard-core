@@ -109,13 +109,14 @@ export function mountPrefsForm(root = document) {
     dirty = serializeForm(form) !== initialSnapshot;
   });
 
-  window.addEventListener("beforeunload", (event) => {
+  const onBeforeUnload = (event) => {
     if (!dirty || submitButton.disabled) {
       return;
     }
     event.preventDefault();
     event.returnValue = "";
-  });
+  };
+  window.addEventListener("beforeunload", onBeforeUnload);
 
   form.addEventListener("submit", (event) => {
     update();
@@ -129,6 +130,7 @@ export function mountPrefsForm(root = document) {
 
   return () => {
     window.clearInterval(intervalId);
+    window.removeEventListener("beforeunload", onBeforeUnload);
     for (const button of root.querySelectorAll(".js-clear-away")) {
       button.removeEventListener("click", onClearAway);
     }
