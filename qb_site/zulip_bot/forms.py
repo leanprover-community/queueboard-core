@@ -151,7 +151,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
         self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
-        self.fields["free_form"].help_text = "A free form description of your reviewing interests."
+        self.fields["free_form"].help_text = "A free form description of your reviewing interests. Publicly visible."
         self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
         self.fields[
             "auto_unassign_days"
@@ -167,6 +167,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         if legacy_labels:
             legacy_csv = ", ".join(legacy_labels)
             labels_help = f"{labels_help} Legacy saved labels: {legacy_csv}."
+        labels_help = f"{labels_help} Publicly visible."
         self.fields["preferred_labels"].help_text = labels_help
 
     def clean_away_until(self) -> object:

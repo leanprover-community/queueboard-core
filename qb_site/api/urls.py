@@ -5,6 +5,7 @@ from api.views import index
 from api.views.queueboard_dependency_graph import QueueboardDependencyGraphView
 from api.views.queueboard_snapshot import QueueboardSnapshotView
 from api.views.reviewer_assignment import AreaStatsView, ReviewerAssignmentsView
+from api.views.reviewer_interests import ReviewerInterestsView
 
 urlpatterns: list = [
     path("", index, name="index"),
@@ -23,5 +24,10 @@ urlpatterns: list = [
         "v1/queueboard/area-stats",
         AreaStatsView.as_view(),
         name="queueboard-area-stats",
+    ),
+    path(
+        "v1/reviewer-interests",
+        ReviewerInterestsView.as_view(),
+        name="reviewer-interests",
     ),
 ]
