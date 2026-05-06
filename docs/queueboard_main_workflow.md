@@ -42,7 +42,6 @@ jobs:
       run: |
         cp -r queueboard-core/scripts .
         cp -r queueboard-core/src/queueboard/queries .
-        cp queueboard-core/reviewer-topics.json .
 
     - name: "Setup Python"
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
