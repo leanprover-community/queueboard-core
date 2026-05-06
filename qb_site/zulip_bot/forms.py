@@ -6,6 +6,7 @@ from datetime import tzinfo
 
 from django import forms
 from django.utils import timezone
+from django.utils.safestring import mark_safe
 
 from core.models import ReviewerPreference
 from core.services.reviewer_notification_settings import MAX_AUTO_UNASSIGN_DAYS, parse_notification_policy
@@ -148,10 +149,11 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.initial["preferred_labels"] = selected_values
 
         tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
+        community_team_page_warning = mark_safe("<b>Publicly visible on <a href='https://leanprover-community.github.io/teams/reviewers.html'>the community team page</a>.</b>")
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
         self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
-        self.fields["free_form"].help_text = "A free form description of your reviewing interests. Publicly visible."
+        self.fields["free_form"].help_text = f"A free form description of your reviewing interests. {community_team_page_warning}"
         self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
         self.fields[
             "auto_unassign_days"
@@ -167,7 +169,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         if legacy_labels:
             legacy_csv = ", ".join(legacy_labels)
             labels_help = f"{labels_help} Legacy saved labels: {legacy_csv}."
-        labels_help = f"{labels_help} Publicly visible."
+        labels_help = f"{labels_help} {community_team_page_warning}"
         self.fields["preferred_labels"].help_text = labels_help
 
     def clean_away_until(self) -> object:
