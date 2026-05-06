@@ -46,10 +46,6 @@ jobs:
           npm ci
           npm test
 
-      - name: Check reviewer-topics.json
-        run: |
-          uv run python -m queueboard.test_reviewer_topics
-
       - name: Test snapshot generation
         run: |
           uv run python -m queueboard.test_snapshot

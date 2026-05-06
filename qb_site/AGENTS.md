@@ -10,6 +10,7 @@
   - `zulip_bot`: Zulip webhook/command integration and policies.
 - Keep new modules inside the owning app (`models/`, `services/`, `tasks/`, `management/commands/`, `tests/`).
 - App-specific guidance:
+  - `qb_site/api/AGENTS.md` for public API endpoints, common patterns, and authentication notes.
   - `qb_site/syncer/AGENTS.md` for ingestion, discovery/backfill, and sync admin workflows.
   - `qb_site/analyzer/AGENTS.md` for revision/queue/dependency sweeps and analytics models.
   - `qb_site/zulip_bot/AGENTS.md` for webhook/command/policy/registration behavior.
