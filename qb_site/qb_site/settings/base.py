@@ -256,6 +256,10 @@ SYNCER_GITHUB_WEBHOOK_DRY_RUN = env_bool(os.getenv("SYNCER_GITHUB_WEBHOOK_DRY_RU
 SYNCER_RATE_REMAINING_MIN = int(os.getenv("SYNCER_RATE_REMAINING_MIN", 200))
 SYNCER_TIMELINE_K_DEFAULT = int(os.getenv("SYNCER_TIMELINE_K_DEFAULT", 150))
 SYNCER_COMMITS_M_DEFAULT = int(os.getenv("SYNCER_COMMITS_M_DEFAULT", 15))
+# Per-review inline-comment fetch cap on PullRequestReview.comments(first: K).
+# Reviews exceeding this cap get a PRReviewInlineCommentBackfill row for the v3
+# recovery sweep; see docs/design-decisions/044-….
+SYNCER_INLINE_COMMENTS_PER_REVIEW = int(os.getenv("SYNCER_INLINE_COMMENTS_PER_REVIEW", 20))
 SYNCER_LAST_SYNC_EPSILON_SECONDS = int(os.getenv("SYNCER_LAST_SYNC_EPSILON_SECONDS", 300))
 SYNCER_ACTIVE_REPOS_PERIOD_SECONDS = int(os.getenv("SYNCER_ACTIVE_REPOS_PERIOD_SECONDS", 300))
 SYNCER_REPO_ENQUEUE_BATCH_MAX = int(os.getenv("SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))

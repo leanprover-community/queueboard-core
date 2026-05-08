@@ -14,7 +14,8 @@ docker compose exec -T web python qb_site/manage.py sync_pr_from_file \
 gh api graphql \
   -F query=@qb_site/syncer/queries/pr_bundle.graphql \
   -F owner='leanprover-community' -F name='mathlib4' \
-  -F number=30723 -F timelineK=150 -F commitsM=15 -F timelineSince='2025-10-20T00:00:00Z' \
+  -F number=30723 -F timelineK=150 -F commitsM=15 -F inlineCommentsPerReview=20 \
+  -F timelineSince='2025-10-20T00:00:00Z' \
   > pr-30723.json
 
 # Repo-level discovery and enqueue
