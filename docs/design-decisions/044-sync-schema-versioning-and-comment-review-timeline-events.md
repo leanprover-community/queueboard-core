@@ -50,7 +50,7 @@
 | 4 — Phase 0. API verification | **Done** | Schema introspection + sample queries against mathlib4, lean4, kubernetes/kubernetes confirm field shapes. See Progress Notes 2026-05-08 (Phase 0). |
 | 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated (commits `042c826`, `9a78d4f`). |
 | 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Committed, awaiting deploy** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing for reviews, pending-review drop, dismissed-review null-guard, requestedReviewer routing (User/Bot/Mannequin → login; Team → slug), and `inline_comment_total_count` refresh. New test class with 16 cases. |
-| 4c. Wire inline-comments service | Pending | Connect existing `inline_comments_sync.py` to bundle ingest path. |
+| 4c. Wire inline-comments service | **Committed, awaiting deploy** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Also includes `state=DISMISSED` review's inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. |
 | 4d. Strict CHECK constraints | Pending | After 4b/4c soak. |
 | 5. v2 upgrader | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2`; the wave fires here. |
 | 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5. |
@@ -1023,6 +1023,83 @@ is a quick reversal if production data turns out to violate them.
   4c. So `PRReviewInlineComment` rows do not appear yet, but the
   parent `REVIEW_*` rows do, and `inline_comment_total_count` carries
   the GitHub-truth count for analytics.
+
+  DB-requiring tests not run locally (no Compose). Need
+  `bash scripts/repo_check_compose.sh` before deploy.
+- 2026-05-08: **Pre-4c verification.** Before wiring 4c, ran additional
+  `gh api graphql` probes to confirm two assumptions the design depends on:
+
+  1. **`state=DISMISSED` `PullRequestReview` nodes appear in
+     `timelineItems` with non-null `submittedAt` and may carry inline
+     comments.** Verified on `rust-lang/rust` PR 149543, which has 8
+     reviews in its sample (states: 5 COMMENTED, 1 CHANGES_REQUESTED,
+     1 APPROVED, 1 DISMISSED). The dismissed review's `submittedAt` is
+     real (`2026-01-14T18:26:51Z`) and its `comments.totalCount=1`
+     with one persistent inline comment. **Implication:** dropping
+     `state=DISMISSED` `PullRequestReview` nodes at the
+     `PRTimelineEvent` level (per 4b) is correct — the dismissal is
+     captured via the separate `ReviewDismissedEvent` — but the inline
+     comments under that review still carry real review feedback and
+     would be lost if 4c skipped them. So 4c's filter is
+     **`submittedAt is not null`** rather than a state allow-list:
+     DISMISSED reviews' inline comments are persisted with
+     `parent_review_event=NULL`, durably linked via `review_node_id`.
+     Backfill markers are skipped for these (no parent FK to anchor
+     the OneToOne row); accept the gap, log a warning. PENDING
+     reviews are dropped naturally because `submittedAt is null`.
+  2. **Thread-reply pattern: each thread reply is wrapped in its own
+     one-comment `PullRequestReview` with `state=COMMENTED`.**
+     Verified on `rust-lang/rust` PR 153826's `reviewThreads`. A
+     three-comment thread had three distinct `PullRequestReview` ids;
+     the second and third comments' `replyTo.id` correctly pointed
+     back to the first comment, not to each other. Confirms the
+     design's invariant and the inline-comments service's
+     bundle-scope thread-root resolution.
+- 2026-05-08: **Chunk 4c implemented.** `PRSyncService.sync_pull_request_bundle`
+  now invokes `_sync_inline_review_comments(pr_obj, tl_nodes)` after
+  the timeline-sync call. The helper:
+
+  - Filters timeline nodes to `PullRequestReview` items with non-null
+    `submittedAt` (drops PENDING).
+  - Resolves the `parent_review_event` FK by looking up
+    `PRTimelineEvent` rows by `github_node_id`. For DISMISSED reviews,
+    no parent row exists, so the FK is left null — see Pre-4c
+    verification.
+  - Builds one `ReviewInlineCommentsGroup` per review via the existing
+    `parse_review_inline_comments_group` helper, then calls
+    `sync_review_inline_comments_bundle` once per bundle. Bundle scope
+    is required so the service can resolve thread roots across
+    reviews (modern GitHub wraps each thread reply in its own
+    one-comment review).
+
+  Result dict gains `inline_comments_created` and
+  `inline_backfill_rows_upserted` keys so the sync_pr task's summary
+  surfaces ingestion volumes for monitoring.
+
+  New fixture `qb_site/syncer/tests/fixtures/pr_bundle_with_engagement_events.json`
+  exercises every shape: a team review request, a Bot review request,
+  an issue comment, two reviews under the same thread (root + reply,
+  validating cross-review thread root resolution), an APPROVED review
+  with `comments.pageInfo.hasNextPage=true` to trigger the backfill
+  marker, a PENDING review (must be dropped), and a DISMISSED review
+  with one inline comment + the matching `ReviewDismissedEvent` (must
+  ingest the inline comment with `parent_review_event=NULL`).
+
+  New tests in
+  `qb_site/syncer/tests/services/test_engagement_event_ingestion.py`
+  (9 cases): row counts, team/bot reviewer routing, issue-comment
+  shape, inline-comment persistence with thread-root self-anchoring,
+  cross-review thread reply linking, backfill row created with
+  `total_count=25`, pending-review drop, dismissed-review inline
+  comments captured with null parent FK, idempotency under re-ingest,
+  result-dict counts.
+
+  Behavior at deploy: with 4a's fragments already returning the new
+  shapes and 4b's normalizer creating REVIEW_* rows, this chunk lights
+  up `PRReviewInlineComment` and `PRReviewInlineCommentBackfill`
+  ingestion. New rows on fresh syncs and timeline rewalks.
+  `CURRENT_SYNC_SCHEMA_VERSION` is still `1`, so no v=2 wave fires —
+  only PRs being synced for unrelated reasons get the new rows.
 
   DB-requiring tests not run locally (no Compose). Need
   `bash scripts/repo_check_compose.sh` before deploy.
