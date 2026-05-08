@@ -48,8 +48,8 @@
 | 3a. Inline-comment models + admin + backup policy | **Committed, awaiting deploy** | Pure additive migration `0041`; both new tables and admins ready; `validate_backup_policy.py` updated. |
 | 3b. Inline-comment ingestion service | **Committed, awaiting deploy** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. Service is importable but unreferenced; Chunk 4 wires it in. |
 | 4 — Phase 0. API verification | **Done** | Schema introspection + sample queries against mathlib4, lean4, kubernetes/kubernetes confirm field shapes. See Progress Notes 2026-05-08 (Phase 0). |
-| 4a. GraphQL fragments + setting | **In progress (uncommitted)** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated. |
-| 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | Pending | Map new `__typename`s in `timeline_sync.py`; new `PRTimelineEventType` values + migration. |
+| 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated (commits `042c826`, `9a78d4f`). |
+| 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Committed, awaiting deploy** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing for reviews, pending-review drop, dismissed-review null-guard, requestedReviewer routing (User/Bot/Mannequin → login; Team → slug), and `inline_comment_total_count` refresh. New test class with 16 cases. |
 | 4c. Wire inline-comments service | Pending | Connect existing `inline_comments_sync.py` to bundle ingest path. |
 | 4d. Strict CHECK constraints | Pending | After 4b/4c soak. |
 | 5. v2 upgrader | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2`; the wave fires here. |
@@ -968,6 +968,63 @@ is a quick reversal if production data turns out to violate them.
   new variable is captured; ran green locally (10/10). DB-requiring
   tests (integration / smoke / backfill) not run locally — Compose
   Postgres unavailable in this environment. Will need to run via
+  `bash scripts/repo_check_compose.sh` before deploy.
+- 2026-05-08: **Chunk 4b implemented.** Seven new values added to
+  `PRTimelineEventType` (`ISSUE_COMMENTED`, `REVIEW_APPROVED`,
+  `REVIEW_CHANGES_REQUESTED`, `REVIEW_COMMENTED`, `REVIEW_DISMISSED`,
+  `REVIEW_REQUESTED`, `REVIEW_REQUEST_REMOVED`); metadata-only migration
+  `0042_alter_prtimelineevent_type.py` regenerates the `choices=` set
+  on the column. CHECK constraints are deferred to 4d.
+
+  `qb_site/syncer/services/sub/timeline_sync.py` was refactored to
+  extract per-event field translation into `_extract_event_fields(ev)`
+  and now handles all five new GraphQL types from Chunk 4a:
+
+  - **`IssueComment`** → `ISSUE_COMMENTED`. `actor_login` from
+    `author.login` with the empty-string convention for null/deleted
+    accounts. `createdAt` populates `occurred_at`.
+  - **`PullRequestReview`** → `REVIEW_*` per `state` (`APPROVED` /
+    `CHANGES_REQUESTED` / `COMMENTED`). `PENDING` and `DISMISSED`
+    review states are dropped at ingest (the latter is captured via
+    the separate `ReviewDismissedEvent`). `submittedAt` populates
+    `occurred_at`; `inline_comment_total_count` is read from
+    `comments.totalCount`. The update path refreshes
+    `inline_comment_total_count` on rewalks (it's GitHub-truth and may
+    grow), but other typed columns remain append-only.
+  - **`ReviewDismissedEvent`** → `REVIEW_DISMISSED`. `actor_login` is
+    derived from `actor`, never from `review.author` (per design's
+    invariant). `extra` carries `dismissed_review_node_id` /
+    `dismissed_review_author` / `dismissed_review_submitted_at` /
+    `previous_review_state`. **Null-guard for `review`**: when
+    GitHub returns `review: null`, only `previous_review_state` is
+    populated in `extra`.
+  - **`ReviewRequestedEvent`** / **`ReviewRequestRemovedEvent`** →
+    `REVIEW_REQUESTED` / `REVIEW_REQUEST_REMOVED`. `requestedReviewer`
+    routing per Phase 0: `User` / `Bot` / `Mannequin` →
+    `requested_reviewer_login`; `Team` → `requested_team_slug`. The
+    two columns are mutually exclusive (only one is populated per row).
+
+  New tests in `syncer.tests.subsystems.test_timeline_sync.TestTimelineSyncReviewAndCommentEvents`
+  (16 cases) cover: each new event type's mapping; pending review
+  dropped; `state=DISMISSED` on `PullRequestReview` dropped (captured
+  via `ReviewDismissedEvent` instead); `inline_comment_total_count`
+  refresh on rewalk; dismissed-review denormalization; dismissed
+  null-`review` guard; User/Team/Bot/Mannequin reviewer routing for
+  `REVIEW_REQUESTED`; `REVIEW_REQUEST_REMOVED` reuses the same routing;
+  null-actor stored as empty string; bot author on `IssueComment`.
+  Pure-function smoke (`_extract_event_fields`) ran green on all paths.
+
+  Behavior at deploy: with 4a's queries already returning the new
+  `__typename`s, this chunk lights up ingestion. New rows on fresh
+  syncs and on timeline backfill rewalks. `CURRENT_SYNC_SCHEMA_VERSION`
+  is still `1`, so the v=2 wave does not fire; only PRs being synced
+  for unrelated reasons (or appearing for the first time) get the new
+  rows. Inline-comment ingestion is **not yet wired** — that's Chunk
+  4c. So `PRReviewInlineComment` rows do not appear yet, but the
+  parent `REVIEW_*` rows do, and `inline_comment_total_count` carries
+  the GitHub-truth count for analytics.
+
+  DB-requiring tests not run locally (no Compose). Need
   `bash scripts/repo_check_compose.sh` before deploy.
 
 ## Finalization Notes
