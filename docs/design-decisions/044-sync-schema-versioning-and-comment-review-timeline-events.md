@@ -50,37 +50,44 @@
 | 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated. |
 | 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Committed, awaiting deploy** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing for reviews, pending-review drop, dismissed-review null-guard, requestedReviewer routing (User/Bot/Mannequin → login; Team → slug), and `inline_comment_total_count` refresh. New test class with 16 cases. |
 | 4c. Wire inline-comments service | **Deployed (2026-05-07)** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Includes `state=DISMISSED` reviews' inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. Live: new `PRTimelineEvent` rows of the new types and `PRReviewInlineComment` rows are appearing on fresh syncs. `PRReviewInlineCommentBackfill` table is still empty as predicted — the v2 wave (Chunk 5) hasn't fired yet, so the long-tail "review with >20 inline comments" population that would trigger backfill rows hasn't been re-walked. |
-| 4d. Strict CHECK constraints | **Committed, awaiting deploy** | Migration `0043` adds three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 (no offending rows under any of the three constraints), confirming current ingestion conforms. Negative-case tests added in `TestTimelineEventCheckConstraints`. |
-| 5. v2 upgrader (the wave) | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2` AND registers `upgrade_to_v2`. Until both ship together, the existing `syncer.upgrade_schema_versions` task is a no-op (target=1, every PR already there). After Chunk 5 deploys, the convergence canary spikes and trends back to 0 over days as the wave converges. |
+| 4d. Strict CHECK constraints | **Deployed (2026-05-08)** | Migration `0043` added three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 before deploy. Negative-case tests in `TestTimelineEventCheckConstraints`. |
+| 5. v2 upgrader (the wave) | **Committed, awaiting deploy** | `CURRENT_SYNC_SCHEMA_VERSION` bumped to 2; `UpgradeToV2` defined in `services/sync_schema_upgrade_v2.py` and registered via `SyncerConfig.ready()`. Migration `0044` data-migrates `timeline_backfill_done=False, timeline_backfill_cursor=NULL` for every PR with `sync_schema_version<2` (option (a) fix from §"Correctness pitfall"). New optional gate `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION` lets a deploy hold the wave below `CURRENT` (clamped to it on the upper side). Existing pre-Chunk-5 tests updated for `CURRENT=2`; new tests cover `target_version` clamping/holding, `effective_target_version`, `UpgradeToV2.is_complete`/`kick`, and the gate path through the periodic task. |
 | 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5. |
 
 ### Resumption pointer for the next agent
-Chunks 1+2 and 4a–4c are in production. The branch
-`sync-schema-versioning` now also carries **Chunk 4d** (migration `0043`
-+ negative tests) ready for deploy. The next units of work, in order:
+Chunks 1+2 and 4a–4d are in production. The branch
+`sync-schema-versioning` now also carries **Chunk 5** (the v2 wave)
+ready for deploy. The next units of work, in order:
 
-1. **Chunk 4d — deploy.** Migration adds three CHECK constraints on
-   `PRTimelineEvent`. Pre-flight queries against prod returned 0/0/0 so
-   the migration is safe to apply; the post-deploy ingestion crash
-   surface is small (any unexpected GraphQL shape would have already
-   produced rows that the pre-flight queries flagged).
-2. **Chunk 5 — v2 upgrader (the wave).** This is where the historical
-   backfill of `IssueComment` / `PullRequestReview` events on
-   already-fully-walked PRs actually runs. **Read §Chunk 5's
-   "Correctness pitfall" callout first** — there's a real bug in the
-   original `is_complete(pr) := pr.timeline_backfill_done` rule that
-   needs to be addressed (PRs with `timeline_backfill_done=True` from
-   v1-era walks would otherwise be stamped to v=2 without ever
-   capturing historical events). Recommended fix is option (a):
-   data-migrate `timeline_backfill_done=False` for every PR with
-   `sync_schema_version < 2` in the same migration that bumps
-   `CURRENT_SYNC_SCHEMA_VERSION = 2`.
-3. **Chunk 6 — drop `engagement_synced_at`.** Trivial, post-soak.
+1. **Chunk 5 — deploy.** This is the wave. Migration `0044` resets
+   `timeline_backfill_done=False` for every PR at `sync_schema_version
+   < 2`; the bumped constant + registered `UpgradeToV2` then drive the
+   actual rewalks via the existing `backfill_repo_incomplete_prs`
+   pacing. Convergence canary
+   (`prs_below_current_sync_schema_version`) spikes on deploy and
+   trends back to 0 over days. **Optional staged rollout:** ship the
+   code with `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` to keep the wave
+   gated, watch the canary, then flip the env var to `2` (or unset) to
+   fire it. **Watch list during the wave:**
+   - `prs_below_current_sync_schema_version` per repo — must be
+     monotonically decreasing pass-over-pass.
+   - GitHub rate-limit telemetry — if the kick budget is consistently
+     exhausted while `SYNCER_RATE_REMAINING_MIN` deferrals fire, the
+     wave is well-paced; flat budget remaining means budget is
+     oversized.
+   - `PRReviewInlineCommentBackfill` row count — should now be growing
+     (long-tail reviews with >`SYNCER_INLINE_COMMENTS_PER_REVIEW`
+     inline comments surface here).
+2. **Chunk 6 — drop `engagement_synced_at`.** Trivial, after Chunk 5
+   has soaked at least one release.
 
-If post-deploy of 4d surfaces a constraint violation we somehow missed
-(integrity error during a fresh sync), the rollback path is to drop
-the offending constraint in a hotfix migration; the data shape is the
-source of truth, not the constraint.
+If the wave stalls (the canary stays flat across multiple snapshots
+on a repo), inspect the per-task return dict
+(`{"kicked": …, "kick_budget_remaining": …, …}`) to determine
+whether kicks are being throttled or whether `is_complete` keeps
+returning False (the latter would imply rewalks aren't completing —
+likely a `backfill_repo_incomplete_prs` rate-limit issue, not an
+upgrader bug).
 
 ## Proposed Design
 
@@ -1031,6 +1038,29 @@ is a quick reversal if production data turns out to violate them.
   `PullRequest` that PRSyncService writes when a full-history walk
   completes. Recommendation: option (a). Tracking as an open question.
 
+- 2026-05-08: **Chunk 5 implemented.** Picked option (a) (data-migrate
+  reset of `timeline_backfill_done`) over option (b) (track
+  `timeline_query_version`) per the design recommendation: option (b)
+  would have added a column on `PullRequest` whose only consumer is
+  this single wave, and the redundant-rewalk cost option (a) imposes
+  is bounded by `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT` so the worst case
+  is a paced re-walk rather than a thundering herd. `UpgradeToV2`
+  lives in its own module
+  (`syncer/services/sync_schema_upgrade_v2.py`) and is registered via
+  `SyncerConfig.ready()`; `register_v2_upgrader` is idempotent so
+  test fixtures and re-imports don't trip the registry duplicate
+  guard. Added the optional `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION`
+  gate (clamped to `CURRENT_SYNC_SCHEMA_VERSION` on the upper side)
+  and threaded it through the candidate-filter query and the
+  per-PR dispatcher target. Pre-existing tests that hard-coded
+  `CURRENT=1` were updated to reflect `CURRENT=2`; new tests cover
+  the gate, the v2 kick (`force=True, backfill_timeline_pages` from
+  settings), and `is_complete` true/false. The kick passes
+  `backfill_timeline_pages=SYNCER_TIMELINE_BACKFILL_PAGES` (not 0) so
+  it does meaningful rewalk work on first invocation rather than
+  just a head sync — interpreting the original design's "so the
+  dedupe doesn't swallow the rewalk" phrase as the kick itself being
+  the rewalk vehicle.
 - 2026-05-08: **4a–4c deployed; 4d implemented.** Live ingestion is
   producing the new `PRTimelineEvent` types and `PRReviewInlineComment`
   rows. `PRReviewInlineCommentBackfill` is still empty as predicted —
