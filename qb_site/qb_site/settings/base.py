@@ -236,6 +236,8 @@ if SYNCER_GITHUB_QUEUE:
         "syncer.backfill_repo_incomplete_prs_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_engagement": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_engagement_active": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.upgrade_schema_versions": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.upgrade_schema_versions_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history_sweep": {"queue": SYNCER_GITHUB_QUEUE},
     }
@@ -287,6 +289,13 @@ SYNCER_INCOMPLETE_BACKFILL_LIMIT = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_LIM
 # Engagement backfill (one-off snapshot of files/assignees/approvals/comments)
 SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS", 900))
 SYNCER_ENGAGEMENT_BACKFILL_LIMIT = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_LIMIT", 5))
+# Sync schema upgrader pacing (see syncer/services/sync_schema_upgrades.py).
+# BATCH_SIZE bounds DB-only stamping work per task invocation; KICK_LIMIT bounds
+# GitHub-bound sync_pr_task enqueues per invocation so a wave can't outrun the
+# rate-limit budget. Period <= 0 disables the periodic beat.
+SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS = int(os.getenv("SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS", 600))
+SYNCER_SCHEMA_UPGRADE_BATCH_SIZE = int(os.getenv("SYNCER_SCHEMA_UPGRADE_BATCH_SIZE", 1000))
+SYNCER_SCHEMA_UPGRADE_KICK_LIMIT = int(os.getenv("SYNCER_SCHEMA_UPGRADE_KICK_LIMIT", 20))
 
 # Pending-CI refresh defaults
 SYNCER_PENDING_CI_MAX_AGE_HOURS = int(os.getenv("SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
@@ -504,6 +513,16 @@ if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:
         "schedule": SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS,
         "kwargs": {
             "limit": SYNCER_ENGAGEMENT_BACKFILL_LIMIT,
+        },
+    }
+# Sync schema upgrader; disable by setting SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS<=0
+if SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["upgrade_schema_versions"] = {
+        "task": "syncer.upgrade_schema_versions_active",
+        "schedule": SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS,
+        "kwargs": {
+            "batch_size": SYNCER_SCHEMA_UPGRADE_BATCH_SIZE,
+            "kick_limit": SYNCER_SCHEMA_UPGRADE_KICK_LIMIT,
         },
     }
 if ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS > 0:

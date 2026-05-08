@@ -32,6 +32,13 @@ class SyncerConvergenceSnapshot(models.Model):
     prs_missing_head_ci_state = models.IntegerField(default=0)
     prs_missing_head_sha = models.IntegerField(default=0)
     prs_missing_head_ci_contexts = models.IntegerField(default=0)
+    # Wave progress for the sync_schema_version upgrader.
+    # ``sync_schema_version_target`` records the value of CURRENT_SYNC_SCHEMA_VERSION
+    # in the codebase at collection time, so historical rows remain interpretable
+    # after future bumps. ``prs_below_current_sync_schema_version`` is the
+    # operator's primary canary for a stalled wave.
+    prs_below_current_sync_schema_version = models.IntegerField(default=0)
+    sync_schema_version_target = models.PositiveSmallIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

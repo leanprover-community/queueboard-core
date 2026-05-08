@@ -14,6 +14,7 @@ from syncer.models import (
     CommitCheckRun,
     CommitStatusContext,
 )
+from syncer.services.sync_schema_upgrades import CURRENT_SYNC_SCHEMA_VERSION
 from core.models import Repository
 
 
@@ -68,6 +69,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             delta = (discovery_state.continuation_success_cutoff - discovery_cutoff).total_seconds()
             discovery_catchup_lag_seconds = max(0, int(delta))
 
+        prs_below_target = qs.filter(sync_schema_version__lt=CURRENT_SYNC_SCHEMA_VERSION).count()
+
         engagement_missing = qs.filter(engagement_synced_at__isnull=True).count()
         engagement_incomplete = (
             qs.filter(
@@ -110,6 +113,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             prs_missing_head_ci_state=missing_head_ci,
             prs_missing_head_sha=missing_head_sha,
             prs_missing_head_ci_contexts=missing_head_contexts,
+            prs_below_current_sync_schema_version=prs_below_target,
+            sync_schema_version_target=CURRENT_SYNC_SCHEMA_VERSION,
         )
         rows += 1
         per_repo.append(
@@ -137,6 +142,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                 "prs_missing_head_ci_state": missing_head_ci,
                 "prs_missing_head_sha": missing_head_sha,
                 "prs_missing_head_ci_contexts": missing_head_contexts,
+                "prs_below_current_sync_schema_version": prs_below_target,
+                "sync_schema_version_target": CURRENT_SYNC_SCHEMA_VERSION,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo, "request_meta": request_meta}

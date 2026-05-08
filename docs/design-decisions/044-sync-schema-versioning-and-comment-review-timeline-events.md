@@ -59,15 +59,30 @@
       def kick(self, pr: PullRequest) -> None: ...   # queues whatever work is needed
   ```
   The dispatcher per PR walks `version+1..CURRENT`:
-  - If `is_complete(pr)` returns True for step `s`, stamp `sync_schema_version=s`
-    and continue.
-  - Else call `kick(pr)` and stop iterating for this PR; the next dispatcher pass
-    re-checks completion.
-  - Stamping happens in a single `update_fields=["sync_schema_version"]` write —
-    no races against `PRSyncService` because the sync service never touches this
-    column.
+  - **No upgrader registered for step `s`** → auto-stamp `sync_schema_version=s`
+    and continue. This intentionally skips trivial / already-baseline versions
+    (e.g. v=1, which corresponds to engagement fields that `PRSyncService`
+    already writes on every sync) without forcing the registration of a
+    no-op upgrader. See Subtleties for the trade-off.
+  - **Upgrader registered and `is_complete(pr)` returns True** → stamp
+    `sync_schema_version=s` and continue.
+  - **Otherwise** → call `kick(pr)` and stop iterating for this PR; the next
+    dispatcher pass re-checks completion.
+  - Stamping uses a guarded `update(...)` keyed on `pk` and a
+    `sync_schema_version__lt=s` predicate, so concurrent dispatchers can't
+    walk the column backward.
 - Adding a future ingestion expansion is then: bump the constant, register an
-  upgrader. No new column on `PullRequest`.
+  upgrader (or skip registration if the new version's data is implicitly
+  already-captured by the existing sync path, in which case auto-stamp does
+  the right thing). No new column on `PullRequest`.
+- Per-task **kick budget** separates the two workloads inside a single task
+  invocation: stamping is DB-only and can clear large backlogs cheaply, while
+  `kick` enqueues GitHub-bound work and must be paced. The dispatcher accepts
+  a `kick_budget`; once exhausted it stops emitting kicks (but continues
+  stamping). The two budgets are configured via
+  `SYNCER_SCHEMA_UPGRADE_BATCH_SIZE` (default 1000, max PRs considered per
+  invocation) and `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT` (default 20, max kicks
+  per invocation, sized to mirror the engagement-backfill pacing).
 
 ### 2. `engagement_synced_at` deprecation
 - In the same migration that introduces `sync_schema_version`, data-migrate
@@ -268,6 +283,18 @@
   upgrader having run would falsely advance the version (e.g., a v=1 PR whose
   bundle sync completes before its v2 timeline rewalk would otherwise be
   prematurely stamped to 2).
+- **Missing-upgrader auto-stamp is deliberate.** A version step with no
+  registered upgrader is treated as "satisfied by default" by the dispatcher,
+  which stamps and continues. This is the right behavior for v=1 — the
+  engagement fields it tracks are already written on every `PRSyncService`
+  sync, so a "v1 upgrader" would be a stamper-only class with a `kick` path
+  that is never exercised in practice. Coding that explicitly is busywork.
+  The trade-off is that a future PR that bumps `CURRENT_SYNC_SCHEMA_VERSION`
+  and *forgets* to register the upgrader will silently auto-stamp PRs through
+  the new version. Mitigation: (1) the version-bump diff has to add both the
+  constant and the registration, so reviewers see them together; (2) the
+  dispatcher logs an info-level event each time it auto-stamps, so missing
+  registrations show up in operational logs.
 - **`PRTimelineEvent` rows correspond 1:1 to `timelineItems` nodes.** Inline
   review comments live in `PRReviewInlineComment`, not in `PRTimelineEvent`.
   This invariant keeps future expansions easy to reason about and avoids
@@ -380,13 +407,37 @@ schema version if a concrete need arises.
      upgrader framework, the new task, and the new models.
    - No behavior change yet (constant still 1; upgrader registry is empty).
 2. **Upgrader framework.**
-   - Add `qb_site/syncer/services/sync_schema_upgrades.py` with the registry,
-     dispatcher, and per-version `SchemaUpgrade` protocol.
-   - Add a Celery task `syncer.upgrade_schema_versions` that selects PRs where
-     `sync_schema_version < CURRENT_SYNC_SCHEMA_VERSION` and dispatches
-     upgraders with the same dedupe/rate-limit treatment as existing backfill
-     tasks.
-   - Add `syncer.upgrade_schema_versions_active_task` periodic beat entry.
+   - Flesh out `qb_site/syncer/services/sync_schema_upgrades.py` with:
+     - `_REGISTRY` + `register(upgrade)` (no upgraders registered yet — the
+       v2 upgrader lands in Chunk 5; v=1 is auto-stamped by the dispatcher).
+     - `dispatch(pr, *, kick_budget) -> DispatchOutcome` per the rules in §1
+       (auto-stamp missing upgraders; stamp on `is_complete=True`; kick on
+       `is_complete=False` until the budget is exhausted).
+     - `stamp(pr, version)` — single guarded UPDATE keyed on
+       `pk=pr.pk, sync_schema_version__lt=version`.
+   - Add `qb_site/syncer/tasks/upgrade_schema_tasks.py` with:
+     - `syncer.upgrade_schema_versions(repo_id, *, batch_size, kick_limit)`:
+       selects up to `batch_size` PRs in the repo at
+       `sync_schema_version < CURRENT_SYNC_SCHEMA_VERSION`, ordered by
+       `(sync_schema_version, -gh_updated_at, -id)`. Walks each through the
+       dispatcher, sharing a single `kick_budget` across the batch. Same
+       dedupe / rate-limit treatment for `kick` enqueues as the existing
+       backfill tasks (`claim_enqueue_slot` + `sync_pr_runtime_key`).
+     - `syncer.upgrade_schema_versions_active(*, batch_size, kick_limit)`:
+       active-repo fanout, mirroring `backfill_repo_engagement_active_task`.
+   - Settings (`qb_site/qb_site/settings/base.py` + `.env.example`):
+     - `SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS` (default 600).
+     - `SYNCER_SCHEMA_UPGRADE_BATCH_SIZE` (default 1000).
+     - `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT` (default 20).
+   - Beat schedule entry gated on `SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS > 0`.
+   - Task routing entries for both task names under `SYNCER_GITHUB_QUEUE`.
+   - Convergence metric: add
+     `prs_below_current_sync_schema_version: IntegerField(default=0)` and
+     `sync_schema_version_target: PositiveSmallIntegerField(default=0)` to
+     `SyncerConvergenceSnapshot`. Populate in `syncer.collect_convergence`.
+     Counts dropping to zero and target advancing in lockstep is the operator
+     signal that a wave has converged.
+   - Update `qb_site/syncer/AGENTS.md` task list with the two new task names.
 3. **`PRReviewInlineComment` and `PRReviewInlineCommentBackfill` models + ingestion path.**
    - New model migrations for both tables.
    - Update `scripts/backup_policy.py` for the two new tables.
@@ -465,6 +516,12 @@ schema version if a concrete need arises.
   - Watch token rate-limit budget during the upgrade wave; confirm
     `SYNCER_RATE_REMAINING_MIN` deferral behaves as on existing backfills.
   - Inspect bundle payload size before/after on a busy PR.
+  - **Convergence dashboard sanity:** after each deploy, query the latest
+    `SyncerConvergenceSnapshot` rows and confirm
+    `sync_schema_version_target` matches `CURRENT_SYNC_SCHEMA_VERSION` in code
+    and `prs_below_current_sync_schema_version` is monotonically decreasing
+    pass-over-pass on each repo. A flat or growing line on this metric across
+    multiple snapshots is the canary for a stalled wave.
 - **Scan-performance check:** during the v=2 wave on real data, run
   `EXPLAIN ANALYZE SELECT id FROM syncer_pullrequest WHERE sync_schema_version < 2 LIMIT 50;`
   and confirm the plan is either an Index Scan on the
@@ -477,6 +534,34 @@ schema version if a concrete need arises.
   typed columns on `PRTimelineEvent`, and the new
   `PRReviewInlineComment` / `PRReviewInlineCommentBackfill` tables must all
   be reflected in `scripts/backup_policy.py`).
+
+## Deploy Boundaries
+Each chunk pair is intended to be deployable on its own and roll back to the
+previous deploy without manual intervention.
+
+1. **Chunks 1+2 → deploy.** Schema columns + data migration land. Upgrader
+   framework + periodic task ship with an empty registry; `CURRENT=1` and
+   v=1 is auto-stamped, so the only behavior change is "new convergence
+   metric column populated; v=0 PRs created between Chunks 1 and 2 deploys
+   get stamped to 1 on the next pass." Soak time for the new periodic scan
+   on real data; opportunity to verify
+   `EXPLAIN ANALYZE ... WHERE sync_schema_version < 2 LIMIT 50;` plan
+   selection.
+2. **Chunks 3+4 → deploy.** Inline-comment models + GraphQL extensions land
+   together (the model migration must precede the ingestion code). New
+   bundles start carrying timeline events for issue comments and reviews,
+   plus inline-comment rows. `CURRENT_SYNC_SCHEMA_VERSION` still 1, so no
+   wave fires; this validates the new ingestion path on fresh syncs only.
+3. **Chunk 5 → deploy.** Bumps `CURRENT=2` and registers the v2 upgrader.
+   The wave kicks off and is paced by `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT`
+   plus the existing `SYNCER_RATE_REMAINING_MIN` deferral. Monitor the
+   convergence-metric line across all active repos.
+4. **Chunk 6 → deploy** (post-soak). Drop `engagement_synced_at` and prune
+   its filter clauses. Trivial, low-impact cleanup.
+
+Rollback: each step is additive (or, for Chunk 6, the column drop comes
+after a release with no remaining writers/readers). Stopping the periodic
+beat task neutralizes the upgrader without further intervention.
 
 ## Open Questions (settle during implementation)
 - Cost of the nested `comments(first: K)` fetch on `PullRequestReview` within
@@ -517,6 +602,18 @@ schema version if a concrete need arises.
   `event_type` → `type` throughout to match the existing column name on
   `PRTimelineEvent`. Added scan-performance subtlety covering all new and
   replaced periodic scans.
+- 2026-05-07: Chunk 1 landed (schema + stub upgrader module). Refined Chunk
+  2's design ahead of implementation: dispatcher auto-stamps versions with
+  no registered upgrader (so v=1 doesn't need a trivial stamper-only
+  upgrader, since `PRSyncService` already writes the engagement fields v=1
+  represents on every sync). Split the pacing knobs into
+  `SYNCER_SCHEMA_UPGRADE_BATCH_SIZE` (DB-only stamping; default 1000) and
+  `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT` (GitHub-bound; default 20) so Chunk 5's
+  v=2 wave is paced like the engagement backfill while stamping clears
+  cheap backlogs in one or two passes. Added two convergence-metric columns
+  to `SyncerConvergenceSnapshot` so wave progress is observable per repo.
+  Documented deploy boundaries (1+2, 3+4, 5, 6) so each impact step has a
+  soak period before the next.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into
