@@ -47,7 +47,11 @@
 | 2. Upgrader framework + convergence metric | **Deployed** | Periodic task `syncer.upgrade_schema_versions` is firing; convergence canary reports `prs_below_current_sync_schema_version=0` and `sync_schema_version_target=1` per repo. Registry empty as designed; auto-stamp path is what's running. |
 | 3a. Inline-comment models + admin + backup policy | **Committed, awaiting deploy** | Pure additive migration `0041`; both new tables and admins ready; `validate_backup_policy.py` updated. |
 | 3b. Inline-comment ingestion service | **Committed, awaiting deploy** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. Service is importable but unreferenced; Chunk 4 wires it in. |
-| 4. GraphQL + new timeline event types + wiring | **Next** | Split into Phase 0 verification + 4a–4d below. |
+| 4 — Phase 0. API verification | **Done** | Schema introspection + sample queries against mathlib4, lean4, kubernetes/kubernetes confirm field shapes. See Progress Notes 2026-05-08 (Phase 0). |
+| 4a. GraphQL fragments + setting | **In progress (uncommitted)** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated. |
+| 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | Pending | Map new `__typename`s in `timeline_sync.py`; new `PRTimelineEventType` values + migration. |
+| 4c. Wire inline-comments service | Pending | Connect existing `inline_comments_sync.py` to bundle ingest path. |
+| 4d. Strict CHECK constraints | Pending | After 4b/4c soak. |
 | 5. v2 upgrader | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2`; the wave fires here. |
 | 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5. |
 
@@ -866,6 +870,105 @@ is a quick reversal if production data turns out to violate them.
   ingest path. Resolved the constraint-strictness and payload-measurement
   open questions (see Open Questions); split Chunk 4 into Phase 0 + 4a–4d
   so each sub-chunk lands with bake time.
+- 2026-05-08: **Phase 0 — API verification complete.** Combined live
+  introspection (`__type` queries) with sample probes of three repos
+  (`leanprover-community/mathlib4` PR 38292, `leanprover/lean4` PR 13628,
+  `kubernetes/kubernetes` PR 129719). Findings, mapped to the Phase 0
+  checklist:
+  1. **`PullRequestReview.author`** — schema kind=`INTERFACE:Actor`
+     (nullable). `Actor` interface includes `Bot`, `EnterpriseUserAccount`,
+     `Mannequin`, `Organization`, `User`. Real-world sample: 30/30 reviews
+     on mathlib4 PR 38292 had `User` authors; 5/5 approves on lean4 13628
+     were `User`. No null `author` observed in the sample (small population
+     of deleted accounts in our active mirrors), but the schema permits null.
+     Design's "persist `author_login` as `\"\"` when null" convention is
+     still required.
+  2. **`PullRequestReview.submittedAt`** — `SCALAR:DateTime` (nullable).
+     0 pending reviews observed in the sample; design's "drop pending
+     reviews at ingest" remains correct since pending reviews surface
+     with `submittedAt=null`.
+  3. **`PullRequestReview.state`** values — schema enum exactly
+     `{PENDING, COMMENTED, APPROVED, CHANGES_REQUESTED, DISMISSED}`,
+     matching the design table. Real-world sample observed `COMMENTED`
+     and `APPROVED` only (mathlib uses bors so `APPROVED` is rarer than
+     in typical OSS; `COMMENTED` was dominant). `CHANGES_REQUESTED`
+     and `DISMISSED` not observed in this sample but the enum guarantees
+     they exist; `DISMISSED` we capture via the separate
+     `ReviewDismissedEvent` rather than the review state.
+  4. **`PullRequestReview.comments.totalCount`** — `NON_NULL(SCALAR:Int)`.
+     Safe to rely on for `inline_comment_total_count`. Distribution on
+     k8s PR 129719 (55 reviews): mostly `1` (single inline thread reply,
+     the modern GitHub pattern), some `4`. **No review observed with
+     `>20` inline comments** → `pageInfo.hasNextPage=False` for all
+     reviews in the sample. `SYNCER_INLINE_COMMENTS_PER_REVIEW=20` is
+     comfortable for current real-world data.
+  5. **`ReviewDismissedEvent.previousReviewState`** —
+     `NON_NULL(ENUM:PullRequestReviewState)`. Same enum as the review
+     state itself. Storing in `extra.previous_review_state` works and
+     never holds null.
+  6. **`ReviewDismissedEvent.review`** — `OBJECT:PullRequestReview`
+     (nullable). **Confirmed nullable**, so the design's null-guard at
+     ingest is required. When `review` is null, `dismissed_review_*`
+     fields in `extra` are stored as null (or omitted) instead of crashing.
+  7. **`ReviewRequestedEvent.requestedReviewer`** — `UNION:RequestedReviewer`
+     with possibleTypes `{Bot, Mannequin, Team, User}`. **Bot IS a member
+     of the union** (contradicts a documentation footnote). Real-world
+     samples showed only `User` requestees, but the schema permits all
+     four. Routing decision: **Bot maps to `requested_reviewer_login`**
+     (it has a `login`); `Team` → `requested_team_slug`; `User`/`Mannequin`
+     → `requested_reviewer_login`. The 4d CHECK constraint should permit
+     non-null `requested_reviewer_login` for Bot/Mannequin/User and
+     non-null `requested_team_slug` for Team, with the two mutually
+     exclusive.
+  8. **`ReviewRequestedEvent.actor` / `ReviewRequestRemovedEvent.actor`**
+     — `INTERFACE:Actor` (nullable). 0 null actors observed in the sample;
+     design's "actor_login as empty string when null" applies.
+  9. **`IssueComment.author`** — `INTERFACE:Actor` (nullable).
+     **`IssueComment.createdAt`** — `NON_NULL(SCALAR:DateTime)`. Sampled
+     authors include both `User` (117) and `Bot` (1) on k8s PR 129719;
+     `Bot` (2) on mathlib4 PR 38292. Bot-authored comments are real
+     and routinely present.
+
+  **Decision points resolved:**
+  - **CHECK constraints (4d)**: safe to write strictly per the original
+    design. The only nuance is the `dismissed_review_*` extra fields,
+    which are nullable in `extra` (no constraint needed since `extra`
+    is JSON).
+  - **`Bot` in `requestedReviewer`**: route to `requested_reviewer_login`.
+  - **`last:250` page size**: bundle response on the busiest sample
+    (k8s PR 129719 — 178 matched nodes, 55 reviews each with nested
+    `comments(first:20)`) was on the order of tens of KB. Will measure
+    real bundle size against current production after 4a deploy via
+    a `gh api graphql` invocation against a mathlib4 active PR.
+- 2026-05-08: **Chunk 4a implemented (uncommitted).**
+  `qb_site/syncer/queries/{pr_bundle, timeline_page, timeline_page_back}.graphql`
+  extended with the five new `itemTypes` and per-type fragments
+  (`IssueComment`, `PullRequestReview` with nested
+  `comments(first: $inlineCommentsPerReview)` plus `pageInfo.hasNextPage`
+  and `totalCount`, `ReviewDismissedEvent`, `ReviewRequestedEvent`,
+  `ReviewRequestRemovedEvent`). New GraphQL variable
+  `$inlineCommentsPerReview: Int!` threaded through
+  `GitHubClient.{get_pr_bundle,get_timeline_page,get_timeline_page_back}`
+  with a default sourced from new setting
+  `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default `20`, in
+  `qb_site/qb_site/settings/base.py` and `.env.example`).
+  `scripts/validate_github_graphql.py` updated to pass the new variable;
+  validation against the live GitHub schema passes for all three queries.
+  `qb_site/syncer/AGENTS.md` `gh api graphql` example updated to include
+  `-F inlineCommentsPerReview=20`.
+
+  Behavior change: bundle/timeline responses now contain the additional
+  event types and inline-comment connections. Normalizer in
+  `timeline_sync.py` does **not** yet recognize these `__typename`s, so
+  they fall through to the existing "unknown type" path (no DB writes,
+  no errors). This is the intended Chunk 4a soak posture: payload
+  growth measurable on real traffic, no ingestion change.
+
+  Tests: `syncer.tests.client.test_github_client` extended to assert the
+  new variable is captured; ran green locally (10/10). DB-requiring
+  tests (integration / smoke / backfill) not run locally — Compose
+  Postgres unavailable in this environment. Will need to run via
+  `bash scripts/repo_check_compose.sh` before deploy.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into
