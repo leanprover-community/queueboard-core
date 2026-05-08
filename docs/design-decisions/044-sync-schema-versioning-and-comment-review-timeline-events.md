@@ -49,21 +49,21 @@
 | 3b. Inline-comment ingestion service | **Committed, awaiting deploy** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. Service was importable but unreferenced before 4c. |
 | 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated. |
 | 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Committed, awaiting deploy** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing for reviews, pending-review drop, dismissed-review null-guard, requestedReviewer routing (User/Bot/Mannequin → login; Team → slug), and `inline_comment_total_count` refresh. New test class with 16 cases. |
-| 4c. Wire inline-comments service | **Committed, awaiting deploy** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Includes `state=DISMISSED` reviews' inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. |
-| 4d. Strict CHECK constraints | **Next** | Adds CHECK constraints on `requested_reviewer_login`, `requested_team_slug`, `inline_comment_total_count` mirroring the existing `syncer_prtl_label_by_type_ck` / `syncer_prtl_sha_by_type_ck` pattern. Per design, lands at least one deploy after 4b/4c so any unexpected GraphQL shape surfaces as a test/staging failure rather than an ingestion crash. |
+| 4c. Wire inline-comments service | **Deployed (2026-05-07)** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Includes `state=DISMISSED` reviews' inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. Live: new `PRTimelineEvent` rows of the new types and `PRReviewInlineComment` rows are appearing on fresh syncs. `PRReviewInlineCommentBackfill` table is still empty as predicted — the v2 wave (Chunk 5) hasn't fired yet, so the long-tail "review with >20 inline comments" population that would trigger backfill rows hasn't been re-walked. |
+| 4d. Strict CHECK constraints | **Committed, awaiting deploy** | Migration `0043` adds three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 (no offending rows under any of the three constraints), confirming current ingestion conforms. Negative-case tests added in `TestTimelineEventCheckConstraints`. |
 | 5. v2 upgrader (the wave) | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2` AND registers `upgrade_to_v2`. Until both ship together, the existing `syncer.upgrade_schema_versions` task is a no-op (target=1, every PR already there). After Chunk 5 deploys, the convergence canary spikes and trends back to 0 over days as the wave converges. |
 | 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5. |
 
 ### Resumption pointer for the next agent
-The branch `sync-schema-versioning` carries Chunks 3a, 3b, 4a, 4b, 4c
-ready for deploy. Chunks 1+2 are in production. The next units of work,
-in order:
+Chunks 1+2 and 4a–4c are in production. The branch
+`sync-schema-versioning` now also carries **Chunk 4d** (migration `0043`
++ negative tests) ready for deploy. The next units of work, in order:
 
-1. **Chunk 4d — strict `CHECK` constraints** (small migration + a test).
-   Concrete constraint definitions are in §Chunk 4d below; routing
-   decisions from Phase 0 are baked in (Bot reviewers → `requested_reviewer_login`).
-   Should land *after* a soak deploy of 4a–4c so any production-data
-   shape mismatch surfaces as test failures, not ingestion crashes.
+1. **Chunk 4d — deploy.** Migration adds three CHECK constraints on
+   `PRTimelineEvent`. Pre-flight queries against prod returned 0/0/0 so
+   the migration is safe to apply; the post-deploy ingestion crash
+   surface is small (any unexpected GraphQL shape would have already
+   produced rows that the pre-flight queries flagged).
 2. **Chunk 5 — v2 upgrader (the wave).** This is where the historical
    backfill of `IssueComment` / `PullRequestReview` events on
    already-fully-walked PRs actually runs. **Read §Chunk 5's
@@ -71,13 +71,16 @@ in order:
    original `is_complete(pr) := pr.timeline_backfill_done` rule that
    needs to be addressed (PRs with `timeline_backfill_done=True` from
    v1-era walks would otherwise be stamped to v=2 without ever
-   capturing historical events).
+   capturing historical events). Recommended fix is option (a):
+   data-migrate `timeline_backfill_done=False` for every PR with
+   `sync_schema_version < 2` in the same migration that bumps
+   `CURRENT_SYNC_SCHEMA_VERSION = 2`.
 3. **Chunk 6 — drop `engagement_synced_at`.** Trivial, post-soak.
 
-If the post-deploy of 4a–4c surfaces an unexpected GraphQL shape
-(e.g. a previously-unobserved `requestedReviewer` union member, or an
-edge case Phase 0 missed), encode the chosen routing in 4d's CHECK
-constraint definitions before they land.
+If post-deploy of 4d surfaces a constraint violation we somehow missed
+(integrity error during a fresh sync), the rollback path is to drop
+the offending constraint in a hotfix migration; the data shape is the
+source of truth, not the constraint.
 
 ## Proposed Design
 
@@ -1027,6 +1030,18 @@ is a quick reversal if production data turns out to violate them.
   at Chunk 5 deploy, or (b) add a `timeline_query_version` column on
   `PullRequest` that PRSyncService writes when a full-history walk
   completes. Recommendation: option (a). Tracking as an open question.
+
+- 2026-05-08: **4a–4c deployed; 4d implemented.** Live ingestion is
+  producing the new `PRTimelineEvent` types and `PRReviewInlineComment`
+  rows. `PRReviewInlineCommentBackfill` is still empty as predicted —
+  the threshold for a backfill row is a single `PullRequestReview` with
+  `>SYNCER_INLINE_COMMENTS_PER_REVIEW` (=20) inline comments, and the
+  long-tail population of such reviews lives on PRs that won't be
+  re-walked until the Chunk 5 wave fires. Pre-flight SQL against prod
+  returned 0 rows for each of the three Chunk 4d constraint queries
+  (`bad_routing`, `not_mutex`, `bad_inline_total`), confirming current
+  ingestion conforms. Migration `0043` + negative tests committed; the
+  next deploy enables them.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into
