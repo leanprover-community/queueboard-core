@@ -17,6 +17,7 @@ from syncer.services.sync_schema_upgrades import (
     CURRENT_SYNC_SCHEMA_VERSION,
     DispatchOutcome,
     dispatch,
+    effective_target_version,
 )
 
 
@@ -40,6 +41,7 @@ def upgrade_schema_versions_task(  # type: ignore[no-redef]
 
     eff_batch = int(batch_size) if batch_size is not None else int(getattr(settings, "SYNCER_SCHEMA_UPGRADE_BATCH_SIZE", 1000))
     eff_kick_limit = int(kick_limit) if kick_limit is not None else int(getattr(settings, "SYNCER_SCHEMA_UPGRADE_KICK_LIMIT", 20))
+    eff_target = effective_target_version()
     if eff_batch <= 0:
         return {
             "repo": f"{repo.owner}/{repo.name}",
@@ -47,11 +49,12 @@ def upgrade_schema_versions_task(  # type: ignore[no-redef]
             "considered": 0,
             "stamped": 0,
             "kicked": 0,
-            "target": CURRENT_SYNC_SCHEMA_VERSION,
+            "target": eff_target,
+            "current": CURRENT_SYNC_SCHEMA_VERSION,
         }
 
     candidates = list(
-        PullRequest.objects.filter(repository=repo, sync_schema_version__lt=CURRENT_SYNC_SCHEMA_VERSION).order_by(
+        PullRequest.objects.filter(repository=repo, sync_schema_version__lt=eff_target).order_by(
             "sync_schema_version", "-gh_updated_at", "-id"
         )[:eff_batch]
     )
@@ -61,7 +64,7 @@ def upgrade_schema_versions_task(  # type: ignore[no-redef]
     auto_stamped = 0
     kick_budget = max(0, eff_kick_limit)
     for pr in candidates:
-        outcome: DispatchOutcome = dispatch(pr, kick_budget=kick_budget)
+        outcome: DispatchOutcome = dispatch(pr, kick_budget=kick_budget, target_version=eff_target)
         if outcome.stamped_to is not None:
             stamped += 1
         if outcome.auto_stamped_versions:
@@ -78,7 +81,8 @@ def upgrade_schema_versions_task(  # type: ignore[no-redef]
         "auto_stamped": auto_stamped,
         "kicked": kicked,
         "kick_budget_remaining": kick_budget,
-        "target": CURRENT_SYNC_SCHEMA_VERSION,
+        "target": eff_target,
+        "current": CURRENT_SYNC_SCHEMA_VERSION,
     }
 
 
@@ -99,5 +103,6 @@ def upgrade_schema_versions_active_task(  # type: ignore[no-redef]
         "enqueued": enqueued,
         "batch_size": batch_size,
         "kick_limit": kick_limit,
-        "target": CURRENT_SYNC_SCHEMA_VERSION,
+        "target": effective_target_version(),
+        "current": CURRENT_SYNC_SCHEMA_VERSION,
     }

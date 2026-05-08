@@ -33,14 +33,37 @@ from syncer.models import PullRequest
 logger = logging.getLogger(__name__)
 
 
-CURRENT_SYNC_SCHEMA_VERSION: int = 1
+CURRENT_SYNC_SCHEMA_VERSION: int = 2
 """Current target value of ``PullRequest.sync_schema_version``.
 
 Bumped each time a new ingestion expansion is rolled out together with its
 upgrader. The dispatcher selects PRs where
 ``sync_schema_version < CURRENT_SYNC_SCHEMA_VERSION`` and walks the registry
 from ``pr.sync_schema_version + 1`` up to this value.
+
+A staging deploy can clamp this via the ``SYNCER_SCHEMA_UPGRADE_TARGET_VERSION``
+setting (see :func:`effective_target_version`); production typically leaves
+the gate equal to this constant.
 """
+
+
+def effective_target_version() -> int:
+    """Return the target version honored by the dispatcher loop.
+
+    Resolved as ``min(SYNCER_SCHEMA_UPGRADE_TARGET_VERSION,
+    CURRENT_SYNC_SCHEMA_VERSION)`` if the setting is present and non-None;
+    otherwise just :data:`CURRENT_SYNC_SCHEMA_VERSION`. Clamping to the
+    constant keeps a misconfigured setting from advancing PRs past versions
+    that have no registered upgrader.
+    """
+    # Local import: keep the module importable in test contexts that build
+    # a minimal Django setup.
+    from django.conf import settings
+
+    raw = getattr(settings, "SYNCER_SCHEMA_UPGRADE_TARGET_VERSION", None)
+    if raw is None:
+        return int(CURRENT_SYNC_SCHEMA_VERSION)
+    return min(int(raw), int(CURRENT_SYNC_SCHEMA_VERSION))
 
 
 class SchemaUpgrade(Protocol):
@@ -102,8 +125,8 @@ class DispatchOutcome:
     auto_stamped_versions: tuple[int, ...]  # versions auto-stamped due to missing upgrader
 
 
-def dispatch(pr: PullRequest, *, kick_budget: int = 1) -> DispatchOutcome:
-    """Walk one PR through ``pr.sync_schema_version + 1 ... CURRENT``.
+def dispatch(pr: PullRequest, *, kick_budget: int = 1, target_version: int | None = None) -> DispatchOutcome:
+    """Walk one PR through ``pr.sync_schema_version + 1 ... target``.
 
     For each step ``s``:
 
@@ -114,13 +137,21 @@ def dispatch(pr: PullRequest, *, kick_budget: int = 1) -> DispatchOutcome:
       caller has run out of kick budget, stop without kicking; the next pass
       tries again.
 
+    ``target_version`` lets a caller (typically the periodic task) gate the
+    walk below :data:`CURRENT_SYNC_SCHEMA_VERSION`. ``None`` defaults to the
+    constant. The value is clamped to the constant so a misconfigured gate
+    cannot advance PRs past versions with no registered upgrader.
+
     The dispatcher modifies ``pr`` in-place (only ``sync_schema_version``).
     """
     if kick_budget < 0:
         raise ValueError(f"kick_budget must be >= 0, got {kick_budget!r}")
 
     initial = int(pr.sync_schema_version)
-    target = int(CURRENT_SYNC_SCHEMA_VERSION)
+    if target_version is None:
+        target = int(CURRENT_SYNC_SCHEMA_VERSION)
+    else:
+        target = min(int(target_version), int(CURRENT_SYNC_SCHEMA_VERSION))
     auto_stamped: list[int] = []
     kicked = False
     final_version: int | None = None

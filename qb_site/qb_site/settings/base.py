@@ -300,6 +300,17 @@ SYNCER_ENGAGEMENT_BACKFILL_LIMIT = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_LIM
 SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS = int(os.getenv("SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS", 600))
 SYNCER_SCHEMA_UPGRADE_BATCH_SIZE = int(os.getenv("SYNCER_SCHEMA_UPGRADE_BATCH_SIZE", 1000))
 SYNCER_SCHEMA_UPGRADE_KICK_LIMIT = int(os.getenv("SYNCER_SCHEMA_UPGRADE_KICK_LIMIT", 20))
+# Optional gate that lets a deploy hold the wave below CURRENT_SYNC_SCHEMA_VERSION
+# (e.g. ship the v2 code with the gate=1 in staging, then flip to 2 to fire). Unset
+# / empty / non-int values mean "use CURRENT_SYNC_SCHEMA_VERSION". Always clamped
+# to the constant by services/sync_schema_upgrades.effective_target_version.
+_SYNCER_SCHEMA_UPGRADE_TARGET_VERSION_RAW = os.getenv("SYNCER_SCHEMA_UPGRADE_TARGET_VERSION", "")
+try:
+    SYNCER_SCHEMA_UPGRADE_TARGET_VERSION: int | None = (
+        int(_SYNCER_SCHEMA_UPGRADE_TARGET_VERSION_RAW) if _SYNCER_SCHEMA_UPGRADE_TARGET_VERSION_RAW else None
+    )
+except ValueError:
+    SYNCER_SCHEMA_UPGRADE_TARGET_VERSION = None
 
 # Pending-CI refresh defaults
 SYNCER_PENDING_CI_MAX_AGE_HOURS = int(os.getenv("SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))

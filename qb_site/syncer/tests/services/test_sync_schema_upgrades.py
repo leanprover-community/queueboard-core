@@ -116,17 +116,18 @@ class DispatchTests(_RegistryIsolationMixin, TestCase):
         self.pr = make_pr(self.repo, 1)
 
     def test_auto_stamps_missing_upgrader(self) -> None:
-        # CURRENT=1 (default), registry empty: a v=0 PR auto-stamps to 1.
+        # CURRENT=2 (default), registry empty: a v=0 PR auto-stamps through
+        # both v=1 and v=2 in one pass.
         outcome = dispatch(self.pr)
         self.assertIsInstance(outcome, DispatchOutcome)
-        self.assertEqual(outcome.stamped_to, 1)
-        self.assertEqual(outcome.auto_stamped_versions, (1,))
+        self.assertEqual(outcome.stamped_to, 2)
+        self.assertEqual(outcome.auto_stamped_versions, (1, 2))
         self.assertFalse(outcome.kicked)
         self.pr.refresh_from_db()
-        self.assertEqual(self.pr.sync_schema_version, 1)
+        self.assertEqual(self.pr.sync_schema_version, 2)
 
     def test_no_op_when_already_at_current(self) -> None:
-        stamp(self.pr, 1)
+        stamp(self.pr, 2)
         outcome = dispatch(self.pr)
         self.assertIsNone(outcome.stamped_to)
         self.assertEqual(outcome.auto_stamped_versions, ())
@@ -228,12 +229,13 @@ class ConcurrentStampTests(_RegistryIsolationMixin, TestCase):
         self.assertEqual(self.pr.sync_schema_version, 5)
 
     def test_dispatch_handles_stale_pr_view(self) -> None:
-        # Another dispatcher already auto-stamped this PR to v=1 in the DB,
-        # but our in-memory snapshot still says v=0. dispatch() should:
+        # Another dispatcher already auto-stamped this PR all the way to
+        # CURRENT in the DB, but our in-memory snapshot still says v=0.
+        # dispatch() should:
         #   - not error,
         #   - not record a phantom auto-stamp (since our UPDATE was a no-op),
         #   - return a clean outcome reflecting "we did nothing new".
-        PullRequest.objects.filter(pk=self.pr.pk).update(sync_schema_version=1)
+        PullRequest.objects.filter(pk=self.pr.pk).update(sync_schema_version=2)
         outcome = dispatch(self.pr)
         self.assertIsNone(outcome.stamped_to)
         self.assertEqual(outcome.auto_stamped_versions, ())
@@ -252,3 +254,60 @@ class ConcurrentStampTests(_RegistryIsolationMixin, TestCase):
         self.assertEqual(outcome.auto_stamped_versions, ())
         self.assertTrue(outcome.kicked)
         self.assertEqual(upgrade.kick_calls, 1)
+
+
+class TargetVersionTests(_RegistryIsolationMixin, TestCase):
+    """Coverage for the ``target_version`` parameter and the settings gate."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.repo = make_repo()
+        self.pr = make_pr(self.repo, 1)
+
+    def test_dispatch_target_version_caps_walk(self) -> None:
+        # CURRENT=3 (patched), gate-equivalent target=2: walk must stop at 2.
+        with mock.patch.object(sync_schema_upgrades, "CURRENT_SYNC_SCHEMA_VERSION", 3):
+            outcome = dispatch(self.pr, target_version=2)
+        self.assertEqual(outcome.stamped_to, 2)
+        self.assertEqual(outcome.auto_stamped_versions, (1, 2))
+        self.assertFalse(outcome.kicked)
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.sync_schema_version, 2)
+
+    def test_dispatch_target_version_clamps_to_current(self) -> None:
+        # A misconfigured gate above CURRENT must NOT advance past CURRENT.
+        with mock.patch.object(sync_schema_upgrades, "CURRENT_SYNC_SCHEMA_VERSION", 1):
+            outcome = dispatch(self.pr, target_version=5)
+        self.assertEqual(outcome.stamped_to, 1)
+        self.pr.refresh_from_db()
+        self.assertEqual(self.pr.sync_schema_version, 1)
+
+    def test_dispatch_target_version_below_initial_is_no_op(self) -> None:
+        stamp(self.pr, 2)
+        # target=1 < initial=2 — loop range is empty, no work performed.
+        with mock.patch.object(sync_schema_upgrades, "CURRENT_SYNC_SCHEMA_VERSION", 3):
+            outcome = dispatch(self.pr, target_version=1)
+        self.assertIsNone(outcome.stamped_to)
+        self.assertEqual(outcome.auto_stamped_versions, ())
+        self.assertFalse(outcome.kicked)
+
+    def test_effective_target_version_unset_setting_returns_constant(self) -> None:
+        from syncer.services.sync_schema_upgrades import effective_target_version
+
+        with self.settings(SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=None):
+            with mock.patch.object(sync_schema_upgrades, "CURRENT_SYNC_SCHEMA_VERSION", 4):
+                self.assertEqual(effective_target_version(), 4)
+
+    def test_effective_target_version_caps_at_constant(self) -> None:
+        from syncer.services.sync_schema_upgrades import effective_target_version
+
+        with self.settings(SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=99):
+            with mock.patch.object(sync_schema_upgrades, "CURRENT_SYNC_SCHEMA_VERSION", 2):
+                self.assertEqual(effective_target_version(), 2)
+
+    def test_effective_target_version_holds_below_constant(self) -> None:
+        from syncer.services.sync_schema_upgrades import effective_target_version
+
+        with self.settings(SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1):
+            with mock.patch.object(sync_schema_upgrades, "CURRENT_SYNC_SCHEMA_VERSION", 2):
+                self.assertEqual(effective_target_version(), 1)
