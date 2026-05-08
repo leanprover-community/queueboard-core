@@ -69,6 +69,22 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
 - Sub-sync modules under `qb_site/syncer/services/sub/` should remain narrow and composable.
 - Preserve boundary: `syncer` stores raw facts; analyzer owns higher-level derived queue/revision semantics.
 
+## Inline-Comment Models (Design Doc 044)
+- `PRReviewInlineComment` (`syncer_prreviewinlinecomment`) holds one row per
+  inline comment under a `PullRequestReview`. Linked by `review_node_id` (the
+  durable identifier) and a nullable `parent_review_event` FK for ORM joins.
+  Idempotent insert keyed on `github_node_id` (globally unique, so plain
+  `unique=True`); ingestion path uses `bulk_create(ignore_conflicts=True)`.
+  Threading: `thread_root_node_id` is a best-effort root of the `replyTo`
+  chain, computed within the in-flight set at ingest and tightened on rewalk
+  if the original target was outside the bundle.
+- `PRReviewInlineCommentBackfill` (`syncer_prreviewinlinecommentbackfill`)
+  tracks reviews whose `comments(first: K)` fetch returned
+  `pageInfo.hasNextPage = true` — i.e. the long tail of inline comments was
+  not captured. Single-table scan is the v3 recovery sweep's hot path; the
+  table stays small and dedicated for that reason. Cursor / last_attempt_at
+  fields are deliberately deferred to v3.
+
 ## Sync Schema Versioning
 - `PullRequest.sync_schema_version` records the highest "ingestion expansion"
   that has been satisfied for a PR. The current target is

@@ -15,6 +15,8 @@ from .models import (
     LabelDef,
     PRLabel,
     PRTimelineEvent,
+    PRReviewInlineComment,
+    PRReviewInlineCommentBackfill,
     SyncerMetricsSnapshot,
     SyncerConvergenceSnapshot,
     RepoBackfillCursor,
@@ -937,6 +939,76 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "requested_reviewer_login",
         "requested_team_slug",
         "inline_comment_total_count",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(PRReviewInlineComment)
+class PRReviewInlineCommentAdmin(ReadOnlyAdmin):
+    list_display = (
+        "pull_request",
+        "gh_created_at",
+        "author_login",
+        "path",
+        "line",
+        "review_node_id",
+        "thread_root_node_id",
+    )
+    list_filter = ("pull_request__repository",)
+    search_fields = (
+        "author_login",
+        "path",
+        "review_node_id",
+        "thread_root_node_id",
+        "github_node_id",
+        "pull_request__number",
+    )
+    date_hierarchy = "gh_created_at"
+    ordering = ("-gh_created_at", "-id")
+    raw_id_fields = ("pull_request", "parent_review_event")
+    readonly_fields = (
+        "pull_request",
+        "parent_review_event",
+        "github_node_id",
+        "review_node_id",
+        "author_login",
+        "gh_created_at",
+        "path",
+        "line",
+        "original_line",
+        "reply_to_node_id",
+        "thread_root_node_id",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(PRReviewInlineCommentBackfill)
+class PRReviewInlineCommentBackfillAdmin(ReadOnlyAdmin):
+    """Operator-visible queue of reviews whose inline-comment fetch was incomplete.
+
+    A non-empty changelist here means the v3 paginator (deferred) has work to
+    do. Steady-state: this table is empty or near-empty; rows accumulate only
+    when a review has more than ``SYNCER_INLINE_COMMENTS_PER_REVIEW`` inline
+    comments.
+    """
+
+    list_display = (
+        "review_event",
+        "pull_request",
+        "review_node_id",
+        "total_count",
+        "created_at",
+    )
+    list_filter = ("pull_request__repository",)
+    search_fields = ("review_node_id", "pull_request__number")
+    raw_id_fields = ("review_event", "pull_request")
+    readonly_fields = (
+        "review_event",
+        "pull_request",
+        "review_node_id",
+        "total_count",
         "created_at",
         "updated_at",
     )
