@@ -118,9 +118,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "last_synced_at",
         "timeline_backfill_done",
         "commits_backfill_done",
+        "sync_schema_version",
         "author_link",
     )
-    list_filter = ("repository", "state", "is_draft", "timeline_backfill_done", "commits_backfill_done")
+    list_filter = (
+        "repository",
+        "state",
+        "is_draft",
+        "timeline_backfill_done",
+        "commits_backfill_done",
+        "sync_schema_version",
+    )
     date_hierarchy = "gh_updated_at"
     raw_id_fields = ("repository", "author")
     # number_link is a readonly helper that links to GitHub
@@ -162,6 +170,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "commits_backfill_done",
         "commits_earliest_synced_at",
         "head_ci_state",
+        "sync_schema_version",
         "created_at",
         "updated_at",
     )
@@ -888,9 +897,29 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
     short_before_sha.short_description = "before_sha"  # type: ignore[attr-defined]
     short_after_sha.short_description = "after_sha"  # type: ignore[attr-defined]
 
-    list_display = ("pull_request", "type", "occurred_at", "label_name", "short_before_sha", "short_after_sha")
+    list_display = (
+        "pull_request",
+        "type",
+        "occurred_at",
+        "actor_login",
+        "label_name",
+        "assignee_login",
+        "requested_reviewer_login",
+        "requested_team_slug",
+        "short_before_sha",
+        "short_after_sha",
+    )
     list_filter = ("pull_request__repository", "type")
-    search_fields = ("label_name", "pull_request__number", "before_sha", "after_sha")
+    search_fields = (
+        "label_name",
+        "pull_request__number",
+        "before_sha",
+        "after_sha",
+        "actor_login",
+        "assignee_login",
+        "requested_reviewer_login",
+        "requested_team_slug",
+    )
     date_hierarchy = "occurred_at"
     ordering = ("-occurred_at", "-id")
     raw_id_fields = ("pull_request",)
@@ -900,8 +929,14 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "type",
         "occurred_at",
         "label_name",
+        "assignee_login",
+        "actor_login",
         "before_sha",
         "after_sha",
+        "extra",
+        "requested_reviewer_login",
+        "requested_team_slug",
+        "inline_comment_total_count",
         "created_at",
         "updated_at",
     )
@@ -1210,6 +1245,8 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
         "prs_missing_head_ci_contexts",
+        "prs_below_current_sync_schema_version",
+        "sync_schema_version_target",
     )
     list_filter = ("repository", "history_cursor_completed", "discovery_continuation_active")
     date_hierarchy = "collected_at"
@@ -1233,6 +1270,8 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
         "prs_missing_head_ci_contexts",
+        "prs_below_current_sync_schema_version",
+        "sync_schema_version_target",
         "created_at",
     )
 
