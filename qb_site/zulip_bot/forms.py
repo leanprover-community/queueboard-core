@@ -150,11 +150,15 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.initial["preferred_labels"] = selected_values
 
         tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
-        community_team_page_warning = mark_safe("<b>Publicly visible on <a href='https://leanprover-community.github.io/teams/reviewers.html'>the community team page</a>.</b>")
+        community_team_page_warning = mark_safe(
+            "<b>Publicly visible on <a href='https://leanprover-community.github.io/teams/reviewers.html'>the community team page</a>.</b>"
+        )
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
         self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
-        self.fields["free_form"].help_text = format_html("A free form description of your reviewing interests. {}", community_team_page_warning)
+        self.fields["free_form"].help_text = format_html(
+            "A free form description of your reviewing interests. {}", community_team_page_warning
+        )
         self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
         self.fields[
             "auto_unassign_days"
