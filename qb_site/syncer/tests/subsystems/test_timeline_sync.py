@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 from django.utils import timezone
 
@@ -547,3 +548,90 @@ class TestTimelineSyncReviewAndCommentEvents(TestCase):
         ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REQ5")
         self.assertEqual(ev.actor_login, "")
         self.assertEqual(ev.requested_reviewer_login, "alice")
+
+
+class TestTimelineEventCheckConstraints(TestCase):
+    """Negative cases for the v2 CHECK constraints on PRTimelineEvent.
+
+    Happy paths are covered by TestTimelineSyncReviewAndCommentEvents above;
+    these tests just guard the database-level invariants by attempting writes
+    that bypass the syncer's normalizer.
+    """
+
+    def setUp(self) -> None:
+        self.repo = make_repo()
+        self.pr = make_pr(self.repo, 1)
+        self.now = timezone.now()
+
+    def _create(self, **fields):
+        return PRTimelineEvent.objects.create(
+            pull_request=self.pr,
+            occurred_at=self.now,
+            **fields,
+        )
+
+    def test_requested_reviewer_login_rejected_on_non_request_type(self) -> None:
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._create(
+                    type=PRTimelineEventType.ISSUE_COMMENTED,
+                    requested_reviewer_login="alice",
+                )
+
+    def test_requested_team_slug_rejected_on_non_request_type(self) -> None:
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._create(
+                    type=PRTimelineEventType.REVIEW_APPROVED,
+                    requested_team_slug="reviewers",
+                )
+
+    def test_both_reviewer_columns_set_is_rejected(self) -> None:
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._create(
+                    type=PRTimelineEventType.REVIEW_REQUESTED,
+                    requested_reviewer_login="alice",
+                    requested_team_slug="reviewers",
+                )
+
+    def test_inline_total_rejected_on_non_review_submission_type(self) -> None:
+        for bad_type in (
+            PRTimelineEventType.REVIEW_DISMISSED,
+            PRTimelineEventType.REVIEW_REQUESTED,
+            PRTimelineEventType.ISSUE_COMMENTED,
+        ):
+            with self.subTest(type=bad_type):
+                with self.assertRaises(IntegrityError):
+                    with transaction.atomic():
+                        self._create(type=bad_type, inline_comment_total_count=3)
+
+    def test_review_request_event_with_single_column_is_allowed(self) -> None:
+        # Sanity: the constraint must not reject the documented happy path.
+        ev_user = self._create(
+            type=PRTimelineEventType.REVIEW_REQUESTED,
+            requested_reviewer_login="alice",
+        )
+        ev_team = self._create(
+            type=PRTimelineEventType.REVIEW_REQUEST_REMOVED,
+            requested_team_slug="reviewers",
+        )
+        self.assertIsNotNone(ev_user.pk)
+        self.assertIsNotNone(ev_team.pk)
+
+    def test_review_submission_with_inline_total_is_allowed(self) -> None:
+        for ok_type in (
+            PRTimelineEventType.REVIEW_APPROVED,
+            PRTimelineEventType.REVIEW_CHANGES_REQUESTED,
+            PRTimelineEventType.REVIEW_COMMENTED,
+        ):
+            with self.subTest(type=ok_type):
+                ev = self._create(type=ok_type, inline_comment_total_count=5)
+                self.assertEqual(ev.inline_comment_total_count, 5)
+
+    def test_request_event_without_either_column_is_allowed(self) -> None:
+        # GitHub may return null requestedReviewer for deleted/anonymized
+        # accounts; design intentionally does not enforce the inverse.
+        ev = self._create(type=PRTimelineEventType.REVIEW_REQUESTED)
+        self.assertIsNone(ev.requested_reviewer_login)
+        self.assertIsNone(ev.requested_team_slug)

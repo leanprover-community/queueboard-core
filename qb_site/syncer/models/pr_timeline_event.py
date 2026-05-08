@@ -92,6 +92,48 @@ class PRTimelineEvent(TimestampedModel):
                 name="syncer_prtl_label_by_type_ck",
                 condition=(Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])),
             ),
+            # If a requested-reviewer column is populated, the type must be a
+            # review-request event. Inverse direction (a review-request must
+            # always have one of the columns set) is intentionally not enforced
+            # — GitHub has historically returned null requestedReviewer for
+            # deleted/anonymized targets and we'd rather store the event than
+            # crash ingestion.
+            models.CheckConstraint(
+                name="syncer_prtl_requested_reviewer_by_type_ck",
+                condition=(
+                    Q(requested_reviewer_login__isnull=True, requested_team_slug__isnull=True)
+                    | Q(
+                        type__in=[
+                            PRTimelineEventType.REVIEW_REQUESTED,
+                            PRTimelineEventType.REVIEW_REQUEST_REMOVED,
+                        ]
+                    )
+                ),
+            ),
+            # At most one of requested_reviewer_login / requested_team_slug is
+            # set on any given row. The two columns mirror disjoint members of
+            # GraphQL's requestedReviewer union (User/Bot/Mannequin vs Team).
+            models.CheckConstraint(
+                name="syncer_prtl_requested_reviewer_mutex_ck",
+                condition=Q(requested_reviewer_login__isnull=True) | Q(requested_team_slug__isnull=True),
+            ),
+            # inline_comment_total_count mirrors PullRequestReview.comments.totalCount
+            # and is therefore only meaningful on the three submitted-review
+            # event types. REVIEW_DISMISSED captures the dismissal event, not
+            # the underlying review, so it must remain null.
+            models.CheckConstraint(
+                name="syncer_prtl_inline_total_by_type_ck",
+                condition=(
+                    Q(inline_comment_total_count__isnull=True)
+                    | Q(
+                        type__in=[
+                            PRTimelineEventType.REVIEW_APPROVED,
+                            PRTimelineEventType.REVIEW_CHANGES_REQUESTED,
+                            PRTimelineEventType.REVIEW_COMMENTED,
+                        ]
+                    )
+                ),
+            ),
         ]
         indexes = [
             models.Index(fields=["pull_request", "occurred_at"], name="syncer_prtimeline_pr_time_idx"),
