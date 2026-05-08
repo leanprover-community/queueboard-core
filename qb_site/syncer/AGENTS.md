@@ -67,3 +67,18 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
 - GraphQL bundle query: `qb_site/syncer/queries/pr_bundle.graphql`.
 - Sub-sync modules under `qb_site/syncer/services/sub/` should remain narrow and composable.
 - Preserve boundary: `syncer` stores raw facts; analyzer owns higher-level derived queue/revision semantics.
+
+## Sync Schema Versioning
+- `PullRequest.sync_schema_version` records the highest "ingestion expansion"
+  that has been satisfied for a PR. The current target is
+  `qb_site/syncer/services/sync_schema_upgrades.CURRENT_SYNC_SCHEMA_VERSION`.
+- The upgrader registry in `services/sync_schema_upgrades.py` is the *only*
+  writer of this column. `PRSyncService` does not touch it. This avoids
+  prematurely stamping a PR to a higher version when the version's upgrader
+  has not actually run.
+- New "we want to capture X" expansions land as a new `SchemaUpgrade` entry
+  registered against the next version, plus a bump of
+  `CURRENT_SYNC_SCHEMA_VERSION` — no new `*_synced_at` column on
+  `PullRequest`.
+- See `docs/design-decisions/044-sync-schema-versioning-and-comment-review-timeline-events.md`
+  for the full design.

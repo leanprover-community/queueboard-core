@@ -48,6 +48,21 @@ class PRTimelineEvent(TimestampedModel):
     # Present only for HEAD_FORCE_PUSHED events; Git commit SHAs (40 chars)
     before_sha = models.CharField(max_length=40, null=True, blank=True)
     after_sha = models.CharField(max_length=40, null=True, blank=True)
+    # Display-time denormalization for review/dismissal events (e.g. dismissed
+    # review identity for REVIEW_DISMISSED). Read with the row, never filtered
+    # on; query-hot fields are promoted to typed columns instead.
+    extra = models.JSONField(default=dict, blank=True)
+    # Populated for REVIEW_REQUESTED / REVIEW_REQUEST_REMOVED when the target
+    # is a User or Mannequin. Mutually exclusive with requested_team_slug.
+    requested_reviewer_login = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    # Populated for REVIEW_REQUESTED / REVIEW_REQUEST_REMOVED when the target
+    # is a Team. Mutually exclusive with requested_reviewer_login.
+    requested_team_slug = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    # Populated for REVIEW_APPROVED / REVIEW_CHANGES_REQUESTED / REVIEW_COMMENTED
+    # from comments.totalCount on the PullRequestReview node. Real GitHub-truth
+    # value, not sync-state — used to detect reviews whose inline comments
+    # exceeded the per-review fetch limit (see PRReviewInlineCommentBackfill).
+    inline_comment_total_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         constraints = [

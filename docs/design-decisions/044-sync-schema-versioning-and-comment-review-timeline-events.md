@@ -35,9 +35,9 @@
     events). Threads can be approximately reconstructed from inline-comment
     `replyTo` chains; proper thread modeling is deferred to v3.
   - Pagination for reviews with more than `SYNCER_INLINE_COMMENTS_PER_REVIEW`
-    inline comments. Such reviews are flagged via
-    `inline_comments_incomplete=True` in the parent review event's `extra`; full
-    pagination of the long tail is deferred to v3.
+    inline comments. Such reviews get a row in a dedicated
+    `PRReviewInlineCommentBackfill` table at ingest time so v3 can find them
+    via a tiny scan; full pagination of the long tail is deferred to v3.
   - Bot filtering at ingestion. Store everything; filter at query time if needed.
 
 ## Proposed Design
@@ -79,29 +79,55 @@
   subsumed by the version-driven backfill).
 
 ### 3. New event types on `PRTimelineEvent`
-- Add `extra: JSONField(default=dict, blank=True)` to `PRTimelineEvent`.
+- The existing discriminator column on `PRTimelineEvent` is named `type` (not
+  `event_type`). New values added to that enum, all sourced from GraphQL
+  `timelineItems`.
+- New typed columns added to `PRTimelineEvent`:
+  - `extra: JSONField(default=dict, blank=True)` — display-time
+    denormalization. Read with each row, not filtered on.
+  - `requested_reviewer_login: CharField(max_length=255, null=True, blank=True, db_index=True)`
+    — populated for `REVIEW_REQUESTED` / `REVIEW_REQUEST_REMOVED` when the
+    target is a `User` or `Mannequin`. Indexed because reviewer-engagement
+    queries filter on this.
+  - `requested_team_slug: CharField(max_length=255, null=True, blank=True, db_index=True)`
+    — populated for the same two events when the target is a `Team`. Mutually
+    exclusive with `requested_reviewer_login`.
+  - `inline_comment_total_count: IntegerField(null=True, blank=True)` —
+    captured from GraphQL `comments.totalCount` on `PullRequestReview`. Real
+    GitHub-truth field, not sync-state. Used both for analytics
+    ("how many inline comments did this review get?") and as the basis for
+    detecting reviews with more inline comments than we captured.
 - Existing typed columns (`label_name`, `assignee_login`, `before_sha`,
   `after_sha`) remain in place; migration to `extra` is a separate cleanup
   not in scope here.
-- New `event_type` values, all sourced from GraphQL `timelineItems`:
+- New `type` values:
 
-  | Event type                  | Source GraphQL type                   | `actor_login`  | `occurred_at`     | `extra`                                                                              |
-  | --------------------------- | ------------------------------------- | -------------- | ----------------- | ------------------------------------------------------------------------------------ |
-  | `ISSUE_COMMENTED`           | `IssueComment`                        | comment author | `createdAt`       | `{}`                                                                                  |
-  | `REVIEW_APPROVED`           | `PullRequestReview` (state=APPROVED)  | review author  | `submittedAt`     | `{"review_state": "APPROVED", "inline_comments_incomplete": false}`                   |
-  | `REVIEW_CHANGES_REQUESTED`  | `PullRequestReview`                   | review author  | `submittedAt`     | `{"review_state": "CHANGES_REQUESTED", "inline_comments_incomplete": false}`          |
-  | `REVIEW_COMMENTED`          | `PullRequestReview` (state=COMMENTED) | review author  | `submittedAt`     | `{"review_state": "COMMENTED", "inline_comments_incomplete": false}`                  |
-  | `REVIEW_DISMISSED`          | `ReviewDismissedEvent`                | dismisser      | event `createdAt` | `{"dismissed_review_node_id": "...", "dismissed_review_author": "alice", "dismissed_review_submitted_at": "...", "previous_review_state": "APPROVED"}` |
-  | `REVIEW_REQUESTED`          | `ReviewRequestedEvent`                | requester      | event `createdAt` | `{"requested_reviewer": "login"}` or `{"requested_team": "slug"}`                     |
-  | `REVIEW_REQUEST_REMOVED`    | `ReviewRequestRemovedEvent`           | remover        | event `createdAt` | `{"requested_reviewer": "login"}` or `{"requested_team": "slug"}`                     |
+  | `type`                      | Source GraphQL type                   | `actor_login`  | `occurred_at`     | Other typed columns                                                       | `extra`                                                                              |
+  | --------------------------- | ------------------------------------- | -------------- | ----------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+  | `ISSUE_COMMENTED`           | `IssueComment`                        | comment author | `createdAt`       | —                                                                         | `{}`                                                                                  |
+  | `REVIEW_APPROVED`           | `PullRequestReview` (state=APPROVED)  | review author  | `submittedAt`     | `inline_comment_total_count`                                              | `{}`                                                                                  |
+  | `REVIEW_CHANGES_REQUESTED`  | `PullRequestReview`                   | review author  | `submittedAt`     | `inline_comment_total_count`                                              | `{}`                                                                                  |
+  | `REVIEW_COMMENTED`          | `PullRequestReview` (state=COMMENTED) | review author  | `submittedAt`     | `inline_comment_total_count`                                              | `{}`                                                                                  |
+  | `REVIEW_DISMISSED`          | `ReviewDismissedEvent`                | dismisser      | event `createdAt` | —                                                                         | `{"dismissed_review_node_id": "...", "dismissed_review_author": "alice", "dismissed_review_submitted_at": "...", "previous_review_state": "APPROVED"}` |
+  | `REVIEW_REQUESTED`          | `ReviewRequestedEvent`                | requester      | event `createdAt` | one of `requested_reviewer_login` / `requested_team_slug`                 | `{}`                                                                                  |
+  | `REVIEW_REQUEST_REMOVED`    | `ReviewRequestRemovedEvent`           | remover        | event `createdAt` | one of `requested_reviewer_login` / `requested_team_slug`                 | `{}`                                                                                  |
 
+- The `review_state` is *not* denormalized into `extra` — it's already encoded
+  by the `type` value (`REVIEW_APPROVED` vs `REVIEW_CHANGES_REQUESTED` vs
+  `REVIEW_COMMENTED`).
+- The "inline comments incomplete" marker is *not* stored on `PRTimelineEvent`.
+  Instead, see §4 — incomplete reviews get a row in
+  `PRReviewInlineCommentBackfill` so the v3 recovery scan can find them in
+  O(rows-needing-work) rather than O(reviews).
 - **Invariant:** every `PRTimelineEvent` row corresponds 1:1 to a node from
   GitHub's `timelineItems` connection. Inline review comments — which live
   nested under `PullRequestReview.comments`, not in `timelineItems` — go in a
   separate model (next section).
 - Idempotency continues via unique `github_node_id`.
 
-### 4. New model: `PRReviewInlineComment`
+### 4. New models: `PRReviewInlineComment` and `PRReviewInlineCommentBackfill`
+
+#### 4a. `PRReviewInlineComment`
 - Mirrors GraphQL's `PullRequestReviewComment`. One row per inline comment.
   ```python
   class PRReviewInlineComment(models.Model):
@@ -133,6 +159,35 @@
   `bulk_create(..., ignore_conflicts=True)`.
 - Captured in v2 via the same timeline rewalk that captures the parent reviews —
   no separate pagination state on `PullRequest` is needed.
+
+#### 4b. `PRReviewInlineCommentBackfill` (sync-state, deferred consumer in v3)
+- Tracks reviews where our nested `comments(first: K)` fetch hit the page limit
+  and we know we missed the long tail. Consumed by a v3 recovery sweep that
+  paginates the rest. Empty for reviews that fit in `K`.
+  ```python
+  class PRReviewInlineCommentBackfill(models.Model):
+      review_event = OneToOneField(PRTimelineEvent, on_delete=CASCADE, primary_key=True)
+      pull_request = ForeignKey(PullRequest, on_delete=CASCADE)
+      review_node_id = CharField(max_length=64, db_index=True)
+      total_count = IntegerField()  # snapshot of comments.totalCount at ingest
+      created_at = DateTimeField(auto_now_add=True)
+      # cursor / last_attempt_at fields land in v3 alongside the paginator.
+  ```
+- Written by the syncer when a `PullRequestReview`'s nested `comments`
+  connection has `pageInfo.hasNextPage = true`. Idempotent insert
+  (`primary_key` is the parent review event; second ingest of the same review
+  is a no-op).
+- The v3 recovery scan is `SELECT ... FROM PRReviewInlineCommentBackfill LIMIT N`
+  — the table *is* the index, so the scan is sub-millisecond regardless of how
+  many millions of `PRTimelineEvent` rows exist.
+- Rows are deleted (or marked complete) by the v3 paginator once it has fetched
+  all remaining inline comments for the review. Until then, this row is the
+  durable signal that the review is incomplete; `inline_comment_total_count` on
+  the parent event row records the GitHub-truth count for analytics.
+- This pattern keeps sync-state ("we still owe inline comments for this review")
+  on a separate, small table rather than mixing it into `PRTimelineEvent`. Same
+  pattern can be reused by future deferred-pagination work without growing
+  `PRTimelineEvent`.
 
 ### 5. GraphQL extensions
 - Extend `qb_site/syncer/queries/pr_bundle.graphql` `timelineItems`:
@@ -181,9 +236,11 @@
   `timeline_page_back.graphql` so backfill paging surfaces the same types.
 - The `comments(first: K)` value comes from a setting
   `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default `20`). When
-  `pageInfo.hasNextPage=true` on a review's comments connection, the parent
-  review event's `extra["inline_comments_incomplete"]` is set to `True` so v3
-  can find the outliers.
+  `pageInfo.hasNextPage=true` on a review's comments connection, the syncer
+  inserts a `PRReviewInlineCommentBackfill` row for that review so v3 can find
+  the outliers via a tiny dedicated-table scan (see §4b). The parent review
+  event's `inline_comment_total_count` column records `comments.totalCount`
+  unconditionally (truth from GitHub), regardless of completeness.
 
 ### 6. v2 upgrader: reset timeline backfill for already-done PRs
 - For PRs at `sync_schema_version < 2`, the v2 upgrader's `kick(pr)`:
@@ -239,8 +296,10 @@
   at implementation time and align convention (likely empty string given
   existing usage).
 - **Team review requests.** `requestedReviewer` can be a `User`, `Team`, or
-  `Mannequin`. Use `extra.requested_reviewer` for users/mannequins (login) and
-  `extra.requested_team` for teams (slug); both keys are mutually exclusive.
+  `Mannequin`. Use `requested_reviewer_login` (typed column) for users and
+  mannequins, `requested_team_slug` (typed column) for teams; the two are
+  mutually exclusive. Both columns are indexed because reviewer-engagement
+  queries filter on them.
 - **Idempotency on insert.** Always `bulk_create(..., ignore_conflicts=True)`
   keyed on `github_node_id`. **Persist events first, advance the timeline
   cursor second** — a crash between the two leaves a safe re-fetch state on
@@ -259,6 +318,29 @@
   event-log totals.
 - **No bot filtering at ingestion.** All events are stored; downstream filters
   by actor login as needed.
+- **Scan-performance posture for new periodic tasks.** Every recurring scan
+  introduced or replaced by this design uses an indexed predicate that returns
+  O(rows-needing-work), not O(table-size). This is deliberate — the prior
+  `engagement_synced_at` scan was unindexed and degraded as the table grew.
+  Specifically:
+  - Upgrader dispatch: `WHERE sync_schema_version < CURRENT` against an
+    indexed `PositiveSmallIntegerField`. After a wave completes, almost all
+    rows are at `CURRENT`, the planner sees ~0% selectivity, and the index
+    scan returns immediately. Postgres 13+ B-tree deduplication keeps the
+    index small even with heavy skew. We rely on the regular B-tree rather
+    than a partial index `WHERE sync_schema_version < <const>` because the
+    constant would have to migrate on every version bump, with negligible
+    extra performance to show for it. Verified post-deploy via
+    `EXPLAIN ANALYZE` (see Validation Plan).
+  - Engagement backfill (existing, unindexed multi-OR): subsumed and removed
+    in Chunk 6.
+  - Inline-comment recovery (deferred to v3 consumer): scans
+    `PRReviewInlineCommentBackfill`, where the table itself is the index of
+    "needs work" — sub-millisecond regardless of total `PRTimelineEvent` size.
+  - Reviewer-engagement queries: `requested_reviewer_login` and
+    `requested_team_slug` are indexed columns on `PRTimelineEvent`. Querying
+    "PRs where X was requested in window W" is a typical (column, occurred_at)
+    range scan.
 
 ## Timeline event types deliberately NOT captured at v2
 For future readers wondering "should we add X?": the following `timelineItems`
@@ -281,14 +363,21 @@ schema version if a concrete need arises.
 
 ## Implementation Plan (Chunks)
 1. **Schema scaffold.**
-   - Add `PullRequest.sync_schema_version` and `CURRENT_SYNC_SCHEMA_VERSION=1`.
-   - Add `PRTimelineEvent.extra` JSONField.
+   - Add `PullRequest.sync_schema_version` (`PositiveSmallIntegerField`,
+     default=0, db_index=True) and `CURRENT_SYNC_SCHEMA_VERSION=1` constant in
+     `qb_site/syncer/services/sync_schema_upgrades.py` (stub file; framework
+     lands in Chunk 2).
+   - Add to `PRTimelineEvent`:
+     - `extra` JSONField (default=dict, blank=True),
+     - `inline_comment_total_count` IntegerField (null/blank),
+     - `requested_reviewer_login` CharField (null/blank, db_index=True),
+     - `requested_team_slug` CharField (null/blank, db_index=True).
    - Data migration: stamp `sync_schema_version=1` where
      `engagement_synced_at IS NOT NULL`.
-   - Update `scripts/backup_policy.py` to cover the new column (and, in chunk 3,
-     the new model).
+   - Update `scripts/backup_policy.py` if the new fields/tables need
+     additional handling (and, in chunk 3, the new models).
    - Update root `AGENTS.md` and `qb_site/syncer/AGENTS.md` to reference the
-     upgrader framework, the new task, and the new model.
+     upgrader framework, the new task, and the new models.
    - No behavior change yet (constant still 1; upgrader registry is empty).
 2. **Upgrader framework.**
    - Add `qb_site/syncer/services/sync_schema_upgrades.py` with the registry,
@@ -298,24 +387,31 @@ schema version if a concrete need arises.
      upgraders with the same dedupe/rate-limit treatment as existing backfill
      tasks.
    - Add `syncer.upgrade_schema_versions_active_task` periodic beat entry.
-3. **`PRReviewInlineComment` model + ingestion path.**
-   - New model migration.
-   - Update `scripts/backup_policy.py` for the new table.
+3. **`PRReviewInlineComment` and `PRReviewInlineCommentBackfill` models + ingestion path.**
+   - New model migrations for both tables.
+   - Update `scripts/backup_policy.py` for the two new tables.
    - Add ingestion in `PRSyncService` to translate nested
      `PullRequestReview.comments` into `PRReviewInlineComment` rows linked via
      `review_node_id` and (when available) `parent_review_event`. Compute
      `thread_root_node_id` from the `replyTo` chain within the in-flight set;
      fall back to `reply_to_node_id` as root if the target is outside the
      bundle.
+   - When `pageInfo.hasNextPage=true` on a review's nested `comments`
+     connection, insert a `PRReviewInlineCommentBackfill` row for that review.
+     Idempotent (primary_key is the parent review event).
+   - Always populate `PRTimelineEvent.inline_comment_total_count` from
+     `comments.totalCount`.
 4. **GraphQL + new timeline event types.**
    - Extend `pr_bundle.graphql`, `timeline_page.graphql`,
      `timeline_page_back.graphql` with new `itemTypes` and per-type fragments,
      including the nested `comments(first: SYNCER_INLINE_COMMENTS_PER_REVIEW)`
      on `PullRequestReview`.
    - Extend the timeline-event normalizer to translate the new GraphQL nodes
-     into `PRTimelineEvent` rows; flag `inline_comments_incomplete` in `extra`
-     when the review's comments connection has more pages.
-   - Add `event_type` enum entries.
+     into `PRTimelineEvent` rows; populate `inline_comment_total_count` from
+     `comments.totalCount` and route `requestedReviewer` to either
+     `requested_reviewer_login` or `requested_team_slug` depending on the
+     GraphQL union member.
+   - Add `type` enum entries on `PRTimelineEventType`.
    - Measure bundle payload growth on a representative busy mathlib4 PR and
      tune `last:` (currently 250) downward if needed; document the chosen
      value.
@@ -343,16 +439,20 @@ schema version if a concrete need arises.
       `engagement_synced_at`; idempotent upgrader dispatch; partial-failure
       resume.
     - `test_engagement_event_ingestion.py`: each new event type maps to the
-      correct row with correct `actor_login`/`occurred_at`/`extra`; bot actors
-      stored, not filtered; null/mannequin actors handled; pending reviews
-      dropped; `REVIEW_DISMISSED` actor distinct from reviewer; team
-      requested-reviewer routed to `extra.requested_team`.
+      correct row with correct `actor_login`/`occurred_at`/typed columns/`extra`;
+      bot actors stored, not filtered; null/mannequin actors handled; pending
+      reviews dropped; `REVIEW_DISMISSED` actor distinct from reviewer; team
+      requested-reviewer routed to `requested_team_slug`, user/mannequin
+      requested-reviewer routed to `requested_reviewer_login`;
+      `inline_comment_total_count` populated from `comments.totalCount`.
     - `test_review_inline_comments.py`: inline comments mapped from
       `PullRequestReview.comments` to `PRReviewInlineComment`;
       `thread_root_node_id` computed from `replyTo` chain;
-      `parent_review_event` FK populated; `inline_comments_incomplete` flagged
-      when `pageInfo.hasNextPage=true`; `bulk_create(ignore_conflicts=True)`
-      no-ops on re-ingest.
+      `parent_review_event` FK populated;
+      `PRReviewInlineCommentBackfill` row inserted iff
+      `pageInfo.hasNextPage=true`; insert is idempotent on re-ingest;
+      `bulk_create(ignore_conflicts=True)` no-ops on re-ingest of inline
+      comments.
     - `test_v2_upgrader.py`: reset of `timeline_backfill_done`; `force=True`
       passthrough; idempotent under retries; `is_complete` returns True only
       after rewalk.
@@ -365,10 +465,18 @@ schema version if a concrete need arises.
   - Watch token rate-limit budget during the upgrade wave; confirm
     `SYNCER_RATE_REMAINING_MIN` deferral behaves as on existing backfills.
   - Inspect bundle payload size before/after on a busy PR.
+- **Scan-performance check:** during the v=2 wave on real data, run
+  `EXPLAIN ANALYZE SELECT id FROM syncer_pullrequest WHERE sync_schema_version < 2 LIMIT 50;`
+  and confirm the plan is either an Index Scan on the
+  `sync_schema_version` index or a Seq Scan whose work is bounded by the
+  `LIMIT` (i.e., it stops once it has 50 rows). A Seq Scan that reads the
+  full table to satisfy `LIMIT` is the regression mode and should be
+  investigated before continuing the wave.
 - **Repo checks:** `bash scripts/repo_check_compose.sh` (covers ruff, Django
-  tests, sanitized-backup policy — `sync_schema_version`, `extra`, and the new
-  `PRReviewInlineComment` table must all be reflected in
-  `scripts/backup_policy.py`).
+  tests, sanitized-backup policy — `sync_schema_version`, `extra`, the new
+  typed columns on `PRTimelineEvent`, and the new
+  `PRReviewInlineComment` / `PRReviewInlineCommentBackfill` tables must all
+  be reflected in `scripts/backup_policy.py`).
 
 ## Open Questions (settle during implementation)
 - Cost of the nested `comments(first: K)` fetch on `PullRequestReview` within
@@ -397,6 +505,18 @@ schema version if a concrete need arises.
   invariants added for `force=True`, soft-deprecation of aggregates, payload
   growth, mannequins, team review requests, and the deliberate non-capture
   list.
+- 2026-05-07: Promoted reviewer-engagement query fields to typed columns
+  (`requested_reviewer_login`, `requested_team_slug`) on `PRTimelineEvent`
+  rather than burying them in `extra`. Replaced the
+  `inline_comments_incomplete` boolean (originally in `extra`) with a
+  combination of `inline_comment_total_count` (GitHub-truth, on
+  `PRTimelineEvent`) and a new dedicated `PRReviewInlineCommentBackfill`
+  table — separating sync-state from event data and keeping the v3 recovery
+  scan O(rows-needing-work). Also dropped the redundant `review_state` from
+  `extra` (the `type` discriminator already encodes it) and renamed
+  `event_type` → `type` throughout to match the existing column name on
+  `PRTimelineEvent`. Added scan-performance subtlety covering all new and
+  replaced periodic scans.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into
