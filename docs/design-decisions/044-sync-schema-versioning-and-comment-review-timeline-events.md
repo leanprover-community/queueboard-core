@@ -44,19 +44,40 @@
 | Chunk | State | Notes |
 | ----- | ----- | ----- |
 | 1. Schema scaffold | **Deployed** | `PullRequest.sync_schema_version` + four new typed columns on `PRTimelineEvent`. Migration `0039` ran cleanly; data migration stamped existing engagement-synced PRs to v=1. |
-| 2. Upgrader framework + convergence metric | **Deployed** | Periodic task `syncer.upgrade_schema_versions` is firing; convergence canary reports `prs_below_current_sync_schema_version=0` and `sync_schema_version_target=1` per repo. Registry empty as designed; auto-stamp path is what's running. |
+| 2. Upgrader framework + convergence metric | **Deployed** | Periodic task `syncer.upgrade_schema_versions` is firing; convergence canary reports `prs_below_current_sync_schema_version=0` and `sync_schema_version_target=1` per repo. Registry empty as designed; auto-stamp path is what's running. **Until Chunk 5 bumps `CURRENT_SYNC_SCHEMA_VERSION` to 2, this task has nothing to do** — every PR is already at the target. |
 | 3a. Inline-comment models + admin + backup policy | **Committed, awaiting deploy** | Pure additive migration `0041`; both new tables and admins ready; `validate_backup_policy.py` updated. |
-| 3b. Inline-comment ingestion service | **Committed, awaiting deploy** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. Service is importable but unreferenced; Chunk 4 wires it in. |
-| 4 — Phase 0. API verification | **Done** | Schema introspection + sample queries against mathlib4, lean4, kubernetes/kubernetes confirm field shapes. See Progress Notes 2026-05-08 (Phase 0). |
-| 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated (commits `042c826`, `9a78d4f`). |
+| 3b. Inline-comment ingestion service | **Committed, awaiting deploy** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. Service was importable but unreferenced before 4c. |
+| 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated. |
 | 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Committed, awaiting deploy** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing for reviews, pending-review drop, dismissed-review null-guard, requestedReviewer routing (User/Bot/Mannequin → login; Team → slug), and `inline_comment_total_count` refresh. New test class with 16 cases. |
-| 4c. Wire inline-comments service | **Committed, awaiting deploy** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Also includes `state=DISMISSED` review's inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. |
-| 4d. Strict CHECK constraints | Pending | After 4b/4c soak. |
-| 5. v2 upgrader | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2`; the wave fires here. |
+| 4c. Wire inline-comments service | **Committed, awaiting deploy** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Includes `state=DISMISSED` reviews' inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. |
+| 4d. Strict CHECK constraints | **Next** | Adds CHECK constraints on `requested_reviewer_login`, `requested_team_slug`, `inline_comment_total_count` mirroring the existing `syncer_prtl_label_by_type_ck` / `syncer_prtl_sha_by_type_ck` pattern. Per design, lands at least one deploy after 4b/4c so any unexpected GraphQL shape surfaces as a test/staging failure rather than an ingestion crash. |
+| 5. v2 upgrader (the wave) | Pending | Bumps `CURRENT_SYNC_SCHEMA_VERSION = 2` AND registers `upgrade_to_v2`. Until both ship together, the existing `syncer.upgrade_schema_versions` task is a no-op (target=1, every PR already there). After Chunk 5 deploys, the convergence canary spikes and trends back to 0 over days as the wave converges. |
 | 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5. |
 
-The branch carries Chunks 3a + 3b uncommitted-relative-to-main. Chunks 1+2
-are already in production and behaving as designed.
+### Resumption pointer for the next agent
+The branch `sync-schema-versioning` carries Chunks 3a, 3b, 4a, 4b, 4c
+ready for deploy. Chunks 1+2 are in production. The next units of work,
+in order:
+
+1. **Chunk 4d — strict `CHECK` constraints** (small migration + a test).
+   Concrete constraint definitions are in §Chunk 4d below; routing
+   decisions from Phase 0 are baked in (Bot reviewers → `requested_reviewer_login`).
+   Should land *after* a soak deploy of 4a–4c so any production-data
+   shape mismatch surfaces as test failures, not ingestion crashes.
+2. **Chunk 5 — v2 upgrader (the wave).** This is where the historical
+   backfill of `IssueComment` / `PullRequestReview` events on
+   already-fully-walked PRs actually runs. **Read §Chunk 5's
+   "Correctness pitfall" callout first** — there's a real bug in the
+   original `is_complete(pr) := pr.timeline_backfill_done` rule that
+   needs to be addressed (PRs with `timeline_backfill_done=True` from
+   v1-era walks would otherwise be stamped to v=2 without ever
+   capturing historical events).
+3. **Chunk 6 — drop `engagement_synced_at`.** Trivial, post-soak.
+
+If the post-deploy of 4a–4c surfaces an unexpected GraphQL shape
+(e.g. a previously-unobserved `requestedReviewer` union member, or an
+edge case Phase 0 missed), encode the chosen routing in 4d's CHECK
+constraint definitions before they land.
 
 ## Proposed Design
 
@@ -407,274 +428,169 @@ schema version if a concrete need arises.
 - Deployments: `DEPLOYED`, `DEPLOYMENT_ENVIRONMENT_CHANGED`.
 
 ## Implementation Plan (Chunks)
-Chunks 1, 2, 3a, 3b are complete; details preserved in git history. The
-sections below describe what remains.
+Chunks 1, 2, 3a, 3b, 4a, 4b, 4c are complete; details preserved in git
+history and summarized in Progress Notes. The sections below describe what
+remains.
 
 ### Chunk 4 — GraphQL + new timeline event types + wiring
-Split into a Phase 0 verification step (no code) followed by four small
-sub-chunks. Each sub-chunk is intended to land cleanly on its own; the
-deploy boundary the Deploy Boundaries section lays out (3+4 together) means
-in practice 3a → 3b → 4a → 4b → 4c → 4d arrive in some sequence with bake
-time between, before Chunk 5 fires the wave.
+**4a, 4b, 4c are committed and awaiting deploy.** Phase 0 verification
+findings are recorded in Progress Notes (2026-05-08); the original Phase 0
+query template lives in commit `24602eb` if anyone needs to re-probe.
 
-#### Phase 0. Verify GitHub API behavior (no code)
-**Why first.** Chunk 4 introduces `CHECK` constraints that reject ingestion
-if the persisted shape doesn't match expectations. We want the constraints
-to be strict (per Open Question (a) resolution), but only after we've
-confirmed the GraphQL responses behave as documented — otherwise a strict
-constraint can cause a sync to crash on edge-case data we didn't anticipate.
+The remaining sub-chunk is **4d** below.
 
-**What to confirm.** Run `gh api graphql` queries against
-`leanprover-community/mathlib4` (and any other busy active repo) and record
-the answers in this doc's Progress Notes:
+#### Chunk 4d. Strict CHECK constraints (next up)
+Lands at least one deploy after 4b/4c so real-world data has flowed
+through the new ingestion path and any edge-case shapes Phase 0 missed
+have surfaced as test/staging failures rather than ingestion crashes.
 
-1. **`PullRequestReview.author` nullability.** Confirm whether `author`
-   can come back null (deleted account) and whether `Bot` is a valid
-   member of the underlying `Actor` interface. Sample query: pick a PR
-   with a known bot reviewer and a PR that's old enough that some
-   reviewer accounts may have been deleted.
-2. **`PullRequestReview.submittedAt`** — confirm pending reviews
-   (drafts) come back with `submittedAt: null`. The design's invariant
-   "drop pending reviews at ingest" depends on this.
-3. **`PullRequestReview.state` values.** Confirm the only values we see
-   are `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`, and
-   `PENDING`. (The doc table maps the first three to typed columns and
-   skips `PENDING`; `DISMISSED` is captured via the separate
-   `ReviewDismissedEvent`, not the review state.)
-4. **`PullRequestReview.comments.totalCount`** — confirm it's
-   non-nullable so we can rely on it for the `inline_comment_total_count`
-   typed column.
-5. **`ReviewDismissedEvent.previousReviewState`** — possible values
-   and nullability. The design table puts this in `extra`, so a null is
-   storable, but documenting the observed values informs the constraint
-   on the parent `type` column.
-6. **`ReviewDismissedEvent.review`** — could the dismissed review be
-   null (e.g., if the review was hard-deleted)? The design relies on
-   reading `review.id` / `review.author` / `review.submittedAt` for the
-   `extra` denormalization; if `review` can be null, we need a null
-   guard at ingest.
-7. **`ReviewRequestedEvent.requestedReviewer`** — the union members
-   we actually see. The design names `User`, `Team`, `Mannequin`; we
-   need to confirm whether `Bot` (or any other `Actor`) ever shows up
-   as a `requestedReviewer`. If `Bot` does, decide whether to route it
-   to `requested_reviewer_login` (it has a `login`) or extend the
-   union handling.
-8. **`ReviewRequestedEvent.actor` / `ReviewRequestRemovedEvent.actor`**
-   — null possibility (deleted requester). The design's "actor_login as
-   empty string when null" convention covers this; sample to confirm.
-9. **`IssueComment.author` and `IssueComment.createdAt`** — both
-   should be present (createdAt is required by GraphQL; author may be
-   null for deleted accounts).
+**Migration content.** Add three CHECK constraints on `PRTimelineEvent`,
+named to match the existing `syncer_prtl_label_by_type_ck` /
+`syncer_prtl_sha_by_type_ck` pattern. Translated to Django `Q`:
 
-**Method.**
-```bash
-gh api graphql -F query='
-  query($owner: String!, $name: String!, $number: Int!) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $number) {
-        timelineItems(last: 250, itemTypes: [
-          ISSUE_COMMENT, PULL_REQUEST_REVIEW,
-          REVIEW_DISMISSED_EVENT, REVIEW_REQUESTED_EVENT,
-          REVIEW_REQUEST_REMOVED_EVENT,
-          LABELED_EVENT, UNLABELED_EVENT, ASSIGNED_EVENT, UNASSIGNED_EVENT,
-          READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT,
-          REOPENED_EVENT, CLOSED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT
-        ]) {
-          totalCount
-          pageInfo { hasPreviousPage startCursor }
-          nodes {
-            __typename
-            ... on IssueComment { id createdAt author { __typename login } }
-            ... on PullRequestReview {
-              id submittedAt state
-              author { __typename login }
-              comments(first: 20) {
-                pageInfo { hasNextPage }
-                totalCount
-                nodes {
-                  id createdAt path line originalLine
-                  replyTo { id }
-                  author { __typename login }
-                }
-              }
-            }
-            ... on ReviewDismissedEvent {
-              id createdAt previousReviewState
-              actor { __typename login }
-              review { id submittedAt author { __typename login } }
-            }
-            ... on ReviewRequestedEvent {
-              id createdAt
-              actor { __typename login }
-              requestedReviewer {
-                __typename
-                ... on User { login }
-                ... on Team { slug }
-                ... on Mannequin { login }
-                ... on Bot { login }
-              }
-            }
-            ... on ReviewRequestRemovedEvent {
-              id createdAt
-              actor { __typename login }
-              requestedReviewer {
-                __typename
-                ... on User { login }
-                ... on Team { slug }
-                ... on Mannequin { login }
-                ... on Bot { login }
-              }
-            }
-          }
-        }
-      }
-      rateLimit { cost remaining }
-    }
-  }
-' -F owner=leanprover-community -F name=mathlib4 -F number=<PR_NUMBER>
+```python
+# In syncer/models/pr_timeline_event.py Meta.constraints:
+models.CheckConstraint(
+    name="syncer_prtl_requested_reviewer_by_type_ck",
+    condition=(
+        Q(requested_reviewer_login__isnull=True, requested_team_slug__isnull=True)
+        | Q(
+            type__in=[
+                PRTimelineEventType.REVIEW_REQUESTED,
+                PRTimelineEventType.REVIEW_REQUEST_REMOVED,
+            ]
+        )
+    ),
+),
+models.CheckConstraint(
+    name="syncer_prtl_requested_reviewer_mutex_ck",
+    # At most one of the two columns is non-null.
+    condition=Q(requested_reviewer_login__isnull=True) | Q(requested_team_slug__isnull=True),
+),
+models.CheckConstraint(
+    name="syncer_prtl_inline_total_by_type_ck",
+    condition=(
+        Q(inline_comment_total_count__isnull=True)
+        | Q(
+            type__in=[
+                PRTimelineEventType.REVIEW_APPROVED,
+                PRTimelineEventType.REVIEW_CHANGES_REQUESTED,
+                PRTimelineEventType.REVIEW_COMMENTED,
+            ]
+        )
+    ),
+),
 ```
 
-Pick three to five PRs spanning: a busy currently-open PR (>50 reviews,
->100 issue comments), an older closed PR with a deleted-account author, a
-PR that has had a dismissed review, a PR that has a team review request,
-and a PR with a Bot as a reviewer (e.g., a Dependabot PR).
+**Routing already encoded by 4b/4c (not a new decision):**
+- `Bot` / `User` / `Mannequin` reviewers → `requested_reviewer_login`.
+- `Team` reviewers → `requested_team_slug`.
+- The two columns are mutually exclusive.
+- `inline_comment_total_count` is set only on the three submitted
+  review types; not on `REVIEW_DISMISSED` (that captures the
+  `ReviewDismissedEvent`, not the review itself).
 
-**Outputs.** Append observations to the Progress Notes — particularly
-any unexpected null fields, additional union members on
-`requestedReviewer`, and the `comments.totalCount` distribution (this
-informs whether `SYNCER_INLINE_COMMENTS_PER_REVIEW=20` is right). Use
-the `rateLimit.cost` from the response plus the response byte size to
-compare against today's `last: 250` cost.
+**Pre-flight checks before writing the migration:**
+1. Confirm production data already conforms by running, on a recent DB
+   snapshot or in a read replica:
+   ```sql
+   -- All non-conforming rows for each constraint should return 0.
+   SELECT COUNT(*) FROM syncer_prtimelineevent
+     WHERE (requested_reviewer_login IS NOT NULL OR requested_team_slug IS NOT NULL)
+       AND type NOT IN ('REVIEW_REQUESTED', 'REVIEW_REQUEST_REMOVED');
+   SELECT COUNT(*) FROM syncer_prtimelineevent
+     WHERE requested_reviewer_login IS NOT NULL AND requested_team_slug IS NOT NULL;
+   SELECT COUNT(*) FROM syncer_prtimelineevent
+     WHERE inline_comment_total_count IS NOT NULL
+       AND type NOT IN ('REVIEW_APPROVED', 'REVIEW_CHANGES_REQUESTED', 'REVIEW_COMMENTED');
+   ```
+2. If any of those queries returns rows, do not add the constraint
+   until ingestion has been audited; the rows came from a code path
+   we didn't expect. Update Progress Notes with the finding.
 
-**Decision points.** From the findings, decide:
-- Whether the planned `CHECK` constraints in 4d are safe to write
-  strictly, or whether any need a permissive form.
-- Whether `Bot` as `requestedReviewer` should be routed to
-  `requested_reviewer_login` (treat as a login-bearing actor) or stored
-  in `extra` only.
-- Whether `last: 250` should drop given the new fragment cost.
+**Tests.** Add cases to
+`qb_site/syncer/tests/subsystems/test_timeline_sync.py` (or a sibling
+file) that attempt to create rows violating each constraint and assert
+`IntegrityError`. The existing
+`TestTimelineSyncReviewAndCommentEvents` already covers the happy
+paths; this new file just adds the negative cases.
 
-#### Chunk 4a. GraphQL fragments + per-review-comments setting
-Bundle responses get larger but no new ingestion happens — the normalizer
-still doesn't recognize the new types, so they're filtered out. Lets us
-measure payload growth in production with minimal risk.
+**Rollback:** if a constraint violates real data in production, drop
+it in a hotfix migration; the data shape is the source of truth.
 
-- Extend `qb_site/syncer/queries/pr_bundle.graphql`,
-  `qb_site/syncer/queries/timeline_page.graphql`,
-  `qb_site/syncer/queries/timeline_page_back.graphql`:
-  - Add to `itemTypes`: `ISSUE_COMMENT`, `PULL_REQUEST_REVIEW`,
-    `REVIEW_DISMISSED_EVENT`, `REVIEW_REQUESTED_EVENT`,
-    `REVIEW_REQUEST_REMOVED_EVENT`.
-  - Add per-type fragments per the table in §3 of this doc.
-  - On `PullRequestReview`, add nested
-    `comments(first: $inlineCommentsPerReview)` with `id, createdAt,
-    path, line, originalLine, replyTo { id }, author { login }` plus
-    `pageInfo { hasNextPage }` and `totalCount`.
-  - Add a new GraphQL variable `$inlineCommentsPerReview: Int!` to all
-    three queries.
-- Add setting `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default `20`) in
-  `qb_site/qb_site/settings/base.py` and `.env.example`. Wire the value
-  into the GraphQL client calls in `qb_site/syncer/services/github_client.py`.
-- After deploy, watch for: bundle payload size (compare before/after on
-  a busy PR via the manual `gh api graphql` invocation), rate-limit
-  budget over a few hours of normal sync traffic, any timeouts.
-- No behavior change beyond payload size. Normalizer rejects the new
-  `__typename` values silently (they fall through the type-map check,
-  same as today's unknown types).
+### Chunk 5. v2 upgrader (the wave)
+This is where the **historical backfill** of `IssueComment` /
+`PullRequestReview` events on already-fully-walked PRs actually
+happens. After the 4a–4c soak, fresh syncs and ongoing
+`backfill_repo_incomplete_prs` runs capture new event types
+opportunistically, but PRs that finished their v1 timeline walk before
+the deploy still have a `timeline_backfill_done=True` flag from the
+v1-era query — i.e., they were "fully walked" under the narrower
+v1 `itemTypes` and never re-walked under the v2 fragments. Chunk 5
+forces those rewalks.
 
-#### Chunk 4b. Normalizer + enum + REVIEW_* / ISSUE_COMMENTED ingestion
-New `PRTimelineEvent` rows start being created on fresh syncs (and on
-the timeline backfill rewalks). No new tables touched yet.
+#### Correctness pitfall to address (raised 2026-05-08)
+The original design had `is_complete(pr) := pr.timeline_backfill_done`.
+That's wrong on its own: a v1-era walk that left
+`timeline_backfill_done=True` would make `is_complete` short-circuit
+to True at v=2, the dispatcher would stamp the PR to v=2 without
+calling `kick`, and the historical event-type backfill would be
+silently skipped.
 
-- Add the seven new values to `PRTimelineEventType` in
-  `qb_site/syncer/models/pr_timeline_event.py`: `ISSUE_COMMENTED`,
-  `REVIEW_APPROVED`, `REVIEW_CHANGES_REQUESTED`, `REVIEW_COMMENTED`,
-  `REVIEW_DISMISSED`, `REVIEW_REQUESTED`, `REVIEW_REQUEST_REMOVED`.
-- Migration that adds the enum values (Django's `TextChoices` change
-  is metadata-only on the model; no DB-level changes unless you add
-  CHECK constraints — those are deferred to 4d).
-- Extend `qb_site/syncer/services/sub/timeline_sync.py`:
-  - Map the new `__typename` values to `PRTimelineEventType`.
-  - For each, extract `actor_login` / `occurred_at` per the design
-    table.
-  - For `PullRequestReview`: map `state` to the right `REVIEW_*`
-    type; drop pending reviews (`submittedAt is None`); populate
-    `inline_comment_total_count` from `comments.totalCount`.
-  - For `REVIEW_REQUESTED` / `REVIEW_REQUEST_REMOVED`: route
-    `requestedReviewer` by `__typename` to either
-    `requested_reviewer_login` (User / Mannequin / Bot if Phase 0
-    confirms) or `requested_team_slug` (Team).
-  - For `REVIEW_DISMISSED`: populate `extra.dismissed_review_node_id`,
-    `extra.dismissed_review_author`, `extra.dismissed_review_submitted_at`,
-    `extra.previous_review_state`. Always derive `actor_login` from
-    `actor`, never from `review.author`.
-- Honor the convention: persist `actor_login` as `""` when GraphQL
-  returns null; same for `requested_reviewer_login` (use empty string
-  rather than null when the underlying object is present but the login
-  is null — should not happen in practice).
-- Add tests under `qb_site/syncer/tests/services/` (or expand
-  `test_pull_request_sync.py`): each new event type maps to the right
-  row; pending review dropped; null/Bot/Mannequin actors routed
-  correctly; dismissed-review denormalization populated.
+Pick one of these two fixes when implementing Chunk 5:
 
-#### Chunk 4c. Wire inline-comments service + reuse the bundle scope
-Connects the existing (unreferenced) `inline_comments_sync` service to
-the bundle ingest path. New rows in `PRReviewInlineComment` and
-`PRReviewInlineCommentBackfill` start appearing on fresh syncs.
+- **(a) Force-reset on deploy (simplest, slightly wasteful).** In the
+  same migration that bumps `CURRENT_SYNC_SCHEMA_VERSION = 2`,
+  data-migrate `timeline_backfill_done=False` and
+  `timeline_backfill_cursor=NULL` for every PR with
+  `sync_schema_version < 2`. Now every PR starts from a known state.
+  PRs that already got post-4a rewalks via
+  `backfill_repo_incomplete_prs` get re-rewalked once — wasted work
+  but bounded by `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT`.
+- **(b) Track the query version (more precise).** Add a column
+  `PullRequest.timeline_query_version: PositiveSmallIntegerField(default=0)`,
+  updated by `PRSyncService` to a module-level
+  `CURRENT_TIMELINE_QUERY_VERSION` whenever a full-history walk
+  completes (`hasPreviousPage=False` on the timeline page). At v=2,
+  that constant is `2`. Then
+  `is_complete(pr) := pr.timeline_backfill_done and pr.timeline_query_version >= 2`.
+  Avoids the redundant rewalks. **Important:** writing
+  `timeline_query_version` is NOT the same as writing
+  `sync_schema_version` — the former is "what query did we walk
+  with", the latter is "what ingestion expansion has been satisfied
+  for this PR" and is still owned exclusively by the upgrader
+  registry per the Subtleties invariant.
 
-- In the bundle-level orchestrator (`PRSyncService.sync_pull_request_bundle`),
-  after the `timeline_sync` call has persisted any `REVIEW_*` events,
-  collect tuples of
-  `(review_node_id, parent_review_event, comments_connection)` for
-  each review node in the bundle and call
-  `sync_review_inline_comments_bundle(...)` once per bundle.
-- Bundle scope is required so the service can resolve thread roots
-  across reviews (modern GitHub wraps each thread reply in its own
-  review).
-- Add an integration test under `qb_site/syncer/tests/` that runs a
-  fixture bundle (`pr_bundle_with_engagement_events.json`) end-to-end
-  through `sync_pull_request_bundle` and asserts the expected
-  `PRTimelineEvent` + `PRReviewInlineComment` rows appear, with one
-  fixture review having `pageInfo.hasNextPage=true` so the
-  `PRReviewInlineCommentBackfill` row gets exercised.
+Pick **(a)** unless the redundant-work cost looks meaningful at our
+scale (it likely doesn't). Document the choice in Progress Notes.
 
-#### Chunk 4d. Strict CHECK constraints
-Final sub-chunk of Chunk 4. Should land at least one deploy after 4c so
-real-world data has flowed through the new ingestion path and any
-edge-case shapes the Phase 0 verification missed have surfaced.
-
-- Migration adds CHECK constraints on `PRTimelineEvent` mirroring the
-  existing `syncer_prtl_label_by_type_ck` / `syncer_prtl_sha_by_type_ck`
-  pattern:
-  - `requested_reviewer_login` + `requested_team_slug` set only when
-    `type IN (REVIEW_REQUESTED, REVIEW_REQUEST_REMOVED)`.
-  - `requested_reviewer_login` and `requested_team_slug` mutually
-    exclusive (at most one is non-null on a given row).
-  - `inline_comment_total_count` set only when
-    `type IN (REVIEW_APPROVED, REVIEW_CHANGES_REQUESTED, REVIEW_COMMENTED)`.
-- Constraints land *after* 4c has been deployed so any shape mismatch
-  surfaces as test/staging failures rather than as a production
-  ingestion crash. If Phase 0 surfaced an edge case (e.g. Bot
-  reviewers), encode the chosen routing here so the constraint
-  reflects production reality.
-
-### Chunk 5. v2 upgrader
-- Register `upgrade_to_v2` (`is_complete`, `kick`) at version 2 in
-  `qb_site/syncer/services/sync_schema_upgrades.py`. `is_complete(pr)`
-  returns `pr.timeline_backfill_done`. `kick(pr)`:
-  1. If `timeline_backfill_done=True`, set it to `False` and clear
-     `timeline_backfill_cursor` so the existing
-     `backfill_repo_incomplete_prs` task re-walks history with the new
-     `itemTypes` and the nested `comments(first: K)` fetch.
-  2. Enqueue `sync_pr_task(force=True)` so dedupe doesn't swallow the
-     rewalk.
+#### Concrete plan
+- Register `upgrade_to_v2` at version 2 in
+  `qb_site/syncer/services/sync_schema_upgrades.py`:
+  - `is_complete(pr)`: see the pitfall above. Either
+    `pr.timeline_backfill_done` (paired with the data-migration
+    reset in option (a)) or
+    `pr.timeline_backfill_done and pr.timeline_query_version >= 2`
+    (option (b)).
+  - `kick(pr)`:
+    1. Set `timeline_backfill_done=False` and clear
+       `timeline_backfill_cursor` so
+       `backfill_repo_incomplete_prs` re-walks history with the v2
+       `itemTypes` and the nested `comments(first: K)` fetch.
+    2. Enqueue `sync_pr_task(force=True)` so the runtime/enqueue
+       dedupe (300s TTL) doesn't swallow the rewalk.
 - Bump `CURRENT_SYNC_SCHEMA_VERSION = 2`.
 - Add settings gate `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION` (default
   `CURRENT_SYNC_SCHEMA_VERSION`) so a deploy can advance the wave
-  deliberately rather than the moment the constant flips.
-- Watch the `prs_below_current_sync_schema_version` convergence canary;
-  it should rise sharply on deploy as everything goes from "below
-  target=2" and then trend back down as the wave progresses.
+  deliberately rather than the moment the constant flips. Useful for
+  staging: deploy with the constant=2 but the gate=1, watch the
+  framework run as a no-op, then flip the env var to 2 to fire the
+  wave.
+- Watch the `prs_below_current_sync_schema_version` convergence
+  canary: it spikes on deploy (every PR is now "below target=2") and
+  trends back to 0 over days as the wave converges. If it stalls
+  (flat or growing pass-over-pass), inspect the kick-budget and
+  rate-limit telemetry.
 
 ### Chunk 6. `engagement_synced_at` deprecation (one release after Chunk 5)
 - Stop writing `engagement_synced_at` from `PRSyncService`.
@@ -806,16 +722,26 @@ is a quick reversal if production data turns out to violate them.
   test / staging failure rather than as a production ingestion crash.
   Phase 0 verification feeds into the exact constraint definitions.
 - ~~**Bundle payload growth measurement.**~~ **`gh api graphql` against
-  a busy PR**, no special tooling. The Phase 0 query in §Chunk 4 is the
-  template; record `rateLimit.cost` and response size before/after the
-  Chunk 4a deploy to inform any tuning of `last:` / K.
+  a busy PR**, no special tooling. Use the Phase 0 query template (in
+  commit `24602eb` if it has been condensed out of this doc); record
+  `rateLimit.cost` and response size before/after the Chunk 4a deploy
+  to inform any tuning of `last:` / K.
+- ~~**Phase 0 GraphQL field-shape findings.**~~ **Done 2026-05-08**;
+  see Progress Notes. Headline: `requestedReviewer` union includes
+  `Bot`, route to `requested_reviewer_login`. `ReviewDismissedEvent.review`
+  is nullable, ingest needs a null guard (now in 4b).
+  `state=DISMISSED` `PullRequestReview` nodes appear in `timelineItems`
+  with non-null `submittedAt` and may carry inline comments —
+  acknowledged in 4c (filter is `submittedAt is not null`, not a state
+  allow-list).
 
 ### Open
-- **Phase 0 GraphQL field-shape findings.** Chunk 4 should *not* begin
-  the constraint-design step (4d) before Phase 0's verification queries
-  are run and their answers recorded in Progress Notes. The questions
-  to resolve are listed under "Phase 0. Verify GitHub API behavior" in
-  §Chunk 4.
+- **Chunk 5 correctness pitfall: `is_complete(pr)` and v1-era
+  `timeline_backfill_done=True`.** Recorded 2026-05-08 in §Chunk 5.
+  Decide between the data-migration-reset approach and the
+  `timeline_query_version` column approach. Recommended: data-migration
+  reset (option (a)) unless the redundant-rewalk cost looks meaningful
+  at our scale.
 - Should the v2 upgrader live as its own Celery task or be folded into
   `backfill_repo_incomplete_prs`? Folding is simpler; separate gives
   cleaner observability per upgrade wave.
@@ -826,40 +752,21 @@ is a quick reversal if production data turns out to violate them.
   its own version bump?
 
 ## Progress Notes
-- 2026-05-07: Initial design drafted.
-- 2026-05-07: Refined to capture inline review comments via nested
-  `PullRequestReview.comments` rather than punting them to v3; introduced
-  `PRReviewInlineComment` model rather than synthesizing inline-comment rows
-  in `PRTimelineEvent` (preserves the "1 row ↔ 1 timelineItems node"
-  invariant).
-- 2026-05-07: Stamping rule moved entirely to the upgrader registry; explicit
-  invariants added for `force=True`, soft-deprecation of aggregates, payload
-  growth, mannequins, team review requests, and the deliberate non-capture
-  list.
-- 2026-05-07: Promoted reviewer-engagement query fields to typed columns
-  (`requested_reviewer_login`, `requested_team_slug`) on `PRTimelineEvent`
-  rather than burying them in `extra`. Replaced the
-  `inline_comments_incomplete` boolean (originally in `extra`) with a
-  combination of `inline_comment_total_count` (GitHub-truth, on
-  `PRTimelineEvent`) and a new dedicated `PRReviewInlineCommentBackfill`
-  table — separating sync-state from event data and keeping the v3 recovery
-  scan O(rows-needing-work). Also dropped the redundant `review_state` from
-  `extra` (the `type` discriminator already encodes it) and renamed
-  `event_type` → `type` throughout to match the existing column name on
-  `PRTimelineEvent`. Added scan-performance subtlety covering all new and
-  replaced periodic scans.
-- 2026-05-07: Chunk 1 landed (schema + stub upgrader module). Refined Chunk
-  2's design ahead of implementation: dispatcher auto-stamps versions with
-  no registered upgrader (so v=1 doesn't need a trivial stamper-only
-  upgrader, since `PRSyncService` already writes the engagement fields v=1
-  represents on every sync). Split the pacing knobs into
+- 2026-05-07: Initial design drafted, then iteratively refined to:
+  inline review comments captured via nested `PullRequestReview.comments`
+  rather than punted to v3; `PRReviewInlineComment` model added (preserves
+  the 1:1 timeline-node invariant); stamping rule moved entirely to the
+  upgrader registry; reviewer-engagement query fields promoted to typed
+  columns (`requested_reviewer_login`, `requested_team_slug`); the
+  `inline_comments_incomplete` boolean replaced by GitHub-truth
+  `inline_comment_total_count` + a dedicated `PRReviewInlineCommentBackfill`
+  table; scan-performance subtleties added for all new periodic scans.
+- 2026-05-07: Chunk 1 landed; Chunk 2's design refined — dispatcher
+  auto-stamps versions with no registered upgrader (so v=1 needs no
+  stamper-only upgrader); pacing split into
   `SYNCER_SCHEMA_UPGRADE_BATCH_SIZE` (DB-only stamping; default 1000) and
-  `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT` (GitHub-bound; default 20) so Chunk 5's
-  v=2 wave is paced like the engagement backfill while stamping clears
-  cheap backlogs in one or two passes. Added two convergence-metric columns
-  to `SyncerConvergenceSnapshot` so wave progress is observable per repo.
-  Documented deploy boundaries (1+2, 3+4, 5, 6) so each impact step has a
-  soak period before the next.
+  `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT` (GitHub-bound; default 20); two
+  convergence-metric columns added to `SyncerConvergenceSnapshot`.
 - 2026-05-08: Chunks 1+2 deployed to production. Convergence canary reports
   `prs_below_current_sync_schema_version=0` per active repo and
   `sync_schema_version_target=1`. Migration `0039`'s data step ran cleanly;
@@ -1103,6 +1010,23 @@ is a quick reversal if production data turns out to violate them.
 
   DB-requiring tests not run locally (no Compose). Need
   `bash scripts/repo_check_compose.sh` before deploy.
+- 2026-05-08: **Pre-deploy discussion of fresh-sync vs Chunk 5
+  interaction.** Question raised: do fresh syncs after the 4a–4c deploy
+  bump `sync_schema_version` so PRs aren't re-enqueued by Chunk 5?
+  Answer: no, PRSyncService doesn't write `sync_schema_version` (the
+  upgrader registry is the sole writer, by Subtleties invariant). So
+  every PR remains at v=1 until Chunk 5 fires.
+
+  This surfaced a real correctness gap in the original Chunk 5 plan:
+  the rule `is_complete(pr) := pr.timeline_backfill_done` causes PRs
+  with v1-era `timeline_backfill_done=True` to be stamped to v=2
+  *without* a rewalk under v2's broader `itemTypes` — historical
+  `IssueComment` / `PullRequestReview` events would be silently
+  skipped. Two fixes are now documented in §Chunk 5: (a) data-migrate
+  `timeline_backfill_done=False` for all `sync_schema_version<2` PRs
+  at Chunk 5 deploy, or (b) add a `timeline_query_version` column on
+  `PullRequest` that PRSyncService writes when a full-history walk
+  completes. Recommendation: option (a). Tracking as an open question.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into
