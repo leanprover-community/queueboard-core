@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
@@ -7,8 +8,11 @@ from dateutil import parser as dtparser
 from django.utils import timezone
 
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
+from syncer.models.pr_review_inline_comment import PRReviewInlineComment
 from syncer.models.pr_timeline_event import PRTimelineEvent, PRTimelineEventType
 from syncer.models.pull_request import PullRequest
+
+logger = logging.getLogger(__name__)
 
 REVISION_DIRTY_EVENT_TYPES = {
     PRTimelineEventType.HEAD_FORCE_PUSHED,
@@ -150,6 +154,95 @@ def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return fields
 
 
+def _synthesize_dismissed_review_parent(pr: PullRequest, dismiss_extra: Dict[str, Any]) -> tuple[PRTimelineEvent | None, bool]:
+    """Synthesize the REVIEW_<previousReviewState> row for a dismissed review.
+
+    A dismissed review's original submission state is dropped at the
+    ``PullRequestReview`` (state=DISMISSED) ingestion path because that node
+    alone doesn't tell us what state the review was in before dismissal. The
+    original state IS recoverable from the paired ``ReviewDismissedEvent``'s
+    ``previousReviewState`` field, which we already denormalize into
+    ``REVIEW_DISMISSED.extra``. This synthesizer creates the corresponding
+    ``REVIEW_<previousReviewState>`` row (idempotent on
+    ``github_node_id == extra.dismissed_review_node_id``) so that the
+    ingested data is consistent regardless of whether the syncer ran
+    between submission and dismissal (Case A — REVIEW_<state> already
+    present) or only after dismissal (Case B — needs synthesis).
+
+    Without this, two PRs with identical upstream history end up with
+    different DB shapes depending on sync timing — a non-deterministic
+    correctness property we want to avoid. See design doc 044.
+
+    Returns ``(row, was_created)`` for the synthesized parent, or
+    ``(None, False)`` when synthesis isn't possible (extra is missing
+    fields, ``previousReviewState`` isn't a submission state, or
+    ``dismissed_review_submitted_at`` failed to parse).
+
+    As a side effect, when synthesis succeeds and the row was created,
+    any existing ``PRReviewInlineComment`` rows with this review's
+    ``review_node_id`` and a null ``parent_review_event_id`` are linked
+    to the new parent. This handles the ordering "inline comments
+    ingested before the dismiss event was seen on a different page".
+    """
+    review_node_id = dismiss_extra.get("dismissed_review_node_id")
+    previous_state = dismiss_extra.get("previous_review_state")
+    submitted_at_iso = dismiss_extra.get("dismissed_review_submitted_at")
+    author = dismiss_extra.get("dismissed_review_author") or ""
+
+    if not review_node_id or not previous_state or not submitted_at_iso:
+        return (None, False)
+
+    ev_type = _REVIEW_STATE_TO_TYPE.get(str(previous_state).upper())
+    if ev_type is None:
+        # PENDING / DISMISSED / unexpected. The first two shouldn't be possible
+        # (you can't dismiss a pending or already-dismissed review), but log
+        # if we ever see one.
+        logger.warning(
+            "timeline_sync.skip_synthesis_unexpected_previous_state pr_id=%s review_node_id=%s previous_state=%s",
+            pr.pk,
+            review_node_id,
+            previous_state,
+        )
+        return (None, False)
+
+    occurred_at = _parse_iso(submitted_at_iso)
+    if occurred_at is None:
+        logger.warning(
+            "timeline_sync.skip_synthesis_unparseable_submitted_at pr_id=%s review_node_id=%s submitted_at=%s",
+            pr.pk,
+            review_node_id,
+            submitted_at_iso,
+        )
+        return (None, False)
+
+    obj, was_created = PRTimelineEvent.objects.get_or_create(
+        pull_request=pr,
+        github_node_id=review_node_id,
+        defaults={
+            "type": ev_type,
+            "occurred_at": occurred_at,
+            "actor_login": str(author),
+            # inline_comment_total_count starts NULL: we don't know the count
+            # without seeing the actual PullRequestReview node. The CHECK
+            # constraint allows null on review-submission types. If a later
+            # walk surfaces the PullRequestReview node (in any state), the
+            # update path in sync_timeline_events refreshes the count.
+        },
+    )
+
+    if was_created:
+        # Back-link any inline comments that were ingested before this
+        # synthesis ran (e.g., the inline comments were on an earlier page
+        # than the dismiss event in the back-walk).
+        PRReviewInlineComment.objects.filter(
+            pull_request=pr,
+            review_node_id=review_node_id,
+            parent_review_event__isnull=True,
+        ).update(parent_review_event=obj)
+
+    return (obj, was_created)
+
+
 def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> TimelineSyncResult:
     """Insert key timeline events for a PR using GraphQL ids (idempotent).
 
@@ -171,7 +264,13 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         REVIEW_COMMENTED (state-routed; PENDING and DISMISSED dropped here)
         with ``inline_comment_total_count`` from ``comments.totalCount``
       - ReviewDismissedEvent → REVIEW_DISMISSED, with denormalized review
-        identity + state in ``extra``
+        identity + state in ``extra``. As a side effect of ingesting a
+        ``REVIEW_DISMISSED`` row whose ``extra`` carries the dismissed
+        review's identity + previous state, this function also synthesizes
+        the corresponding ``REVIEW_<previousReviewState>`` row (idempotent
+        on the dismissed review's ``github_node_id``) so the ingested data
+        is consistent regardless of whether the syncer ran between
+        submission and dismissal. See ``_synthesize_dismissed_review_parent``.
       - ReviewRequestedEvent / ReviewRequestRemovedEvent →
         REVIEW_REQUESTED / REVIEW_REQUEST_REMOVED, routed by reviewer kind
         (User/Bot/Mannequin → ``requested_reviewer_login``; Team →
@@ -237,6 +336,19 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
             if update_fields:
                 obj.save(update_fields=update_fields)
                 updated += 1
+
+        # Synthesize the dismissed review's parent row regardless of whether
+        # the dismiss event row was just created or already existed. Running
+        # on every ingest (not just first creation) makes the live code
+        # self-healing for any production rows whose parents were missed by
+        # the migration's backfill — synthesis is idempotent on the dismissed
+        # review's github_node_id, so re-running is one extra SELECT.
+        if ev_type == PRTimelineEventType.REVIEW_DISMISSED:
+            extra_dict = fields.get("extra") or obj.extra or {}
+            if isinstance(extra_dict, dict):
+                _, synth_created = _synthesize_dismissed_review_parent(pr, extra_dict)
+                if synth_created:
+                    created += 1
 
     if reset_commits_backfill:
         pr.commits_backfill_done = False

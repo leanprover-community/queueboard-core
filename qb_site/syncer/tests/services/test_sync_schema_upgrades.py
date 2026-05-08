@@ -116,18 +116,18 @@ class DispatchTests(_RegistryIsolationMixin, TestCase):
         self.pr = make_pr(self.repo, 1)
 
     def test_auto_stamps_missing_upgrader(self) -> None:
-        # CURRENT=2 (default), registry empty: a v=0 PR auto-stamps through
-        # both v=1 and v=2 in one pass.
+        # CURRENT=3 (default), registry empty: a v=0 PR auto-stamps through
+        # v=1, v=2, and v=3 in one pass.
         outcome = dispatch(self.pr)
         self.assertIsInstance(outcome, DispatchOutcome)
-        self.assertEqual(outcome.stamped_to, 2)
-        self.assertEqual(outcome.auto_stamped_versions, (1, 2))
+        self.assertEqual(outcome.stamped_to, 3)
+        self.assertEqual(outcome.auto_stamped_versions, (1, 2, 3))
         self.assertFalse(outcome.kicked)
         self.pr.refresh_from_db()
-        self.assertEqual(self.pr.sync_schema_version, 2)
+        self.assertEqual(self.pr.sync_schema_version, 3)
 
     def test_no_op_when_already_at_current(self) -> None:
-        stamp(self.pr, 2)
+        stamp(self.pr, 3)
         outcome = dispatch(self.pr)
         self.assertIsNone(outcome.stamped_to)
         self.assertEqual(outcome.auto_stamped_versions, ())
@@ -235,7 +235,10 @@ class ConcurrentStampTests(_RegistryIsolationMixin, TestCase):
         #   - not error,
         #   - not record a phantom auto-stamp (since our UPDATE was a no-op),
         #   - return a clean outcome reflecting "we did nothing new".
-        PullRequest.objects.filter(pk=self.pr.pk).update(sync_schema_version=2)
+        # Note: must stamp DB to CURRENT (=3), not a stale historical value,
+        # since the dispatcher walks 1..CURRENT and any step strictly below
+        # the DB value would be a real (not phantom) advance.
+        PullRequest.objects.filter(pk=self.pr.pk).update(sync_schema_version=3)
         outcome = dispatch(self.pr)
         self.assertIsNone(outcome.stamped_to)
         self.assertEqual(outcome.auto_stamped_versions, ())

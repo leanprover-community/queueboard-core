@@ -33,7 +33,7 @@ from syncer.models import PullRequest
 logger = logging.getLogger(__name__)
 
 
-CURRENT_SYNC_SCHEMA_VERSION: int = 2
+CURRENT_SYNC_SCHEMA_VERSION: int = 3
 """Current target value of ``PullRequest.sync_schema_version``.
 
 Bumped each time a new ingestion expansion is rolled out together with its
@@ -162,7 +162,11 @@ def dispatch(pr: PullRequest, *, kick_budget: int = 1, target_version: int | Non
             if stamp(pr, step):
                 auto_stamped.append(step)
                 final_version = step
-                logger.info(
+                # DEBUG: a wave touching every PR at v=N produces millions of
+                # these lines if INFO. The convergence canary
+                # (prs_below_current_sync_schema_version) is the operational
+                # signal; per-PR auto-stamps are diagnostic-only.
+                logger.debug(
                     "sync_schema_upgrades.auto_stamp pr_id=%s repo_id=%s number=%s version=%s",
                     pr.pk,
                     pr.repository_id,

@@ -393,6 +393,20 @@ class PRSyncService:
         # Seed timeline backfill state from bundle pageInfo if missing.
         # Only mark done when the bundle is unfiltered (no timelineSince) so we
         # don't treat a filtered window as full history.
+        #
+        # Race-with-wave note: a webhook-triggered sync can flip
+        # timeline_backfill_done back to True here mid-wave (the wave's kick
+        # had reset it to False to force a rewalk). For PRs whose entire
+        # timeline fits in the bundle window — which is most PRs at
+        # K=150 — the bundle path itself persists every event AND every
+        # nested sub-collection (inline comments, etc.), so the wave's
+        # rewalk would be redundant work. The flip is safe TODAY because
+        # every sub-collection ingest is invoked from the bundle path
+        # (see syncer AGENTS.md "Timeline ingest invariants"). A future
+        # ingestion expansion that lives ONLY on the back-page query
+        # (i.e., not in the bundle's `timelineItems`) would invalidate
+        # this assumption, and that future expansion's upgrader would
+        # need to gate the seed flip on its own version sentinel.
         tl_conn0 = pr.get("timelineItems") or {}
         page0 = tl_conn0.get("pageInfo") or {}
         timeline_seed_updates: list[str] = []
@@ -461,7 +475,16 @@ class PRSyncService:
                     nodes = titems.get("nodes") or []
                     tl_res = sync_timeline_events(pr_obj, nodes)
                     self._apply_assignment_opt_outs(pr_obj, nodes)
+                    # Sub-collection ingest: inline review comments live
+                    # nested under PullRequestReview nodes and must be
+                    # persisted on every code path that processes a timeline
+                    # page (bundle / forward / back). See syncer AGENTS.md
+                    # ("Timeline ingest invariants").
+                    inline_res = self._sync_inline_review_comments(pr_obj, nodes)
                     result["events_created"] += tl_res.created
+                    if inline_res is not None:
+                        result["inline_comments_created"] += inline_res.comments_created
+                        result["inline_backfill_rows_upserted"] += inline_res.backfill_rows_upserted
                     if rate_log is not None:
                         rl = client.get_last_rate_limit()
                         if isinstance(rl, dict):
@@ -488,7 +511,16 @@ class PRSyncService:
                     titems = tpr.get("timelineItems") or {}
                     nodes = titems.get("nodes") or []
                     tl_res = sync_timeline_events(pr_obj, nodes)
+                    # Sub-collection ingest: see the forward-page path above
+                    # for the invariant. Note that _apply_assignment_opt_outs
+                    # is intentionally not called on historical pages —
+                    # the latest opt-out signal is always in the recent
+                    # timeline, never in the back-walked tail.
+                    inline_res = self._sync_inline_review_comments(pr_obj, nodes)
                     result["events_created"] += tl_res.created
+                    if inline_res is not None:
+                        result["inline_comments_created"] += inline_res.comments_created
+                        result["inline_backfill_rows_upserted"] += inline_res.backfill_rows_upserted
                     # Update earliest timestamp if present
                     if nodes:
                         try:

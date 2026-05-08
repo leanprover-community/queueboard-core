@@ -6,18 +6,17 @@ connection nested inside each ``PullRequestReview`` GraphQL node into
 ``PRReviewInlineComment`` rows + a ``PRReviewInlineCommentBackfill`` row
 when the connection had more pages than we fetched.
 
-Wired into the bundle ingest path in Chunk 4 (design doc 044). Until then
-this module is importable but has no callers.
-
 Input shape (per review group)
 - ``review_node_id``: GraphQL ``PullRequestReview.id`` of the parent review.
 - ``parent_review_event``: the persisted ``PRTimelineEvent`` row for that
-  review submission (or None if not yet persisted; FK is left null and the
-  durable link via ``review_node_id`` carries the relationship).
+  review submission, or None when no such row exists yet (e.g., a dismissed
+  review whose ``ReviewDismissedEvent`` had ``review: null`` so synthesis
+  couldn't fire). The durable link is always ``review_node_id``.
 - ``total_count``: ``comments.totalCount`` for this review (also stamped on
-  ``PRTimelineEvent.inline_comment_total_count`` by Chunk 4).
+  ``PRTimelineEvent.inline_comment_total_count``).
 - ``has_next_page``: ``comments.pageInfo.hasNextPage``. When True we record
-  a ``PRReviewInlineCommentBackfill`` row; the v3 paginator consumes it.
+  a ``PRReviewInlineCommentBackfill`` row keyed on ``review_node_id`` so the
+  v3 paginator can find it via a tiny dedicated-table scan.
 - ``comment_nodes``: raw list of ``PullRequestReviewComment`` GraphQL nodes,
   each shaped like::
 
@@ -31,13 +30,20 @@ Input shape (per review group)
           "author": {"login": str} | None,
       }
 
-Threading
-- ``thread_root_node_id`` is computed by walking ``replyTo`` within the
-  in-flight set (the union of all comments across all reviews in the
-  bundle). If the chain stays in-bundle, the topmost in-bundle node is the
-  root. If a comment's ``replyTo`` target sits outside the bundle, the
-  immediate ``replyTo`` id is used as the root — best-effort, reconciled
-  on later rewalks. A self-rooted comment (no ``replyTo``) is its own root.
+Threading (DB-aware walk + monotone UPSERT)
+- ``thread_root_node_id`` is computed by walking ``replyTo`` through the
+  union of (a) the in-flight set (other comments under any review in the
+  current call) and (b) existing ``PRReviewInlineComment`` rows in the DB.
+  When a comment's ``replyTo`` target leaves the in-flight set we look it
+  up in the DB and copy its already-resolved ``thread_root_node_id``
+  (transitively correct, since that row was resolved by a prior ingest).
+  If the chain leaves both, we fall back to the immediate ``replyTo`` id —
+  best-effort, tightened on a future rewalk that has more of the chain.
+- Re-ingest semantics are monotone-toward-truth: a row whose new walk
+  reached a definitive root (no fallback) UPSERTs ``thread_root_node_id``;
+  a row whose new walk fell back uses INSERT-IGNORE so a possibly-better
+  existing value is preserved. This way a wider-context rewalk improves
+  the stored root, but a narrower rewalk never regresses it.
 """
 
 from __future__ import annotations
@@ -127,12 +133,22 @@ def _build_replyto_map(reviews: Iterable[ReviewInlineCommentsGroup]) -> dict[str
 def _compute_thread_root(
     node_id: str,
     replyto_map: dict[str, str | None],
+    db_thread_roots: dict[str, str],
 ) -> tuple[str, bool]:
-    """Walk ``replyTo`` from ``node_id`` within the in-flight map.
+    """Walk ``replyTo`` from ``node_id`` through the in-flight + DB sets.
 
-    Returns ``(thread_root_node_id, fell_back_outside_bundle)``. The boolean
-    is True iff the chain crossed out of the in-flight set and we used the
-    immediate ``replyTo`` target as the root.
+    The walk steps through the in-flight ``replyto_map`` first (cheap, no
+    DB hit). When a step lands on a ``replyTo`` target that's outside the
+    in-flight set, ``db_thread_roots`` (a one-shot prefetch of existing
+    rows' ``thread_root_node_id``) is consulted: if the target exists in
+    the DB, its already-resolved root is the answer (transitively
+    correct). If neither set has the target, fall back to the immediate
+    ``replyTo`` id as a best-effort root.
+
+    Returns ``(thread_root_node_id, fell_back)``. ``fell_back`` is True
+    iff we exited the chain via the last branch — used by the caller to
+    decide between UPSERT (definitive root: safe to overwrite) and
+    INSERT-IGNORE (preserve any already-better stored value).
     """
     visited: set[str] = set()
     current = node_id
@@ -144,15 +160,20 @@ def _compute_thread_root(
         reply_to = replyto_map.get(current)
         if reply_to is None:
             # Either ``current`` has no replyTo (it's a thread root), or
-            # ``current`` itself isn't in the map (caller bug — current
-            # always starts in the map and we only step to in-map nodes
-            # in the branch below). Either way ``current`` is the answer.
+            # ``current`` itself isn't in the map. Either way ``current``
+            # is the answer; the walk reached a definitive root.
             return current, False
-        if reply_to not in replyto_map:
-            # Chain leaves the bundle — fall back to the immediate replyTo
-            # target as the (best-effort) root.
-            return reply_to, True
-        current = reply_to
+        if reply_to in replyto_map:
+            current = reply_to
+            continue
+        # ``reply_to`` is outside the in-flight set. Consult the DB: if
+        # we've previously resolved this comment's chain to a root, copy
+        # that root as our answer (transitively correct).
+        db_root = db_thread_roots.get(reply_to)
+        if db_root is not None:
+            return db_root, False
+        # Neither in flight nor in DB — fall back to the immediate target.
+        return reply_to, True
 
 
 def sync_review_inline_comments_bundle(
@@ -168,7 +189,20 @@ def sync_review_inline_comments_bundle(
 
     replyto_map = _build_replyto_map(reviews_list)
 
+    # DB-aware thread-root resolution: prefetch existing rows for any
+    # replyTo target that's not in the in-flight set. One batch query
+    # bounded by the number of distinct external replyTo ids.
+    external_replyto_ids = {reply_to for reply_to in replyto_map.values() if reply_to is not None and reply_to not in replyto_map}
+    db_thread_roots: dict[str, str] = {}
+    if external_replyto_ids:
+        db_thread_roots = dict(
+            PRReviewInlineComment.objects.filter(github_node_id__in=external_replyto_ids).values_list(
+                "github_node_id", "thread_root_node_id"
+            )
+        )
+
     rows: list[PRReviewInlineComment] = []
+    fell_back_flags: list[bool] = []
     for group in reviews_list:
         parent_event_id = group.parent_review_event.pk if group.parent_review_event else None
         for node in group.comment_nodes:
@@ -185,7 +219,7 @@ def sync_review_inline_comments_bundle(
 
             reply_to_obj = node.get("replyTo")
             reply_to_id = reply_to_obj.get("id") if isinstance(reply_to_obj, dict) else None
-            thread_root, fell_back = _compute_thread_root(str(node_id), replyto_map)
+            thread_root, fell_back = _compute_thread_root(str(node_id), replyto_map, db_thread_roots)
             if fell_back:
                 result.thread_root_outside_bundle += 1
 
@@ -204,44 +238,50 @@ def sync_review_inline_comments_bundle(
                     thread_root_node_id=thread_root,
                 )
             )
+            fell_back_flags.append(fell_back)
 
     if rows:
-        # ``ignore_conflicts=True`` makes re-ingest a no-op against the
-        # ``github_node_id`` unique constraint. ``bulk_create`` returns the
-        # full input list with ``pk`` populated only for newly inserted
-        # rows in some backends; we trust the unique constraint instead of
-        # post-hoc inspection and count by counting the rows we produced
-        # for which a matching node id did not previously exist.
+        # ``comments_created`` counts only genuinely-new rows. We compute
+        # this BEFORE issuing the upsert so we can distinguish "row was
+        # inserted" from "row was already present and possibly updated".
         existing_ids = set(
             PRReviewInlineComment.objects.filter(github_node_id__in=[r.github_node_id for r in rows]).values_list(
                 "github_node_id", flat=True
             )
         )
-        new_rows = [r for r in rows if r.github_node_id not in existing_ids]
-        PRReviewInlineComment.objects.bulk_create(new_rows, ignore_conflicts=True)
-        result.comments_created = len(new_rows)
-    else:
-        result.comments_created = 0
+        result.comments_created = sum(1 for r in rows if r.github_node_id not in existing_ids)
 
-    # Backfill markers: one per review where the connection had more pages.
+        # Split rows by walk completeness:
+        # - definitive (fell_back=False): UPSERT thread_root_node_id —
+        #   safe to overwrite, since the new walk reached a true root.
+        # - fallback (fell_back=True): INSERT-IGNORE — preserve any
+        #   existing thread_root from a prior ingest that may have had
+        #   wider context. Monotone-toward-truth.
+        complete_rows = [r for r, fb in zip(rows, fell_back_flags) if not fb]
+        fallback_rows = [r for r, fb in zip(rows, fell_back_flags) if fb]
+        if complete_rows:
+            PRReviewInlineComment.objects.bulk_create(
+                complete_rows,
+                update_conflicts=True,
+                update_fields=["thread_root_node_id"],
+                unique_fields=["github_node_id"],
+            )
+        if fallback_rows:
+            PRReviewInlineComment.objects.bulk_create(fallback_rows, ignore_conflicts=True)
+
+    # Backfill markers: one per review where the nested comments connection
+    # had more pages than we captured. Keyed on ``review_node_id`` (the
+    # durable identifier) so we can track this even when the parent
+    # ``PRTimelineEvent`` row doesn't exist (e.g., dismissed reviews whose
+    # dismiss event had ``review: null`` on GitHub).
     for group in reviews_list:
         if not group.has_next_page:
             continue
-        if group.parent_review_event is None:
-            # Without a parent FK we have no anchor for the OneToOne row.
-            # This shouldn't happen on the normal ingest path; log so the
-            # case is visible if it ever fires.
-            logger.warning(
-                "inline_comments_sync.skipped_backfill_no_parent_event review_node_id=%s pull_request_id=%s",
-                group.review_node_id,
-                pull_request.pk,
-            )
-            continue
-        _, _ = PRReviewInlineCommentBackfill.objects.update_or_create(
-            review_event=group.parent_review_event,
+        PRReviewInlineCommentBackfill.objects.update_or_create(
+            review_node_id=group.review_node_id,
             defaults={
                 "pull_request": pull_request,
-                "review_node_id": group.review_node_id,
+                "review_event": group.parent_review_event,
                 "total_count": int(group.total_count),
             },
         )

@@ -36,18 +36,24 @@ class TestEngagementEventBundleIngest(TestCase):
         result = self._ingest()
         pr = PullRequest.objects.get(repository=self.repo, number=99001)
 
-        # 6 PRTimelineEvent rows expected from the v2 path:
+        # 8 PRTimelineEvent rows expected from the v2 path:
         #   - 2 ReviewRequestedEvent (TL_REQ_TEAM, TL_REQ_BOT)
         #   - 1 IssueComment (TL_IC1)
         #   - 1 REVIEW_COMMENTED for TL_REV_COMMENTED
         #   - 1 REVIEW_COMMENTED for TL_REV_REPLY (one-comment thread reply review)
         #   - 1 REVIEW_APPROVED for TL_REV_APPROVED
         #   - 1 REVIEW_DISMISSED for TL_DIS_EVENT
-        # = 7. (PENDING and DISMISSED PullRequestReview state nodes are
-        # dropped at row creation; the dismissal is captured via the
-        # ReviewDismissedEvent timeline item instead.)
-        self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 7)
-        self.assertEqual(result["events_created"], 7)
+        #   - 1 *synthesized* REVIEW_CHANGES_REQUESTED for TL_REV_DISMISSED
+        #     (the dismissed review's parent row, materialized from
+        #     TL_DIS_EVENT.previousReviewState — see design doc 044
+        #     §Item 1: synthesis ensures the data shape is the same
+        #     whether we synced before or after the dismissal).
+        # = 8. (PENDING and DISMISSED PullRequestReview state nodes are
+        # still dropped at row creation; the parent for the dismissed
+        # review is created from the dismiss event, not the
+        # PullRequestReview node.)
+        self.assertEqual(PRTimelineEvent.objects.filter(pull_request=pr).count(), 8)
+        self.assertEqual(result["events_created"], 8)
 
     def test_review_requested_routes_team_and_bot_correctly(self) -> None:
         self._ingest()
@@ -121,30 +127,59 @@ class TestEngagementEventBundleIngest(TestCase):
         # Pending reviews have no comments to ingest in the fixture either.
         self.assertFalse(PRReviewInlineComment.objects.filter(pull_request=pr, review_node_id="TL_REV_PENDING").exists())
 
-    def test_dismissed_review_inline_comments_ingested_without_parent_event(self) -> None:
+    def test_dismissed_review_synthesizes_parent_and_links_inline_comment(self) -> None:
         # Verified live against rust-lang/rust PR 149543: state=DISMISSED
         # PullRequestReview nodes appear in timelineItems with non-null
-        # submittedAt and may have inline comments. No REVIEW_* row is
-        # created for them (the dismissal is captured via the separate
-        # ReviewDismissedEvent), but their inline comments are still
-        # persisted with parent_review_event=NULL so they remain
-        # queryable via the durable review_node_id.
+        # submittedAt and may have inline comments.
+        #
+        # Per design doc 044 §Item 1 (synthesis), ingest produces:
+        #   - The PullRequestReview (state=DISMISSED) node is dropped at
+        #     row creation — its current state doesn't reveal the
+        #     original submission state.
+        #   - The ReviewDismissedEvent creates a REVIEW_DISMISSED row,
+        #     with the dismissed review denormalized into extra.
+        #   - As a side effect of ingesting the dismiss event, the
+        #     dismissed review's parent row is synthesized from
+        #     previousReviewState. github_node_id of the synthesized row
+        #     is the dismissed review's id (so the 1:1 invariant with
+        #     timelineItems nodes still holds — a later walk that
+        #     surfaces the actual PullRequestReview node will refresh
+        #     fields like inline_comment_total_count via the existing
+        #     update path).
+        #   - The inline comment under the dismissed review is linked
+        #     via parent_review_event_id to the synthesized row, so
+        #     analytics queries joining via parent_review_event don't
+        #     silently drop dismissed-review comments.
         self._ingest()
         pr = PullRequest.objects.get(repository=self.repo, number=99001)
-        # No REVIEW_* row for the dismissed PullRequestReview itself.
-        self.assertFalse(PRTimelineEvent.objects.filter(pull_request=pr, github_node_id="TL_REV_DISMISSED").exists())
-        # But REVIEW_DISMISSED row from the ReviewDismissedEvent exists,
-        # with the dismissed review denormalized into extra.
+
+        # The synthesized REVIEW_<previousReviewState> row exists.
+        # previousReviewState in the fixture is CHANGES_REQUESTED.
+        synth = PRTimelineEvent.objects.get(pull_request=pr, github_node_id="TL_REV_DISMISSED")
+        self.assertEqual(synth.type, PRTimelineEventType.REVIEW_CHANGES_REQUESTED)
+        self.assertEqual(synth.actor_login, "reviewer-erin")
+        # occurred_at comes from the dismiss event's
+        # extra.dismissed_review_submitted_at — the original review's
+        # submission time, not the dismiss time.
+        self.assertEqual(synth.occurred_at.isoformat(), "2026-05-01T14:00:00+00:00")
+        # inline_comment_total_count starts NULL on a synthesized row
+        # (we don't know it from the dismiss event alone). The CHECK
+        # constraint allows null on review-submission types.
+        self.assertIsNone(synth.inline_comment_total_count)
+
+        # The REVIEW_DISMISSED row from the ReviewDismissedEvent itself.
         dis = PRTimelineEvent.objects.get(pull_request=pr, github_node_id="TL_DIS_EVENT")
         self.assertEqual(dis.type, PRTimelineEventType.REVIEW_DISMISSED)
         self.assertEqual(dis.actor_login, "test-author")
         self.assertEqual(dis.extra["dismissed_review_node_id"], "TL_REV_DISMISSED")
         self.assertEqual(dis.extra["previous_review_state"], "CHANGES_REQUESTED")
-        # The inline comment under the dismissed review IS captured.
+
+        # The inline comment under the dismissed review is captured and
+        # — critically — linked to the synthesized parent.
         ic = PRReviewInlineComment.objects.get(github_node_id="IC_DISMISSED_1")
         self.assertEqual(ic.review_node_id, "TL_REV_DISMISSED")
         self.assertEqual(ic.author_login, "reviewer-erin")
-        self.assertIsNone(ic.parent_review_event_id)
+        self.assertEqual(ic.parent_review_event_id, synth.pk)
 
     def test_idempotent_under_re_ingest(self) -> None:
         self._ingest()
@@ -163,7 +198,10 @@ class TestEngagementEventBundleIngest(TestCase):
         # 6 inline comments captured: 3 (TL_REV_COMMENTED) + 1 reply (TL_REV_REPLY)
         # + 1 first-page node from TL_REV_APPROVED + 1 from TL_REV_DISMISSED.
         self.assertEqual(result["inline_comments_created"], 6)
-        # Only TL_REV_APPROVED had hasNextPage=true; TL_REV_DISMISSED has no
-        # parent event so its backfill marker is skipped (hasNextPage=false in
-        # the fixture anyway).
+        # Only TL_REV_APPROVED has hasNextPage=true in the fixture, so it's
+        # the only review producing a backfill marker. TL_REV_DISMISSED's
+        # backfill marker would now also be writable (the table is keyed
+        # on review_node_id post §Item 1, so the parent FK can be null);
+        # but its fixture entry has hasNextPage=false so no marker is
+        # produced regardless.
         self.assertEqual(result["inline_backfill_rows_upserted"], 1)

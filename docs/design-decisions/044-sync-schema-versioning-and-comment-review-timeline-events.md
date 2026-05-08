@@ -44,42 +44,95 @@
 | Chunk | State | Notes |
 | ----- | ----- | ----- |
 | 1. Schema scaffold | **Deployed** | `PullRequest.sync_schema_version` + four new typed columns on `PRTimelineEvent`. Migration `0039` ran cleanly; data migration stamped existing engagement-synced PRs to v=1. |
-| 2. Upgrader framework + convergence metric | **Deployed** | Periodic task `syncer.upgrade_schema_versions` is firing; convergence canary reports `prs_below_current_sync_schema_version=0` and `sync_schema_version_target=1` per repo. Registry empty as designed; auto-stamp path is what's running. **Until Chunk 5 bumps `CURRENT_SYNC_SCHEMA_VERSION` to 2, this task has nothing to do** — every PR is already at the target. |
-| 3a. Inline-comment models + admin + backup policy | **Committed, awaiting deploy** | Pure additive migration `0041`; both new tables and admins ready; `validate_backup_policy.py` updated. |
-| 3b. Inline-comment ingestion service | **Committed, awaiting deploy** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. Service was importable but unreferenced before 4c. |
-| 4a. GraphQL fragments + setting | **Committed, awaiting deploy** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added; `validate_github_graphql.py` updated. |
-| 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Committed, awaiting deploy** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing for reviews, pending-review drop, dismissed-review null-guard, requestedReviewer routing (User/Bot/Mannequin → login; Team → slug), and `inline_comment_total_count` refresh. New test class with 16 cases. |
-| 4c. Wire inline-comments service | **Deployed (2026-05-07)** | `PRSyncService.sync_pull_request_bundle` now collects review nodes and calls `sync_review_inline_comments_bundle` once per bundle. Includes `state=DISMISSED` reviews' inline comments (verified live: those nodes appear in `timelineItems` with non-null `submittedAt`). End-to-end fixture + 9-case integration test. Live: new `PRTimelineEvent` rows of the new types and `PRReviewInlineComment` rows are appearing on fresh syncs. `PRReviewInlineCommentBackfill` table is still empty as predicted — the v2 wave (Chunk 5) hasn't fired yet, so the long-tail "review with >20 inline comments" population that would trigger backfill rows hasn't been re-walked. |
-| 4d. Strict CHECK constraints | **Deployed (2026-05-08)** | Migration `0043` added three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 before deploy. Negative-case tests in `TestTimelineEventCheckConstraints`. |
-| 5. v2 upgrader (the wave) | **Committed, awaiting deploy** | `CURRENT_SYNC_SCHEMA_VERSION` bumped to 2; `UpgradeToV2` defined in `services/sync_schema_upgrade_v2.py` and registered via `SyncerConfig.ready()`. Migration `0044` data-migrates `timeline_backfill_done=False, timeline_backfill_cursor=NULL` for every PR with `sync_schema_version<2` (option (a) fix from §"Correctness pitfall"). New optional gate `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION` lets a deploy hold the wave below `CURRENT` (clamped to it on the upper side). Existing pre-Chunk-5 tests updated for `CURRENT=2`; new tests cover `target_version` clamping/holding, `effective_target_version`, `UpgradeToV2.is_complete`/`kick`, and the gate path through the periodic task. |
-| 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5. |
+| 2. Upgrader framework + convergence metric | **Deployed** | Periodic task `syncer.upgrade_schema_versions` is firing; convergence canary reports `prs_below_current_sync_schema_version=0` and `sync_schema_version_target=1` per repo. Registry empty as designed; auto-stamp path is what's running. |
+| 3a. Inline-comment models + admin + backup policy | **Deployed** | Pure additive migration `0041`; both new tables and admins; `validate_backup_policy.py` updated. |
+| 3b. Inline-comment ingestion service | **Deployed** | `qb_site/syncer/services/sub/inline_comments_sync.py` + tests. |
+| 4a. GraphQL fragments + setting | **Deployed** | Fragments added to `pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`; `$inlineCommentsPerReview` threaded; `SYNCER_INLINE_COMMENTS_PER_REVIEW` (default 20) added. |
+| 4b. Normalizer + REVIEW_*/ISSUE_COMMENTED ingestion | **Deployed** | 7 new `PRTimelineEventType` values + metadata-only migration `0042`; `timeline_sync.py` extended to map new `__typename`s with state-routing, pending-review drop, dismissed-review null-guard, requestedReviewer routing, and `inline_comment_total_count` refresh. |
+| 4c. Wire inline-comments service (bundle path only) | **Deployed (2026-05-07)** with gap | `PRSyncService.sync_pull_request_bundle` calls `sync_review_inline_comments_bundle`. **Gap:** the same call was NOT wired into `sync_pull_request`'s forward `get_timeline_page` and backward `get_timeline_page_back` loops. Discovered post-Chunk-5 deploy when v=2 PRs began appearing without `PRReviewInlineComment` rows. Fixed in **Chunk 5b**. |
+| 4d. Strict CHECK constraints | **Deployed (2026-05-08)** | Migration `0043` added three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 before deploy. |
+| 5. v2 upgrader (the wave) | **Deployed (2026-05-08)** with gap | `CURRENT_SYNC_SCHEMA_VERSION=2`; `UpgradeToV2` registered via `SyncerConfig.ready()`. Migration `0044` reset `timeline_backfill_done=False, timeline_backfill_cursor=NULL` for every PR at v<2. **Gap:** because of the 4c gap, v=2 PRs were stamped without their inline comments — the historical pages didn't invoke the inline-comments service. Mitigated by Chunk 5b's v=3 wave; recommend setting `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` between detection and the 5b deploy to stop growing the affected cohort. |
+| 5b. Page-path inline-comments fix + v3 wave | **Committed, awaiting deploy** | Fixed `_sync_inline_review_comments` invocation in both `sync_pull_request` page loops. `CURRENT_SYNC_SCHEMA_VERSION` bumped to 3; `UpgradeToV3` (mechanically identical to v2) registered. Migration `0045` reset `timeline_backfill_done=False` for every PR at v<3 (same option (a) approach as 0044). New regression tests in `tests/services/test_inline_comments_page_paths.py`. See §Chunk 5b. |
+| 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5b. |
 
 ### Resumption pointer for the next agent
-Chunks 1+2 and 4a–4d are in production. The branch
-`sync-schema-versioning` now also carries **Chunk 5** (the v2 wave)
-ready for deploy. The next units of work, in order:
+Chunks 1–4 and Chunk 5 are in production. Chunk 5 shipped with a
+wire-up gap (see §Chunk 5b): the v=2 wave's historical timeline
+rewalks created `REVIEW_*`/`ISSUE_COMMENTED` rows but never persisted
+the nested inline comments, so the v=2-stamped cohort is missing
+`PRReviewInlineComment` rows. The branch `sync-schema-versioning` now
+also carries **Chunk 5b** — the page-path fix plus the v=3 wave to
+recover the affected cohort, plus two additional consistency fixes
+(Item 1 dismissed-review parent synthesis and Item 2 DB-aware
+thread-root resolution) — ready for deploy as one commit. The next
+units of work, in order:
 
-1. **Chunk 5 — deploy.** This is the wave. Migration `0044` resets
-   `timeline_backfill_done=False` for every PR at `sync_schema_version
-   < 2`; the bumped constant + registered `UpgradeToV2` then drive the
-   actual rewalks via the existing `backfill_repo_incomplete_prs`
-   pacing. Convergence canary
-   (`prs_below_current_sync_schema_version`) spikes on deploy and
-   trends back to 0 over days. **Optional staged rollout:** ship the
-   code with `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` to keep the wave
-   gated, watch the canary, then flip the env var to `2` (or unset) to
-   fire it. **Watch list during the wave:**
+1. **Pre-deploy: gate the v=2 wave to a halt.** Set
+   `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` in production before the
+   5b code lands. This stops growing the "v=2 with missing inline
+   comments" cohort. Without the gate, every PR processed during the
+   gap window gets walked twice (once under broken code → v=2, once
+   under fixed code → v=3); with the gate, paused PRs go straight
+   from v=1 → v=3 in one rewalk. The convergence canary will stay
+   flat-and-large during the gate — that's expected.
+2. **Chunk 5b — deploy.** Three migrations land together:
+   - `0045_reset_timeline_backfill_for_v3_wave` — resets
+     `timeline_backfill_done=False` for every PR at v<3 (option (a)
+     applied a second time; same pattern as 0044).
+   - `0046_dismissed_review_synthesis_and_inline_schema_tightening` —
+     does a primary-key swap on `PRReviewInlineCommentBackfill`
+     (`review_event` → auto `id` PK; `review_event` becomes nullable;
+     `review_node_id` becomes the unique key). The PK swap uses
+     `SeparateDatabaseAndState` with raw SQL because Django's
+     auto-generated ordering would emit two PRIMARY KEYs at once,
+     which Postgres rejects. Then adds a `review_node_id != ''`
+     CHECK on `PRReviewInlineComment`, an index on `reply_to_node_id`,
+     and runs two bulk-SQL data backfills: synthesize
+     `REVIEW_<previousReviewState>` rows for existing
+     `REVIEW_DISMISSED` events (Item 1) and link inline comments
+     whose parent is now present.
+   The bumped constant + registered `UpgradeToV3` (mechanically
+   identical to v2) then drive rewalks via the existing
+   `backfill_repo_incomplete_prs` pacing — those rewalks correctly
+   persist the inline comments because the page loops in
+   `pr_sync_service.py` invoke `_sync_inline_review_comments`.
+3. **Post-deploy: lift the gate.** Unset
+   `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION` (or set to `3`) so the
+   wave fires.
+
+   **Watch list during the wave:**
    - `prs_below_current_sync_schema_version` per repo — must be
      monotonically decreasing pass-over-pass.
-   - GitHub rate-limit telemetry — if the kick budget is consistently
-     exhausted while `SYNCER_RATE_REMAINING_MIN` deferrals fire, the
-     wave is well-paced; flat budget remaining means budget is
-     oversized.
-   - `PRReviewInlineCommentBackfill` row count — should now be growing
-     (long-tail reviews with >`SYNCER_INLINE_COMMENTS_PER_REVIEW`
-     inline comments surface here).
-2. **Chunk 6 — drop `engagement_synced_at`.** Trivial, after Chunk 5
-   has soaked at least one release.
+   - `PRReviewInlineComment` row count per repo — should now be
+     growing in lockstep with the cohort transitioning v=2 → v=3.
+   - `PRReviewInlineCommentBackfill` row count — long-tail reviews
+     with >`SYNCER_INLINE_COMMENTS_PER_REVIEW` inline comments
+     should now produce rows here. Since the table is now keyed on
+     `review_node_id` with a nullable `review_event`, dismissed
+     reviews with `review: null` on GitHub also produce rows
+     (previously skipped).
+   - `PRTimelineEvent` row count per repo — will jump on first deploy
+     by the count of `REVIEW_DISMISSED` rows whose `extra` carried a
+     `dismissed_review_node_id` (one synthesized parent per dismiss
+     event). This is migration 0046's data backfill landing; no
+     action needed.
+   - GitHub rate-limit telemetry — same posture as the v=2 wave.
+
+   **Post-deploy SQL spot-checks (run a few hours after deploy):**
+   - The "v=2 PRs with missing inline comments" cohort query in
+     §Validation Plan should return 0 once the wave has covered them
+     (rises to v=3 with parent-FK linked inline comments). Until the
+     wave converges this stays positive but should trend down.
+   - `SELECT COUNT(*) FROM syncer_prtimelineevent ev WHERE ev.type IN
+     ('REVIEW_APPROVED', 'REVIEW_CHANGES_REQUESTED',
+     'REVIEW_COMMENTED') AND EXISTS (SELECT 1 FROM
+     syncer_prtimelineevent dis WHERE dis.type = 'REVIEW_DISMISSED'
+     AND dis.extra->>'dismissed_review_node_id' = ev.github_node_id)`
+     — count of synthesized parents (each pairs with a dismiss
+     event). Should match the count of dismiss events that had a
+     non-null `review` field.
+4. **Chunk 6 — drop `engagement_synced_at`.** Trivial cleanup, after
+   5b has soaked at least one release.
 
 If the wave stalls (the canary stays flat across multiple snapshots
 on a repo), inspect the per-task return dict
@@ -88,6 +141,33 @@ whether kicks are being throttled or whether `is_complete` keeps
 returning False (the latter would imply rewalks aren't completing —
 likely a `backfill_repo_incomplete_prs` rate-limit issue, not an
 upgrader bug).
+
+If something looks wrong with synthesized rows specifically, check
+that migration 0046's data backfill ran (look for fresh
+`REVIEW_APPROVED` / `REVIEW_CHANGES_REQUESTED` / `REVIEW_COMMENTED`
+rows whose `created_at` matches the deploy time, with `extra={}`
+and `inline_comment_total_count IS NULL`). The live synthesis path
+re-runs on every dismiss-event ingest (not just first creation), so
+even if the migration somehow missed rows, the wave's rewalks heal
+them. The "PRTimelineEvent count grew unexpectedly" question is
+expected — it's the synthesized parents.
+
+Things that did **not** change in 5b but next agent might wonder
+about:
+- The "drop `state=DISMISSED PullRequestReview` at row creation"
+  rule still holds (synthesis populates the parent from the dismiss
+  event's extra, not from the dismissed PullRequestReview node).
+- `PRTimelineEvent` rows are still 1:1 with `timelineItems` nodes
+  (the synthesized row's `github_node_id` is the dismissed review's
+  real node id; a future walk that surfaces the actual node will
+  refresh fields like `inline_comment_total_count` via
+  `get_or_create`'s update path).
+- `engagement_synced_at` is still being written for rollback
+  insurance; remove only after Chunk 6.
+- The next ingestion expansion (v=4) would follow the same pattern:
+  bump `CURRENT_SYNC_SCHEMA_VERSION`, register an upgrader, ship a
+  data-migration reset of `timeline_backfill_done` if a rewalk is
+  required. See §Open Questions for the v=4+ candidate list.
 
 ## Proposed Design
 
@@ -355,6 +435,62 @@ upgrader bug).
   `extra.dismissed_review_submitted_at` so the row is self-contained and
   remains interpretable even if the original review event predates the timeline
   window we've walked so far.
+- **`REVIEW_DISMISSED` ingest synthesizes the dismissed review's parent row.**
+  The `state=DISMISSED PullRequestReview` node is dropped at the
+  timeline-event creation step (its `state` no longer reveals the original
+  submission state — only `previousReviewState` on the dismiss event does).
+  But sync-time non-determinism would otherwise produce two distinct data
+  shapes for the same logical history depending on when the syncer ran:
+  - **Case A** — sync between submission and dismissal: the original
+    `REVIEW_<state>` row is created, then later the dismiss event creates
+    its `REVIEW_DISMISSED` row. Two rows.
+  - **Case B** — first sync only after dismissal: the original
+    `PullRequestReview` arrives with `state=DISMISSED` and is dropped, so
+    only the `REVIEW_DISMISSED` row is created. One row.
+
+  To make the data shape independent of sync timing, ingesting a
+  `REVIEW_DISMISSED` row whose `extra` carries the dismissed review's
+  identity + `previous_review_state` ALSO synthesizes the corresponding
+  `REVIEW_<previousReviewState>` row, idempotent on the dismissed review's
+  `github_node_id`. This is `_synthesize_dismissed_review_parent` in
+  `timeline_sync.py`. Side effect: any pre-existing `PRReviewInlineComment`
+  rows for that review with `parent_review_event_id=NULL` are linked to
+  the new parent. Synthesis runs on every ingest of a dismiss event (not
+  just first creation), so the live code self-heals if any production rows
+  were missed by the migration's backfill. The 1:1 invariant with
+  `timelineItems` nodes is preserved: each synthesized row's
+  `github_node_id` corresponds to a real `PullRequestReview` node, and a
+  later walk that surfaces the actual node will refresh its fields (e.g.
+  `inline_comment_total_count`) via the existing update path.
+
+  Synthesis cannot fire when:
+  - `ReviewDismissedEvent.review` was null on GitHub (the dismissed review
+    was hard-deleted) — no node id to key on.
+  - `previousReviewState` is unexpectedly `PENDING` or `DISMISSED` (not
+    possible per GitHub semantics but logged + skipped defensively).
+
+  In the second-rare case where synthesis cannot fire, the dismissed
+  review's inline comments still ingest with `parent_review_event=NULL`;
+  joins via `review_node_id` keep them queryable, and the
+  `PRReviewInlineCommentBackfill` table is also keyed on `review_node_id`
+  (not on the parent FK) so the long-tail signal survives.
+- **DB-aware thread-root resolution and monotone re-ingest.** The
+  inline-comments service computes `thread_root_node_id` by walking
+  `replyTo` through the union of (a) the in-flight set of comments under
+  any review in the current call and (b) existing `PRReviewInlineComment`
+  rows in the DB. When a comment's `replyTo` target leaves the in-flight
+  set, the existing row's already-resolved `thread_root_node_id` is
+  copied (transitively correct, since prior ingests resolved it). Only
+  when neither set has the target do we fall back to the immediate
+  `replyTo` id.
+
+  Re-ingest is monotone-toward-truth: a row whose new walk reached a
+  definitive root (no fallback) UPSERTs `thread_root_node_id` (so a
+  wider-context rewalk improves the stored value); a row whose new walk
+  fell back uses INSERT-IGNORE (so a narrower-context rewalk never
+  regresses an already-better stored value). Implemented as two
+  `bulk_create` calls: `update_conflicts=True` for the definitive batch,
+  `ignore_conflicts=True` for the fallback batch.
 - **`REVIEW_COMMENTED` semantics.** Each `PullRequestReview` becomes one
   `REVIEW_*` event regardless of how many inline comments it contains. The
   inline comments live in `PRReviewInlineComment` rows linked via
@@ -602,7 +738,89 @@ scale (it likely doesn't). Document the choice in Progress Notes.
   (flat or growing pass-over-pass), inspect the kick-budget and
   rate-limit telemetry.
 
-### Chunk 6. `engagement_synced_at` deprecation (one release after Chunk 5)
+### Chunk 5b. Page-path inline-comments fix + v=3 recovery wave
+
+Chunk 5 shipped with a wire-up gap: `_sync_inline_review_comments`
+was only invoked from the bundle path (`sync_pull_request_bundle`).
+The two timeline-page loops in `sync_pull_request` —
+`get_timeline_page` (forward) and `get_timeline_page_back`
+(backward) — called `sync_timeline_events` to persist the parent
+`REVIEW_*` / `ISSUE_COMMENTED` rows but did not invoke the
+inline-comments service, even though both
+`timeline_page.graphql` and `timeline_page_back.graphql` already
+embed the nested `comments(first: $inlineCommentsPerReview)`
+connection (so the data was on the wire and being discarded).
+
+#### Symptom
+- Several thousand PRs at `sync_schema_version=2` with `REVIEW_*` /
+  `ISSUE_COMMENTED` rows present but **zero** corresponding
+  `PRReviewInlineComment` rows.
+- `PRReviewInlineCommentBackfill` table flat-empty even after the
+  v=2 wave processed many PRs whose reviews surely had >K inline
+  comments somewhere in their history.
+- Inline comments only present for PRs whose reviews fit in the
+  bundle's `timelineItems(last: $timelineK)` window — the bundle
+  path was the only path persisting them.
+
+#### Fix (in this chunk)
+1. **Code fix.** `sync_pull_request` now invokes
+   `_sync_inline_review_comments(pr_obj, nodes)` after
+   `sync_timeline_events(pr_obj, nodes)` in both the forward and
+   backward page loops, and accumulates `inline_comments_created` /
+   `inline_backfill_rows_upserted` into the result dict. The
+   service is bundle-scope-agnostic — it only requires a list of
+   timeline nodes — so reusing it page-by-page is correct. Thread-
+   root resolution within a page is exact; cross-page replies fall
+   back to `reply_to_node_id` per the existing best-effort design
+   and reconcile on later rewalks.
+   `_apply_assignment_opt_outs` remains called only on the bundle
+   and forward paths, **not** the back path: the latest opt-out
+   signal lives in recent timeline, never the back-walked tail.
+
+2. **v=3 recovery wave.** PRs already stamped to v=2 will not be
+   re-walked under the existing dispatcher rules
+   (`is_complete(pr) := pr.timeline_backfill_done` is True for
+   them). To re-walk them under fixed code, register `UpgradeToV3`
+   (a thin subclass of `UpgradeToV2` with `version=3`) and bump
+   `CURRENT_SYNC_SCHEMA_VERSION = 3`. Pair with migration `0045`
+   that resets `timeline_backfill_done=False, timeline_backfill_cursor=NULL`
+   for every PR at `sync_schema_version<3` — same option (a)
+   approach as 0044, applied a second time. Without that reset,
+   v=2 PRs would short-circuit `UpgradeToV3.is_complete` to True
+   and auto-stamp to v=3 without a rewalk, repeating the v=2-era
+   pitfall.
+
+3. **Tests.** New regression file
+   `qb_site/syncer/tests/services/test_inline_comments_page_paths.py`
+   covers: backward page creates inline-comment rows; backward
+   page creates `PRReviewInlineCommentBackfill` marker on
+   `hasNextPage=true`; backward page with no review nodes is a
+   no-op; forward page creates inline-comment rows. Existing
+   `test_timeline_backfill.py` and `test_commit_backfill_synced.py`
+   stubs of `sync_pull_request_bundle` updated to include the
+   `inline_comments_created` / `inline_backfill_rows_upserted`
+   keys (bringing them in line with the canonical bundle return
+   shape).
+
+4. **Operational gate (recommended).** Set
+   `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` between detecting the
+   gap and the 5b deploy. This pauses the v=2 wave so PRs still at
+   v=1 are not stamped to a v=2-with-missing-data state during the
+   gap window. After the 5b deploy, unset the gate (or set it to
+   3) and the wave resumes — paused-at-v=1 PRs go directly v=1 →
+   v=3 in a single rewalk under fixed code.
+
+#### Why option (a) again, not (b)
+Same reasoning as the original Chunk 5 decision. Option (b) would
+require either reusing or adding a `timeline_query_version` /
+`inline_comments_query_version` column on `PullRequest` whose only
+consumer is this single wave; option (a)'s redundant-rewalk cost
+is bounded by `SYNCER_SCHEMA_UPGRADE_KICK_LIMIT`. We've now run
+option (a) twice in quick succession; if a third bug discovered
+after a v=4 release ever required a third wave, that would be the
+moment to invest in option (b) infrastructure.
+
+### Chunk 6. `engagement_synced_at` deprecation (one release after Chunk 5b)
 - Stop writing `engagement_synced_at` from `PRSyncService`.
 - Remove its filter clauses from `backfill_repo_engagement_task` (or
   remove the task entirely if `head_sha`/`head_ci_state` filling is
@@ -674,6 +892,81 @@ scale (it likely doesn't). Document the choice in Progress Notes.
   typed columns on `PRTimelineEvent`, and the new
   `PRReviewInlineComment` / `PRReviewInlineCommentBackfill` tables must all
   be reflected in `scripts/backup_policy.py`).
+- **Migration locking posture at scale.** Migrations 0044 / 0045 issue
+  `PullRequest.objects.filter(...).update(...)` — single bulk SQL
+  UPDATE. On the current PR table this completes quickly (verified
+  empirically: 0044 ran cleanly on production at the v=2 deploy). On a
+  multi-million-row table Postgres takes a row-level write lock on every
+  matched row for the duration of the UPDATE, which can briefly block
+  concurrent `sync_pr_task` writes. Migration 0046 issues two bulk SQL
+  statements (synthesis INSERT...SELECT and a UPDATE...FROM); the
+  synthesis is bounded by the population of `REVIEW_DISMISSED` rows
+  (small) and the FK-link UPDATE is bounded by inline comments with
+  null parent FK (also small in practice). **If the PR table grows
+  another order of magnitude before v=4, chunk these by
+  `repository_id` or `id` ranges with a `RunPython` loop.**
+- **Post-deploy shape checks (run on prod after each deploy boundary).**
+  These are positive-signal SQL queries: rerun them at intervals after
+  the deploy and confirm the expected transitions actually happen.
+  A query that "obviously should return non-zero but doesn't" is the
+  signal that an ingestion path is silently dropping data even though
+  the GraphQL response carries it (this is how the v=2 inline-comments
+  gap manifested — see §Chunk 5b).
+  - **After Chunks 4a–4d (the per-PR-sync ingestion):**
+    ```sql
+    -- New event types must start appearing on fresh syncs.
+    SELECT type, COUNT(*)
+      FROM syncer_prtimelineevent
+      WHERE created_at >= now() - interval '1 day'
+        AND type IN ('ISSUE_COMMENTED', 'REVIEW_APPROVED',
+                     'REVIEW_CHANGES_REQUESTED', 'REVIEW_COMMENTED',
+                     'REVIEW_DISMISSED', 'REVIEW_REQUESTED',
+                     'REVIEW_REQUEST_REMOVED')
+      GROUP BY type;
+    -- Inline comments under those reviews must also appear.
+    SELECT COUNT(*) FROM syncer_prreviewinlinecomment
+      WHERE created_at >= now() - interval '1 day';
+    ```
+    Both queries must return non-zero within a sync cycle of the
+    deploy. **A non-zero `PRTimelineEvent` count alongside a zero
+    `PRReviewInlineComment` count is the v=2 gap signature**; if you
+    see it, the page-loop wire-up has regressed.
+  - **After Chunk 5 / 5b (the wave):**
+    ```sql
+    -- Wave progress: must trend monotonically up over days.
+    SELECT repository_id, COUNT(*)
+      FROM syncer_pullrequest
+      WHERE sync_schema_version = (SELECT MAX(sync_schema_version_target)
+                                     FROM syncer_syncerconvergencesnapshot)
+      GROUP BY repository_id;
+    -- Long-tail backfill markers must start appearing once the wave
+    -- has rewalked PRs whose reviews have >SYNCER_INLINE_COMMENTS_PER_REVIEW
+    -- inline comments. Empty after Chunks 4a–4d alone (those PRs
+    -- haven't been re-walked); non-empty once the wave has covered
+    -- representative repos.
+    SELECT COUNT(*) FROM syncer_prreviewinlinecommentbackfill;
+    -- Cross-check: PRs at v=N must have inline comments captured.
+    -- A v=N PR with REVIEW_* events but zero PRReviewInlineComment
+    -- rows AND a parent review with comments.totalCount > 0 is the
+    -- gap signature.
+    SELECT COUNT(*)
+      FROM syncer_pullrequest pr
+      WHERE pr.sync_schema_version >= 3
+        AND EXISTS (
+          SELECT 1 FROM syncer_prtimelineevent ev
+            WHERE ev.pull_request_id = pr.id
+              AND ev.type IN ('REVIEW_APPROVED', 'REVIEW_CHANGES_REQUESTED',
+                              'REVIEW_COMMENTED')
+              AND COALESCE(ev.inline_comment_total_count, 0) > 0
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM syncer_prreviewinlinecomment ic
+            WHERE ic.pull_request_id = pr.id
+        );
+    ```
+    The third query should return 0 (or near-0; rare PRs may have
+    inline comments only in deleted-review states). A non-trivial
+    count is a regression signal.
 
 ## Deploy Boundaries
 Each step is intended to be deployable on its own and roll back to the
@@ -708,8 +1001,18 @@ previous deploy without manual intervention.
    the existing `SYNCER_RATE_REMAINING_MIN` deferral. The
    `prs_below_current_sync_schema_version` canary spikes on deploy and
    trends back to 0 over days as the wave converges.
-7. **Chunk 6 → deploy** (post-soak). Drop `engagement_synced_at` and
-   prune its filter clauses. Trivial cleanup.
+7. **Chunk 5b → deploy.** Page-path inline-comments fix + v=3
+   recovery wave. Bumps `CURRENT=3`, registers `UpgradeToV3`, and
+   ships migration `0045` that resets `timeline_backfill_done` for
+   every PR at v<3. While 5b is in flight (between detecting the
+   v=2 gap and the 5b deploy), the recommended posture is to set
+   `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` to halt the v=2 wave
+   and prevent more PRs from being stamped to v=2-with-missing
+   inline comments. The same wave then converges everyone (paused
+   v=1 PRs and already-v=2 PRs) to v=3 under fixed code.
+8. **Chunk 6 → deploy** (post-soak after 5b). Drop
+   `engagement_synced_at` and prune its filter clauses. Trivial
+   cleanup.
 
 Rollback: every step is additive (or, for Chunk 6, the column drop comes
 after a release with no remaining writers/readers). For Chunks 4 and 5,
@@ -746,20 +1049,47 @@ is a quick reversal if production data turns out to violate them.
   allow-list).
 
 ### Open
-- **Chunk 5 correctness pitfall: `is_complete(pr)` and v1-era
-  `timeline_backfill_done=True`.** Recorded 2026-05-08 in §Chunk 5.
-  Decide between the data-migration-reset approach and the
-  `timeline_query_version` column approach. Recommended: data-migration
-  reset (option (a)) unless the redundant-rewalk cost looks meaningful
-  at our scale.
-- Should the v2 upgrader live as its own Celery task or be folded into
-  `backfill_repo_incomplete_prs`? Folding is simpler; separate gives
-  cleaner observability per upgrade wave.
+- Should the v2/v3 upgrader live as its own Celery task or be folded
+  into `backfill_repo_incomplete_prs`? Folding is simpler; separate
+  gives cleaner observability per upgrade wave.
 - Whether to keep writing `engagement_synced_at` across the deprecation
   window for rollback insurance, or stop writing it immediately and rely
   on `sync_schema_version >= 1`.
-- `MERGED` event in v3: bundled with whatever the next expansion is, or
-  its own version bump?
+- `MERGED` event in v=4: bundled with whatever the next expansion is,
+  or its own version bump?
+
+### v=4+ candidates (deferred from Chunk 5b review)
+These were surfaced during the Chunk 5b review (see Progress Notes
+2026-05-08) as data-quality opportunities that would benefit from a
+future schema-version expansion. None are blocking for v=3.
+
+- **`PRReviewInlineCommentBackfill` consumer.** The marker table is now
+  written reliably (Chunk 5b) but has no consumer — rows accumulate
+  without bound. v=4 would add the actual paginator that walks
+  `PullRequestReview.comments` past the K=20 cutoff and clears or marks
+  rows complete.
+- **Thread-root reconciliation BEYOND the in-bundle + DB walk.** Item 2
+  fixes the common case (cross-page chains converge via DB lookups and
+  monotone UPSERT). It does NOT defend against a hypothetical scenario
+  where intermediate rows in the chain were deleted from the DB after
+  ingest — a re-ingest of a leaf would then fall back to a worse value,
+  but the INSERT-IGNORE branch leaves the existing (better) stored
+  value alone. The leaf's stored root might still be "stale-better"
+  rather than "current-truth." A future principled fix could
+  periodically re-resolve thread roots from the durable
+  `reply_to_node_id` graph.
+- **Promoting `extra.previous_review_state` to a typed column.** The
+  Chunk 5b synthesis approach reads `previous_review_state` from JSON
+  on every dismiss-event ingest. If reviewer-engagement queries grow
+  to filter on it, a typed column would index-friendlier — minor
+  optimization.
+- **`MERGED` event capture** (already noted above).
+- **Capture the dismissed `PullRequestReview` row's
+  `inline_comment_total_count` from the actual node, not from the
+  dismiss event.** Today the synthesized row's count is null until
+  the actual `PullRequestReview` (state=DISMISSED) is later walked.
+  We could update this on the inline-comments service side too, but
+  it's small.
 
 ## Progress Notes
 - 2026-05-07: Initial design drafted, then iteratively refined to:
@@ -1072,6 +1402,90 @@ is a quick reversal if production data turns out to violate them.
   (`bad_routing`, `not_mutex`, `bad_inline_total`), confirming current
   ingestion conforms. Migration `0043` + negative tests committed; the
   next deploy enables them.
+- 2026-05-08: **Chunk 5 deployed; gap detected; Chunk 5b implemented.**
+  Live observation: several thousand PRs at `sync_schema_version=2`
+  have new `REVIEW_*` / `ISSUE_COMMENTED` rows but no
+  `PRReviewInlineComment` rows. Cause: `_sync_inline_review_comments`
+  was only invoked from `sync_pull_request_bundle`; the forward
+  (`get_timeline_page`) and backward (`get_timeline_page_back`) page
+  loops in `sync_pull_request` called `sync_timeline_events` only,
+  even though both queries embed `comments(first: K)`. The v=2 wave's
+  rewalks therefore created the parent rows but discarded the inline
+  comments. Implemented Chunk 5b on the same branch:
+  1. Wired `_sync_inline_review_comments` into both page loops in
+     `pr_sync_service.py` and accumulated the new counters into the
+     result dict.
+  2. Added `UpgradeToV3` (subclass of `UpgradeToV2`, `version=3`)
+     and migration `0045` resetting `timeline_backfill_done` for
+     every PR at v<3. Bumped `CURRENT_SYNC_SCHEMA_VERSION = 3` and
+     registered v3 in `SyncerConfig.ready()`.
+  3. Added `tests/services/test_inline_comments_page_paths.py`
+     with backward-page + forward-page regression coverage and
+     `tests/services/test_sync_schema_upgrade_v3.py` mirroring the
+     v2 tests. Updated CURRENT=2 expectations in
+     `test_collect_convergence_task.py`,
+     `test_upgrade_schema_tasks.py`, and
+     `test_sync_schema_upgrades.py`.
+  4. Updated `qb_site/syncer/AGENTS.md` with a "Timeline ingest
+     invariants" subsection codifying the bundle / forward-page /
+     back-page invariant so future nested-data ingest expansions
+     don't repeat the gap.
+  Operational recommendation: set
+  `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` between gap detection
+  and 5b deploy to halt the v=2 wave; this prevents the affected
+  cohort from growing during the gap window. After 5b deploys,
+  unset the gate (or set it to 3) and the wave resumes; PRs paused
+  at v=1 advance directly to v=3 in a single rewalk under fixed
+  code.
+- 2026-05-08: **Chunk 5b extended with two consistency fixes** after
+  branch review surfaced subtler issues than the original wire-up gap:
+  1. **Item 1 — DISMISSED review parent synthesis.** A
+     `state=DISMISSED PullRequestReview` is dropped at row creation
+     because its current `state` field doesn't reveal the original
+     submission state. But that meant the same logical history
+     produced two different DB shapes depending on sync timing
+     (Case A: synced before dismissal → `REVIEW_<state>` row exists +
+     dismiss event row; Case B: only synced after → only the dismiss
+     event row, with `parent_review_event=NULL` on inline comments).
+     Fixed by synthesizing the `REVIEW_<previousReviewState>` row from
+     the dismiss event's denormalized `extra` data, idempotent on the
+     dismissed review's `github_node_id`. See
+     `_synthesize_dismissed_review_parent` in `timeline_sync.py` and
+     §Subtleties. Migration `0046` backfills existing production data.
+     Schema tightening on the same migration: `PRReviewInlineCommentBackfill`
+     now keys on `review_node_id` (unique) with a nullable
+     `review_event` FK, so the long-tail signal survives even when
+     synthesis can't fire (dismiss event with `review: null`); a
+     `review_node_id != ''` CHECK constraint on `PRReviewInlineComment`
+     defends against accidental orphan rows; an index on
+     `reply_to_node_id` supports the new DB-aware thread-root lookup.
+  2. **Item 2 — DB-aware thread-root walk + monotone UPSERT.** Once
+     Chunk 5b made the inline-comments service run page-by-page
+     (instead of bundle-scope), the in-flight set shrunk and
+     cross-page thread replies started falling back to immediate
+     `replyTo` instead of resolving to the true root. Fixed by
+     extending the walk to consult existing `PRReviewInlineComment`
+     rows when a `replyTo` target leaves the in-flight set, and
+     replacing `bulk_create(ignore_conflicts=True)` with a split
+     two-batch upsert: rows whose new walk reached a definitive root
+     UPSERT `thread_root_node_id` (so wider-context rewalks improve
+     stored values), rows whose walk fell back stay INSERT-IGNORE (so
+     narrower-context rewalks never regress already-better values).
+     New tests: `TestThreadRootDBAwareResolution` in
+     `test_inline_comments_sync.py` covers single-link, three-link
+     chain, fallback preservation, and complete-walk upsert.
+
+  Also added in this batch (non-correctness-affecting):
+  - Comment near `pr_sync_service.py:404` documenting the
+    "webhook-flips-`timeline_backfill_done`-back-to-True" race
+    assumption and what would invalidate it.
+  - Auto-stamp log line dropped from INFO to DEBUG (a wave can produce
+    millions of these).
+  - Migration locking posture documented in §Validation Plan as an
+    operational note (current bulk UPDATEs are fine; chunk if the PR
+    table grows another OoM).
+  - v=4+ candidates listed in §Open Questions to capture the data-
+    quality opportunities surfaced during this review.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db import models
+from django.db.models import Q
 
 from core.models.base import TimestampedModel
 from .pr_timeline_event import PRTimelineEvent
@@ -18,21 +19,41 @@ class PRReviewInlineComment(TimestampedModel):
 
     Idempotency
     - ``github_node_id`` is globally unique on GitHub, so a plain
-      ``unique=True`` is enough to support ``bulk_create(ignore_conflicts=True)``
-      on re-ingest.
+      ``unique=True`` is enough to support per-row UPSERT semantics on
+      re-ingest.
 
     Linkage
     - ``review_node_id`` is the durable link to the parent
-      ``PullRequestReview``: even if the parent ``PRTimelineEvent`` row is ever
-      reconstituted, comments can still be re-associated by node id.
-    - ``parent_review_event`` is the convenience FK for ORM joins; nullable
-      with ``on_delete=SET_NULL`` so deleting the parent doesn't cascade.
+      ``PullRequestReview``. Use this — not ``parent_review_event_id`` —
+      as the canonical join key in analytics queries: see the warning on
+      ``parent_review_event`` below.
+    - ``parent_review_event`` is the convenience FK for ORM joins. Under
+      design doc 044's synthesis logic, this should be non-null for every
+      inline comment whose parent review has any meaningful state
+      (APPROVED / CHANGES_REQUESTED / COMMENTED — including dismissed
+      reviews, where the parent row is synthesized from the
+      ``REVIEW_DISMISSED`` event's denormalized ``previousReviewState``).
+      It can still legitimately be null in narrow cases:
 
-    Threading (best-effort, reconciled on rewalk)
-    - ``thread_root_node_id`` is the root of the ``replyTo`` chain at ingest
-      time. Computed by walking ``replyTo`` within the in-flight set; if a
-      comment's ``replyTo`` points outside the bundle, ``reply_to_node_id`` is
-      used as the root and the value can be tightened on a later rewalk.
+      1. The dismiss event's ``review`` field was null on GitHub (the
+         dismissed review was hard-deleted). We can't synthesize a
+         parent without the review's identity.
+      2. A transient gap during ingest before the synthesis migration
+         backfill catches up.
+
+      Joining via ``parent_review_event_id`` will silently exclude
+      these. Prefer ``review_node_id`` joined to
+      ``PRTimelineEvent.github_node_id`` for analytics that must not
+      drop rows.
+
+    Threading
+    - ``thread_root_node_id`` is the root of the ``replyTo`` chain. The
+      ingest-time walk consults both the in-flight set (other comments
+      in the same page) and existing ``PRReviewInlineComment`` rows in
+      the DB, so cross-page threads converge to the true root after the
+      ancestor chain has been ingested. UPSERT semantics on re-ingest
+      mean a later sync that has more of the chain in scope can tighten
+      a previously-best-effort root.
     """
 
     pull_request = models.ForeignKey(
@@ -56,12 +77,21 @@ class PRReviewInlineComment(TimestampedModel):
     path = models.CharField(max_length=512)
     line = models.IntegerField(null=True, blank=True)
     original_line = models.IntegerField(null=True, blank=True)
-    reply_to_node_id = models.CharField(max_length=255, null=True, blank=True)
+    reply_to_node_id = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     thread_root_node_id = models.CharField(max_length=255, db_index=True)
 
     class Meta:
         indexes = [
             models.Index(fields=["pull_request", "gh_created_at"], name="syncer_prric_pr_time_idx"),
+        ]
+        constraints = [
+            # The durable identifier must actually identify a review: empty
+            # string here would silently orphan the comment from the
+            # review_node_id-based join path that analytics rely on.
+            models.CheckConstraint(
+                name="syncer_prric_review_node_id_not_empty",
+                condition=~Q(review_node_id=""),
+            ),
         ]
         ordering = ["pull_request", "gh_created_at", "id"]
 
@@ -85,12 +115,23 @@ class PRReviewInlineCommentBackfill(TimestampedModel):
 
     The pagination cursor / last_attempt_at fields are deliberately omitted
     here; they land in v3 alongside the paginator that uses them.
+
+    Linkage
+    - ``review_node_id`` is the durable identifier and the unique key for
+      this table. ``review_event`` is a convenience FK that may be null for
+      reviews that have no corresponding ``PRTimelineEvent`` row — at the
+      moment, this only happens for dismissed reviews whose dismiss event
+      had ``review: null`` on GitHub (so synthesis couldn't fire). Joining
+      via ``review_event_id`` will silently exclude those rows; analytics
+      that must not lose anything should join via ``review_node_id`` to
+      ``PRTimelineEvent.github_node_id``.
     """
 
     review_event = models.OneToOneField(
         PRTimelineEvent,
         on_delete=models.CASCADE,
-        primary_key=True,
+        null=True,
+        blank=True,
         related_name="inline_comment_backfill",
     )
     pull_request = models.ForeignKey(
@@ -98,7 +139,7 @@ class PRReviewInlineCommentBackfill(TimestampedModel):
         on_delete=models.CASCADE,
         related_name="review_inline_comment_backfills",
     )
-    review_node_id = models.CharField(max_length=255, db_index=True)
+    review_node_id = models.CharField(max_length=255, unique=True)
     # Snapshot of ``comments.totalCount`` at ingest time. Stored on the
     # parent event row too (``PRTimelineEvent.inline_comment_total_count``);
     # duplicating here keeps the recovery scan self-contained.

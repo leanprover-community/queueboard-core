@@ -606,6 +606,19 @@ class TestTimelineEventCheckConstraints(TestCase):
                     with transaction.atomic():
                         self._create(type=bad_type, inline_comment_total_count=3)
 
+    def test_inline_total_zero_rejected_on_non_review_submission_type(self) -> None:
+        # Edge case: ``0`` is falsy in Python but the CHECK constraint
+        # uses IS NULL, not "not set", so a column with 0 on a non-review
+        # type still violates. This pins the constraint's semantic so a
+        # future "default to 0" code path doesn't silently regress.
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                self._create(
+                    type=PRTimelineEventType.LABELED,
+                    label_name="X",  # required for the label_by_type constraint
+                    inline_comment_total_count=0,
+                )
+
     def test_review_request_event_with_single_column_is_allowed(self) -> None:
         # Sanity: the constraint must not reject the documented happy path.
         ev_user = self._create(
@@ -635,3 +648,200 @@ class TestTimelineEventCheckConstraints(TestCase):
         ev = self._create(type=PRTimelineEventType.REVIEW_REQUESTED)
         self.assertIsNone(ev.requested_reviewer_login)
         self.assertIsNone(ev.requested_team_slug)
+
+
+class TestSynthesizeDismissedReviewParent(TestCase):
+    """Pin the synthesis behavior introduced for design doc 044 §Item 1.
+
+    The dismissed review's parent ``REVIEW_<previousReviewState>`` row must
+    be created from the dismiss event's denormalized ``extra`` data, so
+    the data shape is the same regardless of whether the syncer ran
+    between submission and dismissal (Case A) or only after (Case B).
+    """
+
+    def setUp(self) -> None:
+        self.repo = make_repo()
+        self.pr = make_pr(self.repo, 1)
+
+    def _dismiss_node(
+        self,
+        *,
+        node_id: str = "DIS_1",
+        actor: str = "alice",
+        review_id: str | None = "REV_1",
+        review_author: str = "bob",
+        review_submitted_at: str = "2026-05-01T10:00:00Z",
+        previous_state: str = "APPROVED",
+        created_at: str = "2026-05-01T11:00:00Z",
+    ) -> dict:
+        review_node: dict | None = None
+        if review_id is not None:
+            review_node = {
+                "id": review_id,
+                "submittedAt": review_submitted_at,
+                "author": {"login": review_author, "__typename": "User"},
+            }
+        return {
+            "__typename": "ReviewDismissedEvent",
+            "id": node_id,
+            "createdAt": created_at,
+            "previousReviewState": previous_state,
+            "actor": {"login": actor, "__typename": "User"},
+            "review": review_node,
+        }
+
+    def test_case_b_creates_synthesized_row(self) -> None:
+        # No prior REVIEW_APPROVED row exists. Ingesting the dismiss event
+        # creates both REVIEW_DISMISSED and the synthesized
+        # REVIEW_APPROVED parent.
+        from dateutil import parser as dtparser
+
+        res = sync_timeline_events(self.pr, [self._dismiss_node()])
+        self.assertEqual(res.created, 2)
+        dis = PRTimelineEvent.objects.get(github_node_id="DIS_1")
+        self.assertEqual(dis.type, PRTimelineEventType.REVIEW_DISMISSED)
+        self.assertEqual(dis.actor_login, "alice")
+        synth = PRTimelineEvent.objects.get(github_node_id="REV_1")
+        self.assertEqual(synth.type, PRTimelineEventType.REVIEW_APPROVED)
+        self.assertEqual(synth.actor_login, "bob")
+        # occurred_at is the original review's submittedAt, not the dismiss
+        # event's createdAt — that's the historical truth we want preserved.
+        self.assertEqual(synth.occurred_at, dtparser.isoparse("2026-05-01T10:00:00Z"))
+        # inline_comment_total_count is null on the synthesized row: we
+        # don't know it from the dismiss event alone.
+        self.assertIsNone(synth.inline_comment_total_count)
+
+    def test_case_a_no_op_when_parent_already_exists(self) -> None:
+        # Pre-existing REVIEW_APPROVED row (the syncer saw the original
+        # submission before the dismissal landed). Ingesting the dismiss
+        # event must NOT create a duplicate or overwrite the existing row.
+        existing = PRTimelineEvent.objects.create(
+            pull_request=self.pr,
+            github_node_id="REV_1",
+            type=PRTimelineEventType.REVIEW_APPROVED,
+            occurred_at=timezone.now(),
+            actor_login="bob",
+            inline_comment_total_count=7,
+        )
+        res = sync_timeline_events(self.pr, [self._dismiss_node()])
+        # Only the REVIEW_DISMISSED row was created (synthesis was a no-op).
+        self.assertEqual(res.created, 1)
+        existing.refresh_from_db()
+        self.assertEqual(existing.type, PRTimelineEventType.REVIEW_APPROVED)
+        # Pre-existing inline_comment_total_count must not be clobbered.
+        self.assertEqual(existing.inline_comment_total_count, 7)
+        # Exactly one row with this github_node_id.
+        self.assertEqual(PRTimelineEvent.objects.filter(github_node_id="REV_1").count(), 1)
+
+    def test_skips_when_review_field_was_null(self) -> None:
+        # ReviewDismissedEvent.review is nullable on GitHub (the dismissed
+        # review was hard-deleted). Synthesis can't fire without the
+        # review's identity; only the REVIEW_DISMISSED row is created.
+        res = sync_timeline_events(self.pr, [self._dismiss_node(review_id=None)])
+        self.assertEqual(res.created, 1)
+        self.assertTrue(PRTimelineEvent.objects.filter(github_node_id="DIS_1").exists())
+        # No synthesized row.
+        self.assertEqual(PRTimelineEvent.objects.filter(type=PRTimelineEventType.REVIEW_APPROVED).count(), 0)
+
+    def test_skips_when_previous_state_unexpected(self) -> None:
+        # previousReviewState in {PENDING, DISMISSED} shouldn't be possible
+        # on GitHub but if it ever is, synthesis must skip cleanly with a
+        # warning rather than create an out-of-spec row (CHECK constraints
+        # would reject it anyway, but skip-with-log is more defensive).
+        for unexpected in ("PENDING", "DISMISSED", "BOGUS"):
+            with self.subTest(previous_state=unexpected):
+                PRTimelineEvent.objects.filter(pull_request=self.pr).delete()
+                with self.assertLogs("syncer.services.sub.timeline_sync", level="WARNING"):
+                    sync_timeline_events(
+                        self.pr,
+                        [self._dismiss_node(node_id=f"DIS_{unexpected}", previous_state=unexpected)],
+                    )
+                # REVIEW_DISMISSED still created; synthesis was skipped.
+                self.assertEqual(
+                    PRTimelineEvent.objects.filter(pull_request=self.pr).count(),
+                    1,
+                    f"Unexpected previous_state {unexpected} produced extra rows",
+                )
+
+    def test_links_existing_inline_comments_when_synthesizing(self) -> None:
+        # Sequence: page 1 ingested the dismissed review's INLINE COMMENTS
+        # (with parent_review_event=NULL because no parent row existed
+        # yet). Then page 2 ingests the dismiss event, which triggers
+        # synthesis. The synthesis side-effect must back-link those
+        # already-existing inline comments to the new parent row.
+        from syncer.models.pr_review_inline_comment import PRReviewInlineComment
+
+        orphaned = PRReviewInlineComment.objects.create(
+            pull_request=self.pr,
+            parent_review_event=None,
+            github_node_id="IC_1",
+            review_node_id="REV_1",
+            author_login="bob",
+            gh_created_at=timezone.now(),
+            path="src/foo.py",
+            line=1,
+            thread_root_node_id="IC_1",
+        )
+        sync_timeline_events(self.pr, [self._dismiss_node()])
+        synth = PRTimelineEvent.objects.get(github_node_id="REV_1")
+        orphaned.refresh_from_db()
+        self.assertEqual(orphaned.parent_review_event_id, synth.pk)
+
+    def test_idempotent_on_re_ingest(self) -> None:
+        # Re-ingesting the same dismiss event must not create duplicate
+        # rows, regardless of whether the dismiss event row was just
+        # created or already existed. This pins the "synthesis runs on
+        # every dismiss-event ingest, not just first creation" property
+        # that lets the live code self-heal if the migration missed
+        # anything.
+        sync_timeline_events(self.pr, [self._dismiss_node()])
+        before = PRTimelineEvent.objects.count()
+        # Second ingest: no new rows.
+        res2 = sync_timeline_events(self.pr, [self._dismiss_node()])
+        self.assertEqual(res2.created, 0)
+        self.assertEqual(PRTimelineEvent.objects.count(), before)
+
+
+class TestInlineCommentTotalRefreshOnRewalk(TestCase):
+    """Pin the refresh-on-update behavior for inline_comment_total_count.
+
+    The column is GitHub-truth and may grow between syncs; the update
+    path in sync_timeline_events refreshes it whenever the bundle gives
+    us a non-null value, even if the row already had one.
+    """
+
+    def setUp(self) -> None:
+        self.repo = make_repo()
+        self.pr = make_pr(self.repo, 1)
+
+    def _review_node(self, *, total_count: int) -> dict:
+        return {
+            "__typename": "PullRequestReview",
+            "id": "REV_GROW",
+            "submittedAt": "2026-05-01T12:00:00Z",
+            "state": "COMMENTED",
+            "author": {"login": "alice", "__typename": "User"},
+            "comments": {
+                "totalCount": total_count,
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [],
+            },
+        }
+
+    def test_total_count_refreshes_to_higher_value_on_rewalk(self) -> None:
+        sync_timeline_events(self.pr, [self._review_node(total_count=5)])
+        ev = PRTimelineEvent.objects.get(github_node_id="REV_GROW")
+        self.assertEqual(ev.inline_comment_total_count, 5)
+
+        sync_timeline_events(self.pr, [self._review_node(total_count=12)])
+        ev.refresh_from_db()
+        self.assertEqual(ev.inline_comment_total_count, 12)
+
+    def test_total_count_does_not_change_when_same_value_reingested(self) -> None:
+        sync_timeline_events(self.pr, [self._review_node(total_count=5)])
+        ev_before = PRTimelineEvent.objects.get(github_node_id="REV_GROW")
+        sync_timeline_events(self.pr, [self._review_node(total_count=5)])
+        ev_after = PRTimelineEvent.objects.get(github_node_id="REV_GROW")
+        self.assertEqual(ev_after.inline_comment_total_count, 5)
+        # And the row id is the same (no duplicate creation).
+        self.assertEqual(ev_after.pk, ev_before.pk)

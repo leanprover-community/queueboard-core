@@ -341,21 +341,28 @@ class TestBackfillTracker(InlineCommentsSyncBaseTests):
         backfill = PRReviewInlineCommentBackfill.objects.get(review_event=parent)
         self.assertEqual(backfill.total_count, 99)
 
-    def test_backfill_row_skipped_when_parent_event_missing(self) -> None:
-        # Without the OneToOne anchor we can't write the row; service logs a warning.
+    def test_backfill_row_created_even_when_parent_event_missing(self) -> None:
+        # Per design doc 044 §Item 1, the backfill table is now keyed on
+        # review_node_id (not on the parent FK), so we can record the long
+        # tail even when no PRTimelineEvent row exists for the review (e.g.,
+        # a dismissed review whose dismiss event had ``review: null`` on
+        # GitHub, blocking synthesis). Without this, dismissed reviews with
+        # >K inline comments would silently lose the long-tail signal.
         group = self._group(
             parent_event=None,
             comments=[_comment("C_1")],
             total_count=99,
             has_next_page=True,
         )
-        with self.assertLogs("syncer.services.sub.inline_comments_sync", level="WARNING") as cm:
-            res = sync_review_inline_comments_bundle(pull_request=self.pr, reviews=[group])
-        self.assertEqual(res.backfill_rows_upserted, 0)
-        self.assertFalse(PRReviewInlineCommentBackfill.objects.exists())
-        # Comment row still got written (durable link is review_node_id).
+        res = sync_review_inline_comments_bundle(pull_request=self.pr, reviews=[group])
+        self.assertEqual(res.backfill_rows_upserted, 1)
+        backfill = PRReviewInlineCommentBackfill.objects.get(review_node_id="REV_1")
+        self.assertEqual(backfill.total_count, 99)
+        self.assertEqual(backfill.pull_request_id, self.pr.pk)
+        # The parent FK is nullable for this case; the durable link is review_node_id.
+        self.assertIsNone(backfill.review_event_id)
+        # Comment row was written too (durable link is review_node_id).
         self.assertEqual(PRReviewInlineComment.objects.count(), 1)
-        self.assertTrue(any("skipped_backfill_no_parent_event" in m for m in cm.output))
 
 
 class TestParseHelper(TestCase):
@@ -398,3 +405,155 @@ class TestParseHelper(TestCase):
         self.assertEqual(group.total_count, 0)
         self.assertFalse(group.has_next_page)
         self.assertEqual(group.comment_nodes, ())
+
+
+class TestThreadRootDBAwareResolution(InlineCommentsSyncBaseTests):
+    """Pin the DB-aware thread-root walk + monotone UPSERT semantics.
+
+    These tests cover design doc 044 §Item 2: cross-page thread replies
+    converge to the true root via DB consultation, and re-ingest is
+    monotone-toward-truth (UPSERT when the new walk reached a definitive
+    root, INSERT-IGNORE when it fell back).
+    """
+
+    def test_replyto_in_db_uses_existing_thread_root(self) -> None:
+        # Page A: ingest ROOT comment as a self-rooted thread.
+        parent_a = _make_review_event(self.pr, node_id="REV_A")
+        page_a = self._group(
+            review_node_id="REV_A",
+            parent_event=parent_a,
+            comments=[_comment("ROOT")],
+        )
+        sync_review_inline_comments_bundle(pull_request=self.pr, reviews=[page_a])
+        root_row = PRReviewInlineComment.objects.get(github_node_id="ROOT")
+        self.assertEqual(root_row.thread_root_node_id, "ROOT")
+
+        # Page B: ingest CHILD whose replyTo points to ROOT (now in DB,
+        # not in the in-flight set). The walk consults the DB and copies
+        # ROOT's thread_root_node_id (= "ROOT") rather than falling back.
+        parent_b = _make_review_event(self.pr, node_id="REV_B")
+        page_b = self._group(
+            review_node_id="REV_B",
+            parent_event=parent_b,
+            comments=[_comment("CHILD", reply_to_id="ROOT")],
+        )
+        res = sync_review_inline_comments_bundle(pull_request=self.pr, reviews=[page_b])
+        # Did NOT fall back — DB lookup found ROOT's resolved root.
+        self.assertEqual(res.thread_root_outside_bundle, 0)
+        child_row = PRReviewInlineComment.objects.get(github_node_id="CHILD")
+        self.assertEqual(child_row.thread_root_node_id, "ROOT")
+
+    def test_cross_page_three_link_chain_converges_via_db(self) -> None:
+        # Page A: ROOT (self-rooted).
+        # Page B: MID (replyTo=ROOT, walk consults DB → root="ROOT").
+        # Page C: LEAF (replyTo=MID, walk consults DB → MID's root="ROOT",
+        #         so LEAF's root is also "ROOT").
+        # Without DB-aware resolution, LEAF would fall back to "MID" —
+        # the bug design doc 044 §Item 2 fixes.
+        parent_a = _make_review_event(self.pr, node_id="REV_A")
+        parent_b = _make_review_event(self.pr, node_id="REV_B")
+        parent_c = _make_review_event(self.pr, node_id="REV_C")
+
+        sync_review_inline_comments_bundle(
+            pull_request=self.pr,
+            reviews=[
+                self._group(
+                    review_node_id="REV_A",
+                    parent_event=parent_a,
+                    comments=[_comment("ROOT")],
+                )
+            ],
+        )
+        sync_review_inline_comments_bundle(
+            pull_request=self.pr,
+            reviews=[
+                self._group(
+                    review_node_id="REV_B",
+                    parent_event=parent_b,
+                    comments=[_comment("MID", reply_to_id="ROOT")],
+                )
+            ],
+        )
+        sync_review_inline_comments_bundle(
+            pull_request=self.pr,
+            reviews=[
+                self._group(
+                    review_node_id="REV_C",
+                    parent_event=parent_c,
+                    comments=[_comment("LEAF", reply_to_id="MID")],
+                )
+            ],
+        )
+
+        for node_id in ("ROOT", "MID", "LEAF"):
+            with self.subTest(node=node_id):
+                self.assertEqual(
+                    PRReviewInlineComment.objects.get(github_node_id=node_id).thread_root_node_id,
+                    "ROOT",
+                )
+
+    def test_fallback_walk_preserves_existing_thread_root_on_reingest(self) -> None:
+        # Set up a CHILD comment in the DB with a known thread_root that
+        # was determined by an earlier walk with wider context (we
+        # simulate this by creating the row directly with the "good"
+        # value).
+        parent = _make_review_event(self.pr, node_id="REV_X")
+        existing = PRReviewInlineComment.objects.create(
+            pull_request=self.pr,
+            parent_review_event=parent,
+            github_node_id="CHILD",
+            review_node_id="REV_X",
+            author_login="alice",
+            gh_created_at=timezone.now(),
+            path="src/foo.py",
+            line=10,
+            reply_to_node_id="EXTERNAL_ROOT",
+            thread_root_node_id="EXTERNAL_ROOT_TRUE",
+        )
+
+        # Now re-ingest CHILD where replyTo target is NEITHER in flight
+        # nor in DB → walk falls back to "EXTERNAL_ROOT". An UPSERT here
+        # would clobber the better stored value with a worse one;
+        # INSERT-IGNORE preserves it. Pin the monotone semantics.
+        page = self._group(
+            review_node_id="REV_X",
+            parent_event=parent,
+            comments=[_comment("CHILD", reply_to_id="EXTERNAL_ROOT")],
+        )
+        sync_review_inline_comments_bundle(pull_request=self.pr, reviews=[page])
+        existing.refresh_from_db()
+        self.assertEqual(existing.thread_root_node_id, "EXTERNAL_ROOT_TRUE")
+
+    def test_complete_walk_upserts_thread_root_on_reingest(self) -> None:
+        # Symmetric to the fallback case: when re-ingest's walk reaches a
+        # definitive root (no fallback), the new value can update the
+        # stored one. Set up a CHILD with a stale thread_root, then
+        # re-ingest under conditions where the walk now finds the true
+        # root in flight. The UPSERT path replaces the stale value.
+        parent = _make_review_event(self.pr, node_id="REV_Y")
+        PRReviewInlineComment.objects.create(
+            pull_request=self.pr,
+            parent_review_event=parent,
+            github_node_id="CHILD",
+            review_node_id="REV_Y",
+            author_login="alice",
+            gh_created_at=timezone.now(),
+            path="src/foo.py",
+            line=10,
+            reply_to_node_id="ROOT",
+            thread_root_node_id="STALE",
+        )
+
+        # Re-ingest with both ROOT and CHILD in the same in-flight set.
+        # Walk now reaches a definitive root; UPSERT updates CHILD.
+        page = self._group(
+            review_node_id="REV_Y",
+            parent_event=parent,
+            comments=[
+                _comment("ROOT"),
+                _comment("CHILD", reply_to_id="ROOT"),
+            ],
+        )
+        sync_review_inline_comments_bundle(pull_request=self.pr, reviews=[page])
+        child = PRReviewInlineComment.objects.get(github_node_id="CHILD")
+        self.assertEqual(child.thread_root_node_id, "ROOT")

@@ -113,14 +113,14 @@ class TestCollectConvergenceTask(TestCase):
         self.assertEqual(snap.prs_missing_head_ci_state, 2)
         self.assertEqual(snap.prs_missing_head_sha, 1)
         self.assertEqual(snap.prs_missing_head_ci_contexts, 2)
-        # All three PRs are at sync_schema_version=0 (default) and CURRENT=2,
+        # All three PRs are at sync_schema_version=0 (default) and CURRENT=3,
         # so the wave-progress canary reports 3 below target.
         self.assertEqual(snap.prs_below_current_sync_schema_version, 3)
-        self.assertEqual(snap.sync_schema_version_target, 2)
+        self.assertEqual(snap.sync_schema_version_target, 3)
         self.assertEqual(res["per_repo"][0]["discovery_continuation_active"], True)
         self.assertIsNotNone(res["per_repo"][0]["discovery_lag_seconds"])
         self.assertEqual(res["per_repo"][0]["prs_below_current_sync_schema_version"], 3)
-        self.assertEqual(res["per_repo"][0]["sync_schema_version_target"], 2)
+        self.assertEqual(res["per_repo"][0]["sync_schema_version_target"], 3)
         self.assertEqual(res["rows_created"], 1)
 
     def test_discovery_lag_uses_current_successful_cutoff(self) -> None:

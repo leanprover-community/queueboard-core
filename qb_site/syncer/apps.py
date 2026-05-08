@@ -11,5 +11,7 @@ class SyncerConfig(AppConfig):
         # ready() so model imports don't fire before the app registry is
         # fully populated.
         from syncer.services.sync_schema_upgrade_v2 import register_v2_upgrader
+        from syncer.services.sync_schema_upgrade_v3 import register_v3_upgrader
 
         register_v2_upgrader()
+        register_v3_upgrader()
