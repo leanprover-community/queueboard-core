@@ -262,3 +262,288 @@ class TestTimelineSync(TestCase):
         existing.refresh_from_db()
         self.assertEqual(existing.actor_login, "bot")
         self.assertEqual(existing.assignee_login, "alice")
+
+
+class TestTimelineSyncReviewAndCommentEvents(TestCase):
+    """Coverage for the v2 event types added by design doc 044 (Chunk 4b)."""
+
+    def setUp(self) -> None:
+        self.repo = make_repo()
+        self.pr = make_pr(self.repo, 1)
+
+    def test_issue_comment_creates_row(self) -> None:
+        nodes = [
+            {
+                "__typename": "IssueComment",
+                "id": "IC1",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "author": {"__typename": "User", "login": "alice"},
+            }
+        ]
+        res = sync_timeline_events(self.pr, nodes)
+        self.assertEqual(res.created, 1)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="IC1")
+        self.assertEqual(ev.type, PRTimelineEventType.ISSUE_COMMENTED)
+        self.assertEqual(ev.actor_login, "alice")
+        self.assertIsNone(ev.inline_comment_total_count)
+
+    def test_issue_comment_bot_author(self) -> None:
+        nodes = [
+            {
+                "__typename": "IssueComment",
+                "id": "IC2",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "author": {"__typename": "Bot", "login": "dependabot"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="IC2")
+        self.assertEqual(ev.actor_login, "dependabot")
+
+    def test_issue_comment_null_author_stored_as_empty_string(self) -> None:
+        nodes = [
+            {
+                "__typename": "IssueComment",
+                "id": "IC3",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "author": None,
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="IC3")
+        self.assertEqual(ev.actor_login, "")
+
+    def test_review_state_routing_for_each_terminal_state(self) -> None:
+        nodes = [
+            {
+                "__typename": "PullRequestReview",
+                "id": "RV-A",
+                "state": "APPROVED",
+                "submittedAt": "2026-05-01T12:00:00Z",
+                "author": {"__typename": "User", "login": "alice"},
+                "comments": {"totalCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            },
+            {
+                "__typename": "PullRequestReview",
+                "id": "RV-CR",
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-05-01T12:05:00Z",
+                "author": {"__typename": "User", "login": "bob"},
+                "comments": {"totalCount": 2, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            },
+            {
+                "__typename": "PullRequestReview",
+                "id": "RV-C",
+                "state": "COMMENTED",
+                "submittedAt": "2026-05-01T12:10:00Z",
+                "author": {"__typename": "User", "login": "carol"},
+                "comments": {"totalCount": 1, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            },
+        ]
+        res = sync_timeline_events(self.pr, nodes)
+        self.assertEqual(res.created, 3)
+
+        approved = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="RV-A")
+        self.assertEqual(approved.type, PRTimelineEventType.REVIEW_APPROVED)
+        self.assertEqual(approved.actor_login, "alice")
+        self.assertEqual(approved.inline_comment_total_count, 0)
+
+        cr = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="RV-CR")
+        self.assertEqual(cr.type, PRTimelineEventType.REVIEW_CHANGES_REQUESTED)
+        self.assertEqual(cr.inline_comment_total_count, 2)
+
+        commented = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="RV-C")
+        self.assertEqual(commented.type, PRTimelineEventType.REVIEW_COMMENTED)
+        self.assertEqual(commented.inline_comment_total_count, 1)
+
+    def test_pending_review_is_dropped(self) -> None:
+        nodes = [
+            {
+                "__typename": "PullRequestReview",
+                "id": "RV-P",
+                "state": "PENDING",
+                "submittedAt": None,
+                "author": {"__typename": "User", "login": "alice"},
+                "comments": {"totalCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            }
+        ]
+        res = sync_timeline_events(self.pr, nodes)
+        self.assertEqual(res.created, 0)
+        self.assertFalse(PRTimelineEvent.objects.filter(pull_request=self.pr).exists())
+
+    def test_dismissed_review_state_on_pull_request_review_is_dropped(self) -> None:
+        # State=DISMISSED on a PullRequestReview node is captured via the
+        # separate ReviewDismissedEvent timeline item, not as REVIEW_*.
+        nodes = [
+            {
+                "__typename": "PullRequestReview",
+                "id": "RV-D",
+                "state": "DISMISSED",
+                "submittedAt": "2026-05-01T12:00:00Z",
+                "author": {"__typename": "User", "login": "alice"},
+                "comments": {"totalCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            }
+        ]
+        res = sync_timeline_events(self.pr, nodes)
+        self.assertEqual(res.created, 0)
+
+    def test_inline_comment_total_count_refreshes_to_higher_value(self) -> None:
+        # Initial sync sees totalCount=2; a later sync sees 5 (the long tail
+        # was added between syncs). The column should reflect the new value.
+        nodes_v1 = [
+            {
+                "__typename": "PullRequestReview",
+                "id": "RV-T",
+                "state": "COMMENTED",
+                "submittedAt": "2026-05-01T12:00:00Z",
+                "author": {"__typename": "User", "login": "alice"},
+                "comments": {"totalCount": 2, "pageInfo": {"hasNextPage": False}, "nodes": []},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes_v1)
+        nodes_v2 = [
+            {
+                **nodes_v1[0],
+                "comments": {"totalCount": 5, "pageInfo": {"hasNextPage": True}, "nodes": []},
+            }
+        ]
+        res = sync_timeline_events(self.pr, nodes_v2)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="RV-T")
+        self.assertEqual(ev.inline_comment_total_count, 5)
+        self.assertEqual(res.updated, 1)
+
+    def test_review_dismissed_event_denormalizes_review_into_extra(self) -> None:
+        nodes = [
+            {
+                "__typename": "ReviewDismissedEvent",
+                "id": "DIS1",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "previousReviewState": "APPROVED",
+                "actor": {"__typename": "User", "login": "admin"},
+                "review": {
+                    "id": "OLDREV",
+                    "submittedAt": "2026-04-29T08:00:00Z",
+                    "author": {"__typename": "User", "login": "reviewer"},
+                },
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="DIS1")
+        self.assertEqual(ev.type, PRTimelineEventType.REVIEW_DISMISSED)
+        # Actor is the dismisser, NOT the dismissed review's author.
+        self.assertEqual(ev.actor_login, "admin")
+        self.assertEqual(ev.extra["dismissed_review_node_id"], "OLDREV")
+        self.assertEqual(ev.extra["dismissed_review_author"], "reviewer")
+        self.assertEqual(ev.extra["dismissed_review_submitted_at"], "2026-04-29T08:00:00Z")
+        self.assertEqual(ev.extra["previous_review_state"], "APPROVED")
+
+    def test_review_dismissed_event_handles_null_review(self) -> None:
+        # Phase-0 confirmed ReviewDismissedEvent.review is nullable. We must
+        # store the row with previous_review_state but omit dismissed_review_*.
+        nodes = [
+            {
+                "__typename": "ReviewDismissedEvent",
+                "id": "DIS2",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "previousReviewState": "CHANGES_REQUESTED",
+                "actor": {"__typename": "User", "login": "admin"},
+                "review": None,
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="DIS2")
+        self.assertEqual(ev.actor_login, "admin")
+        self.assertEqual(ev.extra, {"previous_review_state": "CHANGES_REQUESTED"})
+
+    def test_review_requested_user(self) -> None:
+        nodes = [
+            {
+                "__typename": "ReviewRequestedEvent",
+                "id": "REQ1",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "actor": {"__typename": "User", "login": "asker"},
+                "requestedReviewer": {"__typename": "User", "login": "alice"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REQ1")
+        self.assertEqual(ev.type, PRTimelineEventType.REVIEW_REQUESTED)
+        self.assertEqual(ev.actor_login, "asker")
+        self.assertEqual(ev.requested_reviewer_login, "alice")
+        self.assertIsNone(ev.requested_team_slug)
+
+    def test_review_requested_team(self) -> None:
+        nodes = [
+            {
+                "__typename": "ReviewRequestedEvent",
+                "id": "REQ2",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "actor": {"__typename": "User", "login": "asker"},
+                "requestedReviewer": {"__typename": "Team", "slug": "core-reviewers"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REQ2")
+        self.assertEqual(ev.requested_team_slug, "core-reviewers")
+        self.assertIsNone(ev.requested_reviewer_login)
+
+    def test_review_requested_bot_routes_to_login_column(self) -> None:
+        # Phase 0 confirmed Bot is part of the RequestedReviewer union; route
+        # it to requested_reviewer_login since Bot has a login.
+        nodes = [
+            {
+                "__typename": "ReviewRequestedEvent",
+                "id": "REQ3",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "actor": {"__typename": "User", "login": "asker"},
+                "requestedReviewer": {"__typename": "Bot", "login": "dependabot"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REQ3")
+        self.assertEqual(ev.requested_reviewer_login, "dependabot")
+        self.assertIsNone(ev.requested_team_slug)
+
+    def test_review_requested_mannequin_routes_to_login_column(self) -> None:
+        nodes = [
+            {
+                "__typename": "ReviewRequestedEvent",
+                "id": "REQ4",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "actor": {"__typename": "User", "login": "asker"},
+                "requestedReviewer": {"__typename": "Mannequin", "login": "ghost-user"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REQ4")
+        self.assertEqual(ev.requested_reviewer_login, "ghost-user")
+
+    def test_review_request_removed_uses_same_routing(self) -> None:
+        nodes = [
+            {
+                "__typename": "ReviewRequestRemovedEvent",
+                "id": "REM1",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "actor": {"__typename": "User", "login": "asker"},
+                "requestedReviewer": {"__typename": "Team", "slug": "core-reviewers"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REM1")
+        self.assertEqual(ev.type, PRTimelineEventType.REVIEW_REQUEST_REMOVED)
+        self.assertEqual(ev.requested_team_slug, "core-reviewers")
+
+    def test_review_requested_null_actor_is_empty_string(self) -> None:
+        nodes = [
+            {
+                "__typename": "ReviewRequestedEvent",
+                "id": "REQ5",
+                "createdAt": "2026-05-01T12:00:00Z",
+                "actor": None,
+                "requestedReviewer": {"__typename": "User", "login": "alice"},
+            }
+        ]
+        sync_timeline_events(self.pr, nodes)
+        ev = PRTimelineEvent.objects.get(pull_request=self.pr, github_node_id="REQ5")
+        self.assertEqual(ev.actor_login, "")
+        self.assertEqual(ev.requested_reviewer_login, "alice")

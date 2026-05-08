@@ -17,6 +17,13 @@ class PRTimelineEventType(models.TextChoices):
     REOPENED = "REOPENED", "reopened"
     CLOSED = "CLOSED", "closed"
     HEAD_FORCE_PUSHED = "HEAD_FORCE_PUSHED", "head_force_pushed"
+    ISSUE_COMMENTED = "ISSUE_COMMENTED", "issue_commented"
+    REVIEW_APPROVED = "REVIEW_APPROVED", "review_approved"
+    REVIEW_CHANGES_REQUESTED = "REVIEW_CHANGES_REQUESTED", "review_changes_requested"
+    REVIEW_COMMENTED = "REVIEW_COMMENTED", "review_commented"
+    REVIEW_DISMISSED = "REVIEW_DISMISSED", "review_dismissed"
+    REVIEW_REQUESTED = "REVIEW_REQUESTED", "review_requested"
+    REVIEW_REQUEST_REMOVED = "REVIEW_REQUEST_REMOVED", "review_request_removed"
 
 
 class PRTimelineEvent(TimestampedModel):
