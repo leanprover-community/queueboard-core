@@ -305,8 +305,8 @@ SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_
 SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS", 86400))
 
 # Repo label-catalog refresh: how often to reconcile LabelDef against GitHub for active repos.
-# A daily cadence is plenty since labels change infrequently. Set to 0 to disable.
-SYNCER_LABEL_CATALOG_PERIOD_SECONDS = int(os.getenv("SYNCER_LABEL_CATALOG_PERIOD_SECONDS", 86400))
+# Labels change infrequently, so an hourly cadence is plenty. Set to 0 to disable.
+SYNCER_LABEL_CATALOG_PERIOD_SECONDS = int(os.getenv("SYNCER_LABEL_CATALOG_PERIOD_SECONDS", 3600))
 
 # Commit-history harvest sweep defaults
 SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS", 600))
