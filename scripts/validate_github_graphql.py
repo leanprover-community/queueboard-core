@@ -208,6 +208,12 @@ def main() -> int:
     timeline_back_payload = _post_graphql(token, timeline_back_query, timeline_back_vars)
     _require_no_errors("timeline_page_back.graphql", timeline_back_payload)
 
+    repo_labels_query = _load_query(Path("qb_site/syncer/queries/repo_labels.graphql"))
+    repo_labels_vars = {"owner": owner, "name": name, "first": 2, "after": None}
+    print("Validating repo_labels.graphql...")
+    repo_labels_payload = _post_graphql(token, repo_labels_query, repo_labels_vars)
+    _require_no_errors("repo_labels.graphql", repo_labels_payload)
+
     print("GitHub GraphQL validation passed.")
     return 0
 

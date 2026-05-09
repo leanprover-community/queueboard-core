@@ -56,6 +56,7 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
   - `syncer.refresh_pending_ci_for_active_repos` → `syncer.refresh_pending_ci_for_repo`,
   - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows),
   - `syncer.expire_old_webhook_deliveries` (daily by default; deletes GitHubWebhookDelivery rows older than SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS),
+  - `syncer.sync_label_catalog_for_active_repos` → `syncer.sync_label_catalog` (daily by default via SYNCER_LABEL_CATALOG_PERIOD_SECONDS; pages through `repository.labels` and reconciles `LabelDef` rows, deleting labels removed upstream — cascades to `PRLabel`),
   - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
   - `syncer.backfill_repo_engagement_active` → `syncer.backfill_repo_engagement` (optional),
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
