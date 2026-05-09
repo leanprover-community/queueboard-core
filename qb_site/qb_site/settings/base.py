@@ -238,6 +238,8 @@ if SYNCER_GITHUB_QUEUE:
         "syncer.backfill_repo_engagement_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history_sweep": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.sync_label_catalog": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.sync_label_catalog_for_active_repos": {"queue": SYNCER_GITHUB_QUEUE},
     }
 
 # Syncer scheduling defaults (env-overridable)
@@ -301,6 +303,10 @@ SYNCER_CI_STALE_PENDING_DAYS = int(os.getenv("SYNCER_CI_STALE_PENDING_DAYS", 30)
 # Webhook delivery log cleanup
 SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS", 7))
 SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS", 86400))
+
+# Repo label-catalog refresh: how often to reconcile LabelDef against GitHub for active repos.
+# Labels change infrequently, so an hourly cadence is plenty. Set to 0 to disable.
+SYNCER_LABEL_CATALOG_PERIOD_SECONDS = int(os.getenv("SYNCER_LABEL_CATALOG_PERIOD_SECONDS", 3600))
 
 # Commit-history harvest sweep defaults
 SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS = int(os.getenv("SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS", 600))
@@ -436,6 +442,11 @@ if SYNCER_CI_EXPIRY_PERIOD_SECONDS > 0:
         "kwargs": {
             "stale_pending_days": SYNCER_CI_STALE_PENDING_DAYS,
         },
+    }
+if SYNCER_LABEL_CATALOG_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["sync_label_catalog_for_active_repos"] = {
+        "task": "syncer.sync_label_catalog_for_active_repos",
+        "schedule": SYNCER_LABEL_CATALOG_PERIOD_SECONDS,
     }
 if SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["harvest_commit_history"] = {

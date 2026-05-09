@@ -409,6 +409,30 @@ class GitHubClient:
             hit_limit=hit_limit,
         )
 
+    def get_repo_labels_page(
+        self,
+        *,
+        owner: str,
+        name: str,
+        first: int = 100,
+        after: Optional[str] = None,
+        query_path: str = "qb_site/syncer/queries/repo_labels.graphql",
+    ) -> Dict[str, Any]:
+        """Fetch one page of the repository label catalog.
+
+        Returns the raw GraphQL response. Callers can read:
+          data.repository.labels.nodes[]   -> { name, color }
+          data.repository.labels.pageInfo  -> { hasNextPage, endCursor }
+        """
+        query = self._read_file(query_path)
+        variables: Dict[str, Any] = {
+            "owner": owner,
+            "name": name,
+            "first": int(max(1, min(first, 100))),
+            "after": after,
+        }
+        return self.execute(query, variables)
+
     def get_prs_created_page(
         self,
         *,

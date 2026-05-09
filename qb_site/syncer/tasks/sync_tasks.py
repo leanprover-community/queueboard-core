@@ -1669,3 +1669,61 @@ def refresh_pending_ci_for_active_repos_task(  # type: ignore[no-redef]
         )
         enqueued += 1
     return {"repos": len(repos), "enqueued": enqueued}
+
+
+@shared_task(name="syncer.sync_label_catalog", bind=True)
+def sync_label_catalog_task(  # type: ignore[no-redef]
+    self,
+    repo_id: int,
+    *,
+    page_size: int = 100,
+) -> Dict[str, Any]:
+    """Refresh ``LabelDef`` for one repo against GitHub's full label list.
+
+    Fetches every page of ``repository.labels`` first, and only enters the
+    upsert/delete transaction once pagination has completed successfully.
+    A partial GraphQL response raises before any rows are deleted, so a
+    transient API hiccup cannot cascade-blow-away ``PRLabel`` rows.
+    """
+    from syncer.services.sub.labels_sync import fetch_repo_label_catalog, sync_full_label_catalog
+
+    repo = Repository.objects.get(id=int(repo_id))
+    with repo_advisory_lock(repo.id) as acquired:
+        if not acquired:
+            log.info("sync_label_catalog: lock not acquired; skipping repo=%s/%s", repo.owner, repo.name)
+            return {"skipped": True, "reason": "lock_not_acquired", "repo_id": repo.id}
+
+        client = GitHubClient(operation="syncer_label_catalog", owner=repo.owner, repo=repo.name)
+
+        def _fetch(after: Optional[str]) -> Dict[str, Any]:
+            return client.get_repo_labels_page(owner=repo.owner, name=repo.name, first=int(page_size), after=after)
+
+        nodes = fetch_repo_label_catalog(repo, _fetch)
+        result = sync_full_label_catalog(repo, nodes)
+
+    log.info(
+        "sync_label_catalog: repo=%s/%s fetched=%s created=%s updated=%s deleted=%s",
+        repo.owner,
+        repo.name,
+        len(nodes),
+        result.created,
+        result.updated,
+        result.deleted,
+    )
+    return {
+        "repo": f"{repo.owner}/{repo.name}",
+        "repo_id": repo.id,
+        "fetched": len(nodes),
+        "created": result.created,
+        "updated": result.updated,
+        "deleted": result.deleted,
+    }
+
+
+@shared_task(name="syncer.sync_label_catalog_for_active_repos")
+def sync_label_catalog_for_active_repos_task() -> Dict[str, Any]:
+    """Fan out ``syncer.sync_label_catalog`` to every active repository."""
+    repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
+    for repo in repos:
+        sync_label_catalog_task.delay(repo.id)
+    return {"repos": len(repos), "enqueued": len(repos)}
