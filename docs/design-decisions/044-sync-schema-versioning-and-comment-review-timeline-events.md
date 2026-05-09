@@ -52,20 +52,25 @@
 | 4c. Wire inline-comments service (bundle path only) | **Deployed (2026-05-07)** with gap | `PRSyncService.sync_pull_request_bundle` calls `sync_review_inline_comments_bundle`. **Gap:** the same call was NOT wired into `sync_pull_request`'s forward `get_timeline_page` and backward `get_timeline_page_back` loops. Discovered post-Chunk-5 deploy when v=2 PRs began appearing without `PRReviewInlineComment` rows. Fixed in **Chunk 5b**. |
 | 4d. Strict CHECK constraints | **Deployed (2026-05-08)** | Migration `0043` added three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 before deploy. |
 | 5. v2 upgrader (the wave) | **Deployed (2026-05-08)** with gap | `CURRENT_SYNC_SCHEMA_VERSION=2`; `UpgradeToV2` registered via `SyncerConfig.ready()`. Migration `0044` reset `timeline_backfill_done=False, timeline_backfill_cursor=NULL` for every PR at v<2. **Gap:** because of the 4c gap, v=2 PRs were stamped without their inline comments — the historical pages didn't invoke the inline-comments service. Mitigated by Chunk 5b's v=3 wave; recommend setting `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` between detection and the 5b deploy to stop growing the affected cohort. |
-| 5b. Page-path inline-comments fix + v3 wave | **Committed, awaiting deploy** | Fixed `_sync_inline_review_comments` invocation in both `sync_pull_request` page loops. `CURRENT_SYNC_SCHEMA_VERSION` bumped to 3; `UpgradeToV3` (mechanically identical to v2) registered. Migration `0045` reset `timeline_backfill_done=False` for every PR at v<3 (same option (a) approach as 0044). New regression tests in `tests/services/test_inline_comments_page_paths.py`. See §Chunk 5b. |
-| 6. `engagement_synced_at` deprecation | Pending | Post-soak after Chunk 5b. |
+| 5b. Page-path inline-comments fix + v3 wave | **Deployed (2026-05-08)** | Fixed `_sync_inline_review_comments` invocation in both `sync_pull_request` page loops. `CURRENT_SYNC_SCHEMA_VERSION` bumped to 3; `UpgradeToV3` (mechanically identical to v2) registered. Migration `0045` reset `timeline_backfill_done=False` for every PR at v<3 (same option (a) approach as 0044). New regression tests in `tests/services/test_inline_comments_page_paths.py`. See §Chunk 5b. Soak observation through 2026-05-09: v=3 wave converging smoothly, `prs_below_current_sync_schema_version` trending down monotonically per repo, `PRReviewInlineComment` row count growing in lockstep, `PRReviewInlineCommentBackfill` markers now appearing for long-tail reviews. |
+| 6. `engagement_synced_at` removal | **Planned (2026-05-09)** | No schema-version bump required (see §Chunk 6 for the reasoning). Two deploys: 6a stops writing the column and removes `backfill_repo_engagement[_active]` + their beat schedule + their settings + the `prs_missing_engagement` snapshot computation; 6b drops the column itself plus the two `SyncerConvergenceSnapshot` engagement metrics. |
 
 ### Resumption pointer for the next agent
-Chunks 1–4 and Chunk 5 are in production. Chunk 5 shipped with a
-wire-up gap (see §Chunk 5b): the v=2 wave's historical timeline
-rewalks created `REVIEW_*`/`ISSUE_COMMENTED` rows but never persisted
-the nested inline comments, so the v=2-stamped cohort is missing
-`PRReviewInlineComment` rows. The branch `sync-schema-versioning` now
-also carries **Chunk 5b** — the page-path fix plus the v=3 wave to
-recover the affected cohort, plus two additional consistency fixes
-(Item 1 dismissed-review parent synthesis and Item 2 DB-aware
-thread-root resolution) — ready for deploy as one commit. The next
-units of work, in order:
+Chunks 1–4, 5, and **5b are now in production** as of 2026-05-08; the
+v=3 recovery wave has been converging smoothly through 2026-05-09 with
+`prs_below_current_sync_schema_version` trending down monotonically per
+repo and `PRReviewInlineComment` row counts growing in lockstep.
+
+The remaining work is **Chunk 6** — removing `engagement_synced_at`
+and the `backfill_repo_engagement[_active]` task that scanned for it.
+**No schema-version bump is needed** (see §Chunk 6 "Why no schema-
+version bump"); this is a code/schema cleanup, not an ingestion
+expansion. The plan is split across two deploys (6a stop writing +
+remove the task + remove the engagement metric; 6b drop the column
+and the two snapshot fields), each independently rollback-safe.
+
+Historical context (kept here so a future agent reading after Chunk 6
+ships still sees what shipped):
 
 1. **Pre-deploy: gate the v=2 wave to a halt.** Set
    `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` in production before the
@@ -820,12 +825,238 @@ option (a) twice in quick succession; if a third bug discovered
 after a v=4 release ever required a third wave, that would be the
 moment to invest in option (b) infrastructure.
 
-### Chunk 6. `engagement_synced_at` deprecation (one release after Chunk 5b)
-- Stop writing `engagement_synced_at` from `PRSyncService`.
-- Remove its filter clauses from `backfill_repo_engagement_task` (or
-  remove the task entirely if `head_sha`/`head_ci_state` filling is
-  subsumed by the v2 wave).
-- Migration to drop the `engagement_synced_at` column.
+### Chunk 6. `engagement_synced_at` removal (one release after Chunk 5b)
+
+#### Why no schema-version bump
+The schema-version mechanism exists to drive **per-PR rewalks** under
+new query/normalizer code so PRs can be brought up to a current data
+shape. Chunk 6 does the opposite: it removes plumbing that has been
+redundant with `sync_schema_version` since v=1 shipped.
+
+- After Chunks 5 + 5b converge, every PR has `sync_schema_version >= 1`
+  and has been re-synced under code that writes `engagement_synced_at`
+  on every successful sync (paired with `last_synced_at` in
+  `pr_sync_service.py:296,308-314`).
+- That makes `engagement_synced_at IS NULL` equivalent to
+  `last_synced_at IS NULL` for any PR that has been touched since the
+  v=1 deploy. The "missing engagement" cohort the column was originally
+  designed to surface no longer exists.
+- Every read site of `engagement_synced_at` (the analyzer's
+  `_data_status` calls and the `sync_pr_task` skip-decision) needs only
+  "has this PR ever been fully synced?" — `last_synced_at` answers that.
+- No new GraphQL query, no new normalizer behavior, no new event types.
+  Nothing for an upgrader to do. Bumping `CURRENT_SYNC_SCHEMA_VERSION`
+  would only schedule pointless rewalks.
+
+So Chunk 6 is a code/schema cleanup, gated only on time (one release of
+soak after 5b) and on the v=3 wave fully converging on each active repo
+(`prs_below_current_sync_schema_version=0`).
+
+#### Deploy 6a — stop writing, retire the engagement-backfill task
+Pure code change + one deploy. No migration. Reversible by redeploying
+previous code.
+
+**File-by-file:**
+
+1. `qb_site/syncer/services/pr_sync_service.py` — drop the two writes:
+   - Remove `extras["engagement_synced_at"] = now_ts` (currently line
+     ~296).
+   - Remove the trailing fallback `if "engagement_synced_at" not in
+     update_fields: pr_obj.engagement_synced_at = now_ts;
+     update_fields.append("engagement_synced_at")` (lines ~308-310).
+   - The comment about "advance `last_synced_at` after engagement
+     fields are prepared" can be slightly trimmed but is still
+     correct — the relevant invariant is now "after assignees + files
+     + timeline are saved", not "after engagement".
+
+2. `qb_site/syncer/tasks/sync_tasks.py` — drop the redundant
+   skip-bypass:
+   - Remove `needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)`
+     and its use in the skip predicate (lines ~187, 206).
+   - The `last_synced_cutoff` precondition already gates the skip
+     branch on "we have a prior sync"; without that, the skip never
+     fires. With it, `engagement_synced_at` is non-null. So
+     `needs_engagement` is dead weight today.
+
+3. `qb_site/syncer/tasks/backfill_tasks.py` — delete the engagement
+   backfill task entirely (lines ~291-380):
+   - `backfill_repo_engagement_task` (`syncer.backfill_repo_engagement`).
+   - `backfill_repo_engagement_active_task`
+     (`syncer.backfill_repo_engagement_active`).
+   - The `head_sha`/`head_ci_state` clauses that share this task are
+     redundant with `backfill_repo_incomplete_prs`'s
+     `head_ci_state__iexact='PENDING'` and `last_synced_at__isnull`
+     filters plus the v=2/v=3 wave's full re-walks; we don't need a
+     parallel scan for them.
+
+4. `qb_site/syncer/tasks/collect_convergence.py` — stop computing the
+   engagement metrics:
+   - Remove `engagement_missing` and `engagement_incomplete` (lines
+     ~74-81).
+   - Remove `prs_missing_engagement=engagement_missing` and
+     `prs_engagement_incomplete=engagement_incomplete` from the
+     `SyncerConvergenceSnapshot.objects.create(...)` call.
+   - Remove them from the `per_repo` dict.
+   - Note: this leaves the model fields in place for one release; they
+     receive a default `0` write (the model defaults are `0`) until 6b
+     drops the columns. That's intentional rollback insurance.
+
+5. `qb_site/qb_site/settings/base.py` — drop the engagement-backfill
+   plumbing:
+   - Lines ~237-238 in `CELERY_TASK_ROUTES`: remove the two
+     `syncer.backfill_repo_engagement[_active]` queue routes.
+   - Lines ~294-295: remove `SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS`
+     and `SYNCER_ENGAGEMENT_BACKFILL_LIMIT`.
+   - Lines ~524-532: remove the `if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0`
+     beat-schedule block.
+
+6. `.env.example` — drop the two `SYNCER_ENGAGEMENT_BACKFILL_*`
+   entries (lines ~185-187) and any preceding comment.
+
+7. `qb_site/syncer/AGENTS.md` — drop the
+   `syncer.backfill_repo_engagement_active → syncer.backfill_repo_engagement`
+   bullet from the Beat schedule list.
+
+8. `qb_site/analyzer/services/queueboard_snapshot.py` — switch the
+   four `_data_status` callers (lines ~953-956) from
+   `pr.engagement_synced_at` to `pr.last_synced_at`. `_data_status`
+   uses the timestamp only as a "missing" sentinel (None ⇒ never
+   synced), so the substitution is exact: `pr_sync_service.py` writes
+   both fields on the same successful-sync path, so any PR with
+   `last_synced_at` set already had `engagement_synced_at` set under
+   the old code. There is no semantic regression.
+
+9. **Tests to update / delete:**
+   - `qb_site/syncer/tests/backfill/test_engagement_backfill_task.py`
+     — delete the file (the task is gone).
+   - `qb_site/syncer/tests/tasks/test_collect_convergence_task.py` —
+     drop the `engagement_synced_at=...` constructor kwargs and the
+     two `prs_missing_engagement` / `prs_engagement_incomplete`
+     assertions.
+   - `qb_site/syncer/tests/tasks/test_sync_pr_task_skip.py` and
+     `qb_site/syncer/tests/backfill/test_commit_backfill_only.py` and
+     `qb_site/syncer/tests/backfill/test_sync_pr_backfill_only.py` —
+     drop the `pr.engagement_synced_at = last_synced_at` setup
+     (`last_synced_at` alone is what gates the skip path now).
+   - `qb_site/syncer/tests/test_pr_sync_integration.py` — remove the
+     `assertIsNotNone(pr.engagement_synced_at)` assertion.
+   - `qb_site/analyzer/tests/tasks/test_collect_convergence_task.py`,
+     `qb_site/analyzer/tests/test_queueboard_snapshot.py`,
+     `qb_site/analyzer/tests/services/test_reviewer_assignment.py`,
+     `qb_site/analyzer/tests/services/test_dependency_graph.py` —
+     drop `engagement_synced_at=...` constructor kwargs / `.save(...)`
+     calls in test setup.
+   - Search-and-prune any remaining references with
+     `grep -rn engagement_synced_at qb_site/`.
+
+10. `qb_site/syncer/admin.py` — leave `engagement_synced_at` in the
+    PR admin's `readonly_fields` and the two snapshot fields in
+    `list_display` / `readonly_fields` for the 6a release. Remove
+    them in 6b alongside the column drop. (Admin will display the
+    last-frozen value during the 6a soak; this is the intended
+    rollback observability.)
+
+**6a soak watch list:**
+- `engagement_synced_at` values frozen across the deploy boundary on
+  spot-checked PRs (no further increments). New PRs created after
+  6a have `engagement_synced_at=NULL` — that's expected and benign.
+- `prs_missing_engagement` in fresh `SyncerConvergenceSnapshot` rows
+  trends to a stable count (the count of new PRs since 6a) rather
+  than zero; we'll drop the metric in 6b.
+- `backfill_repo_engagement[_active]` no longer appears in the Celery
+  beat schedule and no longer fires.
+- `analyzer.queueboard_snapshot` produces unchanged `_data_status`
+  values for a sample of PRs (since we swapped the input timestamp,
+  not the predicate). Spot-check one open PR per active repo.
+- `bash scripts/repo_check_compose.sh` green.
+
+**6a rollback:** redeploy previous code. The column still exists and
+nothing has been destructively migrated, so the rollback target picks
+up where it left off. The only side effect is a small cohort of new
+PRs with `engagement_synced_at=NULL` — `backfill_repo_engagement` will
+re-fill them once it's running again.
+
+#### Deploy 6b — drop the columns and the snapshot metrics
+Lands at least one release after 6a, and only after a fresh
+`SyncerConvergenceSnapshot` confirms no live writers (other than
+default-0 writes) and no operator dashboards still surface the
+fields.
+
+**Migration `0047_drop_engagement_synced_at_and_snapshot_metrics`:**
+
+```python
+# qb_site/syncer/migrations/0047_drop_engagement_synced_at_and_snapshot_metrics.py
+operations = [
+    migrations.RemoveField("pullrequest", "engagement_synced_at"),
+    migrations.RemoveField("syncerconvergencesnapshot", "prs_missing_engagement"),
+    migrations.RemoveField("syncerconvergencesnapshot", "prs_engagement_incomplete"),
+]
+```
+
+Postgres will issue three `ALTER TABLE ... DROP COLUMN` statements;
+DROP COLUMN on a Postgres table is `O(1)` metadata + lazy reclaim, so
+locking posture is brief even on the multi-million-row PR table.
+
+**File-by-file accompanying changes:**
+
+1. `qb_site/syncer/models/pull_request.py` — drop the
+   `engagement_synced_at = models.DateTimeField(null=True, blank=True)`
+   field (line 69).
+
+2. `qb_site/syncer/models/convergence_snapshot.py` — drop the two
+   `prs_missing_engagement` / `prs_engagement_incomplete` fields
+   (lines 30-31).
+
+3. `qb_site/syncer/admin.py` — remove `engagement_synced_at` from
+   the PR admin (line 167) and `prs_missing_engagement` /
+   `prs_engagement_incomplete` from the `SyncerConvergenceSnapshot`
+   admin's `list_display` and `readonly_fields` (lines 1315-1316,
+   1340-1341).
+
+4. `scripts/backup_policy.py` — drop the columns from any
+   field-level allow-list. Run `bash scripts/repo_check_compose.sh`
+   to confirm the backup-policy validator stays green.
+
+5. `docs/queueboard_api_contract.md` — remove the
+   `engagement_synced_at` mentions on lines 92, 107, 126, 130
+   (replace with `last_synced_at` where the meaning was "has the
+   PR been fully synced?"). Also remove the
+   `syncer.backfill_repo_engagement` reference on line 107 and the
+   `SYNCER_ENGAGEMENT_BACKFILL_*` env-var reference.
+
+6. `docs/design-decisions/017-token-cost-tracking.md` — remove the
+   `backfill_repo_engagement(_active)` entry from the
+   "enqueue-only / DB-only tasks" list (line 15).
+
+**6b soak / verification:**
+- Migration applies cleanly on a recent prod snapshot (or a staging
+  copy) before deploying.
+- `bash scripts/repo_check_compose.sh` green; the
+  `validate_backup_policy.py` step in particular confirms no
+  policy-coverage gap.
+- Post-deploy: latest `SyncerConvergenceSnapshot` row no longer
+  carries `prs_missing_engagement` / `prs_engagement_incomplete`
+  (admin and the periodic task both behave). PR admin no longer
+  surfaces `engagement_synced_at`.
+
+**6b rollback:** the column drops are irreversible without a
+backfill from a backup. By the time 6b ships, no remaining writer
+or reader exists, so the only realistic regression mode is "we
+discover an external consumer (a downstream report, an analytics
+notebook) that still queried `engagement_synced_at`." Mitigation:
+search outside the repo (operator dashboards, ad-hoc Metabase
+queries, the Zulip bot) before 6b deploy and verify nothing reads
+the column.
+
+#### Optional follow-up (not scheduled)
+- **Soft-deprecation of `commenters` / `approvals` / `number_total_comments`.**
+  These aggregate fields on `PullRequest` are noted in §Subtleties as
+  "soft-deprecated, prefer event log". They are still computed from
+  the bundle's `reviews(first: 100)` / `comments(first: 100)`
+  connections at v=3 and continue to have consumers
+  (`queueboard_snapshot`, reports). Switching their computation to
+  `PRTimelineEvent` aggregates over the event log is a separate v=4+
+  task; it does not block Chunk 6.
 
 ## Validation Plan
 - **Unit / integration tests:**
@@ -1010,9 +1241,20 @@ previous deploy without manual intervention.
    and prevent more PRs from being stamped to v=2-with-missing
    inline comments. The same wave then converges everyone (paused
    v=1 PRs and already-v=2 PRs) to v=3 under fixed code.
-8. **Chunk 6 → deploy** (post-soak after 5b). Drop
-   `engagement_synced_at` and prune its filter clauses. Trivial
-   cleanup.
+8. **Chunk 6a → deploy** (post-soak after 5b). Stop writing
+   `engagement_synced_at`; delete `backfill_repo_engagement[_active]`
+   tasks, their beat schedule, their settings, and their queue
+   routes; switch `analyzer.queueboard_snapshot._data_status`
+   callers to `last_synced_at`; drop `prs_missing_engagement` /
+   `prs_engagement_incomplete` from `collect_convergence`'s writes
+   (snapshot columns retained for one release of rollback insurance).
+   Pure code change, no migration, fully reversible.
+9. **Chunk 6b → deploy** (one release after 6a). Migration
+   `0047` drops the `engagement_synced_at` column and the two
+   `SyncerConvergenceSnapshot` engagement metrics; admin/backup
+   policy/API-contract docs updated in lockstep. Postgres
+   `DROP COLUMN` is metadata-only so the lock window is brief even
+   on a multi-million-row PR table.
 
 Rollback: every step is additive (or, for Chunk 6, the column drop comes
 after a release with no remaining writers/readers). For Chunks 4 and 5,
@@ -1486,6 +1728,24 @@ future schema-version expansion. None are blocking for v=3.
     table grows another OoM).
   - v=4+ candidates listed in §Open Questions to capture the data-
     quality opportunities surfaced during this review.
+
+- 2026-05-09: **Chunk 5b soak observation; Chunk 6 plan finalized.**
+  After ~24 hours of soak the v=3 wave is converging cleanly across
+  active repos: `prs_below_current_sync_schema_version` trends
+  monotonically downward in fresh `SyncerConvergenceSnapshot` rows,
+  `PRReviewInlineComment` rows grow in lockstep, and
+  `PRReviewInlineCommentBackfill` markers now appear for the
+  long-tail reviews predicted by Phase 0. No regressions surfaced
+  in admin/queueboard snapshots or in the rate-limit telemetry.
+
+  Confirmed Chunk 6 needs no schema-version bump: the original
+  `engagement_synced_at` column was a "have we ever populated this
+  PR's engagement fields?" sentinel that has been redundant with
+  `sync_schema_version >= 1` (and with `last_synced_at` for the
+  read paths) since Chunk 1 shipped. Removing it is a code/schema
+  cleanup, not an ingestion expansion; nothing for an upgrader to
+  run. See §Chunk 6 for the rationale and the file-by-file
+  6a / 6b plan.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into
