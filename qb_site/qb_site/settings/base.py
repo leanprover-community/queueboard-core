@@ -234,8 +234,6 @@ if SYNCER_GITHUB_QUEUE:
         "syncer.backfill_repo_history_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_incomplete_prs": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_incomplete_prs_active": {"queue": SYNCER_GITHUB_QUEUE},
-        "syncer.backfill_repo_engagement": {"queue": SYNCER_GITHUB_QUEUE},
-        "syncer.backfill_repo_engagement_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.upgrade_schema_versions": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.upgrade_schema_versions_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history": {"queue": SYNCER_GITHUB_QUEUE},
@@ -290,9 +288,6 @@ SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_HISTORY_BACKFILL_
 # Incomplete-PR backfill defaults (DB-based)
 SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS", 600))
 SYNCER_INCOMPLETE_BACKFILL_LIMIT = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_LIMIT", 20))
-# Engagement backfill (one-off snapshot of files/assignees/approvals/comments)
-SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS", 900))
-SYNCER_ENGAGEMENT_BACKFILL_LIMIT = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_LIMIT", 5))
 # Sync schema upgrader pacing (see syncer/services/sync_schema_upgrades.py).
 # BATCH_SIZE bounds DB-only stamping work per task invocation; KICK_LIMIT bounds
 # GitHub-bound sync_pr_task enqueues per invocation so a wave can't outrun the
@@ -520,15 +515,6 @@ if ANALYTICS_CONVERGENCE_PERIOD_SECONDS > 0:
         "task": "analyzer.collect_convergence",
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
         "options": {"headers": {"qb_enqueue_source": "beat_analyzer_convergence"}},
-    }
-# Optional engagement backfill; disable by setting SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS<=0
-if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:
-    CELERY_BEAT_SCHEDULE["backfill_repo_engagement"] = {
-        "task": "syncer.backfill_repo_engagement_active",
-        "schedule": SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS,
-        "kwargs": {
-            "limit": SYNCER_ENGAGEMENT_BACKFILL_LIMIT,
-        },
     }
 # Sync schema upgrader; disable by setting SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS<=0
 if SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS > 0:

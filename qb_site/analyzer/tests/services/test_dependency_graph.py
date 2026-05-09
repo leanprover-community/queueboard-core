@@ -50,7 +50,6 @@ class DependencyGraphBuilderTests(TestCase):
             commenters=[],
             number_total_comments=0,
             last_synced_at=self.now,
-            engagement_synced_at=self.now,
             files_incomplete=False,
             assignees_incomplete=False,
             reviews_incomplete=False,

@@ -86,7 +86,6 @@ front and expensive to recover from when skipped.
   - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows),
   - `syncer.expire_old_webhook_deliveries` (daily by default; deletes GitHubWebhookDelivery rows older than SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS),
   - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
-  - `syncer.backfill_repo_engagement_active` → `syncer.backfill_repo_engagement` (optional),
   - `syncer.upgrade_schema_versions_active` → `syncer.upgrade_schema_versions` (advances `PullRequest.sync_schema_version` toward `CURRENT_SYNC_SCHEMA_VERSION`; see Sync Schema Versioning below),
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
   - `syncer.collect_convergence` — records syncer convergence metrics,

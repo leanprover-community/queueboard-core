@@ -47,7 +47,6 @@ class TestCollectConvergenceTask(TestCase):
             number=2,
             timeline_backfill_done=True,
             commits_backfill_done=False,
-            engagement_synced_at=None,
             head_sha="a" * 40,
             state="open",
             gh_created_at=now,
@@ -68,7 +67,6 @@ class TestCollectConvergenceTask(TestCase):
             timeline_backfill_done=True,
             commits_backfill_done=True,
             head_ci_state="PENDING",
-            engagement_synced_at=now,
             head_sha="b" * 40,
             state="open",
             gh_created_at=now,
@@ -108,8 +106,6 @@ class TestCollectConvergenceTask(TestCase):
         self.assertTrue(snap.discovery_continuation_active)
         self.assertIsNotNone(snap.discovery_last_attempted_at)
         self.assertIsNotNone(snap.discovery_last_successful_at)
-        self.assertEqual(snap.prs_missing_engagement, 2)
-        self.assertEqual(snap.prs_engagement_incomplete, 1)
         self.assertEqual(snap.prs_missing_head_ci_state, 2)
         self.assertEqual(snap.prs_missing_head_sha, 1)
         self.assertEqual(snap.prs_missing_head_ci_contexts, 2)

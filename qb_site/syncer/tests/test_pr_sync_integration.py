@@ -279,7 +279,7 @@ class TestPRSyncIntegration(TestCase):
         self.assertEqual(pr.commenters, ["commenter1", "rev1", "rev2"])
         self.assertEqual(pr.number_total_comments, 7)
         self.assertFalse(pr.comments_incomplete)
-        self.assertIsNotNone(pr.engagement_synced_at)
+        self.assertIsNotNone(pr.last_synced_at)
 
     def test_labels_diff_attach_and_detach(self) -> None:
         svc = PRSyncService()

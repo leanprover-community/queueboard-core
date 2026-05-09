@@ -950,10 +950,10 @@ class QueueboardSnapshotBuilder:
         queue_fields: dict,
         queue_status: DataStatus,
     ) -> dict:
-        comments_status = _data_status(bool(pr.comments_incomplete), pr.engagement_synced_at)
-        assignees_status = _data_status(bool(pr.assignees_incomplete), pr.engagement_synced_at)
-        files_status = _data_status(bool(pr.files_incomplete), pr.engagement_synced_at)
-        approvals_status = _data_status(bool(pr.reviews_incomplete), pr.engagement_synced_at)
+        comments_status = _data_status(bool(pr.comments_incomplete), pr.last_synced_at)
+        assignees_status = _data_status(bool(pr.assignees_incomplete), pr.last_synced_at)
+        files_status = _data_status(bool(pr.files_incomplete), pr.last_synced_at)
+        approvals_status = _data_status(bool(pr.reviews_incomplete), pr.last_synced_at)
         users_commented = [comments_status, list(pr.commenters or [])]
 
         return {
