@@ -70,6 +70,9 @@ class PRTimelineEvent(TimestampedModel):
     # value, not sync-state — used to detect reviews whose inline comments
     # exceeded the per-review fetch limit (see PRReviewInlineCommentBackfill).
     inline_comment_total_count = models.IntegerField(null=True, blank=True)
+    # Provenance: set when the row was first created by the archive backfill
+    # importer (design doc 043). Never touched by live ingestion paths.
+    archive_imported_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [

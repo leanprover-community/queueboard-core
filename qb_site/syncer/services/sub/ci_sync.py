@@ -16,6 +16,7 @@ from syncer.models.commit_check_run import CommitCheckRun
 from syncer.models.commit_status_context import CommitStatusContext
 from syncer.models.pull_request import PullRequest
 from core.utils.db import update_if_changed, upsert_if_changed
+from django.db import transaction
 import logging
 
 log = logging.getLogger(__name__)
@@ -102,8 +103,60 @@ def _effective_allowlist_for_status(pr: PullRequest) -> List[str]:
     return []
 
 
+def _archive_mode_upsert(
+    model: type,
+    lookup: dict[str, Any],
+    commit_values: dict[str, Any],
+    fallback_lookup: dict[str, Any] | None,
+) -> tuple[Any, bool, bool, tuple[str, ...]]:
+    """Archive-mode CI upsert with NULL-stripping on the UPDATE path.
+
+    Resolves the "merge-don't-overwrite" requirement from design doc 043
+    §"CI upsert: merge-don't-overwrite for archive mode". Live ingest may
+    have written ``external_id`` / ``gh_started_at`` / ``gh_completed_at``;
+    a legacy archive payload arrives with those NULL because the legacy
+    fragment doesn't request them. Standard ``update_if_changed`` would
+    treat the NULLs as "changed" and downgrade the live row.
+
+    On UPDATE, we strip NULLs from the values dict before the diff. On
+    CREATE, we keep NULLs (best info we have, and the synthesized
+    ``gh_created_at`` for StatusContext covers the NOT NULL constraint).
+
+    ``fallback_lookup`` covers the live composite-key fallback path
+    exercised by ``_upsert_commit_check_run`` (the repo+sha+name+external_id
+    constraint). StatusContext does not have an analogous composite, so
+    callers pass None there.
+    """
+    existing = model.objects.filter(**lookup).first()
+    if existing is None and fallback_lookup is not None:
+        existing = model.objects.filter(**fallback_lookup).first()
+    if existing is not None:
+        update_values = {k: v for k, v in commit_values.items() if v is not None}
+        was_updated, updated_fields = update_if_changed(existing, update_values)
+        return existing, False, was_updated, updated_fields
+    try:
+        with transaction.atomic():
+            obj = model.objects.create(**lookup, **commit_values)
+        return obj, True, False, tuple()
+    except IntegrityError:
+        # Lost a race with a concurrent writer; fall back to update path.
+        existing = model.objects.filter(**lookup).first()
+        if existing is None and fallback_lookup is not None:
+            existing = model.objects.filter(**fallback_lookup).first()
+        if existing is None:
+            raise
+        update_values = {k: v for k, v in commit_values.items() if v is not None}
+        was_updated, updated_fields = update_if_changed(existing, update_values)
+        return existing, False, was_updated, updated_fields
+
+
 def _upsert_commit_check_run(
-    pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime
+    pr: PullRequest,
+    values: dict[str, Any],
+    gid: str,
+    now: timezone.datetime,
+    *,
+    archive_mode: bool = False,
 ) -> tuple[bool, bool, tuple[str, ...]]:
     # GitHub's API occasionally delivers a non-null conclusion alongside a non-COMPLETED
     # status (e.g. IN_PROGRESS + CANCELLED) as a race condition during cancellation.
@@ -123,6 +176,29 @@ def _upsert_commit_check_run(
         "gh_started_at": values["gh_started_at"],
         "gh_completed_at": values["gh_completed_at"],
     }
+    if archive_mode:
+        ext_id = values.get("external_id")
+        fallback_lookup = (
+            {
+                "repository": pr.repository,
+                "head_sha": values["head_sha"],
+                "name": values["name"],
+                "external_id": ext_id,
+            }
+            if ext_id
+            else None
+        )
+        # commit_values already contains the lookup field (github_node_id);
+        # peel it off so we don't pass it twice to model.objects.create.
+        archive_values = {k: v for k, v in commit_values.items() if k != "github_node_id"}
+        commit_obj, was_created, was_updated, updated_fields = _archive_mode_upsert(
+            CommitCheckRun,
+            {"github_node_id": gid},
+            archive_values,
+            fallback_lookup,
+        )
+        CommitCheckRun.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
+        return was_created, was_updated, updated_fields
     try:
         commit_obj, was_created, was_updated, updated_fields = upsert_if_changed(
             CommitCheckRun,
@@ -168,7 +244,12 @@ def _upsert_commit_check_run(
 
 
 def _upsert_commit_status_context(
-    pr: PullRequest, values: dict[str, Any], gid: str, now: timezone.datetime
+    pr: PullRequest,
+    values: dict[str, Any],
+    gid: str,
+    now: timezone.datetime,
+    *,
+    archive_mode: bool = False,
 ) -> tuple[bool, bool, tuple[str, ...]]:
     commit_values = {
         "repository": pr.repository,
@@ -180,6 +261,16 @@ def _upsert_commit_status_context(
         "description": values["description"],
         "gh_created_at": values["gh_created_at"],
     }
+    if archive_mode:
+        archive_values = {k: v for k, v in commit_values.items() if k != "github_node_id"}
+        commit_obj, was_created, was_updated, updated_fields = _archive_mode_upsert(
+            CommitStatusContext,
+            {"github_node_id": gid},
+            archive_values,
+            None,  # No composite-key fallback for StatusContext (doc 043 §out of scope).
+        )
+        CommitStatusContext.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
+        return was_created, was_updated, updated_fields
     try:
         commit_obj, was_created, was_updated, updated_fields = upsert_if_changed(
             CommitStatusContext,
@@ -214,7 +305,13 @@ def _upsert_commit_status_context(
     return was_created, was_updated, updated_fields
 
 
-def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sha: str) -> CISyncResult:
+def sync_check_runs(
+    pr: PullRequest,
+    contexts: Iterable[Dict[str, Any]],
+    head_sha: str,
+    *,
+    archive_mode: bool = False,
+) -> CISyncResult:
     """Upsert snapshot CheckRun rows from a commit's status.contexts entries.
 
     Inputs are the subset of contexts where __typename == "CheckRun" with keys:
@@ -223,6 +320,12 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
        "externalId": str | None}
 
     The head_sha for these contexts must be passed alongside and stored on each CheckRun row.
+
+    Archive mode (design doc 043): when ``archive_mode=True``, the underlying
+    upsert strips NULL values from the update path so a legacy payload's
+    missing ``external_id`` / ``startedAt`` / ``completedAt`` does not
+    overwrite live's non-null values. CREATE path is unchanged (NULLs are
+    persisted as-is, since they're the best info the archive carries).
     """
     created = 0
     updated = 0
@@ -266,7 +369,9 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
         was_created = False
         was_updated = False
         updated_fields: tuple[str, ...] = tuple()
-        commit_created, commit_updated, commit_updated_fields = _upsert_commit_check_run(pr, values, gid, now)
+        commit_created, commit_updated, commit_updated_fields = _upsert_commit_check_run(
+            pr, values, gid, now, archive_mode=archive_mode
+        )
         was_created = commit_created
         was_updated = commit_updated
         updated_fields = commit_updated_fields
@@ -307,7 +412,13 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     return CISyncResult(created=created, updated=updated, deleted=0, eligible=eligible, filtered=filtered)
 
 
-def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sha: str) -> CISyncResult:
+def sync_status_contexts(
+    pr: PullRequest,
+    contexts: Iterable[Dict[str, Any]],
+    head_sha: str,
+    *,
+    archive_mode: bool = False,
+) -> CISyncResult:
     """Upsert snapshot StatusContext rows from a commit's status.contexts entries.
 
     Inputs are the subset of contexts where __typename == "StatusContext" with keys:
@@ -315,6 +426,11 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
        "description": str | None, "createdAt": str}
 
     The head_sha for these contexts must be passed alongside and stored on each row.
+
+    Archive mode (design doc 043): same NULL-stripping merge semantics as
+    ``sync_check_runs``. The legacy fragment also lacks ``createdAt`` for
+    StatusContext; callers must pre-fill ``gh_created_at`` to a placeholder
+    (typically the per-PR archive timestamp) before invoking this function.
     """
     created = 0
     updated = 0
@@ -352,7 +468,9 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
         was_created = False
         was_updated = False
         updated_fields: tuple[str, ...] = tuple()
-        commit_created, commit_updated, commit_updated_fields = _upsert_commit_status_context(pr, values, gid, now)
+        commit_created, commit_updated, commit_updated_fields = _upsert_commit_status_context(
+            pr, values, gid, now, archive_mode=archive_mode
+        )
         was_created = commit_created
         was_updated = commit_updated
         updated_fields = commit_updated_fields

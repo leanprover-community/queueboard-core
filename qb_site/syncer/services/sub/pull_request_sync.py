@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
@@ -10,6 +11,25 @@ from core.models.repository import Repository
 from core.utils.db import update_if_changed
 from .core_entities_sync import upsert_user_from_github
 from syncer.models.pull_request import PullRequest
+
+
+# Fields gated by the newer-wins guard (design doc 043 §Subtleties /
+# "Newer-wins guard for PR core"). When the existing row's gh_updated_at is
+# newer than the snapshot's updatedAt, an archive-mode upsert must not
+# regress these fields. head_sha is the critical one — overwriting it with
+# an archive-stale value silently corrupts every analyzer artifact that
+# uses it as a SHA-by-time anchor.
+_NEWER_WINS_GATED_FIELDS = frozenset(
+    [
+        "state",
+        "is_draft",
+        "title",
+        "body",
+        "head_sha",
+        "closed_at",
+        "merged_at",
+    ]
+)
 
 
 @dataclass
@@ -28,7 +48,13 @@ def _parse_iso(val: str | None):
     return dt
 
 
-def upsert_pull_request(bundle: Dict[str, Any], repo: Repository) -> PullRequestUpsertResult:
+def upsert_pull_request(
+    bundle: Dict[str, Any],
+    repo: Repository,
+    *,
+    if_newer_than: _dt.datetime | None = None,
+    skip_watermark: bool = False,
+) -> PullRequestUpsertResult:
     """Upsert the PullRequest row from a parsed PR bundle.
 
     Expected bundle shape (subset):
@@ -55,6 +81,18 @@ def upsert_pull_request(bundle: Dict[str, Any], repo: Repository) -> PullRequest
       - Resolve/create the author User row by case-insensitive github_login when present.
       - Upsert the PullRequest keyed by (repo, number).
       - Map GitHub timestamps to gh_* fields.
+
+    Optional archive-mode parameters (design doc 043):
+      - ``if_newer_than``: when set and the existing row's ``gh_updated_at``
+        is later, the gated set defined by ``_NEWER_WINS_GATED_FIELDS`` is
+        omitted from the update. Other fields (additions/deletions/file
+        counts/etc.) still flow through; ``gh_updated_at`` itself is left
+        ungated per the doc, since the archive snapshot is older anyway and
+        a subsequent live sync will move it forward.
+      - ``skip_watermark``: when True, do NOT set ``last_synced_at`` on the
+        create path. Required by the archive importer so the live discovery
+        preflight (``gh_updated_at > last_synced_at``) can still pick the
+        PR up later for timeline-page backfill.
 
     Returns a PullRequestUpsertResult with the instance and whether it was created.
     """
@@ -87,9 +125,17 @@ def upsert_pull_request(bundle: Dict[str, Any], repo: Repository) -> PullRequest
 
     if pr is None:
         pr = PullRequest(repository=repo, number=number, **core_values)
-        pr.last_synced_at = timezone.now()
+        if not skip_watermark:
+            pr.last_synced_at = timezone.now()
         pr.save()
         return PullRequestUpsertResult(pr=pr, created=True, updated_fields=tuple(core_values.keys()))
+
+    # Newer-wins guard. Triggered only when callers explicitly pass an
+    # ``if_newer_than`` cutoff (archive ingest does; live sync does not).
+    # The fields removed here cover the analyzer's primary semantic surface;
+    # additions/deletions/etc. are advisory and still flow through.
+    if if_newer_than is not None and pr.gh_updated_at is not None and pr.gh_updated_at > if_newer_than:
+        core_values = {k: v for k, v in core_values.items() if k not in _NEWER_WINS_GATED_FIELDS}
 
     # Existing: update only changed core fields.
     # Note: last_synced_at is intentionally NOT advanced here. It is advanced only

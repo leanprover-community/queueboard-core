@@ -509,7 +509,7 @@ Do that first; then proceed with Commits 2–6 here.
     does not regress mutated rows, diff mode skips
     completed-elsewhere PRs, `--limit` cap.
 
-### Commit 3: per-item importer + provenance fields
+### Commit 3: per-item importer + provenance fields — **landed**
 - Migration: nullable `archive_imported_at` on `PullRequest`, `CommitCheckRun`,
   `CommitStatusContext`, `PRTimelineEvent`.
 - Targeted sub-sync edits to support archive-mode (each justified above):
@@ -879,6 +879,59 @@ through the listed sequence.
   - Added a "Convergence snapshot during the drain" operational note so
     operators expect the temporary spike in stale/unbuilt counts.
   - Added open questions for zombie PRs and high-event PR truncation.
+- 2026-05-10: Commit 3 landed — provenance migration
+  `0049_commitcheckrun_archive_imported_at_and_more`, archive-mode params
+  on the four sub-syncs, the `syncer.services.archive_import` service,
+  and the `syncer.archive_import_pr_item` Celery task. Decisions and
+  deviations made during implementation:
+  - **Schema gap surfaced**: the legacy `pr_info.graphql` fragment for
+    `HeadRefForcePushedEvent` requests only `id` and `createdAt` — no
+    `beforeCommit` / `afterCommit`. Routing such an event through
+    `_extract_event_fields` with both SHAs absent would trip the
+    `syncer_prtl_sha_by_type_ck` CHECK constraint at INSERT. The doc
+    only flagged the missing `actor` for this event; the missing SHAs
+    are a hard blocker. Resolution: `_extract_event_fields` now drops
+    `HeadRefForcePushedEvent` rows that lack either SHA. Fires only
+    in archive paths in practice (live `pr_bundle.graphql` always
+    requests them), so live behavior is unchanged. The live syncer's
+    timeline backfill picks up the real event with SHAs once it
+    reaches the PR.
+  - **Newer-wins guard set**: the gated set in
+    `pull_request_sync.upsert_pull_request` is exactly the seven
+    fields the doc enumerates (state, is_draft, title, body, head_sha,
+    closed_at, merged_at). `gh_updated_at` itself is left ungated —
+    archive's older value flows through, then a future live sync
+    moves it forward; the guard remains correct because subsequent
+    archive calls compare against the live-fresh `gh_updated_at`.
+  - **CI archive-mode upsert**: factored into a small
+    `_archive_mode_upsert` helper rather than threading a new
+    parameter through `core.utils.db.upsert_if_changed`, so the live
+    code path's IntegrityError handling is preserved unchanged. The
+    helper SELECTs first, branches on found/not-found, and on UPDATE
+    strips NULL values from the values dict before
+    `update_if_changed`. CommitStatusContext gets no composite-key
+    fallback (consistent with the doc's "out of scope" note about
+    `_upsert_commit_status_context` lacking the composite path).
+  - **Provenance stamping strategy**: `archive_imported_at` is set
+    after sub-syncs return, by filtering rows newly created in the
+    transaction (`pull_request=pr` for timeline,
+    `repository=repo, head_sha__in=touched_shas` for CI, plus
+    `archive_imported_at IS NULL` and `created_at >= now`). Rejected
+    threading "return created PKs" through the sub-sync API to keep
+    sub-sync surface area minimal. The narrow filter is robust under
+    the per-PR transaction boundary; concurrent live writers don't
+    race on these specific (PR, sha) tuples in practice.
+  - **`gh_created_at` synthesis** for legacy StatusContext entries
+    (which lack `createdAt`) lives in the `archive_import` service's
+    `_split_contexts` helper, NOT in `ci_sync`. This keeps
+    `sync_status_contexts` ignorant of archive concerns; the caller
+    simply pre-fills `createdAt` with `archive_timestamp.isoformat()`
+    when it's missing.
+  - **HTTP error classification** in the task: 404 → permanent (path
+    genuinely absent), 5xx + network/timeout → transient (next tick
+    retries up to `ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS`), other 4xx
+    → permanent (auth issues, malformed paths). JSON parse and
+    payload-shape errors → permanent.
 - 2026-05-10: Commit 2 landed — `ArchiveImportItem` model + migration
   `0048_archiveimportitem`, `bootstrap_archive_worklist` command,
   `archive_bootstrap` service helper, settings, admin, backup policy,

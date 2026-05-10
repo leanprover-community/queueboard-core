@@ -145,12 +145,25 @@ def sync_full_label_catalog(repo: Repository, labels: Iterable[Dict[str, Any]]) 
     return LabelSyncResult(created=created, updated=updated, deleted=deleted)
 
 
-def sync_pr_labels(pr: PullRequest, label_names: Iterable[str]) -> LabelSyncResult:
+def sync_pr_labels(
+    pr: PullRequest,
+    label_names: Iterable[str],
+    *,
+    additive_only: bool = False,
+) -> LabelSyncResult:
     """Reconcile the current PRLabel attachments for a PR.
 
     - Resolve LabelDef rows by case-insensitive name within the PR's repository.
     - Compute the set difference vs existing PRLabel rows.
     - Bulk create missing attachments; delete extras.
+
+    When ``additive_only`` is True (archive-mode ingest, design doc 043), the
+    detach pass is skipped: labels present on the live row but absent from the
+    archive snapshot are NOT removed (the archive is older and would silently
+    drop labels added since the snapshot). Additionally, archive label names
+    that have no matching ``LabelDef`` for the repo are dropped silently —
+    the live syncer is the catalog source of truth, and creating a LabelDef
+    from archive data could resurrect a label that GitHub has since deleted.
     """
     # Resolve desired LabelDef ids by case-insensitive name
     names = [n for n in label_names]
@@ -164,7 +177,7 @@ def sync_pr_labels(pr: PullRequest, label_names: Iterable[str]) -> LabelSyncResu
     existing = list(PRLabel.objects.filter(pull_request=pr))
     existing_ids = {pl.label_def_id for pl in existing}
     to_add = desired_ids - existing_ids
-    to_del = existing_ids - desired_ids
+    to_del: set[int] = set() if additive_only else (existing_ids - desired_ids)
     if to_add:
         PRLabel.objects.bulk_create([PRLabel(pull_request=pr, label_def_id=lid) for lid in to_add], ignore_conflicts=True)
     if to_del:

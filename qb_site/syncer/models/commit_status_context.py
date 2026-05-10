@@ -21,6 +21,9 @@ class CommitStatusContext(TimestampedModel):
     description = models.TextField(null=True, blank=True)
     gh_created_at = models.DateTimeField()
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    # Provenance: set when the row was first created by the archive backfill
+    # importer (design doc 043). Never touched by live ingestion paths.
+    archive_imported_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [

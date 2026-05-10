@@ -125,8 +125,18 @@ def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     elif typename in ("ReadyForReviewEvent", "ConvertToDraftEvent", "ReopenedEvent", "ClosedEvent"):
         fields["actor_login"] = (ev.get("actor") or {}).get("login")
     elif typename == "HeadRefForcePushedEvent":
-        fields["before_sha"] = (ev.get("beforeCommit") or {}).get("oid")
-        fields["after_sha"] = (ev.get("afterCommit") or {}).get("oid")
+        before_sha = (ev.get("beforeCommit") or {}).get("oid")
+        after_sha = (ev.get("afterCommit") or {}).get("oid")
+        # The CHECK constraint syncer_prtl_sha_by_type_ck requires both SHAs
+        # to be non-null for HEAD_FORCE_PUSHED rows. Live's pr_bundle.graphql
+        # always returns them; the legacy archive fragment used by the
+        # backfill importer (design doc 043) does not. Drop the event in that
+        # case — the live syncer's timeline backfill will pick up the real
+        # event with its SHAs once it reaches the PR.
+        if not before_sha or not after_sha:
+            return None
+        fields["before_sha"] = before_sha
+        fields["after_sha"] = after_sha
         fields["actor_login"] = (ev.get("actor") or {}).get("login")
     elif typename == "IssueComment":
         fields["actor_login"] = _login_or_empty(ev.get("author"))
@@ -243,7 +253,12 @@ def _synthesize_dismissed_review_parent(pr: PullRequest, dismiss_extra: Dict[str
     return (obj, was_created)
 
 
-def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> TimelineSyncResult:
+def sync_timeline_events(
+    pr: PullRequest,
+    events: Iterable[Dict[str, Any]],
+    *,
+    archive_mode: bool = False,
+) -> TimelineSyncResult:
     """Insert key timeline events for a PR using GraphQL ids (idempotent).
 
     Each ``PRTimelineEvent`` row corresponds 1:1 to one ``timelineItems`` node;
@@ -278,6 +293,17 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
 
     Idempotency: ``github_node_id`` is unique; existing rows are updated only
     to fill previously-empty fields. Unknown ``__typename`` values are ignored.
+
+    Archive mode (design doc 043): when ``archive_mode=True``, the dismissed-
+    review parent synthesis is skipped. The legacy ``ReviewDismissedEvent``
+    fragment in ``src/queueboard/queries/pr_info.graphql`` lacks
+    ``previousReviewState``, so ``extra`` cannot carry the data that
+    ``_synthesize_dismissed_review_parent`` keys on. The dismiss-event row
+    itself is still imported; a later upgrader-driven rewalk under live
+    code populates the synthesized parent if the original review still
+    exists in GitHub's response. Legacy ``PullRequestReview`` nodes
+    without ``state``/``submittedAt`` are dropped by
+    ``_extract_event_fields`` regardless of mode.
     """
     created = 0
     updated = 0
@@ -343,7 +369,9 @@ def sync_timeline_events(pr: PullRequest, events: Iterable[Dict[str, Any]]) -> T
         # self-healing for any production rows whose parents were missed by
         # the migration's backfill — synthesis is idempotent on the dismissed
         # review's github_node_id, so re-running is one extra SELECT.
-        if ev_type == PRTimelineEventType.REVIEW_DISMISSED:
+        # Archive mode skips synthesis: the legacy fragment lacks
+        # previousReviewState so the synthesizer has nothing to key on.
+        if not archive_mode and ev_type == PRTimelineEventType.REVIEW_DISMISSED:
             extra_dict = fields.get("extra") or obj.extra or {}
             if isinstance(extra_dict, dict):
                 _, synth_created = _synthesize_dismissed_review_parent(pr, extra_dict)

@@ -93,6 +93,12 @@ class PullRequest(TimestampedModel):
     # Head commit rollup status (GitHub statusCheckRollup.state) for coarse CI signal.
     head_ci_state = models.CharField(max_length=20, null=True, blank=True)
 
+    # Set by the archive backfill importer (design doc 043) when this row was
+    # created from a legacy queueboard-archive snapshot. Internal-only
+    # provenance; not exposed in /api/v1/queueboard/snapshot. Never touched by
+    # the live syncer's own writes.
+    archive_imported_at = models.DateTimeField(null=True, blank=True)
+
     # Sync schema version. Owned exclusively by the upgrader registry in
     # qb_site/syncer/services/sync_schema_upgrades.py — never written by
     # PRSyncService. The periodic upgrader task selects PRs where this column
