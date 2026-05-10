@@ -403,8 +403,10 @@ rows have all attribution fields null. This means:
   event type.
 - The `attribution_backfill` sweep condition fires for all such rows, so the normal periodic
   sweep will progressively populate attribution without any manual intervention.
-- If faster full attribution is needed, use `backfill_queue_window_build_states` to mark all
-  build states stale; the sweep will then pick up all PRs on its next pass.
+- If faster full attribution is needed, mark per-ruleset build-state rows stale by setting
+  `PRQueueWindowBuildState.windows_built_at = NULL` for the affected `(PR, ruleset)` pairs;
+  the sweep will then pick up all such PRs on its next pass. (The legacy
+  `backfill_queue_window_build_states` command was removed in doc 045 step 0.)
 
 ### Staleness coverage (updated table from doc 024)
 

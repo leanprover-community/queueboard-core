@@ -8,7 +8,9 @@ from django.utils import timezone
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import IntegrityError
+from django.db.models import Q
 
+from analyzer.models import PRRevisionBuildState
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.commit_check_run import CommitCheckRun
 from syncer.models.commit_status_context import CommitStatusContext
@@ -33,6 +35,33 @@ class _RevisionSignal:
     name_key: str
     row_ts: timezone.datetime
     signal_ts: timezone.datetime
+
+
+def _bump_latest_ci_synced_at(pr: PullRequest, now: timezone.datetime) -> None:
+    """Advance PRRevisionBuildState.latest_ci_synced_at to ``now`` if newer.
+
+    Drives the queue-window sweep's CI-staleness predicate (doc 045).
+    Idempotent and monotone, even under concurrent CI sub-syncs for the
+    same PR. Called once per CI sub-sync invocation that actually wrote
+    anything (created or updated > 0 from this sub-sync's perspective),
+    rather than per row, to avoid N+1 writes.
+
+    A naive read-modify-write (``state = get_or_create(...); if now >
+    state.x: state.x = now; state.save()``) has a lost-update race when
+    two CI sub-syncs for the same PR run concurrently. The conditional
+    UPDATE below resolves it inside the database. The WHERE clause also
+    skips the write entirely when ``now <= latest_ci_synced_at``,
+    matching the "no-op = no-write" precedent from rebuild-churn fixes
+    (commits 088434e / 78c29cc / 73d0446) — failing this invariant
+    would cause active PRs to be re-rebuilt on every sweep tick.
+    ``auto_now=True`` on ``updated_at`` only fires on ``save()``, so
+    the UPDATE sets it explicitly. The ``__lt OR __isnull`` pair
+    handles the first-write case (column starts null).
+    """
+    PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+    PRRevisionBuildState.objects.filter(pull_request=pr).filter(
+        Q(latest_ci_synced_at__lt=now) | Q(latest_ci_synced_at__isnull=True)
+    ).update(latest_ci_synced_at=now, updated_at=now)
 
 
 def _parse_iso(val: str | None):
@@ -272,6 +301,9 @@ def sync_check_runs(pr: PullRequest, contexts: Iterable[Dict[str, Any]], head_sh
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
 
+    if created > 0 or updated > 0:
+        _bump_latest_ci_synced_at(pr, now)
+
     return CISyncResult(created=created, updated=updated, deleted=0, eligible=eligible, filtered=filtered)
 
 
@@ -350,5 +382,8 @@ def sync_status_contexts(pr: PullRequest, contexts: Iterable[Dict[str, Any]], he
 
     if earliest_ts:
         mark_pr_revision_dirty_if_earlier(pr, earliest_ts)
+
+    if created > 0 or updated > 0:
+        _bump_latest_ci_synced_at(pr, now)
 
     return CISyncResult(created=created, updated=updated, deleted=0, eligible=eligible, filtered=filtered)

@@ -65,8 +65,6 @@ class _Base(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=version,
-            windows_built_revision_version=version,
-            windows_built_at=built_at,
         )
         PRRevision.objects.create(pull_request=pr, head_sha="sha1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
         return PRQueueWindowBuildState.objects.create(

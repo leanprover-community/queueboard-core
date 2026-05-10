@@ -28,7 +28,13 @@
 ## Goals / Non-Goals
 - Goals:
   - Recover historical CI snapshots into `CommitCheckRun` / `CommitStatusContext` for
-    commit SHAs the live syncer can no longer fetch.
+    commit SHAs the live syncer can no longer fetch. Concretely, this is the SHA that
+    was the PR head at the time of the archive scrape, where that SHA has since been
+    force-pushed away and the live syncer didn't enqueue a CI-by-SHA fetch in time.
+    The archive *cannot* recover CI for SHAs that were already orphaned before the
+    scrape: those are absent from the snapshot's `commits(first: 250)` connection by
+    GraphQL semantics, since the connection only enumerates commits in the PR's
+    branch as of the snapshot moment.
   - Idempotent and resumable: safe to stop, restart, re-run; safe to interleave with the
     live syncer.
   - Compatible with the live syncer: does not advance discovery cursors, watermarks, or
@@ -101,7 +107,8 @@
      - `pull_request_sync.upsert_pull_request` (with newer-wins guard, see Invariants).
      - `labels_sync.sync_pr_labels` (additive only — see Invariants).
      - `timeline_sync.sync_timeline_events` (insert by `github_node_id`).
-     - `ci_sync.sync_commit_ci_snapshot` (insert/update by `github_node_id`).
+     - `ci_sync.sync_check_runs` / `ci_sync.sync_status_contexts` (insert/update by
+       `github_node_id`; archive-mode merge per Invariants).
   4. Mark `completed` (or `failed_transient` / `failed_permanent` per error class).
 - This task does **not** enqueue analyzer per-item work. Analyzer rebuild is a single
   bulk sweep at the end (see Implementation Plan).
@@ -136,7 +143,10 @@ project rule for env-backed settings.
   - `syncer.PullRequest`
   - `syncer.CommitCheckRun`
   - `syncer.CommitStatusContext`
-- Set during archive ingest; never touched by the live syncer's own writes.
+  - `syncer.PRTimelineEvent`
+- Set during archive ingest on the rows the importer created (not on rows that
+  pre-existed and were merely refreshed). Never touched by the live syncer's own
+  writes.
 - Internal-only: not exposed in `/api/v1/queueboard/snapshot`. Used for diagnostics
   (e.g. "which CI rows are present only because the archive importer ran?") and for
   policy decisions if we later want to gate display.
@@ -150,6 +160,17 @@ project rule for env-backed settings.
   (`updatedAt > last_synced_at`) would then suppress fresh syncs. (The previous
   `PullRequest.engagement_synced_at` column was removed in design doc 044
   Chunk 6b — `last_synced_at` is now the only "have we synced this PR?" timestamp.)
+- **`last_synced_at` on PR creation**: today, `pull_request_sync.upsert_pull_request`
+  sets `pr.last_synced_at = timezone.now()` when it creates a brand-new row
+  (`pull_request_sync.py:89`). For archive-mode creates the importer must override
+  this — either by passing a `skip_watermark=True` parameter through to
+  `upsert_pull_request`, or by resetting `last_synced_at = None` in archive code
+  immediately after `upsert_pull_request` returns `created=True`. Without the
+  override, the live discovery preflight will skip the PR forever and the live
+  syncer will never come back to walk timeline pagination, leaving
+  `timeline_backfill_done=False` and the analyzer revision builder short-circuited
+  (see "Queue-window staleness after archive ingest" below and design doc
+  045).
 - **`sync_schema_version` untouched**: importer must not advance
   `PullRequest.sync_schema_version`. Per design doc 044, the upgrader registry is
   the sole writer of that column; advancing it from archive code would falsely
@@ -157,18 +178,71 @@ project rule for env-backed settings.
   `comments(first: K)`) have been satisfied for the PR, even though the legacy
   snapshot doesn't carry that data. Leave it alone; the upgrader wave will rewalk
   the PR via the live syncer when its turn comes.
-- **Newer-wins guard for PR core**: in `pull_request_sync`, if the existing DB row's
-  `updated_at` is newer than the archive snapshot's `updatedAt`, do not overwrite
-  state/draft/title/body/closed_at/merged_at. The archive may still contribute
-  CI/timeline rows (those have their own idempotency keys).
+- **Newer-wins guard for PR core**: if the existing DB row's `gh_updated_at` is
+  newer than the archive snapshot's `updatedAt`, do not overwrite
+  state/draft/title/body/head_sha/closed_at/merged_at. The archive may still
+  contribute CI/timeline rows (those have their own idempotency keys).
+  Implementation choice: add an optional `if_newer_than: datetime | None`
+  parameter to `pull_request_sync.upsert_pull_request` rather than wrapping the
+  call in archive code. The guard is generally useful (any future "older snapshot
+  source" gets it for free) and the call site is safer kept in one place.
+- **`head_sha` is part of the guard**: explicitly call out — overwriting `head_sha`
+  with an archive-stale value silently corrupts every analyzer artifact that uses
+  it as a SHA-by-time anchor. The newer-wins guard must include `head_sha` in the
+  set of fields it gates.
 - **Labels are additive only**: do not detach labels that exist in the live DB but not
   in the archive snapshot. The archive is older and would silently drop labels added
   later. Only attach labels whose `LabelDef` already exists for the repo; do not create
-  new label catalog entries from archive data (live syncer is the catalog source of truth).
+  new label catalog entries from archive data (live syncer is the catalog source of
+  truth). Implementation choice: add an `additive_only=True` parameter to
+  `labels_sync.sync_pr_labels`. The function today is full-replace
+  (`labels_sync.py:148–172`), and the new branch should compute
+  `set(archive_labels) ∩ set(existing_label_defs) - set(currently_attached)` and
+  bulk-create only that.
 - **CI rows are insert-or-update by `github_node_id`**: live store wins for shared
   SHAs (its rows are presumably fresher). Archive contributes rows whose
-  `github_node_id` is otherwise absent — the orphan-SHA case we care about.
-- **Timeline events are insert-by-node-id**: existing rows untouched.
+  `github_node_id` is otherwise absent — the orphan-SHA case we care about. The
+  fallback uniqueness key `(repository, head_sha, name, external_id)` in
+  `ci_sync.py:107–122` is exercised when archive payloads lack node ids; tests must
+  cover this path on a real archive payload.
+- **Timeline events are insert-by-node-id**: `sync_timeline_events` uses
+  `get_or_create(pull_request, github_node_id, defaults=fields)` (`timeline_sync.py:297–300`).
+  Existing rows are *not* refreshed even if the archive has fields the live row is
+  missing. This is intentional (live is presumed fresher) but worth pinning with a
+  test so future changes don't silently flip the semantics.
+
+### Queue-window staleness after archive ingest
+
+**This subsection's substance moved to design doc 045** ("CI-Write Watermark
+for Queue-Window Staleness"). Doc 045 introduces a
+`PRRevisionBuildState.latest_ci_synced_at` column that the CI sub-syncs
+advance on every successful invocation, plus a matching staleness predicate
+in `rebuild_queue_windows_sweep` and the convergence canary. The bug it
+fixes is not specific to the archive importer — every out-of-band CI ingest
+path (CI-by-SHA via `refresh_pending_ci_for_repo`, `commit_history_tasks`,
+`ci_backfill`, the admin tool) has the same gap today.
+
+**Dependency**: doc 043 depends on doc 045 landing first. Once 045 is
+in place:
+
+- The archive importer goes through the standard
+  `sync_check_runs` / `sync_status_contexts` (with the `archive_mode` flag
+  from "CI upsert: merge-don't-overwrite for archive mode" above), and
+  those sub-syncs advance `latest_ci_synced_at` automatically.
+- The queue-window sweep predicate's
+  `windows_built_at < latest_ci_synced_at` clause picks up the affected
+  PRs on the next tick.
+- No archive-specific dirty-marking helper is needed.
+
+**One archive-specific concern remains** (independent of 045): for PRs the
+importer creates that didn't exist in the live DB,
+`pull_request_sync.upsert_pull_request` sets `pr.last_synced_at =
+timezone.now()` (`pull_request_sync.py:89`) on the create path. The
+importer's call must override this so the live discovery preflight
+(`gh_updated_at > last_synced_at`) can still pick the PR up later for
+timeline-page backfill. Implementation choice (already noted in
+"Compatibility with the live syncer" above): `skip_watermark=True`
+parameter on `upsert_pull_request`.
 
 ### Schema drift
 - Legacy GraphQL responses span ~2 years; some fields may have been renamed or added
@@ -211,6 +285,137 @@ project rule for env-backed settings.
   `timeline_sync._extract_event_fields` path. Importer-specific normalization
   must not bypass `_extract_event_fields`.
 
+### Legacy archive payload schema deficiency
+
+The legacy `src/queueboard/queries/pr_info.graphql` predates several fields the
+current syncer models require. For the CI-row recovery use case specifically,
+the gaps are:
+
+- **`StatusContext`**: legacy fragment requests `id, context, state, targetUrl,
+  description` (`pr_info.graphql:49–54` and `:194–200`). It does **not**
+  request `createdAt`. But `CommitStatusContext.gh_created_at` is `NOT NULL`
+  in the model (declared in migration `0030_commitcheckrun_commitstatuscontext`,
+  unchanged since). A direct `_upsert_commit_status_context` call with
+  `gh_created_at=None` would raise `IntegrityError: NOT NULL constraint
+  failed`. **Hard blocker.**
+- **`CheckRun`**: legacy fragment requests `id, name, conclusion, status,
+  detailsUrl` (`pr_info.graphql:56–62` and `:201–207`). It does **not**
+  request `externalId`, `startedAt`, or `completedAt`. The corresponding
+  model columns are all `null=True`, so insertion succeeds, but archive rows
+  carry `external_id=NULL`, `gh_started_at=NULL`, `gh_completed_at=NULL`.
+  This is benign at insert time but interacts badly with the merge concern
+  below (overwriting live's non-null values with archive's NULLs).
+
+#### Resolution: synthesize `gh_created_at` from `archive_timestamp`
+
+The archive directory layout includes `data/<N>/timestamp.txt` carrying the
+scrape time for that PR. When archive-mode `_upsert_commit_status_context`
+encounters a payload with no `createdAt`, set `gh_created_at = archive_timestamp`
+as a documented placeholder. The placeholder is monotonic with respect to the
+archive snapshot ordering — it is **not** the real CI creation time. The
+provenance column `archive_imported_at` lets future code distinguish
+synthesized timestamps from real ones if the analyzer ever needs to.
+
+Implementation note: the analyzer's CI evaluation (`_latest_ci_statuses_for_fragment`
+in `analyzer/services/queue_windows.py`) orders by `gh_created_at`/`gh_completed_at`.
+Archive-imported StatusContexts ordered by their synthesized timestamp will sort
+to "around the time of the archive scrape," which is later than the real
+creation time. For the orphan-SHA recovery case (where the SHA's revision
+window has long since closed), this sorting behavior is benign — there is no
+conflicting live data on the same SHA whose ordering matters. Verify in
+analyzer tests that NULL `gh_started_at`/`gh_completed_at` on archive CheckRuns
+don't crash the evaluation path; if they do, the fix is to default to
+`archive_timestamp` for those too.
+
+Alternative considered: skipping StatusContext ingestion entirely. Defensible
+if the archive's StatusContext fraction is small; verify at implementation
+time by counting `... on StatusContext` vs `... on CheckRun` matches across a
+sample of archive payloads. If StatusContexts are rare in mathlib4's archive
+era (the project switched to CheckRun-based CI early on), skipping is
+simpler.
+
+Alternative considered: making `CommitStatusContext.gh_created_at` nullable.
+Rejected — the column is genuinely useful for live data (queue-window
+evaluation uses it for time-ordering) and the cost of a synthesized
+placeholder for archive rows only is lower than relaxing the model invariant.
+
+### CI upsert: merge-don't-overwrite for archive mode
+
+A subtler bug than the StatusContext blocker. Suppose live ingested a
+`CommitCheckRun` with `(node_id="X", external_id="ext1", gh_started_at=T1,
+gh_completed_at=T2)`. Then the archive importer ingests the same `node_id="X"`
+from a legacy payload (which lacks `externalId`/`startedAt`/`completedAt`).
+`upsert_if_changed` finds the existing row by `node_id="X"`, then
+`update_if_changed` sees `external_id` and the timestamps as "changed" (live's
+values vs archive's NULLs) and **overwrites the row's non-null values with
+NULL**. Live's authoritative data is silently downgraded.
+
+This is the CI-row analogue of the PR-core newer-wins concern. There is no
+per-row `updated_at` on CI rows to compare against, so the gate has to be
+field-shape-based rather than time-based.
+
+Implementation: add an `archive_mode: bool = False` parameter to
+`_upsert_commit_check_run` and `_upsert_commit_status_context`. When True:
+
+- Strip keys whose value is `None` from `commit_values` *before* passing to
+  `update_if_changed`. The "merge" is field-by-field: archive only
+  contributes values for fields the legacy payload populates.
+- On the CREATE path (row did not exist), insert with archive's values
+  including NULLs — that's the best information we have. The synthesized
+  `gh_created_at` covers the StatusContext NOT-NULL constraint.
+
+`sync_check_runs` and `sync_status_contexts` (the public callers) accept
+the same `archive_mode` flag and pass it through.
+
+Tests:
+- Archive-mode update preserves existing non-null `external_id`/timestamps
+  on a row that lives previously inserted.
+- Archive-mode create on a brand-new node_id stores archive's available
+  fields and synthesized timestamp.
+- Live-mode update behavior unchanged (the parameter defaults to False).
+- Live-mode followed by archive-mode followed by live-mode: live's second
+  write restores the full field set (since live ingest provides all
+  fields).
+
+### Latent ci_sync dedup issues — out of scope
+
+Two bugs in the existing CI upsert helpers were surfaced during pre-implementation
+review and are explicitly **out of scope** for this importer:
+
+- **NULL `github_node_id` creates duplicates**: `upsert_if_changed` with
+  `{"github_node_id": None}` matches no rows under SQL NULL semantics, so
+  re-ingesting a payload without a node id creates a duplicate row each
+  time. The legacy `pr_info.graphql` does request `id` for both
+  `StatusContext` and `CheckRun`, so this does not bite the importer.
+  Mentioned here only because the importer's defensive merge-mode is
+  **not** a workaround — a NULL-node-id payload would still duplicate.
+- **`_upsert_commit_status_context` lacks a composite-key fallback**
+  analogous to `_upsert_commit_check_run`'s `(repo, head_sha, name,
+  external_id)` path. Live and archive both write graphql-keyed
+  StatusContext rows (always with `rest_id IS NULL`), so the fallback
+  there is rarely exercised; the importer does not write
+  `rest_id`-keyed rows at all.
+
+Both warrant separate cleanup commits. They are tracked in the broader
+syncer-pipeline backlog rather than as part of doc-043 work.
+
+### Transaction boundaries
+- Wrap each `import_pr_info_payload` invocation in a single
+  `transaction.atomic()` block, mirroring the live `sync_pull_request_bundle`
+  posture (`pr_sync_service.py:152`). The Celery task boundary is not the same
+  as a transaction boundary — a parse error or DB failure halfway through must
+  not leave a half-imported PR with, say, CI rows but no PullRequest row.
+- Do *not* span multiple PRs per transaction. Per-PR atomicity gives the live
+  syncer the maximum opportunity to interleave on the same PR table without
+  contention, and it limits blast radius if a single payload triggers a
+  constraint failure.
+- The CI sub-syncs' `latest_ci_synced_at` advance (per design doc 045) runs
+  inside the same transaction as the sub-syncs themselves. There is a small
+  race window with the queue-window sweep (the sweep could read state and
+  rebuild while the importer is mid-transaction), but the sweep reads CI
+  rows under its own snapshot, and a watermark advance from a transaction
+  that hasn't committed is invisible to the sweep. Benign.
+
 ### Failure handling
 - HTTP 404 on `raw.githubusercontent.com` → `failed_permanent` (the path genuinely does
   not exist in the archive). Do not retry.
@@ -251,6 +456,20 @@ project rule for env-backed settings.
 
 ## Implementation Plan
 
+### Prerequisites
+
+**Design doc 045 ("CI-Write Watermark for Queue-Window Staleness") must land
+before Commit 3 below.** Commit 3's archive-import path goes through the
+standard `sync_check_runs` / `sync_status_contexts` and relies on doc 045's
+`PRRevisionBuildState.latest_ci_synced_at` advancing automatically to
+trigger queue-window invalidation. Without 045, archive-imported CI rows
+would sit in the DB without flowing into a queue-window recompute (the
+same bug that affects the other out-of-band CI ingest paths today).
+
+Doc 045 is small and standalone — it can be implemented and shipped
+independently of this doc as a self-contained queue-window-staleness fix.
+Do that first; then proceed with Commits 2–6 here.
+
 ### Commit 1 (this doc)
 - Add `docs/design-decisions/043-archive-repo-backfill-importer.md`.
 
@@ -269,21 +488,47 @@ project rule for env-backed settings.
 
 ### Commit 3: per-item importer + provenance fields
 - Migration: nullable `archive_imported_at` on `PullRequest`, `CommitCheckRun`,
-  `CommitStatusContext`.
+  `CommitStatusContext`, `PRTimelineEvent`.
+- Targeted sub-sync edits to support archive-mode (each justified above):
+  - `pull_request_sync.upsert_pull_request`: add `if_newer_than: datetime | None`
+    parameter; when set and the existing row's `gh_updated_at` is later, skip
+    the update of all gated fields. Also add `skip_watermark: bool = False` so
+    the importer can suppress the `last_synced_at = timezone.now()` assignment
+    on creation; archive code passes `True`.
+  - `labels_sync.sync_pr_labels`: add `additive_only: bool = False` parameter;
+    when `True`, skip the detach pass and only attach labels whose `LabelDef`
+    already exists for the repo.
+  - `timeline_sync.sync_timeline_events`: add `archive_mode: bool = False`
+    parameter as documented above (drops legacy `PullRequestReview` items
+    lacking `state`/`submittedAt`; skips dismissed-review parent synthesis).
+  - `ci_sync.sync_check_runs` / `sync_status_contexts` (and the underlying
+    `_upsert_commit_check_run` / `_upsert_commit_status_context`): add an
+    `archive_mode: bool = False` parameter. When `True`, strip NULL values
+    from `commit_values` before `update_if_changed` so archive payloads do
+    not downgrade live's non-null `external_id`/timestamps. CREATE path
+    inserts whatever archive has (the synthesized `gh_created_at` covers
+    the StatusContext NOT-NULL constraint). See "Legacy archive payload
+    schema deficiency" and "CI upsert: merge-don't-overwrite for archive
+    mode" above.
 - `qb_site/syncer/services/archive_import.py`:
   - `fetch_pr_info(archive_name, pr_number) -> bytes`
   - `import_pr_info_payload(repository, payload, *, archive_name, archive_timestamp)`
-    — invokes existing sub-syncs with archive flags (newer-wins guard, additive
-    labels, archive-mode timeline). Sub-syncs to invoke today
-    (post-doc-044 names — verify at implementation time):
-    - `pull_request_sync.upsert_pull_request` (newer-wins guard).
-    - `labels_sync.sync_pr_labels` (additive only).
-    - `timeline_sync.sync_timeline_events` with an `archive_mode=True` flag
-      that drops legacy-shape `PullRequestReview` items lacking `state` /
-      `submittedAt` and skips dismissed-review parent synthesis (legacy
-      payload has no `previousReviewState`); other event types route through
-      `_extract_event_fields` unchanged so CHECK constraints remain satisfied.
-    - `ci_sync.sync_commit_ci_snapshot` (insert/update by `github_node_id`).
+    — wraps the call in `transaction.atomic()`; invokes:
+    - `pull_request_sync.upsert_pull_request` with `if_newer_than=...`,
+      `skip_watermark=True`.
+    - `labels_sync.sync_pr_labels` with `additive_only=True`.
+    - `timeline_sync.sync_timeline_events` with `archive_mode=True`.
+    - `ci_sync.sync_check_runs` / `sync_status_contexts` with
+      `archive_mode=True` (per "CI upsert: merge-don't-overwrite for archive
+      mode" above). These automatically advance
+      `PRRevisionBuildState.latest_ci_synced_at` per design doc 045, which
+      is what triggers the queue-window sweep to pick up the PR; no
+      archive-specific dirty-marking helper is needed.
+  - For created PRs, reset `pr.last_synced_at = None` after
+    `upsert_pull_request` returns `created=True` (covered by the
+    `skip_watermark=True` parameter on `upsert_pull_request`).
+  - Stamps `archive_imported_at` on rows the call inserted (return values from
+    the sub-syncs identify created vs. updated rows).
   - **Not invoked from archive code:** `_sync_inline_review_comments` (no
     nested `comments` data in archive); writes to `sync_schema_version`
     (owned exclusively by the upgrader registry).
@@ -291,7 +536,8 @@ project rule for env-backed settings.
 - Tests:
   - Minimal-shape fixture imports cleanly.
   - Full-shape fixture creates expected rows in PullRequest, PRTimelineEvent,
-    CommitCheckRun, CommitStatusContext.
+    CommitCheckRun, CommitStatusContext, with `archive_imported_at` populated
+    on the created rows.
   - Legacy-shape `PullRequestReview` timeline node (no `state`) is silently
     dropped; sibling `IssueComment` / `ReviewRequestedEvent` /
     `ReviewDismissedEvent` rows still ingest.
@@ -300,12 +546,106 @@ project rule for env-backed settings.
     the same PR populates the synthesized parent without conflict.
   - CHECK constraints from doc 044 Chunk 4d are satisfied (no
     `IntegrityError`) on representative archive payloads.
-  - Re-import of identical payload is a no-op (no duplicate rows, no stat changes).
-  - Live PR with newer `updatedAt` than archive: PR core untouched; CI orphan-SHA rows
-    still inserted.
+  - Re-import of identical payload is a no-op (no duplicate rows, no stat
+    changes; dirty marker not re-advanced after the first call).
+  - Live PR with newer `updatedAt` than archive: PR core untouched
+    (state/title/body/head_sha all preserved); CI orphan-SHA rows still inserted.
   - Imported PRs do **not** get `sync_schema_version` advanced.
-  - Labels: archive snapshot with fewer labels does not detach existing live labels.
+  - Labels: archive snapshot with fewer labels does not detach existing live
+    labels; archive label whose `LabelDef` does not exist in the repo is
+    silently dropped (catalog source-of-truth is the live syncer).
+  - **`latest_ci_synced_at` advancement** (per design doc 045): after
+    `import_pr_info_payload`, the PR's `PRRevisionBuildState.latest_ci_synced_at`
+    is set to the import time. Verify across cases:
+    new-PR / existing-PR-with-earlier-CI / existing-PR-with-later-CI /
+    timeline-only-delta. Doc 045 owns the helper-level tests; this spot
+    just verifies the importer threads through correctly.
+  - **`last_synced_at` reset on creation**: created PR has `last_synced_at IS
+    NULL` after import so the live discovery preflight will pick it up.
+  - **CommitStatusContext fallback key**: archive payload lacking
+    `github_node_id` on a status context exercises the
+    `(repo, head_sha, name, external_id)` path without conflict.
+  - **`gh_created_at` synthesis for StatusContext**: archive
+    `_upsert_commit_status_context` populates `gh_created_at =
+    archive_timestamp` when the legacy payload lacks `createdAt`; the row
+    inserts cleanly under the NOT-NULL constraint.
+  - **Archive-mode merge does not downgrade live data**: live ingest writes
+    a CheckRun with `external_id` / `gh_started_at` / `gh_completed_at`,
+    then archive ingests the same `github_node_id` from a legacy payload
+    (those three fields NULL); the existing row's non-null values are
+    preserved.
+  - **Archive-mode merge on archive-only rows**: brand-new `github_node_id`
+    arrives via archive; row is created with archive's available fields
+    (NULLs for the missing legacy fields, synthesized `gh_created_at` for
+    StatusContext).
+  - **HeadRefForcePushedEvent missing actor**: legacy fragment omits `actor`
+    on some old payloads; importer ingests with `actor_login = ""` rather
+    than crashing.
   - Failure modes: 404 → permanent; 500 → transient with retry; parse error → permanent.
+
+#### Interleaving tests (archive vs live ordering)
+
+These are the scenarios most likely to expose ordering bugs and are worth
+explicit coverage before deployment. Each starts from a clean DB and runs
+through the listed sequence.
+
+1. **Archive only, never seen by live** — import archive payload for a PR
+   absent from live. Verify PR row, CI rows, timeline events created;
+   `last_synced_at IS NULL`; `latest_ci_synced_at` set on
+   `PRRevisionBuildState` (per doc 045); queue-window
+   `windows_built_at` left null. After a synthetic analyzer sweep, the PR has
+   revisions and queue windows.
+2. **Archive first, then live (live newer)** — archive imports an older PR,
+   then a live `sync_pr_task` runs. Verify live wins on PR core (post-archive
+   `gh_updated_at` reflects the live `updatedAt`); labels reflect the live
+   set (full-replace from live); CI rows from both sources coexist (no dup by
+   `github_node_id`); `archive_imported_at` is preserved on the originally
+   archive-created rows; `last_synced_at` is now non-null (set by live).
+3. **Live first, then archive (archive older)** — live syncs the PR to its
+   current state, then archive imports an older snapshot. Verify
+   newer-wins guard preserves PR core (state, head_sha, title, body all
+   from live); `additive_only=True` does not detach live labels; archive's
+   CI rows for an orphan SHA (one not in live's current `commits` view)
+   are inserted; live-shared CI rows untouched.
+4. **Live first, then archive — newer-wins on `head_sha` specifically** —
+   force-push between archive snapshot time and live sync time means
+   archive's `head_sha` differs from live's. Guard must keep live's
+   `head_sha`. Test that overwriting it would corrupt the analyzer
+   (smoke-check by asserting the value, not by running the analyzer).
+5. **Force-push interleaving (the headline use case)** — synthetic PR with
+   live timeline containing one HEAD_FORCE_PUSHED event (X→Y) and CI for
+   Y only. Archive contributes CI for X. After import:
+   - HEAD_FORCE_PUSHED event in live timeline preserved.
+   - Both X and Y CI rows present, distinct.
+   - Revision builder produces two PRRevision windows; X's CI attributes
+     to its window, Y's to its.
+   - Queue windows recompute and (with a CI-gating ruleset) reflect both
+     windows correctly.
+6. **Same SHA, same `github_node_id`, both sources** — live has the row;
+   archive payload has the same row with possibly older state. The
+   `github_node_id` upsert must not regress live (e.g. live's
+   `conclusion=SUCCESS` not downgraded to archive's `conclusion=PENDING`).
+7. **Same SHA, no `github_node_id` on archive side** — archive falls back
+   to `(repo, head_sha, name, external_id)`; live row inserted via
+   node-id has the same composite key. Verify dedup, no `IntegrityError`.
+8. **Re-import is idempotent** — running `import_pr_info_payload` twice in
+   succession on the same payload produces no row count delta and no flaps in
+   `archive_imported_at` (timestamp set on first import only).
+   `latest_ci_synced_at` advances on each call by design — that's the
+   monotone-write contract from doc 045.
+9. **Archive ingest of a PR whose live row has `timeline_backfill_done=False`** —
+   archive shouldn't flip this to True (importer leaves it alone); live
+   timeline backfill must still run when the live syncer reaches the PR.
+10. **Timeline-only delta** — archive payload contributes new timeline
+    rows but no new CI rows (e.g. a PR whose CI was already fully synced
+    live but a force-push event was somehow missing). The CI sub-syncs
+    still run (with empty contexts); doc 045's
+    `_bump_latest_ci_synced_at` skips no-op calls so the watermark is
+    only advanced when CI was actually written. Revision rebuild is
+    triggered via the existing timeline-sync dirty path
+    (`mark_pr_revision_dirty_if_earlier` on `HEAD_FORCE_PUSHED` at
+    `timeline_sync.py:360`); queue-window rebuild follows once the
+    revision builder bumps `revision_version`.
 
 ### Commit 4: throttled scheduler + observability
 - `archive_import_tick` task; register in beat schedule (gated by
@@ -368,6 +708,37 @@ project rule for env-backed settings.
    (off-peak preferred — analyzer sweeps are CPU-bound).
 5. Optional: bootstrap `queueboard-archive` in diff mode and let it drain.
 
+### Convergence snapshot during the drain
+- `SyncerConvergenceSnapshot` does not distinguish archive-imported rows from
+  live-synced rows. During the multi-day drain, expect:
+  - Higher `pr_no_revisions` / `windows_stale` counts immediately post-bootstrap
+    (worklist is enrolled before the analyzer has had a chance to run).
+  - Both counts trend down as the importer advances and the analyzer sweeps
+    catch up. The slope, not the absolute value, is the health signal.
+  - `prs_below_current_sync_schema_version` may briefly *grow* if the importer
+    creates brand-new PRs with `sync_schema_version=0` faster than the
+    upgrader wave can rewalk them. This is expected and self-corrects once
+    the worklist drains.
+- The `archive_pending` / `archive_completed` / `archive_failed_permanent`
+  counters added in Commit 4 are the importer's own health signal and
+  should be the primary thing we watch during the drain.
+
+### Analyzer load during the drain
+- Each archive-imported PR dirty-marks itself, triggering eventual revision
+  + queue-window rebuilds. At the planned 10/min import rate this adds
+  ~580 PRs/hour of analyzer work on top of normal live-sync-driven load.
+- Verify during the first 24 hours of the drain that:
+  - `rebuild_revisions_sweep` and `rebuild_queue_windows_sweep` task
+    durations stay within the envelope they show under live-sync-only
+    load (compare the Celery task-result `runtime_ms` distribution
+    pre- and post-`ARCHIVE_IMPORT_ENABLED=True`).
+  - `windows_stale` and `pr_no_revisions` convergence counters trend
+    downward across snapshot ticks (a flat line indicates the
+    analyzer is not keeping up).
+- If the analyzer falls behind, the lever to tune is
+  `ARCHIVE_IMPORT_BATCH_SIZE` / `ARCHIVE_IMPORT_TICK_SECONDS` (slow
+  the importer), not the analyzer's own concurrency.
+
 ### Heroku basic dyno guardrails
 - Single `worker` dyno runs both beat and worker (per `Procfile`). Beat tick is cheap;
   worker handles per-item HTTP + DB writes.
@@ -389,11 +760,102 @@ project rule for env-backed settings.
 - Do we want a single shared `ArchiveImportItem` row per `(repo, pr_number)` with the
   archive name de-duplicated, or one row per archive (current proposal)? Current choice
   keeps the per-archive history; arguably useful for debugging.
+- **Zombie PRs**: a PR could exist in the archive but have been deleted from
+  GitHub since (spam PRs, account deletions). The importer would create a
+  PullRequest row that the live syncer can never refresh. Default: accept
+  these as historical record; the status command's report should surface
+  `archive_imported_at IS NOT NULL AND last_synced_at IS NULL AND created_at
+  < N days ago` so we can audit them. Validating against GitHub at bootstrap
+  would add ~36k REST calls and is not worth the rate-budget cost.
+- **High-event PRs (>250 timeline items, >250 commits)**: the legacy snapshot
+  truncates both connections at `first: 250`. For a closed PR the live
+  syncer also won't paginate past its own truncation point. Should the
+  importer flag these explicitly so we know which PRs have known-incomplete
+  archive data? A small `archive_truncated_at_first_250` boolean on
+  `ArchiveImportItem` would make this auditable cheaply.
 
 ## Progress Notes
 - 2026-05-06: Initial plan written. Decision to skip tarball/clone transport in favor
   of `raw.githubusercontent.com` + persisted worklist + throttled Celery beat tick,
   driven by Heroku basic-dyno memory and disk constraints. Provenance kept internal.
+- 2026-05-10: Pre-implementation review identified that the proposed
+  `mark_pr_dirty_for_archive_import` helper was solving a symptom of a
+  wider issue affecting every out-of-band CI ingest path
+  (`refresh_pending_ci_for_repo`, `commit_history_tasks`, the analyzer's
+  `ci_backfill`, the admin tool — none of which trigger
+  `process_pr_task` after writing CI). Spun the fix out into design doc
+  045 ("CI-Write Watermark for Queue-Window Staleness"), which adds a
+  `PRRevisionBuildState.latest_ci_synced_at` column updated by
+  `sync_check_runs` / `sync_status_contexts` and a matching staleness
+  predicate in the queue-window sweep. With doc 045 landed, the
+  archive importer needs no archive-specific dirty-marking helper —
+  going through the standard CI sub-syncs (with the `archive_mode`
+  flag from the CI-merge-mode subsection) suffices. Doc 043 updated:
+  - "Stale-marking after archive ingest" subsection rewritten as
+    "Queue-window staleness after archive ingest" pointing at doc 045.
+  - Commit 3 implementation list dropped the helper call; CI sub-syncs
+    now suffice for queue-window invalidation.
+  - Validation Plan tests reframed in terms of `latest_ci_synced_at`
+    advancement rather than `dirty_from_ts` setting.
+  - Interleaving tests #1, #8, #10 updated to reflect the new
+    mechanism.
+  - Implementation order: doc 045 lands first; doc 043's Commit 3
+    depends on it.
+- 2026-05-10: Pre-implementation review of CI upsert behavior surfaced
+  legacy-query schema deficiencies. Doc additions:
+  - "Legacy archive payload schema deficiency" subsection: the legacy
+    `pr_info.graphql` does not request `createdAt` for `StatusContext`,
+    nor `externalId` / `startedAt` / `completedAt` for `CheckRun`.
+    `CommitStatusContext.gh_created_at` is `NOT NULL`, so direct ingest
+    fails with `IntegrityError`. Resolution: synthesize `gh_created_at =
+    archive_timestamp` from the per-PR `timestamp.txt`, documented as a
+    placeholder.
+  - "CI upsert: merge-don't-overwrite for archive mode" subsection:
+    archive payloads with shared `github_node_id` would otherwise overwrite
+    live's non-null `external_id` / timestamps with NULL via
+    `update_if_changed`. Add `archive_mode=True` to
+    `_upsert_commit_check_run` / `_upsert_commit_status_context` (and the
+    public `sync_check_runs` / `sync_status_contexts`) that strips NULL
+    values before update.
+  - "Latent ci_sync dedup issues — out of scope" subsection: documents the
+    NULL-`github_node_id` duplicate hazard and the asymmetric
+    `_upsert_commit_status_context` fallback as known live-syncer
+    fragility seams that the importer does not exercise. Out of scope for
+    doc 043; tracked separately.
+  - Commit 3 sub-sync edits list updated with the `archive_mode` flag on
+    `ci_sync` helpers; Commit 3 tests list extended with merge-mode
+    scenarios and `gh_created_at` synthesis.
+- 2026-05-10: Pre-implementation review of stale-marking, force-push
+  interleaving, and other correctness concerns. Doc additions:
+  - Tightened the orphan-SHA recovery scope claim in Goals (the archive can
+    only recover CI for SHAs that were the head at scrape time, not for
+    SHAs already orphaned before the scrape).
+  - Added a "Stale-marking after archive ingest" subsection introducing
+    `mark_pr_dirty_for_archive_import`. The existing
+    `mark_pr_revision_dirty_if_earlier` is a no-op when `built_through_ts`
+    is null or when `signal_ts >= built_through_ts`, so archive-contributed
+    CI for the orphan-SHA case can otherwise sit in the DB without ever
+    flowing into a queue-window recompute.
+  - Added the `last_synced_at`-on-creation pitfall (live `upsert_pull_request`
+    sets `last_synced_at = now()` for new rows, which breaks the live
+    discovery preflight). Resolved via a new `skip_watermark` parameter on
+    `upsert_pull_request`, applied for archive-mode creates.
+  - Made the newer-wins guard a parameter on `upsert_pull_request`
+    (`if_newer_than: datetime | None`) rather than archive-side wrapper
+    logic; explicitly added `head_sha` to the gated set.
+  - Made `additive_only=True` an explicit parameter on
+    `labels_sync.sync_pr_labels` rather than a behavioral aspiration.
+  - Added a "Transaction boundaries" subsection (per-PR atomicity, not
+    per-batch).
+  - Added `PRTimelineEvent` to the `archive_imported_at` provenance set.
+  - Pinned timeline upsert as insert-only (`get_or_create(defaults=…)`
+    semantics) with a test to prevent silent regressions.
+  - Added an "Interleaving tests" block enumerating the 10 archive/live
+    ordering scenarios most likely to expose ordering bugs (force-push
+    interleaving, head_sha guard, fallback-key dedup, idempotency).
+  - Added a "Convergence snapshot during the drain" operational note so
+    operators expect the temporary spike in stale/unbuilt counts.
+  - Added open questions for zombie PRs and high-event PR truncation.
 - 2026-05-10: Plan updated to reflect dependencies that landed on master while
   this importer was still at Commit 1:
   - Doc 044 Chunk 6b removed `PullRequest.engagement_synced_at`. Updated

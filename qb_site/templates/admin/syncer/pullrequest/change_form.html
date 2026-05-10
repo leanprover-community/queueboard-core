@@ -165,8 +165,7 @@
       <th>Dirty from</th>
       <th>CI checked rev</th>
       <th>CI checked at</th>
-      <th>Windows built rev</th>
-      <th>Windows built at</th>
+      <th>Latest CI synced at</th>
       <th>Tail revision</th>
       <th>Last built at</th>
       <th>Updated at</th>
@@ -182,8 +181,7 @@
       <td>{{ revision_build_state.dirty_from_ts }}</td>
       <td>{{ revision_build_state.ci_checked_revision_version }}</td>
       <td>{{ revision_build_state.ci_checked_at }}</td>
-      <td>{{ revision_build_state.windows_built_revision_version }}</td>
-      <td>{{ revision_build_state.windows_built_at }}</td>
+      <td>{{ revision_build_state.latest_ci_synced_at }}</td>
       <td>
         {% if revision_build_state.tail_revision %}
         <a href="{% url 'admin:analyzer_prrevision_change' revision_build_state.tail_revision_id %}">{{ revision_build_state.tail_revision }}</a>
