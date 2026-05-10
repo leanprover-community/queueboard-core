@@ -51,6 +51,198 @@
   - Modifying analyzer logic. Analyzer reruns naturally over imported rows via the usual
     sweep tasks.
 
+## Current Status (mid-drain handoff)
+
+Snapshot as of 2026-05-10, written for a session that picks this up
+after the worklist has fully drained. Read this section first; the
+rest of the doc is unchanged from the original design + the
+chronological Progress Notes that record each commit's landing.
+
+### What's landed
+
+| Commit | State | Branch | Notes |
+|---|---|---|---|
+| 1 (doc) | landed (on master) | — | initial plan |
+| 2 (model + bootstrap) | landed | `archive-importer-1` @ `09ab265` | `ArchiveImportItem` + `bootstrap_archive_worklist` |
+| 3 (per-item importer) | landed | `archive-importer-1` @ `8a92d9a` | provenance migration, sub-sync archive-mode flags, service + task |
+| 3 followup (timestamp synthesis) | landed | `archive-importer-1` @ `3822099` | fix described below; required re-pend of completed items |
+| 4 (scheduler + observability) | landed | `archive-importer-1` @ `6e4a832` | beat tick, status command, convergence counters |
+| 5 (bulk analyzer rebuild) | not started | — | see below — partly redundant given existing beat sweeps |
+| 6 (older-archive catch-up) | not started, optional | — | only worth doing if archive2 left meaningful gaps |
+
+The four landed commits are on branch `archive-importer-1` and are
+already deployed and running in production.
+
+### Where the drain stands
+
+The full archive2 worklist (~36k items) was bootstrapped via
+`bootstrap_archive_worklist --archive queueboard-archive2 --repo
+leanprover-community/mathlib4` (no `--limit`) and
+`ARCHIVE_IMPORT_ENABLED=1` was set. Mid-drain, a bug was discovered
+where CheckRun timestamps were NULL — landed `3822099` fixed it by
+synthesizing from `commit.committedDate`. Already-imported rows were
+re-pended (SQL below) and are being re-ingested with correct
+timestamps. As of handoff time the drain is mid-flight; thousands of
+rows still pending.
+
+### When the drain completes (post-drain checklist)
+
+Run these in order. Substitute `<app-name>` for the Heroku app.
+
+1. **Confirm full drain**:
+   ```bash
+   heroku run -a <app-name> -- python qb_site/manage.py archive_import_status
+   ```
+   Expect `pending == 0` and `failed_transient == 0` for the
+   `queueboard-archive2` archive. `failed_permanent` may be non-zero
+   (404s from PRs the archive lost or never had — accept these).
+
+2. **Spot-check provenance + timestamps**:
+   ```bash
+   heroku run -a <app-name> -- python qb_site/manage.py shell -c "
+   from syncer.models import CommitCheckRun, CommitStatusContext
+   null_ts = CommitCheckRun.objects.filter(
+       archive_imported_at__isnull=False,
+       gh_completed_at__isnull=True,
+       gh_started_at__isnull=True,
+   ).count()
+   print('CheckRun null both ts:', null_ts, '(expect 0)')
+   sc_null = CommitStatusContext.objects.filter(
+       archive_imported_at__isnull=False,
+       gh_created_at__isnull=True,
+   ).count()
+   print('StatusContext null created_at:', sc_null, '(expect 0; column is NOT NULL)')
+   "
+   ```
+
+3. **Verify the analyzer caught up**:
+   ```bash
+   heroku run -a <app-name> -- python qb_site/manage.py shell -c "
+   from syncer.models import PullRequest
+   from analyzer.models import PRRevision, PRQueueWindow
+   archive_prs = PullRequest.objects.filter(archive_imported_at__isnull=False)
+   print('archive-imported PRs:', archive_prs.count())
+   print('  with PRRevision rows:', archive_prs.filter(prrevision__isnull=False).distinct().count())
+   print('  with PRQueueWindow rows:', archive_prs.filter(prqueuewindow__isnull=False).distinct().count())
+   "
+   ```
+   The beat-scheduled `analyzer.rebuild_revisions_sweep` and
+   `analyzer.rebuild_queue_windows_sweep` run every 10 minutes
+   (per `ANALYZER_*_SWEEP_PERIOD_SECONDS=600`). They should be
+   chasing the archive-imported PRs naturally; the counts above
+   should be trending up. If they're flat or far below the total,
+   force-kick the sweeps once:
+
+   ```bash
+   heroku run -a <app-name> -- python qb_site/manage.py shell -c "
+   from analyzer.tasks.rebuild_revisions_sweep import rebuild_revisions_sweep_task
+   from analyzer.tasks.rebuild_queue_windows_sweep import rebuild_queue_windows_sweep_task
+   print('revisions:', rebuild_revisions_sweep_task.delay(max_prs_per_repo=500).id)
+   print('queue windows:', rebuild_queue_windows_sweep_task.delay(max_prs_per_repo=500).id)
+   "
+   ```
+
+   Note that Commit 5 in the Implementation Plan below references
+   `python manage.py rebuild_revisions_sweep --repo …` etc. Those
+   management commands **don't exist**; the actual mechanism is the
+   beat-scheduled tasks plus the Django-shell `.delay()` form above.
+   If we decide we want explicit per-repo management commands for
+   operators, that's a small follow-up. The doc's Commit 5 wording
+   is aspirational.
+
+4. **Headline-use-case spot check**. Pick a force-pushed PR with
+   known orphan SHAs and verify CI rows exist for those SHAs with
+   `archive_imported_at` set:
+
+   ```bash
+   heroku run -a <app-name> -- python qb_site/manage.py shell -c "
+   from syncer.models import CommitCheckRun
+   # Replace head_sha with a known orphan SHA from a force-pushed PR.
+   for cr in CommitCheckRun.objects.filter(head_sha='ABC123...', archive_imported_at__isnull=False)[:5]:
+       print(cr.head_sha[:7], cr.name, cr.status, cr.conclusion, cr.gh_completed_at)
+   "
+   ```
+
+5. **Decide on Commit 6 (older archive)**. The older
+   `queueboard-archive` repo is mostly redundant with archive2
+   (archive2 was recreated from the same data). Diff-mode bootstrap
+   would only enroll PR numbers that archive2 did NOT successfully
+   complete. The numerical difference is ~5,750 entries; the
+   diff-mode set may be much smaller. Decide whether to bootstrap
+   `queueboard-archive` in diff mode by running:
+
+   ```bash
+   heroku run -a <app-name> -- python qb_site/manage.py bootstrap_archive_worklist \
+     --archive queueboard-archive \
+     --repo leanprover-community/mathlib4 \
+     --diff-against queueboard-archive2
+   ```
+
+   Inspect the row count enrolled before enabling. If the enrolled
+   set is small (say < 100), it's worth letting it drain (with
+   `ARCHIVE_IMPORT_ENABLED` still on it picks up automatically). If
+   it's larger, decide based on whether the additional coverage is
+   worth the extra wall-clock time.
+
+### Operational gotchas surfaced during deployment
+
+These were discovered during the live rollout, not anticipated by
+the original design. Recorded here so a future operator doesn't
+re-learn them:
+
+- **Heroku CLI eats `--flag` args.** Wrap with `--` or quote:
+  `heroku run -a <app> -- python qb_site/manage.py bootstrap_archive_worklist --archive ...`
+  Without the `--`, the Heroku CLI tries to parse `--archive` as
+  one of its own flags and errors out with "Nonexistent flags".
+
+- **`attempts` counts failed attempts only, not total invocations.**
+  A `status=completed, attempts=0` row is a clean first-try ingest.
+  `last_attempted_at` is the timestamp that always moves; use it as
+  the "did we touch this row" signal.
+
+- **Bootstrap orders lexicographically.** `--limit 5` against
+  archive2 picks PRs {1, 10, 100, 1000, 10000}, not {1, 2, 3, 4, 5}.
+  Cosmetic, but confused initial smoke testing because those very
+  old PRs predate GitHub Actions and carry little or no CI data.
+  Higher PR numbers (15000+) are where the orphan-SHA recovery use
+  case actually demonstrates.
+
+- **NULL-timestamp CheckRuns are silently dropped by the analyzer**,
+  not just sorted late. Fixed in `3822099`. See the corresponding
+  Progress Notes entry for the full reasoning chain.
+
+- **Live discovery preflight skips very-old archive PRs.** Archive
+  imports brand-new PRs (e.g. PR 15000 missing from live) with
+  `gh_updated_at = <old archive value>` and `last_synced_at = NULL`.
+  The preflight `gh_updated_at > last_synced_at` passes (NULL means
+  always sync), but the discovery query itself uses
+  `pullRequests(updatedAt: {since: <recent>})` and won't re-list a
+  PR whose `updatedAt` is years old. So the archive's snapshot is
+  the only data those PRs will get unless someone explicitly
+  enqueues `sync_pr_task` for them. Acceptable for the orphan-SHA
+  recovery use case (the SHAs are gone from GitHub anyway), but
+  worth knowing. The status command's report could flag
+  `archive_imported_at IS NOT NULL AND last_synced_at IS NULL AND
+  age > N days` as an audit list — listed under Open Questions.
+
+### Re-pend SQL (for reference)
+
+In case any further code fix surfaces and we need to replay the
+worklist again, the canonical re-pend is:
+
+```sql
+UPDATE syncer_archiveimportitem
+   SET status='pending', completed_at=NULL, last_attempted_at=NULL,
+       last_error='', attempts=0
+ WHERE status IN ('completed', 'in_progress', 'failed_transient');
+```
+
+`failed_permanent` rows are deliberately excluded — they failed for
+non-timestamp reasons (404, JSON parse, payload-shape) and the
+re-pend wouldn't change their fate. Re-import is idempotent via
+`_archive_mode_upsert`'s NULL-stripping (input side only) and the
+`archive_imported_at__isnull=True` filter on provenance stamping.
+
 ## Proposed Design
 
 ### Source / transport
@@ -681,12 +873,25 @@ through the listed sequence.
   `archive_pending`, `archive_completed`, `archive_failed_permanent`).
 
 ### Commit 5: bulk analyzer rebuild
-- After archive2 worklist drains:
-  - `python manage.py rebuild_revisions_sweep --repo leanprover-community/mathlib4`
-  - `python manage.py rebuild_queue_windows_sweep --repo leanprover-community/mathlib4`
-  - `python manage.py refresh_queueboard_snapshots --repo leanprover-community/mathlib4`
-- Verify queue snapshot still serves correctly; spot-check a known force-pushed PR for
-  the appearance of orphan-SHA CI rows.
+
+**Note**: the management commands listed below (`rebuild_revisions_sweep
+--repo`, `rebuild_queue_windows_sweep --repo`,
+`refresh_queueboard_snapshots --repo`) do not currently exist —
+this section is aspirational. The actual mechanism is the
+beat-scheduled `analyzer.rebuild_revisions_sweep` /
+`analyzer.rebuild_queue_windows_sweep` tasks (running every 10
+minutes per `ANALYZER_*_SWEEP_PERIOD_SECONDS=600`) plus the
+Django-shell `.delay()` form documented in §"Current Status
+(mid-drain handoff)" above. Building explicit operator-facing
+management commands is a small follow-up worth doing if the
+Django-shell incantation feels too obscure for routine use.
+
+- After archive2 worklist drains, the beat sweeps catch up
+  naturally over the next 1–2 ticks. To force convergence
+  immediately, kick the tasks from a Django shell — see the
+  handoff section.
+- Verify queue snapshot still serves correctly; spot-check a known
+  force-pushed PR for the appearance of orphan-SHA CI rows.
 
 ### Commit 6 (optional): older-archive catch-up
 - Bootstrap `queueboard-archive` in diff mode against archive2 completion set.
@@ -879,6 +1084,19 @@ through the listed sequence.
   - Added a "Convergence snapshot during the drain" operational note so
     operators expect the temporary spike in stale/unbuilt counts.
   - Added open questions for zombie PRs and high-event PR truncation.
+- 2026-05-10: Deployment session — committed `09ab265`, `8a92d9a`,
+  `6e4a832` (Commits 2/3/4) plus followup `3822099` (timestamp
+  synthesis fix). All four are on branch `archive-importer-1` and
+  deployed to production. Bootstrap of `queueboard-archive2` for
+  `leanprover-community/mathlib4` enrolled ~35,661 items. After
+  surfacing the NULL-timestamp gap mid-drain and landing the fix,
+  the worklist was re-pended (`UPDATE … status='pending' WHERE
+  status IN ('completed', 'in_progress', 'failed_transient')`) and
+  the drain restarted from a clean state with correct synthesis.
+  At session end the drain was still in flight with thousands of
+  rows pending; the §"Current Status (mid-drain handoff)" section
+  near the top of this doc has the post-drain checklist a future
+  session should run when it picks this up.
 - 2026-05-10: Post-deploy gap surfaced and fixed: archive CheckRuns
   were being inserted with NULL ``gh_started_at`` / ``gh_completed_at``
   (the legacy fragment requests neither), and the analyzer's CI
