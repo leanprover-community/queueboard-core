@@ -1317,6 +1317,9 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_missing_head_ci_contexts",
         "prs_below_current_sync_schema_version",
         "sync_schema_version_target",
+        "archive_pending",
+        "archive_completed",
+        "archive_failed_permanent",
     )
     list_filter = ("repository", "history_cursor_completed", "discovery_continuation_active")
     date_hierarchy = "collected_at"
@@ -1340,6 +1343,9 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_missing_head_ci_contexts",
         "prs_below_current_sync_schema_version",
         "sync_schema_version_target",
+        "archive_pending",
+        "archive_completed",
+        "archive_failed_permanent",
         "created_at",
     )
 

@@ -97,7 +97,7 @@ front and expensive to recover from when skipped.
   - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
   - `syncer.upgrade_schema_versions_active` → `syncer.upgrade_schema_versions` (advances `PullRequest.sync_schema_version` toward `CURRENT_SYNC_SCHEMA_VERSION`; see Sync Schema Versioning below),
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
-  - `syncer.archive_import_pr_item` — per-item ingest of legacy archive snapshots into live tables (design doc 043). Enqueued by the upcoming Commit 4 scheduler tick; not on a beat schedule yet.
+  - `syncer.archive_import_tick` → `syncer.archive_import_pr_item` — beat-driven worklist drain for the archive backfill importer (design doc 043). Tick runs every `ARCHIVE_IMPORT_TICK_SECONDS` (default 60s) and gates on `ARCHIVE_IMPORT_ENABLED` so operators can toggle activity without restarting beat. Status surface: `python manage.py archive_import_status [--repo OWNER/NAME] [--errors N]`.
   - `syncer.collect_convergence` — records syncer convergence metrics,
   - `syncer.collect_metrics` — records sync throughput/lag metrics.
 - Keep task behavior idempotent and retry-safe; prefer explicit status/reason payloads in return dicts.

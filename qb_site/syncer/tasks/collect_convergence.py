@@ -6,6 +6,8 @@ from django.db.models import DateTimeField, ExpressionWrapper, F, Q, Exists, Out
 from django.utils import timezone
 
 from syncer.models import (
+    ArchiveImportItem,
+    ArchiveImportItemStatus,
     PullRequest,
     CommitHistoryHarvest,
     RepoBackfillCursor,
@@ -71,6 +73,17 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
 
         prs_below_target = qs.filter(sync_schema_version__lt=CURRENT_SYNC_SCHEMA_VERSION).count()
 
+        archive_qs = ArchiveImportItem.objects.filter(repository=repo)
+        archive_pending = archive_qs.filter(
+            status__in=[
+                ArchiveImportItemStatus.PENDING,
+                ArchiveImportItemStatus.IN_PROGRESS,
+                ArchiveImportItemStatus.FAILED_TRANSIENT,
+            ]
+        ).count()
+        archive_completed = archive_qs.filter(status=ArchiveImportItemStatus.COMPLETED).count()
+        archive_failed_permanent = archive_qs.filter(status=ArchiveImportItemStatus.FAILED_PERMANENT).count()
+
         missing_head_ci = qs.filter(head_ci_state__isnull=True).count()
         missing_head_sha = qs.filter(Q(head_sha__isnull=True) | Q(head_sha="")).count()
         head_ccr = CommitCheckRun.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
@@ -105,6 +118,9 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             prs_missing_head_ci_contexts=missing_head_contexts,
             prs_below_current_sync_schema_version=prs_below_target,
             sync_schema_version_target=CURRENT_SYNC_SCHEMA_VERSION,
+            archive_pending=archive_pending,
+            archive_completed=archive_completed,
+            archive_failed_permanent=archive_failed_permanent,
         )
         rows += 1
         per_repo.append(
@@ -132,6 +148,9 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                 "prs_missing_head_ci_contexts": missing_head_contexts,
                 "prs_below_current_sync_schema_version": prs_below_target,
                 "sync_schema_version_target": CURRENT_SYNC_SCHEMA_VERSION,
+                "archive_pending": archive_pending,
+                "archive_completed": archive_completed,
+                "archive_failed_permanent": archive_failed_permanent,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo, "request_meta": request_meta}

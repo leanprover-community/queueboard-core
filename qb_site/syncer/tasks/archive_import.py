@@ -1,20 +1,26 @@
-"""Per-item Celery task for the archive backfill importer (design doc 043).
+"""Celery tasks for the archive backfill importer (design doc 043).
 
-Each ArchiveImportItem produced by ``bootstrap_archive_worklist`` becomes
-one ``import_archive_pr_item`` invocation. The task atomically claims the
-row (so two beat ticks can't double-pick), HTTP GETs the legacy payload
-from raw.githubusercontent.com, parses the JSON, and hands the unwrapped
-``pullRequest`` node to the archive_import service. Result status maps:
+Two tasks:
+  - ``import_archive_pr_item(item_id)`` — per-item ingest. Each
+    ArchiveImportItem produced by ``bootstrap_archive_worklist`` becomes
+    one invocation. Claims the row atomically, HTTP GETs the legacy
+    ``pr_info.json`` from raw.githubusercontent.com, hands the unwrapped
+    ``pullRequest`` node to the archive_import service. Status map:
+      - 200 + ingest succeeds → ``completed``.
+      - 404 → ``failed_permanent`` (path genuinely absent). No retry.
+      - 5xx / network / timeout → ``failed_transient``; next tick re-picks.
+        Capped at ``ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS``, after which
+        the row flips to ``failed_permanent``.
+      - JSON parse / payload-shape errors → ``failed_permanent``.
+      - Other DB errors → ``failed_transient`` (next tick retries).
 
-- 200 + ingest succeeds → ``completed``.
-- 404 → ``failed_permanent`` (the path genuinely doesn't exist in the
-  archive). No retry.
-- 5xx / network / timeout → ``failed_transient``; the next scheduler tick
-  re-picks. Capped at ``ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS`` after
-  which the row flips to ``failed_permanent``.
-- JSON parse / archive payload schema error → ``failed_permanent`` with
-  the error stored in ``last_error`` for inspection.
-- Per-item DB errors → ``failed_transient`` (next tick retries).
+  - ``archive_import_tick()`` — beat-driven scheduler. Picks up to
+    ``ARCHIVE_IMPORT_BATCH_SIZE`` rows where status is ``pending`` or
+    ``failed_transient`` (oldest ``last_attempted_at`` first, NULL first
+    so brand-new pending rows go ahead of already-retried transient
+    ones), enqueues each as ``import_archive_pr_item.delay(item_id)``.
+    Honors ``ARCHIVE_IMPORT_ENABLED`` inside the task — operators flip
+    the env var to enable/disable activity without restarting beat.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ import requests
 from celery import shared_task
 from django.conf import settings
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from syncer.models import ArchiveImportItem, ArchiveImportItemStatus
@@ -167,3 +174,38 @@ def _mark_permanent(item: ArchiveImportItem, message: str) -> Dict[str, Any]:
         last_error=message,
     )
     return {"item_id": item.pk, "status": ArchiveImportItemStatus.FAILED_PERMANENT.value, "reason": message}
+
+
+@shared_task(name="syncer.archive_import_tick", bind=True)
+def archive_import_tick(self) -> Dict[str, Any]:
+    """Periodically fan out pending archive worklist items to the per-item task.
+
+    Beat fires this unconditionally on its cadence; the
+    ``ARCHIVE_IMPORT_ENABLED`` gate inside the task lets operators
+    toggle activity via env var without restarting beat.
+
+    Selection: at most ``ARCHIVE_IMPORT_BATCH_SIZE`` rows where status is
+    pending or failed_transient, ordered by ``last_attempted_at NULLS
+    FIRST``. ``in_progress`` is intentionally excluded — those have a
+    live worker; the scheduler must not double-pick.
+    """
+    if not bool(getattr(settings, "ARCHIVE_IMPORT_ENABLED", False)):
+        return {"status": "disabled", "enqueued": 0}
+
+    batch_size = max(1, int(getattr(settings, "ARCHIVE_IMPORT_BATCH_SIZE", 10)))
+    pickable = (
+        ArchiveImportItem.objects.filter(
+            status__in=[
+                ArchiveImportItemStatus.PENDING,
+                ArchiveImportItemStatus.FAILED_TRANSIENT,
+            ]
+        )
+        .order_by(F("last_attempted_at").asc(nulls_first=True), "id")
+        .values_list("pk", flat=True)[:batch_size]
+    )
+    item_ids = list(pickable)
+    enqueued: list[tuple[int, str]] = []
+    for item_id in item_ids:
+        async_result = import_archive_pr_item.delay(item_id)
+        enqueued.append((item_id, getattr(async_result, "id", "")))
+    return {"status": "ok", "enqueued": len(enqueued), "items": enqueued}

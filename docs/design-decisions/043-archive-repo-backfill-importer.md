@@ -670,7 +670,7 @@ through the listed sequence.
     `timeline_sync.py:360`); queue-window rebuild follows once the
     revision builder bumps `revision_version`.
 
-### Commit 4: throttled scheduler + observability
+### Commit 4: throttled scheduler + observability — **landed**
 - `archive_import_tick` task; register in beat schedule (gated by
   `ARCHIVE_IMPORT_ENABLED`).
 - Status command `python manage.py archive_import_status` printing a small table:
@@ -879,6 +879,30 @@ through the listed sequence.
   - Added a "Convergence snapshot during the drain" operational note so
     operators expect the temporary spike in stale/unbuilt counts.
   - Added open questions for zombie PRs and high-event PR truncation.
+- 2026-05-10: Commit 4 landed — throttled scheduler tick, status command,
+  and convergence counters. Decisions made during implementation:
+  - **Beat fires unconditionally; gate lives inside the task.** When
+    `ARCHIVE_IMPORT_ENABLED=False` the tick returns
+    `{"status": "disabled", "enqueued": 0}` immediately. This lets
+    operators flip the env var to enable/disable activity without
+    restarting beat — important on Heroku where a beat restart costs
+    a dyno cycle. Verified end-to-end against a real worklist with
+    `ARCHIVE_IMPORT_ENABLED=False` blocking enqueueing on otherwise
+    pending rows.
+  - **Selection uses `last_attempted_at NULLS FIRST`.** Brand-new
+    pending rows (NULL last_attempted_at) sort ahead of retried
+    transient rows; among retries, oldest goes first. `in_progress`
+    is intentionally excluded from selection to avoid double-pickup
+    even though the per-item task's atomic claim would catch it.
+  - **Convergence rolls pending + in_progress + failed_transient into
+    `archive_pending`.** The intent is "work the importer still has
+    to do." `failed_transient` rows are recovering, not finished;
+    operators should see them in the pending bucket so a stuck retry
+    loop is visible without joining against `last_error`.
+  - **`archive_import_status` uses no SQL aggregation tricks** — a
+    single `values(archive_name, status).annotate(Count)` query plus
+    one ORDER BY per archive for the oldest-pending sample. Worklist
+    sizes top out around 70k; per-archive scans are cheap.
 - 2026-05-10: Commit 3 landed — provenance migration
   `0049_commitcheckrun_archive_imported_at_and_more`, archive-mode params
   on the four sub-syncs, the `syncer.services.archive_import` service,

@@ -476,6 +476,13 @@ if SYNCER_LABEL_CATALOG_PERIOD_SECONDS > 0:
         "task": "syncer.sync_label_catalog_for_active_repos",
         "schedule": SYNCER_LABEL_CATALOG_PERIOD_SECONDS,
     }
+if ARCHIVE_IMPORT_TICK_SECONDS > 0:
+    # Beat fires unconditionally; ``ARCHIVE_IMPORT_ENABLED`` gates activity
+    # inside the task so operators can toggle without restarting beat.
+    CELERY_BEAT_SCHEDULE["archive_import_tick"] = {
+        "task": "syncer.archive_import_tick",
+        "schedule": ARCHIVE_IMPORT_TICK_SECONDS,
+    }
 if SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["harvest_commit_history"] = {
         "task": "syncer.harvest_commit_history_sweep",

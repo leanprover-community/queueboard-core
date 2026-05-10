@@ -38,6 +38,15 @@ class SyncerConvergenceSnapshot(models.Model):
     prs_below_current_sync_schema_version = models.IntegerField(default=0)
     sync_schema_version_target = models.PositiveSmallIntegerField(default=0)
 
+    # Archive backfill importer worklist counters (design doc 043). Per
+    # repository: rows pending ingest, rows successfully completed, rows
+    # whose attempts exhausted (terminal failure). Operators watch
+    # ``archive_pending`` trend down across the multi-day drain;
+    # ``archive_failed_permanent`` should stay flat at 0 in steady state.
+    archive_pending = models.IntegerField(default=0)
+    archive_completed = models.IntegerField(default=0)
+    archive_failed_permanent = models.IntegerField(default=0)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
