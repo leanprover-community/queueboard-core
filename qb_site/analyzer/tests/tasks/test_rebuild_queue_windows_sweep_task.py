@@ -787,3 +787,141 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
 
         self.assertEqual(res["prs_checked"], 0)
         self.assertEqual(res["windows_rebuilt"], 0)
+
+    # ---- doc 045 latest_ci_synced_at watermark ----
+
+    def test_picks_up_when_only_ci_watermark_is_newer(self) -> None:
+        """A PR whose only staleness signal is latest_ci_synced_at > windows_built_at
+        gets picked up by the sweep.  This is the bug doc 045 exists to fix."""
+        pr = self._mk_pr(18)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        # Set windows_built_at *after* gh_updated_at and ruleset updated_at so the
+        # other staleness sources do not fire — the only stale signal is CI.
+        windows_built_at = pr.gh_updated_at + timezone.timedelta(hours=1)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=windows_built_at)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            latest_ci_synced_at=windows_built_at + timezone.timedelta(minutes=10),
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=windows_built_at,
+            last_status="rebuilt",
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 1)
+
+    def test_skips_when_ci_watermark_predates_windows_built_at(self) -> None:
+        """When latest_ci_synced_at <= windows_built_at, no CI staleness fires."""
+        pr = self._mk_pr(19)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        windows_built_at = pr.gh_updated_at + timezone.timedelta(hours=1)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=windows_built_at)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            # CI was synced *before* windows were built — windows already reflect it.
+            latest_ci_synced_at=windows_built_at - timezone.timedelta(minutes=10),
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=windows_built_at,
+            last_status="rebuilt",
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertEqual(res["windows_rebuilt"], 0)
+
+    def test_skips_when_ci_watermark_is_null(self) -> None:
+        """latest_ci_synced_at is null on PRs whose CI hasn't been synced yet
+        post-deploy.  The new staleness clause must not fire on them."""
+        pr = self._mk_pr(20)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        windows_built_at = pr.gh_updated_at + timezone.timedelta(hours=1)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=windows_built_at)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            latest_ci_synced_at=None,
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=windows_built_at,
+            last_status="rebuilt",
+        )
+
+        res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        self.assertEqual(res["prs_checked"], 0)
+        self.assertEqual(res["windows_rebuilt"], 0)
+
+    def test_no_churn_under_identical_ci_resync(self) -> None:
+        """End-to-end no-churn regression test (mirrors 73d0446's process-flow test).
+
+        Drive sync_check_runs twice with identical payloads, with a sweep tick
+        between/after each.  The second sync must produce zero CI writes
+        (created=0, updated=0), the watermark must not advance, and the second
+        sweep tick must not rebuild the PR's windows.
+
+        This is the load-bearing test for doc 045: if it ever fails, the
+        rebuild-loop class of bug fixed in 088434e / 78c29cc / 73d0446 has
+        regressed for CI-watermark-driven rebuilds.
+        """
+        from syncer.services.sub.ci_sync import sync_check_runs
+
+        pr = self._mk_pr(21)
+        # Seed a revision so the sweep considers the PR.
+        PRRevision.objects.create(pull_request=pr, head_sha="abc1234", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        PRRevisionBuildState.objects.create(pull_request=pr, revision_version=1)
+
+        ctx = {
+            "id": "CR_NO_CHURN",
+            "name": "build",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2025-10-20T00:00:00Z",
+            "completedAt": "2025-10-20T00:05:00Z",
+            "detailsUrl": None,
+            "externalId": None,
+        }
+
+        # First sync writes a CI row and bumps the watermark.
+        first_sync = sync_check_runs(pr, [ctx], "abc1234")
+        self.assertEqual(first_sync.created, 1)
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        first_watermark = state.latest_ci_synced_at
+        self.assertIsNotNone(first_watermark)
+        first_revision_version = state.revision_version
+
+        # First sweep builds windows.
+        res1 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+        self.assertGreaterEqual(res1["windows_rebuilt"], 1)
+        rs_state = PRQueueWindowBuildState.objects.get(pull_request=pr, rule_set=self.rule_set)
+        first_built_at = rs_state.windows_built_at
+        self.assertIsNotNone(first_built_at)
+
+        # Second sync with the *same* payload: no CI writes, no watermark advance.
+        second_sync = sync_check_runs(pr, [ctx], "abc1234")
+        self.assertEqual(second_sync.created, 0)
+        self.assertEqual(second_sync.updated, 0)
+        state.refresh_from_db()
+        self.assertEqual(state.latest_ci_synced_at, first_watermark)
+        self.assertEqual(state.revision_version, first_revision_version)
+
+        # Second sweep tick must not pick the PR up.
+        res2 = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+        self.assertEqual(res2["prs_checked"], 0)
+        self.assertEqual(res2["windows_rebuilt"], 0)
+        rs_state.refresh_from_db()
+        self.assertEqual(rs_state.windows_built_at, first_built_at)

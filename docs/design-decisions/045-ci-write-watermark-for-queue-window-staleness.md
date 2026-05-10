@@ -287,20 +287,21 @@ In `rebuild_queue_windows_sweep.py`, the SQL prefilter (around lines
 
 ```python
 needs_rebuild |= Q(
-    pull_request__revision_build_state__latest_ci_synced_at__isnull=False,
+    revision_build_state__latest_ci_synced_at__isnull=False,
     min_ruleset_state_windows_built_at__lt=F(
-        "pull_request__revision_build_state__latest_ci_synced_at"
+        "revision_build_state__latest_ci_synced_at"
     ),
 )
 ```
 
-The lookup goes through `pull_request__revision_build_state` because
-`PRQueueWindowBuildState` has a FK to `PullRequest`, not a direct
-relation to `PRRevisionBuildState`; the latter is reachable via the
-`OneToOneField` reverse accessor on the PR. (No second clause is
-needed for the "some ruleset has no `windows_built_at` yet" case —
-the existing `null_ruleset_state_windows_built_at_count__gt=0`
-predicate already covers it.)
+The sweep's queryset iterates `PullRequest` directly, so the lookup
+from there to `PRRevisionBuildState` is `revision_build_state__...`
+(the `related_name` on the model's `OneToOneField`). This matches
+the existing `revision_build_state__revision_version` lookups in the
+same file. (No second clause is needed for the "some ruleset has no
+`windows_built_at` yet" case — the existing
+`null_ruleset_state_windows_built_at_count__gt=0` predicate already
+covers it.)
 
 In `_is_ruleset_stale_for_pr`, after the existing `gh_updated_at` check
 (today line 80), add:

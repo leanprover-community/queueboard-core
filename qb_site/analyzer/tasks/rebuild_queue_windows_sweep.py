@@ -46,6 +46,7 @@ def _is_ruleset_stale_for_pr(
     - ``windows_built_at`` null       → ``null_ruleset_state_windows_built_at_count > 0``
     - Ruleset ``updated_at`` changed  → ``min_ruleset_state_windows_built_at < max_ruleset_updated_at``
     - Label/state change (``gh_updated_at``) → ``min_ruleset_state_windows_built_at < gh_updated_at``
+    - CI write since last build (``latest_ci_synced_at``) → ``min_ruleset_state_windows_built_at < revision_build_state__latest_ci_synced_at``
     - Rollup fields missing           → ``has_rollup_backfill=True`` (Exists subquery)
     - Attribution fields missing/inconsistent → ``has_attribution_backfill=True`` (Exists subquery)
       Covers: pre-migration windows (opened_by_event_type IS NULL) and post-expire-task
@@ -78,6 +79,12 @@ def _is_ruleset_stale_for_pr(
     # PR metadata changes.  If windows were built before that timestamp, queue membership
     # may have changed (e.g. a forbidden label was added/removed) without a revision bump.
     if pr_gh_updated_at and rs_state.windows_built_at < pr_gh_updated_at:
+        return True
+    # CI rows changed (rerun, conclusion arrived, status flipped) after the last
+    # queue-window build.  CI-only changes don't bump revision_version or gh_updated_at,
+    # so without this signal CI-gated rulesets stay stale until the next per-PR sync.
+    # See doc 045 for the watermark write site (syncer.services.sub.ci_sync).
+    if state.latest_ci_synced_at and rs_state.windows_built_at < state.latest_ci_synced_at:
         return True
     return False
 
@@ -141,6 +148,7 @@ def rebuild_queue_windows_sweep_task(
             "timeline_backfill_done",
             "commits_backfill_done",
             "revision_build_state__revision_version",
+            "revision_build_state__latest_ci_synced_at",
         )
         pr_qs = pr_qs.annotate(
             has_revisions=Exists(has_revisions),
@@ -203,6 +211,12 @@ def rebuild_queue_windows_sweep_task(
         # timestamp, queue membership may have changed without a revision bump.
         # Using an F() expression avoids a correlated subquery and keeps this O(1) per row.
         needs_rebuild |= Q(min_ruleset_state_windows_built_at__lt=F("gh_updated_at"))
+        # Detect staleness from CI-only changes: re-runs, late conclusions, and status
+        # flips that don't bump revision_version or gh_updated_at.  See doc 045.
+        needs_rebuild |= Q(
+            revision_build_state__latest_ci_synced_at__isnull=False,
+            min_ruleset_state_windows_built_at__lt=F("revision_build_state__latest_ci_synced_at"),
+        )
         pr_qs = pr_qs.filter(needs_rebuild).order_by("-gh_updated_at", "-id").iterator(chunk_size=200)
 
         repo_rebuilt = 0

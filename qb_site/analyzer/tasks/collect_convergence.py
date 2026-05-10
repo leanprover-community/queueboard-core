@@ -32,9 +32,10 @@ def collect_analyzer_convergence_task() -> dict:
         prs_with_rev = list(
             base_prs.annotate(
                 rev_version=F("revision_build_state__revision_version"),
+                latest_ci_synced_at=F("revision_build_state__latest_ci_synced_at"),
             )
             .filter(rev_version__isnull=False)
-            .values("id", "rev_version", "gh_updated_at")
+            .values("id", "rev_version", "gh_updated_at", "latest_ci_synced_at")
         )
         windows_stale = 0
         if active_rulesets and prs_with_rev:
@@ -78,6 +79,7 @@ def collect_analyzer_convergence_task() -> dict:
                 pr_id = int(pr_row["id"])
                 rev_version = int(pr_row["rev_version"])
                 pr_gh_updated_at = pr_row.get("gh_updated_at")
+                pr_latest_ci_synced_at = pr_row.get("latest_ci_synced_at")
                 for rs in active_rulesets:
                     rs_id = int(rs.id)
                     if (pr_id, rs_id) in rollup_stale_pairs:
@@ -97,6 +99,9 @@ def collect_analyzer_convergence_task() -> dict:
                             # GitHub bumps gh_updated_at on label/state changes; if windows
                             # were built before that, queue membership may have changed.
                             or (bool(pr_gh_updated_at) and bool(rs_built_at) and rs_built_at < pr_gh_updated_at)
+                            # CI-only changes (re-runs, late conclusions) advance latest_ci_synced_at
+                            # without bumping revision_version or gh_updated_at.  See doc 045.
+                            or (bool(pr_latest_ci_synced_at) and bool(rs_built_at) and rs_built_at < pr_latest_ci_synced_at)
                         )
                         if stale:
                             windows_stale += 1

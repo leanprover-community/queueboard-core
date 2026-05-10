@@ -446,3 +446,30 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
         self.assertIsNotNone(snap)
         self.assertEqual(snap.windows_unknown_attribution, 0)
+
+    def test_windows_stale_includes_pr_stale_only_due_to_ci_watermark(self) -> None:
+        """A PR whose only staleness signal is latest_ci_synced_at > windows_built_at
+        is counted in windows_stale.  Mirrors the sweep predicate per doc 045."""
+        pr = self._mk_pr(73)
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        # Built after gh_updated_at and ruleset updated_at, so the only stale signal is CI.
+        windows_built_at = pr.gh_updated_at + timezone.timedelta(hours=1)
+        PullRequest.objects.filter(pk=pr.pk).update(gh_updated_at=windows_built_at - timezone.timedelta(minutes=30))
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=windows_built_at - timezone.timedelta(minutes=30))
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            latest_ci_synced_at=windows_built_at + timezone.timedelta(minutes=10),
+        )
+        PRQueueWindowBuildState.objects.create(
+            pull_request=pr,
+            rule_set=self.rule_set,
+            revision_version_built=1,
+            windows_built_at=windows_built_at,
+            last_status="rebuilt",
+        )
+
+        collect_analyzer_convergence_task.apply().get()
+        snap = AnalyzerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        self.assertEqual(snap.windows_stale, 1)

@@ -19,6 +19,15 @@ class PRRevisionBuildState(models.Model):
     ci_checked_revision_version = models.PositiveIntegerField(null=True, blank=True)
     ci_checked_at = models.DateTimeField(null=True, blank=True)
 
+    # Wall-clock high-water mark of "we last wrote a CommitCheckRun or
+    # CommitStatusContext row for this PR." Drives the queue-window
+    # sweep's CI-staleness predicate (doc 045): if windows_built_at on
+    # any (PR, ruleset) row predates latest_ci_synced_at, the windows
+    # are out of date with respect to CI evidence and need a rebuild.
+    # Advanced only by content-changing CI sub-syncs (no-op syncs leave
+    # it unchanged) so the sweep doesn't loop on unchanged CI.
+    latest_ci_synced_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
     # Optional pointer to the known tail window for faster appends; safe to null out.
     tail_revision = models.ForeignKey(
         "analyzer.PRRevision",
