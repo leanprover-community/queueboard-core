@@ -122,20 +122,54 @@ where `result` is the `CISyncResult` the sub-sync was already accumulating
 (it tracks created/updated counts), and the helper is:
 
 ```python
+from django.db.models import Q
+
+
 def _bump_latest_ci_synced_at(pr: PullRequest, now: datetime) -> None:
     """Advance PRRevisionBuildState.latest_ci_synced_at to `now` if newer.
 
-    Idempotent and monotone. Called once per CI sub-sync invocation that
-    actually wrote anything, rather than per row, to avoid N+1 writes."""
-    state, _ = PRRevisionBuildState.objects.get_or_create(pull_request=pr)
-    if state.latest_ci_synced_at is None or now > state.latest_ci_synced_at:
-        state.latest_ci_synced_at = now
-        state.save(update_fields=["latest_ci_synced_at", "updated_at"])
+    Idempotent and monotone, even under concurrent CI sub-syncs for the
+    same PR. Called once per CI sub-sync invocation that actually wrote
+    anything, rather than per row, to avoid N+1 writes.
+
+    Two design choices, both following the "no-op means no-write" lesson
+    from the rebuild-churn fixes (see Invariants):
+
+    1. **Atomic conditional UPDATE rather than read-modify-write.** A
+       naive `state = get_or_create(...); if now > state.x: state.x = now;
+       state.save()` has a lost-update race when two CI sub-syncs run
+       for the same PR concurrently — both read the same value, then
+       the later writer can clobber a higher one. The single SQL
+       statement below resolves the race inside the database.
+    2. **WHERE-gated, not `GREATEST`-gated.** Using
+       `latest_ci_synced_at=Greatest(F('...'), Value(now))` would be
+       atomic too, but it would touch the row on every call (writing a
+       new MVCC version and bumping `updated_at`) even when the
+       watermark doesn't actually advance. The WHERE form below skips
+       the write entirely when `now <= latest_ci_synced_at`, keeping
+       `updated_at` truthful and matching the precedent set by
+       commits `088434e` and `78c29cc`.
+
+    `auto_now=True` on `updated_at` only fires on `save()`, so the
+    UPDATE sets it explicitly. The `__lt OR __isnull` pair handles the
+    first-write case (column starts null)."""
+    PRRevisionBuildState.objects.get_or_create(pull_request=pr)
+    PRRevisionBuildState.objects.filter(pull_request=pr).filter(
+        Q(latest_ci_synced_at__lt=now) | Q(latest_ci_synced_at__isnull=True)
+    ).update(latest_ci_synced_at=now, updated_at=now)
 ```
 
-The `now` parameter is the same `timezone.now()` already passed through
-`_upsert_commit_check_run` / `_upsert_commit_status_context` for the
-per-row `last_synced_at` field. Reuse it for symmetry.
+The `now` parameter is the same `timezone.now()` captured at the top
+of each sub-sync (`ci_sync.py:205` for `sync_check_runs`, `:294` for
+`sync_status_contexts`) and threaded through `_upsert_commit_check_run`
+/ `_upsert_commit_status_context` for the per-row `last_synced_at`
+field. Reuse it for symmetry. Note that this is **not** the same value
+as the `earliest_ts` signal timestamp passed to
+`mark_pr_revision_dirty_if_earlier` on the adjacent line — that's a
+GitHub-event time used to decide how far back the revision builder
+must rewalk. `latest_ci_synced_at` is a wall-clock "we wrote CI as of
+this time" watermark, which is what the per-row `last_synced_at` clock
+gives us.
 
 A status flip (e.g. a CheckRun row going from `status=PENDING` to
 `status=COMPLETED`) counts as `updated > 0` from `update_if_changed`'s
@@ -147,26 +181,24 @@ queue-window sweep tick on the affected PR.
 ### Sweep predicate
 
 In `rebuild_queue_windows_sweep.py`, the SQL prefilter (around lines
-182–205 today) gains:
+162–206 today) gains:
 
 ```python
 needs_rebuild |= Q(
-    revision_build_state__latest_ci_synced_at__isnull=False,
+    pull_request__revision_build_state__latest_ci_synced_at__isnull=False,
     min_ruleset_state_windows_built_at__lt=F(
-        "revision_build_state__latest_ci_synced_at"
+        "pull_request__revision_build_state__latest_ci_synced_at"
     ),
-)
-needs_rebuild |= Q(
-    revision_build_state__latest_ci_synced_at__isnull=False,
-    null_ruleset_state_windows_built_at_count__gt=0,
 )
 ```
 
-The first clause catches PRs whose CI was synced after the windows were
-last materialized. The second covers the case where some ruleset has no
-`windows_built_at` set yet — already covered by the existing
-`null_ruleset_state_windows_built_at_count__gt=0` predicate, but kept
-explicit for clarity in the new code path.
+The lookup goes through `pull_request__revision_build_state` because
+`PRQueueWindowBuildState` has a FK to `PullRequest`, not a direct
+relation to `PRRevisionBuildState`; the latter is reachable via the
+`OneToOneField` reverse accessor on the PR. (No second clause is
+needed for the "some ruleset has no `windows_built_at` yet" case —
+the existing `null_ruleset_state_windows_built_at_count__gt=0`
+predicate already covers it.)
 
 In `_is_ruleset_stale_for_pr`, after the existing `gh_updated_at` check
 (today line 80), add:
@@ -246,16 +278,55 @@ letting the next sweep tick re-evaluate is minimal — recommend skipping.
   always advances the watermark; it sets `dirty_from_ts` only if the
   signal predates `built_through_ts`. The two are not redundant — they
   drive different sweeps for different reasons.
+- **The watermark comparison is conservative under concurrent rebuild
+  + sub-sync.** `windows_built_at` is set by
+  `record_queue_window_build_states` using `now_ts` captured at sweep
+  batch start (`rebuild_queue_windows_sweep.py:93`), which is at-or-
+  before the CI rows the rebuild actually read. So if a CI sub-sync
+  races a rebuild for the same PR — sub-sync runs after `now_ts` is
+  captured but before the per-PR rebuild commits — the post-rebuild
+  comparison `windows_built_at < latest_ci_synced_at` may flag the PR
+  for a redundant re-rebuild on the next sweep tick, but it cannot
+  mistakenly leave fresh CI un-materialized. Redundant rebuild is the
+  safe failure mode; missed rebuild is what we're avoiding.
+- **No-op means no-write — explicitly inheriting the lesson from
+  prior rebuild-churn fixes.** Past production bugs (`73d0446` "several
+  more sources of queue rebuilding churn", `088434e` "do not clear
+  ci_checked_* fields on noop", `78c29cc` "only bump
+  ci_checked_revision_version if no actionable SHAs", `2597f93` "use
+  revision_build_state to avoid checking same PRs over and over") all
+  shared one root cause: bookkeeping timestamps or version counters
+  advanced on no-op operations, which then made staleness comparisons
+  flag fresh state as stale, which triggered another rebuild, which
+  re-bumped the bookkeeping, which… etc. The watermark mechanism here
+  must respect the same invariant: a CI sub-sync that produced no
+  content change (`result.created == 0 and result.updated == 0`) must
+  not advance `latest_ci_synced_at`, and the bump helper itself must
+  not write the row when `now <= latest_ci_synced_at`. The gate at the
+  call site and the WHERE clause inside the helper are both load-
+  bearing for this. Tests pin both. **Reviewers tempted to "simplify"
+  by making the watermark advance unconditionally on every sub-sync
+  call should re-read this invariant first** — that change would
+  re-introduce the exact loop class those commits fixed, since active
+  PRs receive periodic content-no-op sub-syncs from `sync_pr_task`.
 
 ## Tests
 
 In `analyzer/tests/`:
 
 - `_bump_latest_ci_synced_at`:
-  - First call sets the column.
+  - First call sets the column (Postgres `GREATEST(NULL, now)` returns
+    `now`).
   - Second call with later `now` advances forward.
   - Second call with earlier `now` is a no-op (monotone).
   - Get-or-creates `PRRevisionBuildState` if it doesn't exist.
+  - Concurrency: two interleaved calls — A reads, B reads, B writes
+    larger `now`, A writes smaller `now` — leave the column at the
+    larger value. (Easiest to write as two threads / two transactions
+    using `transaction.atomic()` blocks; the `GREATEST`-based UPDATE
+    must make this pass without a select-for-update.)
+  - `updated_at` is bumped on every successful UPDATE (auto_now does
+    not fire for `.update()`, so the helper sets it explicitly).
 - Sub-sync integration:
   - `sync_check_runs` with new rows: watermark advances to `now`.
   - `sync_check_runs` with rows that all match existing state (created=0,
@@ -271,21 +342,47 @@ In `analyzer/tests/`:
   - `latest_ci_synced_at` is null → no change to existing behavior.
 - `rebuild_queue_windows_sweep`:
   - PR with stale `windows_built_at` only because of CI: picked up.
-  - PR with fresh `windows_built_at` and stale `latest_ci_synced_at`:
-    not picked up (sanity check; ordering matters).
+  - PR with `windows_built_at >= latest_ci_synced_at`: not picked up
+    (no false positive when the windows are genuinely fresh).
+  - Race scenario: CI sub-sync writes after the sweep batch's `now_ts`
+    is captured but before the per-PR rebuild commits. Resulting
+    `latest_ci_synced_at > windows_built_at`; the *next* sweep tick
+    picks the PR up for a (redundant) rebuild. This pins the
+    conservative behavior described in Invariants — i.e., we'd rather
+    over-rebuild once than miss a CI write.
 - Convergence canary:
   - `windows_stale` includes PRs whose only staleness source is CI.
 - End-to-end: ingest a CI re-run via `sync_check_runs`; confirm the next
   `rebuild_queue_windows_sweep` tick rebuilds the PR's windows even
   though revision_version did not bump.
+- **No-churn regression test (mirrors the test added in `73d0446`):**
+  drive `process_pr` (or the full per-PR sync orchestration) twice in
+  a row with identical CI payloads, and assert all three of:
+  - `latest_ci_synced_at` does not advance on the second pass.
+  - `revision_version` does not advance on the second pass.
+  - The second pass's `rebuild_queue_windows_sweep` tick does **not**
+    rebuild the PR's windows (count rebuild invocations or check
+    `windows_built_at` is unchanged).
+  This is the test the design ultimately stands or falls on — if it
+  passes, the watermark cannot drive a self-feeding rebuild loop on
+  active PRs; if it ever starts failing, that is the signal that the
+  no-op-no-write invariant has regressed somewhere upstream (e.g., a
+  new field added to `_diff_fields` with unstable equality, or a
+  refactor that made the watermark advance unconditionally).
 
 ## Operational Notes
 
-- Convergence-snapshot impact during rollout: the moment the migration
-  lands, `windows_stale` may briefly tick up because PRs whose only CI
-  writes happened post-migration get the new staleness signal. The first
-  sweep tick after each PR's next CI write clears it. Expected to
-  normalize within one sweep period.
+- Convergence-snapshot impact during rollout: each PR's first
+  post-deploy CI write flips `latest_ci_synced_at` from null to "now,"
+  which (since `windows_built_at` for that PR was set on a prior
+  rebuild, i.e. earlier than now) marks the PR's rulesets stale. On a
+  busy repo this means a large fraction of the active cohort flips to
+  `windows_stale = True` within minutes of deploy and gets re-rebuilt
+  on the next 1–2 sweep ticks. Before rollout, sanity-check that the
+  sweep's per-tick batch budget can absorb this one-time spike — by
+  inspecting recent peak-window sweep durations or by deploying during
+  a low-traffic period. The spike clears by definition once each PR
+  has been rebuilt once post-deploy.
 - No rollback complexity — the column is additive and the sweep predicate
   is additive. Reverting requires removing the predicate clauses and the
   `_bump_latest_ci_synced_at` call (the migration can stay or be reverted
