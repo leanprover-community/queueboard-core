@@ -403,6 +403,15 @@ ANALYZER_AREA_STATS_PERIOD_SECONDS = int(os.getenv("ANALYZER_AREA_STATS_PERIOD_S
 ANALYZER_AREA_STATS_TTL_SECONDS = int(os.getenv("ANALYZER_AREA_STATS_TTL_SECONDS", ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS))
 ANALYTICS_CONVERGENCE_PERIOD_SECONDS = int(os.getenv("ANALYTICS_CONVERGENCE_PERIOD_SECONDS", 900))
 
+# Archive backfill importer (design doc 043). Master flag defaults to False;
+# bootstrap command enrolls a worklist before the scheduler tick is enabled.
+ARCHIVE_IMPORT_ENABLED = env_bool(os.getenv("ARCHIVE_IMPORT_ENABLED"), False)
+ARCHIVE_IMPORT_BATCH_SIZE = int(os.getenv("ARCHIVE_IMPORT_BATCH_SIZE", 10))
+ARCHIVE_IMPORT_TICK_SECONDS = int(os.getenv("ARCHIVE_IMPORT_TICK_SECONDS", 60))
+ARCHIVE_IMPORT_RAW_BASE_URL = os.getenv("ARCHIVE_IMPORT_RAW_BASE_URL", "https://raw.githubusercontent.com")
+ARCHIVE_IMPORT_FETCH_TIMEOUT_SECONDS = int(os.getenv("ARCHIVE_IMPORT_FETCH_TIMEOUT_SECONDS", 30))
+ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS = int(os.getenv("ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS", 5))
+
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()

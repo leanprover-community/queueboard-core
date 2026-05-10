@@ -28,6 +28,14 @@ docker compose exec -T web python qb_site/manage.py list_changed_prs \
 docker compose exec -T web python qb_site/manage.py sync_repo \
   --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --limit 50
 
+# Archive backfill importer (design doc 043): enroll the worklist for one archive repo.
+docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
+  --archive queueboard-archive2 --repo leanprover-community/mathlib4
+# Older archive in diff mode (only enroll PRs not yet completed from archive2):
+docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
+  --archive queueboard-archive --repo leanprover-community/mathlib4 \
+  --diff-against queueboard-archive2
+
 # App tests
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer
 ```

@@ -470,21 +470,44 @@ Doc 045 is small and standalone — it can be implemented and shipped
 independently of this doc as a self-contained queue-window-staleness fix.
 Do that first; then proceed with Commits 2–6 here.
 
-### Commit 1 (this doc)
+### Commit 1 (this doc) — **landed**
 - Add `docs/design-decisions/043-archive-repo-backfill-importer.md`.
 
-### Commit 2: model + bootstrap command
-- Migration adding `syncer.ArchiveImportItem`.
+### Commit 2: model + bootstrap command — **landed**
+- Migration adding `syncer.ArchiveImportItem`
+  (`qb_site/syncer/migrations/0048_archiveimportitem.py`). Columns and
+  constraints match the model spec above; row granularity is one per
+  `(archive_name, pr_number)` per the open-question decision.
+- `qb_site/syncer/services/archive_bootstrap.py`:
+  - `enumerate_archive_pr_entries(owner, archive, branch=…, fetcher=…)`
+    factored out so tests stub at the HTTP boundary cleanly.
+  - Two `git/trees` REST calls per archive (root tree → `data/` tree).
+    Raises if either response is `truncated=True`.
 - `qb_site/syncer/management/commands/bootstrap_archive_worklist.py`:
-  - Resolves the `data/` tree sha via two `git/trees` calls.
-  - Inserts pending rows for each PR directory; idempotent re-run.
-  - `--diff-against` flag for the older archive (only enroll numbers absent from
-    completed-from-archive2 set).
-- Settings wired in `base.py` and `.env.example`.
-- Tests:
-  - Bootstrap with stubbed tree response → expected row set.
-  - Re-run is a no-op.
-  - Diff mode skips numbers already completed from another archive.
+  - `--archive`, `--repo`, `--archive-owner`, `--branch`, `--diff-against`,
+    `--limit`. `bulk_create(ignore_conflicts=True)` against the
+    `(archive_name, pr_number)` unique constraint for idempotent re-run.
+  - Diff mode: skips PR numbers whose other-archive row has
+    `status='completed'`.
+- Settings wired in `qb_site/qb_site/settings/base.py` and `.env.example`
+  (`ARCHIVE_IMPORT_ENABLED`, `_BATCH_SIZE`, `_TICK_SECONDS`,
+  `_RAW_BASE_URL`, `_FETCH_TIMEOUT_SECONDS`,
+  `_MAX_TRANSIENT_ATTEMPTS`). The scheduler-tick consumer arrives in
+  Commit 4; defaults are inert until then.
+- Wired the new model into `qb_site/syncer/admin.py` (read-only) and
+  added `syncer_archiveimportitem` to `scripts/backup_policy.py`
+  (`BACKUP_TABLES` + `TRUNCATE_TABLES`, since this is operational
+  worklist state — not durable PR/CI data).
+- Tests landed:
+  - `qb_site/syncer/tests/models/test_archive_import_item.py` — defaults,
+    unique constraint, same-PR-different-archive coexistence.
+  - `qb_site/syncer/tests/services/test_archive_bootstrap.py` — happy
+    path + `truncated`/missing-`data/` failure modes + non-numeric
+    sub-tree filtering.
+  - `qb_site/syncer/tests/management/test_bootstrap_archive_worklist_cmd.py`
+    — bad `--repo`, unknown repo, full enrollment, idempotent re-run
+    does not regress mutated rows, diff mode skips
+    completed-elsewhere PRs, `--limit` cap.
 
 ### Commit 3: per-item importer + provenance fields
 - Migration: nullable `archive_imported_at` on `PullRequest`, `CommitCheckRun`,
@@ -856,6 +879,26 @@ through the listed sequence.
   - Added a "Convergence snapshot during the drain" operational note so
     operators expect the temporary spike in stale/unbuilt counts.
   - Added open questions for zombie PRs and high-event PR truncation.
+- 2026-05-10: Commit 2 landed — `ArchiveImportItem` model + migration
+  `0048_archiveimportitem`, `bootstrap_archive_worklist` command,
+  `archive_bootstrap` service helper, settings, admin, backup policy,
+  and the listed tests. Decisions made during implementation:
+  - Open question on row granularity resolved as **one row per
+    `(archive_name, pr_number)`**; the alternative (shared row across
+    archives) was rejected to keep per-archive history visible.
+  - Bootstrap fetcher takes a branch ref (default `master`) rather
+    than resolving the default branch from the repo metadata; both
+    archive repos use `master`, and a `--branch` flag covers the
+    edge case without an extra REST call.
+  - Backup policy classifies the new table as truncate-on-sanitize
+    (operational state), not retain — the worklist is regenerable
+    from upstream and carries no durable PR data.
+  - The bootstrap command reports `considered`, `present_after`,
+    and per-archive totals rather than a precise insert count;
+    Postgres' `bulk_create(ignore_conflicts=True)` does not return
+    PKs for skipped rows, so a one-off SELECT around the insert
+    would be needed to compute the exact delta. Worth revisiting if
+    operators find the current readout confusing.
 - 2026-05-10: Plan updated to reflect dependencies that landed on master while
   this importer was still at Commit 1:
   - Doc 044 Chunk 6b removed `PullRequest.engagement_synced_at`. Updated

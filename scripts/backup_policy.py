@@ -37,6 +37,7 @@ BACKUP_TABLES: tuple[str, ...] = (
     "django_content_type",
     "django_migrations",
     "django_session",
+    "syncer_archiveimportitem",
     "syncer_cishafetchstate",
     "syncer_commitcheckrun",
     "syncer_commithistoryharvest",
@@ -90,6 +91,8 @@ TRUNCATE_TABLES: tuple[str, ...] = (
     "syncer_cishafetchstate",
     "syncer_repodiscoverystate",
     "syncer_githubwebhookdelivery",
+    # Archive backfill importer worklist (design doc 043) — operational state.
+    "syncer_archiveimportitem",
 )
 
 # Tables retained in sanitized dump.
