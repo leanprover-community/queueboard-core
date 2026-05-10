@@ -145,9 +145,18 @@ project rule for env-backed settings.
 
 ### Compatibility with the live syncer
 - **Watermarks untouched**: importer must not advance `RepoBackfillCursor`,
-  `RepoDiscoveryState`, `CIShaFetchState`, or set `PullRequest.last_synced_at` /
-  `engagement_synced_at`. If `last_synced_at` reflected the archive's fetch time, the
-  live discovery preflight (`updatedAt > last_synced_at`) would then suppress fresh syncs.
+  `RepoDiscoveryState`, `CIShaFetchState`, or set `PullRequest.last_synced_at`. If
+  `last_synced_at` reflected the archive's fetch time, the live discovery preflight
+  (`updatedAt > last_synced_at`) would then suppress fresh syncs. (The previous
+  `PullRequest.engagement_synced_at` column was removed in design doc 044
+  Chunk 6b — `last_synced_at` is now the only "have we synced this PR?" timestamp.)
+- **`sync_schema_version` untouched**: importer must not advance
+  `PullRequest.sync_schema_version`. Per design doc 044, the upgrader registry is
+  the sole writer of that column; advancing it from archive code would falsely
+  claim that the v=2/v=3 ingestion expansions (broader `timelineItems`, nested
+  `comments(first: K)`) have been satisfied for the PR, even though the legacy
+  snapshot doesn't carry that data. Leave it alone; the upgrader wave will rewalk
+  the PR via the live syncer when its turn comes.
 - **Newer-wins guard for PR core**: in `pull_request_sync`, if the existing DB row's
   `updated_at` is newer than the archive snapshot's `updatedAt`, do not overwrite
   state/draft/title/body/closed_at/merged_at. The archive may still contribute
@@ -167,6 +176,40 @@ project rule for env-backed settings.
   fixture files in `test/`:
   - `archive_pr_info_minimal.json` — only required fields populated.
   - `archive_pr_info_full.json` — a real sample from archive2 (e.g. PR 12345).
+- **Live ingestion has expanded since the archive was written.** Design doc 044
+  added new `PRTimelineEvent` types (`ISSUE_COMMENTED`, `REVIEW_APPROVED`,
+  `REVIEW_CHANGES_REQUESTED`, `REVIEW_COMMENTED`, `REVIEW_DISMISSED`,
+  `REVIEW_REQUESTED`, `REVIEW_REQUEST_REMOVED`), three CHECK constraints on
+  `PRTimelineEvent`, and the `PRReviewInlineComment` /
+  `PRReviewInlineCommentBackfill` models. The legacy `pr_info.graphql` shape only
+  partially covers these:
+  - `IssueComment`, `ReviewRequestedEvent`, `ReviewRequestRemovedEvent`,
+    `ReviewDismissedEvent` nodes are present in the legacy `timelineItems` query
+    and can flow through the live `timeline_sync.py` normalizer with no
+    archive-specific changes.
+  - The legacy `PullRequestReview` fragment under `timelineItems` lacks `state`
+    and `submittedAt`, so the normalizer cannot route the row to one of
+    `REVIEW_APPROVED` / `REVIEW_CHANGES_REQUESTED` / `REVIEW_COMMENTED`.
+    Archive-mode ingestion **drops** these review nodes (consistent with how
+    the live ingest already drops `state=DISMISSED` review nodes — see doc
+    044 §Subtleties). The PR-level `reviews(first: 100)` connection in the
+    legacy payload still feeds the soft-deprecated `approvals` /
+    `commenters` aggregates via `pull_request_sync`.
+  - The legacy `ReviewDismissedEvent` fragment has no `previousReviewState` or
+    `actor`, so dismissed-review parent synthesis (doc 044 §Subtleties) cannot
+    fire. Archive-mode keeps the dismiss-event row itself but skips synthesis;
+    a later upgrader-driven rewalk under live code will populate the
+    synthesized parent.
+  - Inline review comments (`PullRequestReview.comments` connection) are not
+    in the legacy query at all — see Out of scope.
+
+### CHECK-constraint compatibility
+- The three CHECK constraints from doc 044 Chunk 4d — by-type routing for
+  `requested_reviewer_login` / `requested_team_slug`, mutex between those two
+  columns, and by-type routing for `inline_comment_total_count` — are
+  satisfied automatically as long as archive-mode goes through the live
+  `timeline_sync._extract_event_fields` path. Importer-specific normalization
+  must not bypass `_extract_event_fields`.
 
 ### Failure handling
 - HTTP 404 on `raw.githubusercontent.com` → `failed_permanent` (the path genuinely does
@@ -189,6 +232,19 @@ project rule for env-backed settings.
 - `pr_reactions.json` — not modeled in syncer; ignored.
 - `processed_data/all_pr_data.json.{aa..an}` — derived aggregator output; analyzer
   recomputes equivalents.
+- **Inline review comments** (`PRReviewInlineComment` /
+  `PRReviewInlineCommentBackfill`, added by doc 044 Chunk 3a). The legacy
+  `pr_info.graphql` carries `reviewThreads(first: 100)` with comment bodies,
+  but not the per-`PullRequestReview.comments(first: K)` connection that the
+  live ingest path expects. Re-fetchable from GitHub via the live syncer's
+  v=3 rewalks — same justification as `pr_reactions.json`. The importer does
+  not invoke `_sync_inline_review_comments` or write
+  `PRReviewInlineCommentBackfill` rows.
+- **Dismissed-review parent synthesis** (doc 044 §Subtleties). The legacy
+  `ReviewDismissedEvent` fragment lacks `previousReviewState`, so synthesis
+  has nothing to key on. The dismiss-event row itself is still imported; a
+  later upgrader-driven rewalk under live code populates the synthesized
+  parent if the original review still exists in GitHub's response.
 - Cross-repo support — initial implementation hard-codes
   `leanprover-community/mathlib4` mapping. The model carries `repository` so this is
   a config concern, not a schema one.
@@ -217,15 +273,37 @@ project rule for env-backed settings.
 - `qb_site/syncer/services/archive_import.py`:
   - `fetch_pr_info(archive_name, pr_number) -> bytes`
   - `import_pr_info_payload(repository, payload, *, archive_name, archive_timestamp)`
-    — invokes existing sub-syncs with archive flags (newer-wins guard, additive labels).
+    — invokes existing sub-syncs with archive flags (newer-wins guard, additive
+    labels, archive-mode timeline). Sub-syncs to invoke today
+    (post-doc-044 names — verify at implementation time):
+    - `pull_request_sync.upsert_pull_request` (newer-wins guard).
+    - `labels_sync.sync_pr_labels` (additive only).
+    - `timeline_sync.sync_timeline_events` with an `archive_mode=True` flag
+      that drops legacy-shape `PullRequestReview` items lacking `state` /
+      `submittedAt` and skips dismissed-review parent synthesis (legacy
+      payload has no `previousReviewState`); other event types route through
+      `_extract_event_fields` unchanged so CHECK constraints remain satisfied.
+    - `ci_sync.sync_commit_ci_snapshot` (insert/update by `github_node_id`).
+  - **Not invoked from archive code:** `_sync_inline_review_comments` (no
+    nested `comments` data in archive); writes to `sync_schema_version`
+    (owned exclusively by the upgrader registry).
 - `qb_site/syncer/tasks/archive_import.py::import_archive_pr_item(item_id)`.
 - Tests:
   - Minimal-shape fixture imports cleanly.
   - Full-shape fixture creates expected rows in PullRequest, PRTimelineEvent,
     CommitCheckRun, CommitStatusContext.
+  - Legacy-shape `PullRequestReview` timeline node (no `state`) is silently
+    dropped; sibling `IssueComment` / `ReviewRequestedEvent` /
+    `ReviewDismissedEvent` rows still ingest.
+  - Imported `ReviewDismissedEvent` row stores no synthesized parent (legacy
+    payload lacks `previousReviewState`); a subsequent live-code rewalk on
+    the same PR populates the synthesized parent without conflict.
+  - CHECK constraints from doc 044 Chunk 4d are satisfied (no
+    `IntegrityError`) on representative archive payloads.
   - Re-import of identical payload is a no-op (no duplicate rows, no stat changes).
   - Live PR with newer `updatedAt` than archive: PR core untouched; CI orphan-SHA rows
     still inserted.
+  - Imported PRs do **not** get `sync_schema_version` advanced.
   - Labels: archive snapshot with fewer labels does not detach existing live labels.
   - Failure modes: 404 → permanent; 500 → transient with retry; parse error → permanent.
 
@@ -316,6 +394,25 @@ project rule for env-backed settings.
 - 2026-05-06: Initial plan written. Decision to skip tarball/clone transport in favor
   of `raw.githubusercontent.com` + persisted worklist + throttled Celery beat tick,
   driven by Heroku basic-dyno memory and disk constraints. Provenance kept internal.
+- 2026-05-10: Plan updated to reflect dependencies that landed on master while
+  this importer was still at Commit 1:
+  - Doc 044 Chunk 6b removed `PullRequest.engagement_synced_at`. Updated
+    "Watermarks untouched" to drop the reference.
+  - Doc 044 added the `sync_schema_version` framework with the upgrader
+    registry as sole writer. Added an explicit invariant that the importer
+    must not advance `sync_schema_version`.
+  - Doc 044 added new `PRTimelineEvent` types (`REVIEW_*`,
+    `ISSUE_COMMENTED`, etc.), three CHECK constraints (Chunk 4d), and the
+    `PRReviewInlineComment` / `PRReviewInlineCommentBackfill` models.
+    Added a "Schema drift" sub-section enumerating which legacy event
+    shapes flow through unchanged, which get dropped (legacy
+    `PullRequestReview` timeline nodes without `state` / `submittedAt`),
+    and which get partial coverage (legacy `ReviewDismissedEvent` keeps
+    the dismiss row but skips parent synthesis — no `previousReviewState`
+    in the legacy fragment). Added an "Out of scope" entry for inline
+    review comments (legacy `pr_info.graphql` has `reviewThreads` but not
+    the per-`PullRequestReview.comments` connection the new ingest path
+    expects). Updated Commit 3's plan + tests to match.
 
 ## Finalization Notes
 - After Commit 6 (or its decision-not-to-do), collapse this doc into a final
