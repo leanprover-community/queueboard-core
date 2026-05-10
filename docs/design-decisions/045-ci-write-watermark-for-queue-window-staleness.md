@@ -85,11 +85,13 @@ staleness predicate to the queue-window sweep + convergence canary. The
 existing dirty-from-ts mechanism continues to serve revision-builder
 signaling unchanged.
 
-Land the work in two PRs: a prerequisite cleanup (Step 0) that drops
-two dead columns from `PRRevisionBuildState`, then the watermark
-feature itself (Steps 1+). Step 0 is independently shippable and has
-no behavioral effect on its own, so it's safe to land first and
-verify in production before the watermark work goes in.
+Land the work in one PR organized as two commits: a prerequisite
+cleanup (Step 0) that drops two dead columns from
+`PRRevisionBuildState`, followed by the watermark feature itself
+(Steps 1+). Keeping Step 0 as its own commit means it's bisectable
+and reviewable in isolation, even though it ships in the same PR.
+Step 0 has no behavioral effect on its own once the dormant-PR
+verification SQL returns zero.
 
 ### Step 0: Drop legacy `windows_built_*` fields (prerequisite)
 
@@ -482,24 +484,23 @@ In `analyzer/tests/`:
 
 ## Operational Notes
 
-- **Two-PR rollout.** Step 0 (legacy column drop) lands first as its
-  own PR. It is independently verifiable: pre-deploy, the row count
-  in the verification SQL should be zero or near-zero; post-deploy,
-  no behavior should change. Steps 1+ (the watermark feature) follow
-  in a second PR once Step 0 is stable.
-- Convergence-snapshot impact during rollout of the watermark PR:
-  each PR's first post-deploy CI write flips `latest_ci_synced_at`
-  from null to "now," which (since `windows_built_at` for that PR
-  was set on a prior rebuild, i.e. earlier than now) marks the PR's
-  rulesets stale. On a busy repo this means a large fraction of the
-  active cohort flips to `windows_stale = True` within minutes of
-  deploy and gets re-rebuilt on the next 1–2 sweep ticks. Before
-  rollout, sanity-check that the sweep's per-tick batch budget can
-  absorb this one-time spike — by inspecting recent peak-window
-  sweep durations or by deploying during a low-traffic period. The
-  spike clears by definition once each PR has been rebuilt once
-  post-deploy.
-- No rollback complexity for the watermark PR — the column is
+- **Two-commit rollout in one PR.** Step 0 (legacy column drop) is
+  its own commit so it's bisectable and reviewable in isolation; the
+  watermark commit (Steps 1+) follows in the same PR. Run the
+  verification SQL pre-merge — the row count should be zero or
+  near-zero. The Step 0 commit has no behavioral effect on its own.
+- Convergence-snapshot impact during rollout: each PR's first
+  post-deploy CI write flips `latest_ci_synced_at` from null to "now,"
+  which (since `windows_built_at` for that PR was set on a prior
+  rebuild, i.e. earlier than now) marks the PR's rulesets stale. On a
+  busy repo this means a large fraction of the active cohort flips to
+  `windows_stale = True` within minutes of deploy and gets re-rebuilt
+  on the next 1–2 sweep ticks. Before rollout, sanity-check that the
+  sweep's per-tick batch budget can absorb this one-time spike — by
+  inspecting recent peak-window sweep durations or by deploying during
+  a low-traffic period. The spike clears by definition once each PR
+  has been rebuilt once post-deploy.
+- No rollback complexity for the watermark commit — the column is
   additive and the sweep predicate is additive. Reverting requires
   removing the predicate clauses and the `_bump_latest_ci_synced_at`
   call (the migration can stay or be reverted separately).
@@ -507,8 +508,8 @@ In `analyzer/tests/`:
   Postgres operation, but the data is gone; revival would have to go
   through the same per-ruleset state that supplanted them, so a
   meaningful rollback isn't really available. Mitigated by the
-  pre-deploy verification SQL — if the row count is non-zero, fix
-  the dormant PRs first instead of rolling forward.
+  pre-merge verification SQL — if the row count is non-zero, fix
+  the dormant PRs first instead of merging.
 
 ## References
 
