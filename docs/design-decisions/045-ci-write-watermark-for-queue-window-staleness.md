@@ -85,6 +85,106 @@ staleness predicate to the queue-window sweep + convergence canary. The
 existing dirty-from-ts mechanism continues to serve revision-builder
 signaling unchanged.
 
+Land the work in two PRs: a prerequisite cleanup (Step 0) that drops
+two dead columns from `PRRevisionBuildState`, then the watermark
+feature itself (Steps 1+). Step 0 is independently shippable and has
+no behavioral effect on its own, so it's safe to land first and
+verify in production before the watermark work goes in.
+
+### Step 0: Drop legacy `windows_built_*` fields (prerequisite)
+
+`PRRevisionBuildState` carries two columns —
+`windows_built_revision_version` and `windows_built_at` — that doc 024
+("per-ruleset queue-window build state") superseded with per-(PR,
+ruleset) `PRQueueWindowBuildState.windows_built_*`. The PR-level
+columns are dead weight today:
+
+- They are **written only to null** during revision rebuilds
+  (`revisions.py:479-480`).
+- The sole live reader is a `"legacy_pr_build_state"` backfill
+  fallback at `queue_window_build_state.py:143-148` that populates
+  per-ruleset state for any PR still lacking it. Since every revision
+  rebuild nulls the source columns, this fallback can only fire for
+  PRs that have not had a revision rebuild since doc 024's migration
+  landed — i.e. dormant closed PRs.
+
+Adding `latest_ci_synced_at` next to two columns that nobody writes
+non-null values to is bad for legibility. Clean these up first so
+the watermark addition is the only PR-level revision build-state
+change in flight.
+
+Steps:
+
+1. **Confirm the fallback is dead in production.** Run:
+   ```sql
+   SELECT COUNT(*) FROM analyzer_prrevisionbuildstate
+   WHERE windows_built_at IS NOT NULL
+      OR windows_built_revision_version IS NOT NULL;
+   ```
+   If the count is zero or trivial (a handful of rows), proceed. If
+   non-trivial, the simplest path is to enqueue revision rebuilds for
+   the affected PRs (which will null the columns) before continuing —
+   or accept that the fallback runs one last time during the rollout
+   and the per-ruleset state catches up.
+
+2. **Remove the fallback code path.** In
+   `analyzer/services/queue_window_build_state.py:143-148`, drop the
+   legacy-state branch that reads the PR-level fields. Remove any
+   helpers used only by that branch. Update tests that exercise the
+   fallback (search for `"legacy_pr_build_state"` and the field names).
+
+3. **Stop writing the columns.** In `analyzer/services/revisions.py`
+   around lines 479-480, remove the `windows_built_revision_version =
+   None` / `windows_built_at = None` assignments. (Keep the
+   `update_fields=` list in sync if those fields are listed there.)
+
+4. **Drop the columns and their index.**
+   ```python
+   # analyzer/migrations/00NN_drop_legacy_windows_built_fields.py
+   operations = [
+       migrations.RemoveIndex(
+           model_name="prrevisionbuildstate",
+           name="prrbs_windows_built_rev_idx",
+       ),
+       migrations.RemoveField(
+           model_name="prrevisionbuildstate",
+           name="windows_built_revision_version",
+       ),
+       migrations.RemoveField(
+           model_name="prrevisionbuildstate",
+           name="windows_built_at",
+       ),
+   ]
+   ```
+   Postgres `DROP COLUMN` is metadata-only on a non-rewriting drop,
+   so this is fast even if the table is large.
+
+5. **Admin + summary references.** Remove the columns from
+   `analyzer/admin.py`'s `list_display` / `readonly_fields` for
+   `PRRevisionBuildState`, and from any task summaries that still
+   emit them (e.g. `plan_missing_ci.py:167, 170` per the audit).
+   These were already nulls so the change is cosmetic.
+
+6. **Update doc 024.** Add a "Superseded fields" note recording that
+   the PR-level fallback was removed, link this doc, and update any
+   migration references in 024's body. Doc 024 is the historical
+   source of these fields and should remain the place a future reader
+   looks first.
+
+7. **Backup policy.** `scripts/backup_policy.py` covers
+   `PRRevisionBuildState`; the column removal needs the field list
+   updated there too (see root `AGENTS.md` on backup policy
+   coverage).
+
+`ci_checked_at` is **kept** in this pass. The audit found it's only
+read in task-output summaries (`plan_missing_ci.py:166`) and not in
+any live staleness check, but that's deliberate observability —
+having a wall-clock for "when was CI last checked for revision N"
+helps operators diagnose stuck PRs without joining against task
+logs. Document this in the model docstring as part of step 5
+("observability-only; not a staleness signal") so the next reviewer
+doesn't try to delete it.
+
 ### Schema
 
 New column on `analyzer.PRRevisionBuildState`:
@@ -315,18 +415,28 @@ letting the next sweep tick re-evaluate is minimal — recommend skipping.
 In `analyzer/tests/`:
 
 - `_bump_latest_ci_synced_at`:
-  - First call sets the column (Postgres `GREATEST(NULL, now)` returns
-    `now`).
+  - First call sets the column (the `__isnull=True` branch of the
+    WHERE matches; UPDATE writes one row).
   - Second call with later `now` advances forward.
-  - Second call with earlier `now` is a no-op (monotone).
+  - Second call with earlier-or-equal `now` is a no-op: zero rows
+    match the WHERE, zero rows written. Pin this with
+    `assertNumQueries`-style or row-count assertions so a future
+    refactor that drops the WHERE gate (e.g. switching to
+    `Greatest(...)`) fails the test.
   - Get-or-creates `PRRevisionBuildState` if it doesn't exist.
-  - Concurrency: two interleaved calls — A reads, B reads, B writes
-    larger `now`, A writes smaller `now` — leave the column at the
-    larger value. (Easiest to write as two threads / two transactions
-    using `transaction.atomic()` blocks; the `GREATEST`-based UPDATE
-    must make this pass without a select-for-update.)
-  - `updated_at` is bumped on every successful UPDATE (auto_now does
-    not fire for `.update()`, so the helper sets it explicitly).
+  - Concurrency: two interleaved transactions — A and B both read
+    the same starting state, B writes a larger `now`, A writes a
+    smaller `now` — final value equals the larger of the two and
+    `updated_at` is consistent with that value. (Easiest to write
+    as two threads with `transaction.atomic()` blocks; the
+    WHERE-gated UPDATE must make this pass without a
+    select-for-update.)
+  - `updated_at` is bumped only when the row was actually written
+    (auto_now does not fire for `.update()`, so the helper sets it
+    explicitly inside the same statement that sets
+    `latest_ci_synced_at`). Verify by snapshotting `updated_at`,
+    calling the helper with an earlier `now`, and asserting
+    `updated_at` is unchanged.
 - Sub-sync integration:
   - `sync_check_runs` with new rows: watermark advances to `now`.
   - `sync_check_runs` with rows that all match existing state (created=0,
@@ -372,25 +482,39 @@ In `analyzer/tests/`:
 
 ## Operational Notes
 
-- Convergence-snapshot impact during rollout: each PR's first
-  post-deploy CI write flips `latest_ci_synced_at` from null to "now,"
-  which (since `windows_built_at` for that PR was set on a prior
-  rebuild, i.e. earlier than now) marks the PR's rulesets stale. On a
-  busy repo this means a large fraction of the active cohort flips to
-  `windows_stale = True` within minutes of deploy and gets re-rebuilt
-  on the next 1–2 sweep ticks. Before rollout, sanity-check that the
-  sweep's per-tick batch budget can absorb this one-time spike — by
-  inspecting recent peak-window sweep durations or by deploying during
-  a low-traffic period. The spike clears by definition once each PR
-  has been rebuilt once post-deploy.
-- No rollback complexity — the column is additive and the sweep predicate
-  is additive. Reverting requires removing the predicate clauses and the
-  `_bump_latest_ci_synced_at` call (the migration can stay or be reverted
-  separately).
+- **Two-PR rollout.** Step 0 (legacy column drop) lands first as its
+  own PR. It is independently verifiable: pre-deploy, the row count
+  in the verification SQL should be zero or near-zero; post-deploy,
+  no behavior should change. Steps 1+ (the watermark feature) follow
+  in a second PR once Step 0 is stable.
+- Convergence-snapshot impact during rollout of the watermark PR:
+  each PR's first post-deploy CI write flips `latest_ci_synced_at`
+  from null to "now," which (since `windows_built_at` for that PR
+  was set on a prior rebuild, i.e. earlier than now) marks the PR's
+  rulesets stale. On a busy repo this means a large fraction of the
+  active cohort flips to `windows_stale = True` within minutes of
+  deploy and gets re-rebuilt on the next 1–2 sweep ticks. Before
+  rollout, sanity-check that the sweep's per-tick batch budget can
+  absorb this one-time spike — by inspecting recent peak-window
+  sweep durations or by deploying during a low-traffic period. The
+  spike clears by definition once each PR has been rebuilt once
+  post-deploy.
+- No rollback complexity for the watermark PR — the column is
+  additive and the sweep predicate is additive. Reverting requires
+  removing the predicate clauses and the `_bump_latest_ci_synced_at`
+  call (the migration can stay or be reverted separately).
+- Step 0 rollback: re-adding the dropped columns is a metadata-only
+  Postgres operation, but the data is gone; revival would have to go
+  through the same per-ruleset state that supplanted them, so a
+  meaningful rollback isn't really available. Mitigated by the
+  pre-deploy verification SQL — if the row count is non-zero, fix
+  the dormant PRs first instead of rolling forward.
 
 ## References
 
-- `qb_site/analyzer/models/pr_revision_build_state.py` — column lives here.
+- `qb_site/analyzer/models/pr_revision_build_state.py` — column lives
+  here; also where the legacy `windows_built_*` fields are removed in
+  Step 0.
 - `qb_site/syncer/services/sub/ci_sync.py:188–355` — call sites for
   `_bump_latest_ci_synced_at`.
 - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py:20–205` — sweep
@@ -398,6 +522,17 @@ In `analyzer/tests/`:
 - `qb_site/analyzer/tasks/collect_convergence.py` — convergence canary.
 - `qb_site/analyzer/services/queueboard_snapshot.py:457, 762–765` —
   consumers of materialized vs. fresh CI data.
+- `qb_site/analyzer/services/queue_window_build_state.py:143-148` —
+  legacy `"legacy_pr_build_state"` fallback removed in Step 0.
+- `qb_site/analyzer/services/revisions.py:479-480` — Step 0 stops
+  writing nulls to the dropped columns here.
+- `qb_site/analyzer/admin.py` — Step 0 removes the dropped columns
+  from `PRRevisionBuildState`'s admin display.
+- `scripts/backup_policy.py` — Step 0 updates this to reflect the
+  schema change.
+- `docs/design-decisions/024-per-ruleset-queue-window-build-state.md`
+  — origin of the per-ruleset state that supersedes the PR-level
+  `windows_built_*` fields; updated by Step 0 to record their removal.
 - `docs/design-decisions/043-archive-repo-backfill-importer.md` — the
   archive importer is one of the out-of-band CI ingest paths that
   benefits; it depends on this work landing first.
