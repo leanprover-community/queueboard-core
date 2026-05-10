@@ -476,14 +476,10 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         state.revision_version = (state.revision_version or 0) + 1
         state.ci_checked_revision_version = None
         state.ci_checked_at = None
-        state.windows_built_revision_version = None
-        state.windows_built_at = None
         update_fields += [
             "revision_version",
             "ci_checked_revision_version",
             "ci_checked_at",
-            "windows_built_revision_version",
-            "windows_built_at",
         ]
     else:
         strategy = "noop"

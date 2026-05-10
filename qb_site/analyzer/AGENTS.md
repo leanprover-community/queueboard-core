@@ -26,9 +26,6 @@ docker compose exec -T web python qb_site/manage.py plan_ci_backfill --repo lean
 
 # Backfill reviewer opt-outs command
 docker compose exec -T web python qb_site/manage.py backfill_reviewer_opt_outs --dry-run
-
-# Backfill queue-window build states (e.g. after adding a new build-state field)
-docker compose exec -T web python qb_site/manage.py backfill_queue_window_build_states --dry-run
 ```
 
 ## Task Surface

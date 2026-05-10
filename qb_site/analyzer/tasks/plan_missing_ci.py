@@ -164,10 +164,6 @@ def plan_missing_ci_backfill_task(
                         if state.ci_checked_revision_version is not None
                         else None,
                         "ci_checked_at": state.ci_checked_at.isoformat() if state.ci_checked_at else None,
-                        "windows_built_revision_version": int(state.windows_built_revision_version or 0)
-                        if state.windows_built_revision_version is not None
-                        else None,
-                        "windows_built_at": state.windows_built_at.isoformat() if state.windows_built_at else None,
                         "state_updated_at": state.updated_at.isoformat() if state.updated_at else None,
                         "candidate_count": len(candidate_shas),
                         "terminal_shas": list(terminal_shas),
@@ -264,10 +260,6 @@ def plan_missing_ci_backfill_task(
                         if state.ci_checked_revision_version is not None
                         else None,
                         "ci_checked_at": state.ci_checked_at.isoformat() if state.ci_checked_at else None,
-                        "windows_built_revision_version": int(state.windows_built_revision_version or 0)
-                        if state.windows_built_revision_version is not None
-                        else None,
-                        "windows_built_at": state.windows_built_at.isoformat() if state.windows_built_at else None,
                         "state_updated_at": state.updated_at.isoformat() if state.updated_at else None,
                         "candidate_count": len(candidate_shas),
                         "terminal_shas": list(terminal_shas),

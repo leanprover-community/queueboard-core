@@ -1,5 +1,17 @@
 # Per-Ruleset Queue Window Build State
 
+> **Superseded fields removed (doc 045 step 0).** The PR-level
+> `PRRevisionBuildState.windows_built_revision_version` and
+> `PRRevisionBuildState.windows_built_at` columns referenced throughout
+> this doc were dropped from the schema in doc 045's step 0 cleanup,
+> alongside the `backfill_queue_window_build_states` management command
+> and its service function `backfill_queue_window_build_states_for_repo`.
+> Per-ruleset `PRQueueWindowBuildState` is now the only source of
+> queue-window freshness; references to the PR-level fields below are
+> retained for historical context only. Pre-deploy verification
+> confirmed all 33,445 rows with non-null legacy values had
+> corresponding per-ruleset state — pure residue, no data lost.
+
 ## Context
 - Queue windows are materialized per `(pull_request, rule_set)` in `analyzer.PRQueueWindow`.
 - Freshness tracking was historically PR-level via `analyzer.PRRevisionBuildState.windows_built_revision_version` and `windows_built_at`.
@@ -12,7 +24,7 @@
 - Analyzer convergence computes `windows_stale` as stale `(PR, ruleset)` pairs.
 - Transitional PR-level fallback reads were removed after production validation.
 - Queue-window paths no longer write PR-level `windows_built_*`; per-ruleset state is the source of truth for freshness.
-- PR-level fields remain in schema for compatibility/observability in this phase, but are no longer used by sweep/convergence freshness logic.
+- PR-level fields were dropped from the schema in doc 045 step 0 (see banner above).
 
 ## Architecture
 
@@ -58,9 +70,8 @@ A `(PR, ruleset)` pair is stale when any of the following are true:
 - When queue windows are rebuilt, `process_pr` records per-ruleset build-state updates.
 - `process_pr` does not update PR-level `windows_built_*`.
 
-### Backfill Path
-- `backfill_queue_window_build_states` populates/realigns per-ruleset build-state rows for existing PRs and active rulesets.
-- Dry-run mode is used for readiness and coverage checks.
+### Backfill Path (historical)
+- The original `backfill_queue_window_build_states` management command populated per-ruleset build-state rows for existing PRs and active rulesets from the legacy PR-level fields. It and its supporting service function were removed in doc 045 step 0; the per-ruleset rows it produced are the canonical state going forward, and the live writer (`record_queue_window_build_states`) maintains them.
 
 ## Consequences
 - Pros:
@@ -122,8 +133,7 @@ Queue windows can become stale from several independent causes. This table maps 
 - `qb_site/analyzer/tasks/rebuild_queue_windows_sweep.py`
 - `qb_site/analyzer/tasks/process_pr.py`
 - `qb_site/analyzer/tasks/collect_convergence.py`
-- `qb_site/analyzer/management/commands/backfill_queue_window_build_states.py`
 - `qb_site/analyzer/tests/tasks/test_rebuild_queue_windows_sweep_task.py`
 - `qb_site/analyzer/tests/tasks/test_process_pr.py`
 - `qb_site/analyzer/tests/tasks/test_collect_convergence_task.py`
-- `qb_site/analyzer/tests/services/test_queue_window_build_state.py`
+- `docs/design-decisions/045-ci-write-watermark-for-queue-window-staleness.md` — Step 0 cleanup that removed the legacy PR-level fields and the `backfill_queue_window_build_states` command.

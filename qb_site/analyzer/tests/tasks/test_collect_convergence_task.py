@@ -62,8 +62,6 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
             pull_request=pr2,
             revision_version=2,
             ci_checked_revision_version=2,
-            windows_built_revision_version=1,
-            windows_built_at=pr2.gh_created_at,
         )
         # PR with revisions and a CI-by-SHA fetch state (should not count as "not checked").
         pr4 = self._mk_pr(4)
@@ -132,12 +130,9 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
     def test_windows_stale_clears_after_sweep_updates_built_at(self) -> None:
         pr = self._mk_pr(10)
         PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
-        old_built_at = timezone.now() - timezone.timedelta(days=3)
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=old_built_at,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -186,8 +181,6 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at - timezone.timedelta(hours=2))
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=timezone.now())
@@ -250,8 +243,6 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at - timezone.timedelta(hours=2))
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at - timezone.timedelta(hours=2))

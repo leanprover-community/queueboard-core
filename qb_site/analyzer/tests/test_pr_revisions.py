@@ -156,14 +156,10 @@ class TestPRRevisions(TestCase):
         state = PRRevisionBuildState.objects.get(pull_request=pr)
         state.ci_checked_revision_version = state.revision_version
         state.ci_checked_at = timezone.now()
-        state.windows_built_revision_version = state.revision_version
-        state.windows_built_at = timezone.now()
         state.save(
             update_fields=[
                 "ci_checked_revision_version",
                 "ci_checked_at",
-                "windows_built_revision_version",
-                "windows_built_at",
             ]
         )
 
@@ -174,8 +170,6 @@ class TestPRRevisions(TestCase):
         self.assertEqual(state.revision_version, 1)
         self.assertEqual(state.ci_checked_revision_version, 1)
         self.assertIsNotNone(state.ci_checked_at)
-        self.assertEqual(state.windows_built_revision_version, 1)
-        self.assertIsNotNone(state.windows_built_at)
 
     def test_rebuild_full_when_builder_version_mismatch(self) -> None:
         pr = self._mk_pr(13)
@@ -315,8 +309,6 @@ class TestPRRevisions(TestCase):
         self.assertEqual(state.revision_version, 2)
         self.assertIsNone(state.ci_checked_revision_version)
         self.assertIsNone(state.ci_checked_at)
-        self.assertIsNone(state.windows_built_revision_version)
-        self.assertIsNone(state.windows_built_at)
 
     def test_append_preserves_prefix_and_rewrites_tail(self) -> None:
         pr = self._mk_pr(16)

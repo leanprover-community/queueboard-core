@@ -77,8 +77,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
-            windows_built_revision_version=2,
-            windows_built_at=built_at,
         )
         PRQueueWindowBuildState.objects.create(
             pull_request=pr,
@@ -99,8 +97,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=timezone.now(),
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -128,8 +124,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=old_built_at,
         )
         rs_state = PRQueueWindowBuildState.objects.create(
             pull_request=pr,
@@ -169,8 +163,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=3,
-            windows_built_revision_version=3,
-            windows_built_at=built_at,
         )
         PRQueueWindowBuildState.objects.create(
             pull_request=pr,
@@ -219,8 +211,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=4,
-            windows_built_revision_version=4,
-            windows_built_at=built_at,
         )
         PRQueueWindowBuildState.objects.create(
             pull_request=pr,
@@ -274,8 +264,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         PRQueueWindow.objects.create(
             pull_request=pr,
@@ -343,8 +331,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
@@ -394,8 +380,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at + timezone.timedelta(hours=1))
@@ -454,8 +438,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
@@ -516,8 +498,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
-            windows_built_revision_version=1,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
@@ -579,8 +559,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
-            windows_built_revision_version=2,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
@@ -647,8 +625,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
-            windows_built_revision_version=2,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
@@ -711,8 +687,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=2,
-            windows_built_revision_version=2,
-            windows_built_at=built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=built_at)
         QueueRuleSet.objects.filter(pk=rs_two.pk).update(updated_at=built_at)
@@ -773,8 +747,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=old_built_at,
         )
         # Pin ruleset updated_at to old_built_at so it is not a staleness trigger.
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=old_built_at)
@@ -801,8 +773,6 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         PRRevisionBuildState.objects.create(
             pull_request=pr,
             revision_version=1,
-            windows_built_revision_version=1,
-            windows_built_at=fresh_built_at,
         )
         QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=fresh_built_at)
         PRQueueWindowBuildState.objects.create(
