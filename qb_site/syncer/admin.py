@@ -15,6 +15,8 @@ from .models import (
     LabelDef,
     PRLabel,
     PRTimelineEvent,
+    PRReviewInlineComment,
+    PRReviewInlineCommentBackfill,
     SyncerMetricsSnapshot,
     SyncerConvergenceSnapshot,
     RepoBackfillCursor,
@@ -118,9 +120,17 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "last_synced_at",
         "timeline_backfill_done",
         "commits_backfill_done",
+        "sync_schema_version",
         "author_link",
     )
-    list_filter = ("repository", "state", "is_draft", "timeline_backfill_done", "commits_backfill_done")
+    list_filter = (
+        "repository",
+        "state",
+        "is_draft",
+        "timeline_backfill_done",
+        "commits_backfill_done",
+        "sync_schema_version",
+    )
     date_hierarchy = "gh_updated_at"
     raw_id_fields = ("repository", "author")
     # number_link is a readonly helper that links to GitHub
@@ -154,7 +164,6 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "reviews_incomplete",
         "comments_incomplete",
         "last_synced_at",
-        "engagement_synced_at",
         "timeline_backfill_cursor",
         "timeline_backfill_done",
         "timeline_earliest_synced_at",
@@ -162,6 +171,7 @@ class PullRequestAdmin(ReadOnlyAdmin):
         "commits_backfill_done",
         "commits_earliest_synced_at",
         "head_ci_state",
+        "sync_schema_version",
         "created_at",
         "updated_at",
     )
@@ -888,9 +898,29 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
     short_before_sha.short_description = "before_sha"  # type: ignore[attr-defined]
     short_after_sha.short_description = "after_sha"  # type: ignore[attr-defined]
 
-    list_display = ("pull_request", "type", "occurred_at", "label_name", "short_before_sha", "short_after_sha")
+    list_display = (
+        "pull_request",
+        "type",
+        "occurred_at",
+        "actor_login",
+        "label_name",
+        "assignee_login",
+        "requested_reviewer_login",
+        "requested_team_slug",
+        "short_before_sha",
+        "short_after_sha",
+    )
     list_filter = ("pull_request__repository", "type")
-    search_fields = ("label_name", "pull_request__number", "before_sha", "after_sha")
+    search_fields = (
+        "label_name",
+        "pull_request__number",
+        "before_sha",
+        "after_sha",
+        "actor_login",
+        "assignee_login",
+        "requested_reviewer_login",
+        "requested_team_slug",
+    )
     date_hierarchy = "occurred_at"
     ordering = ("-occurred_at", "-id")
     raw_id_fields = ("pull_request",)
@@ -900,8 +930,84 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "type",
         "occurred_at",
         "label_name",
+        "assignee_login",
+        "actor_login",
         "before_sha",
         "after_sha",
+        "extra",
+        "requested_reviewer_login",
+        "requested_team_slug",
+        "inline_comment_total_count",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(PRReviewInlineComment)
+class PRReviewInlineCommentAdmin(ReadOnlyAdmin):
+    list_display = (
+        "pull_request",
+        "gh_created_at",
+        "author_login",
+        "path",
+        "line",
+        "review_node_id",
+        "thread_root_node_id",
+    )
+    list_filter = ("pull_request__repository",)
+    search_fields = (
+        "author_login",
+        "path",
+        "review_node_id",
+        "thread_root_node_id",
+        "github_node_id",
+        "pull_request__number",
+    )
+    date_hierarchy = "gh_created_at"
+    ordering = ("-gh_created_at", "-id")
+    raw_id_fields = ("pull_request", "parent_review_event")
+    readonly_fields = (
+        "pull_request",
+        "parent_review_event",
+        "github_node_id",
+        "review_node_id",
+        "author_login",
+        "gh_created_at",
+        "path",
+        "line",
+        "original_line",
+        "reply_to_node_id",
+        "thread_root_node_id",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(PRReviewInlineCommentBackfill)
+class PRReviewInlineCommentBackfillAdmin(ReadOnlyAdmin):
+    """Operator-visible queue of reviews whose inline-comment fetch was incomplete.
+
+    A non-empty changelist here means the v3 paginator (deferred) has work to
+    do. Steady-state: this table is empty or near-empty; rows accumulate only
+    when a review has more than ``SYNCER_INLINE_COMMENTS_PER_REVIEW`` inline
+    comments.
+    """
+
+    list_display = (
+        "review_event",
+        "pull_request",
+        "review_node_id",
+        "total_count",
+        "created_at",
+    )
+    list_filter = ("pull_request__repository",)
+    search_fields = ("review_node_id", "pull_request__number")
+    raw_id_fields = ("review_event", "pull_request")
+    readonly_fields = (
+        "review_event",
+        "pull_request",
+        "review_node_id",
+        "total_count",
         "created_at",
         "updated_at",
     )
@@ -1205,11 +1311,11 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "discovery_continuation_active",
         "discovery_last_attempted_at",
         "discovery_last_successful_at",
-        "prs_missing_engagement",
-        "prs_engagement_incomplete",
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
         "prs_missing_head_ci_contexts",
+        "prs_below_current_sync_schema_version",
+        "sync_schema_version_target",
     )
     list_filter = ("repository", "history_cursor_completed", "discovery_continuation_active")
     date_hierarchy = "collected_at"
@@ -1228,11 +1334,11 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "discovery_continuation_active",
         "discovery_last_attempted_at",
         "discovery_last_successful_at",
-        "prs_missing_engagement",
-        "prs_engagement_incomplete",
         "prs_missing_head_ci_state",
         "prs_missing_head_sha",
         "prs_missing_head_ci_contexts",
+        "prs_below_current_sync_schema_version",
+        "sync_schema_version_target",
         "created_at",
     )
 

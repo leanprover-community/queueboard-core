@@ -52,9 +52,7 @@ class TestCollectAnalyzerConvergenceTask(TestCase):
 
     def test_collects_convergence_counts(self) -> None:
         # PR with no revisions
-        pr1 = self._mk_pr(1)
-        pr1.engagement_synced_at = timezone.now()
-        pr1.save(update_fields=["engagement_synced_at"])
+        self._mk_pr(1)
         # PR with revisions but stale windows/ci check and incomplete engagement
         pr2 = self._mk_pr(2)
         pr2.files_incomplete = True

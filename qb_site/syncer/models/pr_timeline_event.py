@@ -17,6 +17,13 @@ class PRTimelineEventType(models.TextChoices):
     REOPENED = "REOPENED", "reopened"
     CLOSED = "CLOSED", "closed"
     HEAD_FORCE_PUSHED = "HEAD_FORCE_PUSHED", "head_force_pushed"
+    ISSUE_COMMENTED = "ISSUE_COMMENTED", "issue_commented"
+    REVIEW_APPROVED = "REVIEW_APPROVED", "review_approved"
+    REVIEW_CHANGES_REQUESTED = "REVIEW_CHANGES_REQUESTED", "review_changes_requested"
+    REVIEW_COMMENTED = "REVIEW_COMMENTED", "review_commented"
+    REVIEW_DISMISSED = "REVIEW_DISMISSED", "review_dismissed"
+    REVIEW_REQUESTED = "REVIEW_REQUESTED", "review_requested"
+    REVIEW_REQUEST_REMOVED = "REVIEW_REQUEST_REMOVED", "review_request_removed"
 
 
 class PRTimelineEvent(TimestampedModel):
@@ -48,6 +55,21 @@ class PRTimelineEvent(TimestampedModel):
     # Present only for HEAD_FORCE_PUSHED events; Git commit SHAs (40 chars)
     before_sha = models.CharField(max_length=40, null=True, blank=True)
     after_sha = models.CharField(max_length=40, null=True, blank=True)
+    # Display-time denormalization for review/dismissal events (e.g. dismissed
+    # review identity for REVIEW_DISMISSED). Read with the row, never filtered
+    # on; query-hot fields are promoted to typed columns instead.
+    extra = models.JSONField(default=dict, blank=True)
+    # Populated for REVIEW_REQUESTED / REVIEW_REQUEST_REMOVED when the target
+    # is a User or Mannequin. Mutually exclusive with requested_team_slug.
+    requested_reviewer_login = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    # Populated for REVIEW_REQUESTED / REVIEW_REQUEST_REMOVED when the target
+    # is a Team. Mutually exclusive with requested_reviewer_login.
+    requested_team_slug = models.CharField(max_length=255, null=True, blank=True, db_index=True)
+    # Populated for REVIEW_APPROVED / REVIEW_CHANGES_REQUESTED / REVIEW_COMMENTED
+    # from comments.totalCount on the PullRequestReview node. Real GitHub-truth
+    # value, not sync-state — used to detect reviews whose inline comments
+    # exceeded the per-review fetch limit (see PRReviewInlineCommentBackfill).
+    inline_comment_total_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         constraints = [
@@ -69,6 +91,48 @@ class PRTimelineEvent(TimestampedModel):
             models.CheckConstraint(
                 name="syncer_prtl_label_by_type_ck",
                 condition=(Q(label_name__isnull=True) | Q(type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED])),
+            ),
+            # If a requested-reviewer column is populated, the type must be a
+            # review-request event. Inverse direction (a review-request must
+            # always have one of the columns set) is intentionally not enforced
+            # — GitHub has historically returned null requestedReviewer for
+            # deleted/anonymized targets and we'd rather store the event than
+            # crash ingestion.
+            models.CheckConstraint(
+                name="syncer_prtl_requested_reviewer_by_type_ck",
+                condition=(
+                    Q(requested_reviewer_login__isnull=True, requested_team_slug__isnull=True)
+                    | Q(
+                        type__in=[
+                            PRTimelineEventType.REVIEW_REQUESTED,
+                            PRTimelineEventType.REVIEW_REQUEST_REMOVED,
+                        ]
+                    )
+                ),
+            ),
+            # At most one of requested_reviewer_login / requested_team_slug is
+            # set on any given row. The two columns mirror disjoint members of
+            # GraphQL's requestedReviewer union (User/Bot/Mannequin vs Team).
+            models.CheckConstraint(
+                name="syncer_prtl_requested_reviewer_mutex_ck",
+                condition=Q(requested_reviewer_login__isnull=True) | Q(requested_team_slug__isnull=True),
+            ),
+            # inline_comment_total_count mirrors PullRequestReview.comments.totalCount
+            # and is therefore only meaningful on the three submitted-review
+            # event types. REVIEW_DISMISSED captures the dismissal event, not
+            # the underlying review, so it must remain null.
+            models.CheckConstraint(
+                name="syncer_prtl_inline_total_by_type_ck",
+                condition=(
+                    Q(inline_comment_total_count__isnull=True)
+                    | Q(
+                        type__in=[
+                            PRTimelineEventType.REVIEW_APPROVED,
+                            PRTimelineEventType.REVIEW_CHANGES_REQUESTED,
+                            PRTimelineEventType.REVIEW_COMMENTED,
+                        ]
+                    )
+                ),
             ),
         ]
         indexes = [

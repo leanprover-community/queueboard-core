@@ -112,17 +112,21 @@ class GitHubClient:
         number: int,
         timelineK: int = 150,
         commitsM: int = 15,
+        inlineCommentsPerReview: Optional[int] = None,
         query_path: str = "qb_site/syncer/queries/pr_bundle.graphql",
         timeline_since_iso: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetch the single-PR GraphQL bundle as a dict."""
         query = self._read_file(query_path)
+        if inlineCommentsPerReview is None:
+            inlineCommentsPerReview = int(getattr(settings, "SYNCER_INLINE_COMMENTS_PER_REVIEW", 20))
         variables = {
             "owner": owner,
             "name": name,
             "number": int(number),
             "timelineK": int(timelineK),
             "commitsM": int(commitsM),
+            "inlineCommentsPerReview": int(inlineCommentsPerReview),
             "timelineSince": timeline_since_iso,
         }
         return self.execute(query, variables)
@@ -148,16 +152,20 @@ class GitHubClient:
         number: int,
         first: int,
         after: Optional[str] = None,
+        inlineCommentsPerReview: Optional[int] = None,
         query_path: str = "qb_site/syncer/queries/timeline_page.graphql",
         since_iso: Optional[str] = None,
     ) -> Dict[str, Any]:
         query = self._read_file(query_path)
+        if inlineCommentsPerReview is None:
+            inlineCommentsPerReview = int(getattr(settings, "SYNCER_INLINE_COMMENTS_PER_REVIEW", 20))
         variables = {
             "owner": owner,
             "name": name,
             "number": int(number),
             "first": int(first),
             "after": after,
+            "inlineCommentsPerReview": int(inlineCommentsPerReview),
             "since": since_iso,
         }
         return self.execute(query, variables)
@@ -170,16 +178,20 @@ class GitHubClient:
         number: int,
         last: int,
         before: Optional[str] = None,
+        inlineCommentsPerReview: Optional[int] = None,
         query_path: str = "qb_site/syncer/queries/timeline_page_back.graphql",
     ) -> Dict[str, Any]:
         """Fetch an older page of timeline items using last/before for backfill."""
         query = self._read_file(query_path)
+        if inlineCommentsPerReview is None:
+            inlineCommentsPerReview = int(getattr(settings, "SYNCER_INLINE_COMMENTS_PER_REVIEW", 20))
         variables = {
             "owner": owner,
             "name": name,
             "number": int(number),
             "last": int(last),
             "before": before,
+            "inlineCommentsPerReview": int(inlineCommentsPerReview),
         }
         return self.execute(query, variables)
 

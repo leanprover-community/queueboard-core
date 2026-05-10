@@ -169,6 +169,7 @@ def main() -> int:
         **base_vars,
         "timelineK": 2,
         "commitsM": 1,
+        "inlineCommentsPerReview": 5,
         "timelineSince": None,
     }
     print("Validating pr_bundle.graphql...")
@@ -180,6 +181,7 @@ def main() -> int:
         **base_vars,
         "first": 2,
         "after": None,
+        "inlineCommentsPerReview": 5,
         "since": None,
     }
     print("Validating timeline_page.graphql...")
@@ -203,6 +205,7 @@ def main() -> int:
         **base_vars,
         "last": 2,
         "before": start_cursor,
+        "inlineCommentsPerReview": 5,
     }
     print("Validating timeline_page_back.graphql...")
     timeline_back_payload = _post_graphql(token, timeline_back_query, timeline_back_vars)

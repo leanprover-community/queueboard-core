@@ -12,7 +12,7 @@
   - `sync_ci_for_shas` (`qb_site/syncer/tasks/sync_tasks.py`): returns `rate_events` per CI page and `rate_limit`.
   - `harvest_commit_history` (`qb_site/syncer/tasks/commit_history_tasks.py`): returns `rate_events` labeled `commit_history_page` plus final `rate_limit`.
   - `backfill_repo_history` (`qb_site/syncer/tasks/backfill_tasks.py`): returns `rate_events` labeled `prs_created_page` plus final `rate_limit`.
-  - Enqueue-only or DB-only tasks do not emit token costs: `harvest_commit_history_sweep`, `backfill_repo_history_active`, `backfill_repo_incomplete_prs(_active)`, `backfill_repo_engagement(_active)`, `refresh_pending_ci_for_repo(_active)` (delegates CI fetching to `sync_ci_for_shas`), `sync_active_repos`, `collect_convergence`, `collect_metrics`.
+  - Enqueue-only or DB-only tasks do not emit token costs: `harvest_commit_history_sweep`, `backfill_repo_history_active`, `backfill_repo_incomplete_prs(_active)`, `refresh_pending_ci_for_repo(_active)` (delegates CI fetching to `sync_ci_for_shas`), `sync_active_repos`, `collect_convergence`, `collect_metrics`.
 - Parsing rules (in `collect_metrics_task`) treat empty or missing `rate_events` the same as absent and fall back to `rate_limit.cost`; non-dict results are ignored to avoid crashes.
 
 ## Consequences

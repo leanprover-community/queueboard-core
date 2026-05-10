@@ -51,6 +51,19 @@ uv run python qb_site/manage.py test zulip_bot
 - Running `makemigrations` on host may emit a Postgres connection warning when DB is not running; file generation still works.
 - PostgreSQL is the only supported DB backend for Django runtime/testing in this repo.
 
+## Keeping Django Admin in Sync With Models
+- Each app registers its models in `qb_site/<app>/admin.py` (currently `core`,
+  `syncer`, `analyzer`). When you add, rename, or remove a model field, update
+  the corresponding admin's `list_display`, `list_filter`, `search_fields`, and
+  `readonly_fields` in the same change so operators see the new field on both
+  the changelist and the detail view.
+- New models should get a registration in the owning app's `admin.py`. Most of
+  this codebase uses the local `ReadOnlyAdmin` base class — match that pattern
+  unless there's a specific reason to allow edits.
+- For new periodic-task / convergence-style metrics, add the new column to the
+  relevant `*Snapshot` admin's `list_display` and `readonly_fields` so the
+  metric is visible without having to write SQL.
+
 ## Syncer/Analyzer Notes
 - Repo-level sync runs through `syncer.sync_repo_since`; per-PR ingest is `syncer.sync_pr`.
 - CreatedAt history backfill state is tracked by `syncer.RepoBackfillCursor`; keep that distinct from any updatedAt discovery/watermark state.

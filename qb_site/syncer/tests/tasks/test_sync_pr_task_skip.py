@@ -23,9 +23,8 @@ class TestSyncPrTaskSkip(TestCase):
         if last_synced_at is None:
             last_synced_at = timezone.now()
         pr = make_pr(self.repo, number, last_synced_at=last_synced_at)
-        pr.engagement_synced_at = last_synced_at
         pr.head_ci_state = head_ci_state
-        pr.save(update_fields=["engagement_synced_at", "head_ci_state"])
+        pr.save(update_fields=["head_ci_state"])
         return pr
 
     @mock.patch("syncer.tasks.sync_tasks.GitHubClient")

@@ -3,10 +3,10 @@
 #   $owner: String!, $name: String!, $number: Int!
 #   $timelineK: Int!  (max timeline items to fetch)
 #   $commitsM: Int!   (number of head commits to inspect)
-
+#   $inlineCommentsPerReview: Int! (max inline comments per PullRequestReview)
 #   $timelineSince: DateTime (optional lower bound for timeline items)
 
-query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!, $commitsM: Int!, $timelineSince: DateTime) {
+query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!, $commitsM: Int!, $inlineCommentsPerReview: Int!, $timelineSince: DateTime) {
   rateLimit { cost remaining resetAt used }
   repository(owner: $owner, name: $name) {
     id
@@ -115,6 +115,11 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
           REOPENED_EVENT
           CLOSED_EVENT
           HEAD_REF_FORCE_PUSHED_EVENT
+          ISSUE_COMMENT
+          PULL_REQUEST_REVIEW
+          REVIEW_DISMISSED_EVENT
+          REVIEW_REQUESTED_EVENT
+          REVIEW_REQUEST_REMOVED_EVENT
         ]
       ) {
         pageInfo { hasNextPage endCursor hasPreviousPage startCursor }
@@ -170,6 +175,61 @@ query PRBundle($owner: String!, $name: String!, $number: Int!, $timelineK: Int!,
             actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
             beforeCommit { oid }
             afterCommit { oid }
+          }
+          ... on IssueComment {
+            id
+            createdAt
+            author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+          }
+          ... on PullRequestReview {
+            id
+            submittedAt
+            state
+            author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            comments(first: $inlineCommentsPerReview) {
+              totalCount
+              pageInfo { hasNextPage }
+              nodes {
+                id
+                createdAt
+                path
+                line
+                originalLine
+                replyTo { id }
+                author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+              }
+            }
+          }
+          ... on ReviewDismissedEvent {
+            id
+            createdAt
+            previousReviewState
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            review { id submittedAt author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
+          }
+          ... on ReviewRequestedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Team { slug }
+              ... on Mannequin { login }
+              ... on Bot { login }
+            }
+          }
+          ... on ReviewRequestRemovedEvent {
+            id
+            createdAt
+            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Team { slug }
+              ... on Mannequin { login }
+              ... on Bot { login }
+            }
           }
         }
       }

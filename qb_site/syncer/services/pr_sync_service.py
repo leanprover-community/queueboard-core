@@ -13,10 +13,15 @@ from syncer.services.github_client import GitHubClient
 from syncer.services.sub.pull_request_sync import upsert_pull_request
 from syncer.services.sub.labels_sync import sync_label_catalog, sync_pr_labels
 from syncer.services.sub.timeline_sync import sync_timeline_events
+from syncer.services.sub.inline_comments_sync import (
+    parse_review_inline_comments_group,
+    sync_review_inline_comments_bundle,
+)
 from analyzer.models import ReviewerOptOut
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.services.sub.core_entities_sync import upsert_repo_metadata
 from syncer.models.pull_request import PullRequest
+from syncer.models.pr_timeline_event import PRTimelineEvent
 
 
 class PRSyncService:
@@ -42,6 +47,53 @@ class PRSyncService:
         if timezone.is_naive(dt):
             dt = timezone.make_aware(dt)
         return dt
+
+    def _sync_inline_review_comments(self, pr_obj: PullRequest, tl_nodes: list[dict]):
+        """Walk a bundle's timeline nodes and persist nested inline review comments.
+
+        Bundle scope is required so the inline-comments service can resolve
+        thread roots across reviews — modern GitHub wraps each thread reply
+        in its own single-comment review (verified against rust-lang/rust
+        live data; see Progress Notes).
+
+        Filter: any ``PullRequestReview`` node with non-null ``submittedAt``
+        is eligible. PENDING reviews (``submittedAt is None``) are dropped.
+        Notably, ``state=DISMISSED`` reviews ARE included even though 4b
+        does not create a parent ``REVIEW_*`` row for them — their inline
+        comments still carry real review feedback and the durable
+        ``review_node_id`` link makes them queryable. ``parent_review_event``
+        is left null for those rows.
+        """
+        review_nodes = [
+            ev
+            for ev in tl_nodes
+            if isinstance(ev, dict) and ev.get("__typename") == "PullRequestReview" and ev.get("id") and ev.get("submittedAt")
+        ]
+        if not review_nodes:
+            return None
+
+        # Resolve persisted parent events for the in-bundle review node ids.
+        # For DISMISSED-state reviews, no parent row was created by
+        # ``sync_timeline_events`` and the lookup returns None.
+        review_ids = [str(ev["id"]) for ev in review_nodes]
+        parents_by_node_id = {
+            row.github_node_id: row for row in PRTimelineEvent.objects.filter(pull_request=pr_obj, github_node_id__in=review_ids)
+        }
+
+        groups = []
+        for ev in review_nodes:
+            review_id = str(ev["id"])
+            group = parse_review_inline_comments_group(
+                review_node_id=review_id,
+                parent_review_event=parents_by_node_id.get(review_id),
+                comments_connection=ev.get("comments"),
+            )
+            if group is not None:
+                groups.append(group)
+
+        if not groups:
+            return None
+        return sync_review_inline_comments_bundle(pull_request=pr_obj, reviews=groups)
 
     def _apply_assignment_opt_outs(self, pr_obj: PullRequest, events: list[dict]) -> None:
         if not events:
@@ -113,6 +165,11 @@ class PRSyncService:
         tl_nodes = (pr_bundle.get("timelineItems") or {}).get("nodes") or []
         tl_res = sync_timeline_events(pr_obj, tl_nodes)
         self._apply_assignment_opt_outs(pr_obj, tl_nodes)
+
+        # Inline review comments (design doc 044). Bundle scope is required so
+        # the inline-comments service can resolve thread roots across reviews
+        # — modern GitHub wraps each thread reply in its own one-comment review.
+        inline_res = self._sync_inline_review_comments(pr_obj, tl_nodes)
 
         # CI snapshots per commit
         checkruns_upserted = 0
@@ -236,8 +293,6 @@ class PRSyncService:
             total_comments = int(issue_comments_count) + int(review_comments_count)
         extras["number_total_comments"] = total_comments
 
-        extras["engagement_synced_at"] = now_ts
-
         update_fields: list[str] = []
         ci_update_fields: list[str] = []
         if head_ci_state is not None and pr_obj.head_ci_state != head_ci_state:
@@ -248,15 +303,12 @@ class PRSyncService:
             if getattr(pr_obj, field) != value:
                 setattr(pr_obj, field, value)
                 update_fields.append(field)
-        if "engagement_synced_at" not in update_fields:
-            pr_obj.engagement_synced_at = now_ts
-            update_fields.append("engagement_synced_at")
-        # Advance last_synced_at here, after all engagement fields are prepared, so
-        # that the skip check never sees a PR as up-to-date when assignees (or other
-        # engagement data) were not yet persisted.
+        # Always advance last_synced_at after a successful sync, even when no
+        # extras fields changed (idempotent re-sync). The skip predicate in
+        # sync_pr_task uses last_synced_at to decide when a PR is up-to-date,
+        # so the timestamp must reflect the latest successful walk.
         pr_obj.last_synced_at = now_ts
-        if update_fields or ci_update_fields:
-            pr_obj.save(update_fields=update_fields + ci_update_fields + ["updated_at", "last_synced_at"])
+        pr_obj.save(update_fields=update_fields + ci_update_fields + ["updated_at", "last_synced_at"])
 
         result = {
             "labels_created": lab_res.created,
@@ -266,6 +318,8 @@ class PRSyncService:
             "events_created": tl_res.created,
             "checkruns_upserted": checkruns_upserted,
             "statusctx_upserted": statusctx_upserted,
+            "inline_comments_created": inline_res.comments_created if inline_res else 0,
+            "inline_backfill_rows_upserted": inline_res.backfill_rows_upserted if inline_res else 0,
         }
 
         if dry_run:
@@ -334,6 +388,20 @@ class PRSyncService:
         # Seed timeline backfill state from bundle pageInfo if missing.
         # Only mark done when the bundle is unfiltered (no timelineSince) so we
         # don't treat a filtered window as full history.
+        #
+        # Race-with-wave note: a webhook-triggered sync can flip
+        # timeline_backfill_done back to True here mid-wave (the wave's kick
+        # had reset it to False to force a rewalk). For PRs whose entire
+        # timeline fits in the bundle window — which is most PRs at
+        # K=150 — the bundle path itself persists every event AND every
+        # nested sub-collection (inline comments, etc.), so the wave's
+        # rewalk would be redundant work. The flip is safe TODAY because
+        # every sub-collection ingest is invoked from the bundle path
+        # (see syncer AGENTS.md "Timeline ingest invariants"). A future
+        # ingestion expansion that lives ONLY on the back-page query
+        # (i.e., not in the bundle's `timelineItems`) would invalidate
+        # this assumption, and that future expansion's upgrader would
+        # need to gate the seed flip on its own version sentinel.
         tl_conn0 = pr.get("timelineItems") or {}
         page0 = tl_conn0.get("pageInfo") or {}
         timeline_seed_updates: list[str] = []
@@ -402,7 +470,16 @@ class PRSyncService:
                     nodes = titems.get("nodes") or []
                     tl_res = sync_timeline_events(pr_obj, nodes)
                     self._apply_assignment_opt_outs(pr_obj, nodes)
+                    # Sub-collection ingest: inline review comments live
+                    # nested under PullRequestReview nodes and must be
+                    # persisted on every code path that processes a timeline
+                    # page (bundle / forward / back). See syncer AGENTS.md
+                    # ("Timeline ingest invariants").
+                    inline_res = self._sync_inline_review_comments(pr_obj, nodes)
                     result["events_created"] += tl_res.created
+                    if inline_res is not None:
+                        result["inline_comments_created"] += inline_res.comments_created
+                        result["inline_backfill_rows_upserted"] += inline_res.backfill_rows_upserted
                     if rate_log is not None:
                         rl = client.get_last_rate_limit()
                         if isinstance(rl, dict):
@@ -429,7 +506,16 @@ class PRSyncService:
                     titems = tpr.get("timelineItems") or {}
                     nodes = titems.get("nodes") or []
                     tl_res = sync_timeline_events(pr_obj, nodes)
+                    # Sub-collection ingest: see the forward-page path above
+                    # for the invariant. Note that _apply_assignment_opt_outs
+                    # is intentionally not called on historical pages —
+                    # the latest opt-out signal is always in the recent
+                    # timeline, never in the back-walked tail.
+                    inline_res = self._sync_inline_review_comments(pr_obj, nodes)
                     result["events_created"] += tl_res.created
+                    if inline_res is not None:
+                        result["inline_comments_created"] += inline_res.comments_created
+                        result["inline_backfill_rows_upserted"] += inline_res.backfill_rows_upserted
                     # Update earliest timestamp if present
                     if nodes:
                         try:

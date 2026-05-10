@@ -184,7 +184,6 @@ def sync_pr_task(  # type: ignore[no-redef]
     state_mismatch = bool(pr_db and header_state and pr_db.state != header_state)
     draft_mismatch = bool(pr_db and header_is_draft is not None and pr_db.is_draft != header_is_draft)
     needs_state_refresh = state_mismatch or draft_mismatch
-    needs_engagement = bool(pr_db and pr_db.engagement_synced_at is None)
     # Ensure we fill head rollup state even if updatedAt hasn’t changed.
     pending_head_states = {"PENDING", "EXPECTED", "IN_PROGRESS", "QUEUED"}
     needs_head_ci = bool(pr_db and (pr_db.head_ci_state is None or str(pr_db.head_ci_state).upper() in pending_head_states))
@@ -196,14 +195,13 @@ def sync_pr_task(  # type: ignore[no-redef]
         last_synced_cutoff = pr_db.last_synced_at - timedelta(seconds=max(0, eps))
         if timezone.is_naive(last_synced_cutoff):
             last_synced_cutoff = timezone.make_aware(last_synced_cutoff)
-    # Even when updatedAt is unchanged, we may need to sync to fill engagement/head CI rollup or backfill history.
+    # Even when updatedAt is unchanged, we may need to sync to fill head CI rollup or backfill history.
     if (
         pr_db
         and last_synced_cutoff
         and gh_updated
         and gh_updated <= last_synced_cutoff
         and not needs_state_refresh
-        and not needs_engagement
         and not needs_head_ci
         and not needs_head_sha
         and not force

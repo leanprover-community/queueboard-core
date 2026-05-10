@@ -1,0 +1,184 @@
+{
+  "_comment": "End-to-end fixture for design doc 044 Chunk 4c. Exercises the v2 timelineItems shapes (ISSUE_COMMENT, PULL_REQUEST_REVIEW with nested comments, REVIEW_DISMISSED_EVENT, REVIEW_REQUESTED_EVENT) plus the inline-comment service. Includes one review with comments.pageInfo.hasNextPage=true so PRReviewInlineCommentBackfill is exercised.",
+  "data": {
+    "repository": {
+      "id": "R_engagement",
+      "name": "mathlib4",
+      "owner": { "login": "leanprover-community" },
+      "defaultBranchRef": { "name": "main" },
+      "pullRequest": {
+        "number": 99001,
+        "state": "OPEN",
+        "isDraft": false,
+        "title": "Engagement-events fixture",
+        "body": "End-to-end coverage for 044 Chunk 4c",
+        "createdAt": "2026-05-01T08:00:00Z",
+        "updatedAt": "2026-05-01T18:00:00Z",
+        "baseRefName": "master",
+        "headRefName": "feature-branch",
+        "headRepositoryOwner": { "login": "test-author" },
+        "headRepository": { "name": "fork-repo" },
+        "additions": 50,
+        "deletions": 10,
+        "changedFiles": 4,
+        "author": { "__typename": "User", "id": "U_author", "login": "test-author", "name": "Test Author", "avatarUrl": "https://example.com/a.png" },
+        "labels": { "nodes": [] },
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "ReviewRequestedEvent",
+              "id": "TL_REQ_TEAM",
+              "createdAt": "2026-05-01T09:00:00Z",
+              "actor": { "__typename": "User", "login": "asker" },
+              "requestedReviewer": { "__typename": "Team", "slug": "core-reviewers" }
+            },
+            {
+              "__typename": "ReviewRequestedEvent",
+              "id": "TL_REQ_BOT",
+              "createdAt": "2026-05-01T09:01:00Z",
+              "actor": { "__typename": "User", "login": "asker" },
+              "requestedReviewer": { "__typename": "Bot", "login": "dependabot" }
+            },
+            {
+              "__typename": "IssueComment",
+              "id": "TL_IC1",
+              "createdAt": "2026-05-01T10:00:00Z",
+              "author": { "__typename": "User", "login": "alice" }
+            },
+            {
+              "__typename": "PullRequestReview",
+              "id": "TL_REV_COMMENTED",
+              "submittedAt": "2026-05-01T11:00:00Z",
+              "state": "COMMENTED",
+              "author": { "__typename": "User", "login": "reviewer-bob" },
+              "comments": {
+                "totalCount": 3,
+                "pageInfo": { "hasNextPage": false },
+                "nodes": [
+                  {
+                    "id": "IC_REV_1",
+                    "createdAt": "2026-05-01T11:00:30Z",
+                    "path": "src/foo.py",
+                    "line": 10,
+                    "originalLine": 10,
+                    "replyTo": null,
+                    "author": { "__typename": "User", "login": "reviewer-bob" }
+                  },
+                  {
+                    "id": "IC_REV_2",
+                    "createdAt": "2026-05-01T11:00:45Z",
+                    "path": "src/foo.py",
+                    "line": 20,
+                    "originalLine": 20,
+                    "replyTo": null,
+                    "author": { "__typename": "User", "login": "reviewer-bob" }
+                  },
+                  {
+                    "id": "IC_REV_3",
+                    "createdAt": "2026-05-01T11:00:50Z",
+                    "path": "src/bar.py",
+                    "line": 5,
+                    "originalLine": 5,
+                    "replyTo": null,
+                    "author": { "__typename": "User", "login": "reviewer-bob" }
+                  }
+                ]
+              }
+            },
+            {
+              "__typename": "PullRequestReview",
+              "id": "TL_REV_REPLY",
+              "submittedAt": "2026-05-01T12:00:00Z",
+              "state": "COMMENTED",
+              "author": { "__typename": "User", "login": "test-author" },
+              "comments": {
+                "totalCount": 1,
+                "pageInfo": { "hasNextPage": false },
+                "nodes": [
+                  {
+                    "id": "IC_REPLY_1",
+                    "createdAt": "2026-05-01T12:00:10Z",
+                    "path": "src/foo.py",
+                    "line": 10,
+                    "originalLine": 10,
+                    "replyTo": { "id": "IC_REV_1" },
+                    "author": { "__typename": "User", "login": "test-author" }
+                  }
+                ]
+              }
+            },
+            {
+              "__typename": "PullRequestReview",
+              "id": "TL_REV_APPROVED",
+              "submittedAt": "2026-05-01T13:00:00Z",
+              "state": "APPROVED",
+              "author": { "__typename": "User", "login": "reviewer-carol" },
+              "comments": {
+                "totalCount": 25,
+                "pageInfo": { "hasNextPage": true },
+                "nodes": [
+                  {
+                    "id": "IC_BIG_1",
+                    "createdAt": "2026-05-01T13:00:05Z",
+                    "path": "src/baz.py",
+                    "line": 1,
+                    "originalLine": 1,
+                    "replyTo": null,
+                    "author": { "__typename": "User", "login": "reviewer-carol" }
+                  }
+                ]
+              }
+            },
+            {
+              "__typename": "PullRequestReview",
+              "id": "TL_REV_PENDING",
+              "submittedAt": null,
+              "state": "PENDING",
+              "author": { "__typename": "User", "login": "reviewer-dave" },
+              "comments": {
+                "totalCount": 0,
+                "pageInfo": { "hasNextPage": false },
+                "nodes": []
+              }
+            },
+            {
+              "__typename": "PullRequestReview",
+              "id": "TL_REV_DISMISSED",
+              "submittedAt": "2026-05-01T14:00:00Z",
+              "state": "DISMISSED",
+              "author": { "__typename": "User", "login": "reviewer-erin" },
+              "comments": {
+                "totalCount": 1,
+                "pageInfo": { "hasNextPage": false },
+                "nodes": [
+                  {
+                    "id": "IC_DISMISSED_1",
+                    "createdAt": "2026-05-01T14:00:05Z",
+                    "path": "src/qux.py",
+                    "line": 99,
+                    "originalLine": 99,
+                    "replyTo": null,
+                    "author": { "__typename": "User", "login": "reviewer-erin" }
+                  }
+                ]
+              }
+            },
+            {
+              "__typename": "ReviewDismissedEvent",
+              "id": "TL_DIS_EVENT",
+              "createdAt": "2026-05-01T15:00:00Z",
+              "previousReviewState": "CHANGES_REQUESTED",
+              "actor": { "__typename": "User", "login": "test-author" },
+              "review": {
+                "id": "TL_REV_DISMISSED",
+                "submittedAt": "2026-05-01T14:00:00Z",
+                "author": { "__typename": "User", "login": "reviewer-erin" }
+              }
+            }
+          ]
+        },
+        "commits": { "nodes": [] }
+      }
+    }
+  }
+}

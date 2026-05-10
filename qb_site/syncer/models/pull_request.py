@@ -66,7 +66,6 @@ class PullRequest(TimestampedModel):
 
     # Ingestion metadata
     last_synced_at = models.DateTimeField(null=True, blank=True)
-    engagement_synced_at = models.DateTimeField(null=True, blank=True)
     files_incomplete = models.BooleanField(default=False)
     assignees_incomplete = models.BooleanField(default=False)
     reviews_incomplete = models.BooleanField(default=False)
@@ -93,6 +92,14 @@ class PullRequest(TimestampedModel):
 
     # Head commit rollup status (GitHub statusCheckRollup.state) for coarse CI signal.
     head_ci_state = models.CharField(max_length=20, null=True, blank=True)
+
+    # Sync schema version. Owned exclusively by the upgrader registry in
+    # qb_site/syncer/services/sync_schema_upgrades.py — never written by
+    # PRSyncService. The periodic upgrader task selects PRs where this column
+    # is below CURRENT_SYNC_SCHEMA_VERSION and dispatches per-version upgraders.
+    # Indexed so the dispatcher's `< CURRENT` scan stays O(rows-needing-work)
+    # at steady state.
+    sync_schema_version = models.PositiveSmallIntegerField(default=0, db_index=True)
 
     class Meta:
         constraints = [

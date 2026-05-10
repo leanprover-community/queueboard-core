@@ -234,8 +234,8 @@ if SYNCER_GITHUB_QUEUE:
         "syncer.backfill_repo_history_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_incomplete_prs": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.backfill_repo_incomplete_prs_active": {"queue": SYNCER_GITHUB_QUEUE},
-        "syncer.backfill_repo_engagement": {"queue": SYNCER_GITHUB_QUEUE},
-        "syncer.backfill_repo_engagement_active": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.upgrade_schema_versions": {"queue": SYNCER_GITHUB_QUEUE},
+        "syncer.upgrade_schema_versions_active": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.harvest_commit_history_sweep": {"queue": SYNCER_GITHUB_QUEUE},
         "syncer.sync_label_catalog": {"queue": SYNCER_GITHUB_QUEUE},
@@ -256,6 +256,10 @@ SYNCER_GITHUB_WEBHOOK_DRY_RUN = env_bool(os.getenv("SYNCER_GITHUB_WEBHOOK_DRY_RU
 SYNCER_RATE_REMAINING_MIN = int(os.getenv("SYNCER_RATE_REMAINING_MIN", 200))
 SYNCER_TIMELINE_K_DEFAULT = int(os.getenv("SYNCER_TIMELINE_K_DEFAULT", 150))
 SYNCER_COMMITS_M_DEFAULT = int(os.getenv("SYNCER_COMMITS_M_DEFAULT", 15))
+# Per-review inline-comment fetch cap on PullRequestReview.comments(first: K).
+# Reviews exceeding this cap get a PRReviewInlineCommentBackfill row for the v3
+# recovery sweep; see docs/design-decisions/044-….
+SYNCER_INLINE_COMMENTS_PER_REVIEW = int(os.getenv("SYNCER_INLINE_COMMENTS_PER_REVIEW", 20))
 SYNCER_LAST_SYNC_EPSILON_SECONDS = int(os.getenv("SYNCER_LAST_SYNC_EPSILON_SECONDS", 300))
 SYNCER_ACTIVE_REPOS_PERIOD_SECONDS = int(os.getenv("SYNCER_ACTIVE_REPOS_PERIOD_SECONDS", 300))
 SYNCER_REPO_ENQUEUE_BATCH_MAX = int(os.getenv("SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))
@@ -286,9 +290,24 @@ SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_HISTORY_BACKFILL_
 # Incomplete-PR backfill defaults (DB-based)
 SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_PERIOD_SECONDS", 600))
 SYNCER_INCOMPLETE_BACKFILL_LIMIT = int(os.getenv("SYNCER_INCOMPLETE_BACKFILL_LIMIT", 20))
-# Engagement backfill (one-off snapshot of files/assignees/approvals/comments)
-SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS", 900))
-SYNCER_ENGAGEMENT_BACKFILL_LIMIT = int(os.getenv("SYNCER_ENGAGEMENT_BACKFILL_LIMIT", 5))
+# Sync schema upgrader pacing (see syncer/services/sync_schema_upgrades.py).
+# BATCH_SIZE bounds DB-only stamping work per task invocation; KICK_LIMIT bounds
+# GitHub-bound sync_pr_task enqueues per invocation so a wave can't outrun the
+# rate-limit budget. Period <= 0 disables the periodic beat.
+SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS = int(os.getenv("SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS", 600))
+SYNCER_SCHEMA_UPGRADE_BATCH_SIZE = int(os.getenv("SYNCER_SCHEMA_UPGRADE_BATCH_SIZE", 1000))
+SYNCER_SCHEMA_UPGRADE_KICK_LIMIT = int(os.getenv("SYNCER_SCHEMA_UPGRADE_KICK_LIMIT", 20))
+# Optional gate that lets a deploy hold the wave below CURRENT_SYNC_SCHEMA_VERSION
+# (e.g. ship the v2 code with the gate=1 in staging, then flip to 2 to fire). Unset
+# / empty / non-int values mean "use CURRENT_SYNC_SCHEMA_VERSION". Always clamped
+# to the constant by services/sync_schema_upgrades.effective_target_version.
+_SYNCER_SCHEMA_UPGRADE_TARGET_VERSION_RAW = os.getenv("SYNCER_SCHEMA_UPGRADE_TARGET_VERSION", "")
+try:
+    SYNCER_SCHEMA_UPGRADE_TARGET_VERSION: int | None = (
+        int(_SYNCER_SCHEMA_UPGRADE_TARGET_VERSION_RAW) if _SYNCER_SCHEMA_UPGRADE_TARGET_VERSION_RAW else None
+    )
+except ValueError:
+    SYNCER_SCHEMA_UPGRADE_TARGET_VERSION = None
 
 # Pending-CI refresh defaults
 SYNCER_PENDING_CI_MAX_AGE_HOURS = int(os.getenv("SYNCER_PENDING_CI_MAX_AGE_HOURS", 48))
@@ -508,13 +527,14 @@ if ANALYTICS_CONVERGENCE_PERIOD_SECONDS > 0:
         "schedule": ANALYTICS_CONVERGENCE_PERIOD_SECONDS,
         "options": {"headers": {"qb_enqueue_source": "beat_analyzer_convergence"}},
     }
-# Optional engagement backfill; disable by setting SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS<=0
-if SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS > 0:
-    CELERY_BEAT_SCHEDULE["backfill_repo_engagement"] = {
-        "task": "syncer.backfill_repo_engagement_active",
-        "schedule": SYNCER_ENGAGEMENT_BACKFILL_PERIOD_SECONDS,
+# Sync schema upgrader; disable by setting SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS<=0
+if SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["upgrade_schema_versions"] = {
+        "task": "syncer.upgrade_schema_versions_active",
+        "schedule": SYNCER_SCHEMA_UPGRADE_PERIOD_SECONDS,
         "kwargs": {
-            "limit": SYNCER_ENGAGEMENT_BACKFILL_LIMIT,
+            "batch_size": SYNCER_SCHEMA_UPGRADE_BATCH_SIZE,
+            "kick_limit": SYNCER_SCHEMA_UPGRADE_KICK_LIMIT,
         },
     }
 if ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS > 0:

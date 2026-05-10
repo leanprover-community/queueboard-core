@@ -149,6 +149,8 @@ class TestCommitBackfillSynced(TestCase):
                 "events_created": 0,
                 "checkruns_upserted": 0,
                 "statusctx_upserted": 0,
+                "inline_comments_created": 0,
+                "inline_backfill_rows_upserted": 0,
             },
         ):
             svc.sync_pull_request(

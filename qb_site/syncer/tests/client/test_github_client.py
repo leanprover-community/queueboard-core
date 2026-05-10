@@ -75,13 +75,14 @@ class TestGitHubClient(SimpleTestCase):
                 return {"data": {}}
 
             with mock.patch.object(GitHubClient, "execute", new=fake_execute):
-                out = client.get_pr_bundle(owner="o", name="r", number=123, timelineK=10, commitsM=2)
+                out = client.get_pr_bundle(owner="o", name="r", number=123, timelineK=10, commitsM=2, inlineCommentsPerReview=7)
                 self.assertEqual(out, {"data": {}})
                 self.assertEqual(captured["owner"], "o")
                 self.assertEqual(captured["name"], "r")
                 self.assertEqual(captured["number"], 123)
                 self.assertEqual(captured["timelineK"], 10)
                 self.assertEqual(captured["commitsM"], 2)
+                self.assertEqual(captured["inlineCommentsPerReview"], 7)
 
     def test_get_changed_pr_numbers_pagination_and_cutoff(self) -> None:
         client = GitHubClient(token="t")

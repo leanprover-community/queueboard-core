@@ -14,6 +14,7 @@ from syncer.models import (
     CommitCheckRun,
     CommitStatusContext,
 )
+from syncer.services.sync_schema_upgrades import CURRENT_SYNC_SCHEMA_VERSION
 from core.models import Repository
 
 
@@ -68,14 +69,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             delta = (discovery_state.continuation_success_cutoff - discovery_cutoff).total_seconds()
             discovery_catchup_lag_seconds = max(0, int(delta))
 
-        engagement_missing = qs.filter(engagement_synced_at__isnull=True).count()
-        engagement_incomplete = (
-            qs.filter(
-                Q(files_incomplete=True) | Q(assignees_incomplete=True) | Q(reviews_incomplete=True) | Q(comments_incomplete=True)
-            )
-            .distinct()
-            .count()
-        )
+        prs_below_target = qs.filter(sync_schema_version__lt=CURRENT_SYNC_SCHEMA_VERSION).count()
+
         missing_head_ci = qs.filter(head_ci_state__isnull=True).count()
         missing_head_sha = qs.filter(Q(head_sha__isnull=True) | Q(head_sha="")).count()
         head_ccr = CommitCheckRun.objects.filter(repository=repo, head_sha=OuterRef("head_sha"))
@@ -105,11 +100,11 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             discovery_continuation_active=discovery_continuation_active,
             discovery_last_attempted_at=discovery_state.last_attempted_at if discovery_state else None,
             discovery_last_successful_at=discovery_state.last_successful_at if discovery_state else None,
-            prs_missing_engagement=engagement_missing,
-            prs_engagement_incomplete=engagement_incomplete,
             prs_missing_head_ci_state=missing_head_ci,
             prs_missing_head_sha=missing_head_sha,
             prs_missing_head_ci_contexts=missing_head_contexts,
+            prs_below_current_sync_schema_version=prs_below_target,
+            sync_schema_version_target=CURRENT_SYNC_SCHEMA_VERSION,
         )
         rows += 1
         per_repo.append(
@@ -132,11 +127,11 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                     if discovery_state and discovery_state.last_successful_at
                     else None
                 ),
-                "prs_missing_engagement": engagement_missing,
-                "prs_engagement_incomplete": engagement_incomplete,
                 "prs_missing_head_ci_state": missing_head_ci,
                 "prs_missing_head_sha": missing_head_sha,
                 "prs_missing_head_ci_contexts": missing_head_contexts,
+                "prs_below_current_sync_schema_version": prs_below_target,
+                "sync_schema_version_target": CURRENT_SYNC_SCHEMA_VERSION,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo, "request_meta": request_meta}

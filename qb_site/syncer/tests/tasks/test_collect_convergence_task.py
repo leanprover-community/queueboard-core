@@ -47,7 +47,6 @@ class TestCollectConvergenceTask(TestCase):
             number=2,
             timeline_backfill_done=True,
             commits_backfill_done=False,
-            engagement_synced_at=None,
             head_sha="a" * 40,
             state="open",
             gh_created_at=now,
@@ -68,7 +67,6 @@ class TestCollectConvergenceTask(TestCase):
             timeline_backfill_done=True,
             commits_backfill_done=True,
             head_ci_state="PENDING",
-            engagement_synced_at=now,
             head_sha="b" * 40,
             state="open",
             gh_created_at=now,
@@ -108,13 +106,17 @@ class TestCollectConvergenceTask(TestCase):
         self.assertTrue(snap.discovery_continuation_active)
         self.assertIsNotNone(snap.discovery_last_attempted_at)
         self.assertIsNotNone(snap.discovery_last_successful_at)
-        self.assertEqual(snap.prs_missing_engagement, 2)
-        self.assertEqual(snap.prs_engagement_incomplete, 1)
         self.assertEqual(snap.prs_missing_head_ci_state, 2)
         self.assertEqual(snap.prs_missing_head_sha, 1)
         self.assertEqual(snap.prs_missing_head_ci_contexts, 2)
+        # All three PRs are at sync_schema_version=0 (default) and CURRENT=3,
+        # so the wave-progress canary reports 3 below target.
+        self.assertEqual(snap.prs_below_current_sync_schema_version, 3)
+        self.assertEqual(snap.sync_schema_version_target, 3)
         self.assertEqual(res["per_repo"][0]["discovery_continuation_active"], True)
         self.assertIsNotNone(res["per_repo"][0]["discovery_lag_seconds"])
+        self.assertEqual(res["per_repo"][0]["prs_below_current_sync_schema_version"], 3)
+        self.assertEqual(res["per_repo"][0]["sync_schema_version_target"], 3)
         self.assertEqual(res["rows_created"], 1)
 
     def test_discovery_lag_uses_current_successful_cutoff(self) -> None:
@@ -242,3 +244,57 @@ class TestCollectConvergenceTask(TestCase):
         snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
         self.assertIsNotNone(snap)
         self.assertEqual(snap.prs_missing_head_ci_contexts, 1)
+
+    def test_sync_schema_version_target_reflects_module_constant(self) -> None:
+        # Mix of PRs at v=0 (below target), v=1 (at-or-above target depending on
+        # the patched CURRENT). Patch CURRENT=2 inside the convergence task's
+        # namespace to verify the metric tracks the *current* target rather
+        # than a stale historical value.
+        now = timezone.now()
+        for n in (1, 2):
+            PullRequest.objects.create(
+                repository=self.repo,
+                number=n,
+                state="open",
+                gh_created_at=now,
+                gh_updated_at=now,
+                base_ref_name="master",
+                head_ref_name="branch",
+                head_repo_owner_login="o",
+                head_repo_name="r",
+                title=f"t{n}",
+                body="",
+                additions=0,
+                deletions=0,
+                changed_files_count=0,
+                sync_schema_version=0,
+            )
+        for n in (3, 4):
+            PullRequest.objects.create(
+                repository=self.repo,
+                number=n,
+                state="open",
+                gh_created_at=now,
+                gh_updated_at=now,
+                base_ref_name="master",
+                head_ref_name="branch",
+                head_repo_owner_login="o",
+                head_repo_name="r",
+                title=f"t{n}",
+                body="",
+                additions=0,
+                deletions=0,
+                changed_files_count=0,
+                sync_schema_version=1,
+            )
+
+        from unittest import mock as _mock
+
+        with _mock.patch("syncer.tasks.collect_convergence.CURRENT_SYNC_SCHEMA_VERSION", 2):
+            collect_syncer_convergence_task.apply().get()
+        snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        # 2 PRs at v=0 + 2 PRs at v=1, all below CURRENT=2 → 4 below target.
+        self.assertEqual(snap.prs_below_current_sync_schema_version, 4)
+        self.assertEqual(snap.sync_schema_version_target, 2)
