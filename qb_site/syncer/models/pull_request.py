@@ -66,7 +66,6 @@ class PullRequest(TimestampedModel):
 
     # Ingestion metadata
     last_synced_at = models.DateTimeField(null=True, blank=True)
-    engagement_synced_at = models.DateTimeField(null=True, blank=True)
     files_incomplete = models.BooleanField(default=False)
     assignees_incomplete = models.BooleanField(default=False)
     reviews_incomplete = models.BooleanField(default=False)

@@ -89,7 +89,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 ## Database coverage (current vs. needed)
 - Covered today:
   - Core PR metadata: state, draft, timestamps, base/head refs, head repo owner/name, title/body, additions/deletions, `changed_files_count` (Syncer `PullRequest`).
-  - Engagement fields: first 100 `files`, `assignees`, `approvals` (approving review authors), `commenters` (issue + review authors), `number_total_comments`, with completeness flags and `engagement_synced_at`.
+  - Engagement fields: first 100 `files`, `assignees`, `approvals` (approving review authors), `commenters` (issue + review authors), `number_total_comments`, with completeness flags. PR ingestion completion is tracked by `last_synced_at` (and per-PR ingest expansions by `sync_schema_version`).
   - CI rollup inputs: `CommitCheckRun`, `CommitStatusContext`.
   - Labels and attachments: `LabelDef`, `PRLabel`.
   - Timeline events needed for state evolution: `PRTimelineEvent` (label add/remove, draft toggles, reopen/close).
@@ -104,7 +104,7 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Coverage updates (Dec 2025):
   - Syncer now fetches and stores snapshot fields on `PullRequest`: first 100 `modified_files`, `assignees`, `approvals` (approving review authors), `commenters` (issue comment + review authors), and `number_total_comments` (issue + review comments) with completeness flags.
   - GraphQL bundle expanded to include files/assignees/reviews/comments/reviewThreads totals; comments/review bodies are not fetched.
-  - Engagement backfill task (`syncer.backfill_repo_engagement[_active]`) enqueues PR syncs for rows that have never had the new fields populated (`engagement_synced_at IS NULL`). Schedule is configurable via `SYNCER_ENGAGEMENT_BACKFILL_*` env vars.
+  - Backfilling rows that have never been fully synced is handled by `syncer.backfill_repo_incomplete_prs[_active]` and the `sync_schema_version` upgrader wave (`syncer.upgrade_schema_versions[_active]`); the legacy engagement-specific backfill task has been retired.
   - Body dependency edges: Analyzer `PRDependency` rows parse ``- [ ] depends on: #<n>`` lines from PR bodies; rebuild tasks (`analyzer.rebuild_pr_dependencies`, `analyzer.rebuild_dependencies_sweep`) keep dependencies for existing PRs up to date.
   - Dependency sweep runner: `analyzer.rebuild_dependencies_sweep` walks active repos in least-recently-checked order (tracked in `PRDependencyState`) so periodic runs eventually cover all PRs even after downtime; supports fan-out mode to limit memory on small dynos and uses a builder_version flag for safe re-parses.
 - Source of truth for classification remains the existing Python logic (`classify_pr_state`, `ci_status`, `state_evolution`); port into Analyzer services and add parity tests using the fixtures in `test/`.
@@ -123,11 +123,11 @@ Update cadence: ingest/upserts populate the raw fields; the snapshot builder com
 - Ownership: Analyzer service builds a `QueueboardSnapshot` payload; DRF endpoint serves cached/precomputed blobs keyed by `repo` + `rule_set_id`.
 - Rule sets: resolve a single rule set per snapshot (repo default + optional override); include `rule_set_id` in meta and cache keys; no mixing across rule sets.
 - DataStatus mapping:
-  - `missing` if engagement/timeline data has never been synced (e.g., `engagement_synced_at` null or no timeline events).
+  - `missing` if engagement/timeline data has never been synced (e.g., `last_synced_at` null or no timeline events).
   - `incomplete` if pagination caps hit or completeness flags are true (`files_incomplete`, `assignees_incomplete`, `reviews_incomplete`, `comments_incomplete`, timeline backfill not done).
   - `valid` otherwise.
 - Inputs:
-  - `PullRequest` with engagement fields/flags, `last_synced_at`, `engagement_synced_at`, timeline backfill flags.
+  - `PullRequest` with engagement fields/flags, `last_synced_at`, `sync_schema_version`, timeline backfill flags.
   - `PRLabel`/`LabelDef`, `PRTimelineEvent`, commit-scoped CI rows, `PRDependency`, reviewer preferences.
 - Steps:
   1) Fetch open PRs for the repo; prefetch labels/engagement fields.

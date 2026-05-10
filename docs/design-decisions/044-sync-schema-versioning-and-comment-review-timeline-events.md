@@ -53,7 +53,8 @@
 | 4d. Strict CHECK constraints | **Deployed (2026-05-08)** | Migration `0043` added three constraints: `syncer_prtl_requested_reviewer_by_type_ck`, `syncer_prtl_requested_reviewer_mutex_ck`, `syncer_prtl_inline_total_by_type_ck`. Pre-flight queries against prod returned 0/0/0 before deploy. |
 | 5. v2 upgrader (the wave) | **Deployed (2026-05-08)** with gap | `CURRENT_SYNC_SCHEMA_VERSION=2`; `UpgradeToV2` registered via `SyncerConfig.ready()`. Migration `0044` reset `timeline_backfill_done=False, timeline_backfill_cursor=NULL` for every PR at v<2. **Gap:** because of the 4c gap, v=2 PRs were stamped without their inline comments — the historical pages didn't invoke the inline-comments service. Mitigated by Chunk 5b's v=3 wave; recommend setting `SYNCER_SCHEMA_UPGRADE_TARGET_VERSION=1` between detection and the 5b deploy to stop growing the affected cohort. |
 | 5b. Page-path inline-comments fix + v3 wave | **Deployed (2026-05-08)** | Fixed `_sync_inline_review_comments` invocation in both `sync_pull_request` page loops. `CURRENT_SYNC_SCHEMA_VERSION` bumped to 3; `UpgradeToV3` (mechanically identical to v2) registered. Migration `0045` reset `timeline_backfill_done=False` for every PR at v<3 (same option (a) approach as 0044). New regression tests in `tests/services/test_inline_comments_page_paths.py`. See §Chunk 5b. Soak observation through 2026-05-09: v=3 wave converging smoothly, `prs_below_current_sync_schema_version` trending down monotonically per repo, `PRReviewInlineComment` row count growing in lockstep, `PRReviewInlineCommentBackfill` markers now appearing for long-tail reviews. |
-| 6. `engagement_synced_at` removal | **Planned (2026-05-09)** | No schema-version bump required (see §Chunk 6 for the reasoning). Two deploys: 6a stops writing the column and removes `backfill_repo_engagement[_active]` + their beat schedule + their settings + the `prs_missing_engagement` snapshot computation; 6b drops the column itself plus the two `SyncerConvergenceSnapshot` engagement metrics. |
+| 6a. Stop writing + retire engagement-backfill task | **Deployed (2026-05-09)** | Commit `e51cecc`. Soaked cleanly through 2026-05-10 — no regressions in `_data_status`, beat schedule, or convergence snapshots; `engagement_synced_at` values frozen on existing PRs as designed. |
+| 6b. Drop columns + snapshot metrics | **Implemented (2026-05-10)** | Migration `0047_drop_engagement_synced_at_and_snapshot_metrics` issues three `RemoveField` ops (`pullrequest.engagement_synced_at`, `syncerconvergencesnapshot.prs_missing_engagement`, `syncerconvergencesnapshot.prs_engagement_incomplete`). Model fields and admin entries removed in lockstep; `docs/queueboard_api_contract.md` and `docs/design-decisions/017-token-cost-tracking.md` updated. `scripts/backup_policy.py` requires no edit (no field-level allowlist; all retained tables export with `SELECT *`). |
 
 ### Resumption pointer for the next agent
 Chunks 1–4, 5, and **5b are now in production** as of 2026-05-08; the
@@ -1746,6 +1747,28 @@ future schema-version expansion. None are blocking for v=3.
   cleanup, not an ingestion expansion; nothing for an upgrader to
   run. See §Chunk 6 for the rationale and the file-by-file
   6a / 6b plan.
+
+- 2026-05-10: **Chunk 6b implemented.** Migration
+  `0047_drop_engagement_synced_at_and_snapshot_metrics` regenerated cleanly
+  via `uv run python qb_site/manage.py makemigrations syncer` after dropping
+  `PullRequest.engagement_synced_at` and the two
+  `SyncerConvergenceSnapshot.prs_{missing,engagement_incomplete}_*` fields
+  from their model files. `qb_site/syncer/admin.py` updated in lockstep
+  (PR admin `readonly_fields`; convergence-snapshot admin `list_display`
+  + `readonly_fields`). `docs/queueboard_api_contract.md` updated to
+  reference `last_synced_at` / `sync_schema_version` instead of
+  `engagement_synced_at`, and the `syncer.backfill_repo_engagement[_active]`
+  / `SYNCER_ENGAGEMENT_BACKFILL_*` mentions replaced with the active
+  backfill mechanism (`backfill_repo_incomplete_prs[_active]` +
+  `upgrade_schema_versions[_active]`). `docs/design-decisions/017-token-cost-tracking.md`'s
+  enqueue-only-tasks list trimmed of `backfill_repo_engagement(_active)`.
+  `scripts/backup_policy.py` required no edit: it has no field-level
+  allowlist, and all retained tables export via `SELECT *`, so dropped
+  columns are reflected automatically by Postgres. Pre-deploy check is
+  `bash scripts/repo_check_compose.sh` (covers ruff, Django tests, the
+  `validate_backup_policy.py` step). Migration applies cleanly on a recent
+  prod snapshot before the deploy proper; `DROP COLUMN` on the
+  multi-million-row PR table is metadata-only so the lock window is brief.
 
 ## Finalization Notes
 - After v2 ships and `engagement_synced_at` is dropped, convert this doc into

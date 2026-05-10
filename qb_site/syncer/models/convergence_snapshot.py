@@ -27,8 +27,6 @@ class SyncerConvergenceSnapshot(models.Model):
     discovery_continuation_active = models.BooleanField(default=False)
     discovery_last_attempted_at = models.DateTimeField(null=True, blank=True)
     discovery_last_successful_at = models.DateTimeField(null=True, blank=True)
-    prs_missing_engagement = models.IntegerField(default=0)
-    prs_engagement_incomplete = models.IntegerField(default=0)
     prs_missing_head_ci_state = models.IntegerField(default=0)
     prs_missing_head_sha = models.IntegerField(default=0)
     prs_missing_head_ci_contexts = models.IntegerField(default=0)
