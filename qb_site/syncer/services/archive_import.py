@@ -100,17 +100,34 @@ def fetch_pr_info(archive_name: str, pr_number: int, *, archive_owner: str = "le
 def _split_contexts(
     contexts: Iterable[Any],
     *,
+    commit_committed_at_iso: str | None,
     archive_timestamp_iso: str | None,
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a ``statusCheckRollup.contexts.nodes`` list into CheckRun / StatusContext.
 
-    StatusContext entries lacking ``createdAt`` (the legacy fragment doesn't
-    request it, see doc 043 §"Legacy archive payload schema deficiency")
-    are augmented with the per-PR archive timestamp as a documented
-    placeholder; the synthesized value is monotone with respect to the
-    archive snapshot ordering and lets the row pass the NOT NULL constraint
-    on ``CommitStatusContext.gh_created_at``.
+    The legacy ``pr_info.graphql`` fragment requests no ``startedAt`` /
+    ``completedAt`` for ``CheckRun`` and no ``createdAt`` for
+    ``StatusContext`` (see doc 043 §"Legacy archive payload schema
+    deficiency"). Inserting NULLs is fine for the model schema, but the
+    analyzer's ``_latest_ci_statuses_for_fragment`` filter silently
+    excludes rows where both timestamps are NULL — which would defeat the
+    importer's orphan-SHA recovery use case, since the analyzer would
+    never count those rescued CheckRuns.
+
+    Synthesis source preference, per-row:
+      1. ``commit.committedDate`` — best proxy. The commit's authored time
+         is always ≤ any analyzer evaluation time within that SHA's
+         revision window, so the filter ``gh_completed_at <= at`` will
+         match. Also preserves realistic per-commit ordering within a PR.
+         (CI runs typically complete slightly after committedDate; the
+         bias is small relative to typical revision-window durations.)
+      2. ``archive_timestamp`` — per-PR ``timestamp.txt`` scrape time.
+         Used only when committedDate is missing. Sorts to "around the
+         scrape time" — later than reality, so the analyzer's filter
+         may still exclude these rows for past ``at`` queries. Acceptable
+         as a NULL-avoidance fallback for malformed payloads.
     """
+    synth_ts = commit_committed_at_iso or archive_timestamp_iso
     check_runs: list[Dict[str, Any]] = []
     status_contexts: list[Dict[str, Any]] = []
     for ctx in contexts or []:
@@ -118,10 +135,18 @@ def _split_contexts(
             continue
         typename = ctx.get("__typename")
         if typename == "CheckRun":
+            if synth_ts:
+                overrides: dict[str, Any] = {}
+                if not ctx.get("startedAt"):
+                    overrides["startedAt"] = synth_ts
+                if not ctx.get("completedAt"):
+                    overrides["completedAt"] = synth_ts
+                if overrides:
+                    ctx = {**ctx, **overrides}
             check_runs.append(ctx)
         elif typename == "StatusContext":
-            if not ctx.get("createdAt") and archive_timestamp_iso:
-                ctx = {**ctx, "createdAt": archive_timestamp_iso}
+            if not ctx.get("createdAt") and synth_ts:
+                ctx = {**ctx, "createdAt": synth_ts}
             status_contexts.append(ctx)
     return check_runs, status_contexts
 
@@ -199,7 +224,12 @@ def import_pr_info_payload(
                 continue
             rollup = commit.get("statusCheckRollup") or {}
             contexts_nodes = ((rollup.get("contexts") or {}).get("nodes")) or []
-            check_runs, status_contexts = _split_contexts(contexts_nodes, archive_timestamp_iso=archive_ts_iso)
+            commit_committed_at_iso = commit.get("committedDate")
+            check_runs, status_contexts = _split_contexts(
+                contexts_nodes,
+                commit_committed_at_iso=commit_committed_at_iso,
+                archive_timestamp_iso=archive_ts_iso,
+            )
             if check_runs:
                 cr_res = sync_check_runs(pr, check_runs, head_sha, archive_mode=True)
                 result.check_runs_created += cr_res.created

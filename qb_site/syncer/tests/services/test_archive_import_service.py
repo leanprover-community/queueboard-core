@@ -160,14 +160,18 @@ class TestImportPRInfoPayloadCore(TestCase):
         # head_sha is critical — stamping archive's stale value would corrupt analyzer.
         self.assertEqual(live_pr.head_sha, "live-sha")
 
-    def test_status_context_gh_created_at_synthesized_from_archive_timestamp(self) -> None:
-        # Legacy fragment lacks createdAt for StatusContext entries.
+    def test_status_context_gh_created_at_synthesized_from_committed_date(self) -> None:
+        # Legacy fragment lacks createdAt for StatusContext entries. The
+        # service synthesizes from commit.committedDate (preferred over
+        # archive_timestamp, which is too late for orphan-SHA recovery).
+        committed_at = datetime(2024, 2, 14, 9, 30, 0, tzinfo=_tz.utc)
         payload = _archive_payload(
             number=104,
             commits=[
                 {
                     "commit": {
                         "oid": "commit-sha-A",
+                        "committedDate": committed_at.isoformat(),
                         "statusCheckRollup": {
                             "contexts": {
                                 "nodes": [
@@ -194,8 +198,174 @@ class TestImportPRInfoPayloadCore(TestCase):
             archive_timestamp=self.archive_ts,
         )
         row = CommitStatusContext.objects.get(github_node_id="SC-A")
-        self.assertEqual(row.gh_created_at, self.archive_ts)
+        self.assertEqual(row.gh_created_at, committed_at)
         self.assertIsNotNone(row.archive_imported_at)
+
+    def test_check_run_timestamps_synthesized_from_committed_date(self) -> None:
+        # Legacy fragment lacks startedAt/completedAt for CheckRun entries.
+        # Without synthesis, the analyzer's filter would silently exclude
+        # the row from CI evaluation.
+        committed_at = datetime(2024, 3, 10, 8, 0, 0, tzinfo=_tz.utc)
+        payload = _archive_payload(
+            number=110,
+            commits=[
+                {
+                    "commit": {
+                        "oid": "commit-sha-B",
+                        "committedDate": committed_at.isoformat(),
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "nodes": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "id": "CR-B",
+                                        "name": "lint",
+                                        "status": "COMPLETED",
+                                        "conclusion": "SUCCESS",
+                                        # No startedAt / completedAt.
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            ],
+        )
+        import_pr_info_payload(
+            self.repo,
+            payload,
+            archive_name="queueboard-archive2",
+            archive_timestamp=self.archive_ts,
+        )
+        row = CommitCheckRun.objects.get(github_node_id="CR-B")
+        self.assertEqual(row.gh_started_at, committed_at)
+        self.assertEqual(row.gh_completed_at, committed_at)
+
+    def test_committed_date_preferred_over_archive_timestamp(self) -> None:
+        # When both committedDate and archive_timestamp are present,
+        # committedDate wins (it's the more accurate source).
+        committed_at = datetime(2024, 1, 5, tzinfo=_tz.utc)
+        payload = _archive_payload(
+            number=111,
+            commits=[
+                {
+                    "commit": {
+                        "oid": "commit-sha-C",
+                        "committedDate": committed_at.isoformat(),
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "nodes": [
+                                    {
+                                        "__typename": "StatusContext",
+                                        "id": "SC-C",
+                                        "context": "legacy/ci",
+                                        "state": "SUCCESS",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            ],
+        )
+        import_pr_info_payload(
+            self.repo,
+            payload,
+            archive_name="queueboard-archive2",
+            archive_timestamp=self.archive_ts,
+        )
+        row = CommitStatusContext.objects.get(github_node_id="SC-C")
+        self.assertEqual(row.gh_created_at, committed_at)
+        self.assertNotEqual(row.gh_created_at, self.archive_ts)
+
+    def test_falls_back_to_archive_timestamp_when_committed_date_missing(self) -> None:
+        # Defensive: if committedDate is absent (malformed payload), the
+        # importer must still produce a non-null gh_created_at so the
+        # StatusContext NOT NULL constraint doesn't trip.
+        payload = _archive_payload(
+            number=112,
+            commits=[
+                {
+                    "commit": {
+                        "oid": "commit-sha-D",
+                        # No committedDate.
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "nodes": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "id": "CR-D",
+                                        "name": "lint",
+                                        "status": "COMPLETED",
+                                        "conclusion": "SUCCESS",
+                                    },
+                                    {
+                                        "__typename": "StatusContext",
+                                        "id": "SC-D",
+                                        "context": "legacy/ci",
+                                        "state": "SUCCESS",
+                                    },
+                                ]
+                            }
+                        },
+                    }
+                }
+            ],
+        )
+        import_pr_info_payload(
+            self.repo,
+            payload,
+            archive_name="queueboard-archive2",
+            archive_timestamp=self.archive_ts,
+        )
+        cr = CommitCheckRun.objects.get(github_node_id="CR-D")
+        sc = CommitStatusContext.objects.get(github_node_id="SC-D")
+        self.assertEqual(cr.gh_completed_at, self.archive_ts)
+        self.assertEqual(cr.gh_started_at, self.archive_ts)
+        self.assertEqual(sc.gh_created_at, self.archive_ts)
+
+    def test_explicit_timestamps_in_payload_are_preserved(self) -> None:
+        # If the payload happens to carry startedAt/completedAt (unusual for
+        # the legacy fragment but possible for newer captures), the importer
+        # must NOT overwrite them with the synthesized value.
+        committed_at = datetime(2024, 4, 1, tzinfo=_tz.utc)
+        real_started = datetime(2024, 4, 1, 0, 0, 5, tzinfo=_tz.utc)
+        real_completed = datetime(2024, 4, 1, 0, 1, 30, tzinfo=_tz.utc)
+        payload = _archive_payload(
+            number=113,
+            commits=[
+                {
+                    "commit": {
+                        "oid": "commit-sha-E",
+                        "committedDate": committed_at.isoformat(),
+                        "statusCheckRollup": {
+                            "contexts": {
+                                "nodes": [
+                                    {
+                                        "__typename": "CheckRun",
+                                        "id": "CR-E",
+                                        "name": "build",
+                                        "status": "COMPLETED",
+                                        "conclusion": "SUCCESS",
+                                        "startedAt": real_started.isoformat(),
+                                        "completedAt": real_completed.isoformat(),
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                }
+            ],
+        )
+        import_pr_info_payload(
+            self.repo,
+            payload,
+            archive_name="queueboard-archive2",
+            archive_timestamp=self.archive_ts,
+        )
+        row = CommitCheckRun.objects.get(github_node_id="CR-E")
+        self.assertEqual(row.gh_started_at, real_started)
+        self.assertEqual(row.gh_completed_at, real_completed)
 
     def test_full_shape_creates_expected_rows_with_archive_imported_at(self) -> None:
         LabelDef.objects.create(repository=self.repo, name="bug", color="ff0000")

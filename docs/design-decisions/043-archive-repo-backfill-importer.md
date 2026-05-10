@@ -879,6 +879,54 @@ through the listed sequence.
   - Added a "Convergence snapshot during the drain" operational note so
     operators expect the temporary spike in stale/unbuilt counts.
   - Added open questions for zombie PRs and high-event PR truncation.
+- 2026-05-10: Post-deploy gap surfaced and fixed: archive CheckRuns
+  were being inserted with NULL ``gh_started_at`` / ``gh_completed_at``
+  (the legacy fragment requests neither), and the analyzer's CI
+  evaluation
+  (``_latest_ci_statuses_for_fragment`` in
+  ``analyzer/services/queue_windows.py:99-103``) silently EXCLUDES rows
+  where both are NULL via the filter
+  ``Q(gh_completed_at__lte=at) | (Q(gh_completed_at__isnull=True) &
+  Q(gh_started_at__lte=at))``. That defeated the importer's headline
+  orphan-SHA recovery use case — the rescued CheckRuns would sit in the
+  DB but never feed CI gating decisions. Doc 043's original synthesis
+  plan (use ``archive_timestamp`` from the per-PR ``timestamp.txt``)
+  also has a problem the doc didn't catch: orphan SHAs were
+  force-pushed away before the scrape, so the analyzer queries at
+  ``at`` < force-push time < scrape time, and even the synthesized
+  row stays excluded. Additionally, archive StatusContexts whose
+  ``createdAt`` was missing were getting ``timezone.now()`` stamped
+  via ``sync_status_contexts``'s fallback — also wrong, just less
+  obviously so.
+
+  **Resolution**: synthesize CheckRun ``startedAt`` / ``completedAt``
+  and StatusContext ``createdAt`` from ``commit.committedDate`` (the
+  commit's authored time, available in the legacy fragment on the
+  commit node). committedDate is always ≤ any analyzer ``at`` within
+  that SHA's revision window so the filter matches, and preserves
+  realistic per-commit ordering within the PR. Falls back to
+  ``archive_timestamp`` only when committedDate is absent
+  (malformed payload). The bias vs. real CI completion time is small
+  (CI generally completes seconds-to-minutes after commit) relative
+  to typical revision-window durations.
+
+  Already-imported rows can be re-pended for re-ingest:
+  ``UPDATE syncer_archiveimportitem SET status='pending',
+  completed_at=NULL, last_attempted_at=NULL, last_error='',
+  attempts=0 WHERE status IN ('completed', 'in_progress',
+  'failed_transient');``. ``_archive_mode_upsert`` strips NULLs only
+  on the input side, so re-import populates the synthesized
+  timestamps without downgrading anything; ``archive_imported_at``
+  is filter-gated on ``IS NULL`` so the first-import stamp is
+  preserved.
+
+  Code change: ``_split_contexts`` in
+  ``qb_site/syncer/services/archive_import.py`` now takes a
+  ``commit_committed_at_iso`` argument; ``import_pr_info_payload``
+  threads ``commit.committedDate`` from each commit node through.
+  Tests in ``test_archive_import_service.py`` updated and extended
+  to cover the new synthesis priority + fallback + preservation of
+  explicit timestamps when present.
 - 2026-05-10: Commit 4 landed — throttled scheduler tick, status command,
   and convergence counters. Decisions made during implementation:
   - **Beat fires unconditionally; gate lives inside the task.** When
