@@ -26,6 +26,7 @@ from .models import (
     CIShaFetchState,
     CommitCheckRun,
     CommitStatusContext,
+    ArchiveImportItem,
 )
 from analyzer.models import PRRevision, PRDependency, PRDependencyState, PRQueueWindow, PRRevisionBuildState, QueueRuleSet
 from analyzer.services.revisions import rebuild_pr_revisions
@@ -1316,6 +1317,9 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_missing_head_ci_contexts",
         "prs_below_current_sync_schema_version",
         "sync_schema_version_target",
+        "archive_pending",
+        "archive_completed",
+        "archive_failed_permanent",
     )
     list_filter = ("repository", "history_cursor_completed", "discovery_continuation_active")
     date_hierarchy = "collected_at"
@@ -1339,6 +1343,9 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "prs_missing_head_ci_contexts",
         "prs_below_current_sync_schema_version",
         "sync_schema_version_target",
+        "archive_pending",
+        "archive_completed",
+        "archive_failed_permanent",
         "created_at",
     )
 
@@ -1457,6 +1464,48 @@ class CommitCheckRunAdmin(ReadOnlyAdmin):
         "created_at",
         "updated_at",
     )
+
+
+@admin.register(ArchiveImportItem)
+class ArchiveImportItemAdmin(ReadOnlyAdmin):
+    """Worklist for the archive backfill importer (design doc 043)."""
+
+    list_display = (
+        "repository",
+        "archive_name",
+        "pr_number",
+        "status",
+        "attempts",
+        "last_attempted_at",
+        "completed_at",
+        "archive_blob_sha",
+    )
+    list_filter = ("repository", "archive_name", "status")
+    search_fields = (
+        "archive_name",
+        "pr_number",
+        "archive_path",
+        "archive_blob_sha",
+        "repository__owner",
+        "repository__name",
+    )
+    raw_id_fields = ("repository",)
+    readonly_fields = (
+        "repository",
+        "archive_name",
+        "pr_number",
+        "archive_path",
+        "archive_blob_sha",
+        "archive_timestamp",
+        "status",
+        "attempts",
+        "last_error",
+        "last_attempted_at",
+        "completed_at",
+        "created_at",
+        "updated_at",
+    )
+    ordering = ("archive_name", "pr_number")
 
 
 @admin.register(CommitStatusContext)

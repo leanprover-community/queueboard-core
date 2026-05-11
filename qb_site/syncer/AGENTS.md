@@ -28,6 +28,14 @@ docker compose exec -T web python qb_site/manage.py list_changed_prs \
 docker compose exec -T web python qb_site/manage.py sync_repo \
   --repo leanprover-community/mathlib4 --since 2025-10-20T00:00:00Z --limit 50
 
+# Archive backfill importer (design doc 043): enroll the worklist for one archive repo.
+docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
+  --archive queueboard-archive2 --repo leanprover-community/mathlib4
+# Older archive in diff mode (only enroll PRs not yet completed from archive2):
+docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
+  --archive queueboard-archive --repo leanprover-community/mathlib4 \
+  --diff-against queueboard-archive2
+
 # App tests
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer
 ```
@@ -89,6 +97,7 @@ front and expensive to recover from when skipped.
   - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
   - `syncer.upgrade_schema_versions_active` → `syncer.upgrade_schema_versions` (advances `PullRequest.sync_schema_version` toward `CURRENT_SYNC_SCHEMA_VERSION`; see Sync Schema Versioning below),
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
+  - `syncer.archive_import_tick` → `syncer.archive_import_pr_item` — beat-driven worklist drain for the archive backfill importer (design doc 043). Tick runs every `ARCHIVE_IMPORT_TICK_SECONDS` (default 60s) and gates on `ARCHIVE_IMPORT_ENABLED` so operators can toggle activity without restarting beat. Status surface: `python manage.py archive_import_status [--repo OWNER/NAME] [--errors N]`.
   - `syncer.collect_convergence` — records syncer convergence metrics,
   - `syncer.collect_metrics` — records sync throughput/lag metrics.
 - Keep task behavior idempotent and retry-safe; prefer explicit status/reason payloads in return dicts.

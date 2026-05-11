@@ -15,3 +15,4 @@ from .convergence_snapshot import SyncerConvergenceSnapshot  # noqa: F401
 from .repo_backfill_cursor import RepoBackfillCursor  # noqa: F401
 from .repo_discovery_state import RepoDiscoveryState  # noqa: F401
 from .github_webhook_delivery import GitHubWebhookDelivery, GitHubWebhookDeliveryStatus  # noqa: F401
+from .archive_import_item import ArchiveImportItem, ArchiveImportItemStatus  # noqa: F401
