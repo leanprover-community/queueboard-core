@@ -5,6 +5,7 @@
 # QUEUEBOARD_API_BASE_URL into the API directory before rendering.
 
 import argparse
+import html
 import json
 import os
 import sys
@@ -132,7 +133,9 @@ def user_link(author_name: str, details: str | None = None) -> str:
 
 # An HTML link to a mathlib PR from the PR title
 def title_link(title: str, url: str) -> str:
-    return f"<a href='{url}'>{title}</a>"
+    # The title is untrusted text and may contain characters such as < > & that would
+    # otherwise be interpreted as HTML (breaking layout or enabling injection); escape it.
+    return f"<a href='{url}'>{html.escape(title)}</a>"
 
 
 # Create a button showing this label's title, and linking to the set of
@@ -241,7 +244,11 @@ def _compute_pr_entries(
         # Mild HACK: if a PR has label "t-algebra", we append the hidden string "label:t-algebra$" to make this searchable.
         label_hack = hide("label:t-algebra$") if "t-algebra" in [lab.name for lab in pr.labels] else ""
         branch_name = pr_info.branch_name if pr_info is not None else "missing"
-        description = pr_info.description if pr_info is not None else ""
+        # The PR body is raw, untrusted text (often markdown with embedded HTML, e.g. dependabot
+        # release notes). It goes into a hidden, search-only column, so escape it: raw tags would
+        # otherwise break the surrounding table structure (an upstream length cap can even slice the
+        # body mid-tag, leaving unbalanced HTML that drops trailing cells) and are an XSS vector.
+        description = html.escape(pr_info.description) if pr_info is not None else ""
         # Mild HACK: append each PR's author as "author:name" to the end of the author column (hidden),
         # to allow for searches "author:name".
         author_hack = hide(f"author:{name}")
