@@ -11,9 +11,12 @@ const diff_stat = DataTable.type('diff_stat', {
   },
 });
 const formatted_relativedelta = DataTable.type('formatted_relativedelta', {
-  detect: function (data) { return data.startsWith('<div style="display:none">'); },
+  detect: function (data) { return typeof data === 'string' && data.startsWith('<div style="display:none">'); },
   order: {
     pre: function (data) {
+      if (typeof data !== 'string') {
+          return -1;
+      }
       let main = (data.split('</div>', 2))[0].slice('<div style="display:none">'.length);
       // If there is no input data, main is the empty string.
       if (!main.includes('-')) {

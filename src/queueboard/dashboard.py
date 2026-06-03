@@ -227,7 +227,11 @@ def _compute_pr_entries(
     result = ""
     for pr in prs:
         pr_number = str(pr.number)
-        name = aggregate_information[pr_number].author
+        # Detailed information about the current PR; may be absent for some PRs
+        # (e.g. when the aggregate data has not been backfilled yet). All accesses
+        # below must tolerate this being None, otherwise the whole page fails to render.
+        pr_info = aggregate_information[pr_number] if pr_number in aggregate_information else None
+        name = pr_info.author if pr_info is not None else "unknown"
         if pr.url != infer_pr_url(pr.number):
             print(
                 f"warning: PR {pr.number} has url differing from the inferred one:\n  actual:   {pr.url}\n  inferred: {infer_pr_url(pr.number)}",
@@ -236,8 +240,8 @@ def _compute_pr_entries(
         labels = _write_labels(pr.labels, page_name, id)
         # Mild HACK: if a PR has label "t-algebra", we append the hidden string "label:t-algebra$" to make this searchable.
         label_hack = hide("label:t-algebra$") if "t-algebra" in [lab.name for lab in pr.labels] else ""
-        branch_name = aggregate_information[pr_number].branch_name if pr_number in aggregate_information else "missing"
-        description = aggregate_information[pr_number].description
+        branch_name = pr_info.branch_name if pr_info is not None else "missing"
+        description = pr_info.description if pr_info is not None else ""
         # Mild HACK: append each PR's author as "author:name" to the end of the author column (hidden),
         # to allow for searches "author:name".
         author_hack = hide(f"author:{name}")
@@ -248,10 +252,6 @@ def _compute_pr_entries(
             description,
             labels + label_hack,
         ]
-        # Detailed information about the current PR.
-        pr_info = None
-        if pr_number in aggregate_information:
-            pr_info = aggregate_information[pr_number]
         if pr_info is None:
             print(f"main dashboard: found no aggregate information for PR {pr.number}", file=sys.stderr)
             entries.extend(["-1/-1", "no data available", "-1", "-1", '<a title="no data available">n/a</a>'])
@@ -260,7 +260,11 @@ def _compute_pr_entries(
             if extra_settings.show_approvals:
                 entries.append("???")
             if extra_settings.potential_reviewers and potential_reviewers is not None:
+                # NB: two columns ("Potential reviewers" and "Contact") are added to the header,
+                # so this branch must append two entries as well; otherwise the row is short by
+                # one cell, which makes DataTables read a null cell and breaks column type detection.
                 entries.append("???")
+                entries.append("")
         else:
             na = '<a title="no data available">n/a</a>'
             total_comments = na if pr_info.number_total_comments is None else str(pr_info.number_total_comments)
@@ -334,14 +338,14 @@ def _compute_pr_entries(
         real_update = f'{hide(" ")}<a title="{unknown_update}">unknown</a>'
         total_time = f'{hide(" ")}<a title="{unknown_total}">unknown</a>'
         if pr_info:
-            last_update = aggregate_information[pr_number].last_status_change
+            last_update = pr_info.last_status_change
             if last_update is not None and last_update.status != DataStatus.Missing:
                 date = str(last_update.time).replace("+00:00", "")
                 prefix = hide(format_delta2(datetime.now(timezone.utc) - last_update.time))
                 real_update = f'{prefix}<a title="{date}">{format_delta(last_update.delta)} ago</a>'
                 if last_update.status == DataStatus.Incomplete:
                     real_update += '<a title="caution: this data is likely incomplete">*</a>'
-            tqt = aggregate_information[pr_number].total_queue_time
+            tqt = pr_info.total_queue_time
             if tqt is not None and tqt.status != DataStatus.Missing:
                 prefix = hide(format_delta2(tqt.value_td))
                 total_time = f'{prefix}<a title="{tqt.explanation}">{format_delta(tqt.value_rd)}</a>'
