@@ -133,7 +133,9 @@ def user_link(author_name: str, details: str | None = None) -> str:
 
 # An HTML link to a mathlib PR from the PR title
 def title_link(title: str, url: str) -> str:
-    return f"<a href='{url}'>{title}</a>"
+    # The title is untrusted text and may contain characters such as < > & that would
+    # otherwise be interpreted as HTML (breaking layout or enabling injection); escape it.
+    return f"<a href='{url}'>{html.escape(title)}</a>"
 
 
 # Create a button showing this label's title, and linking to the set of
