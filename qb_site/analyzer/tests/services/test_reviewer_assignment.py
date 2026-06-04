@@ -10,6 +10,7 @@ from analyzer.services.reviewer_assignment import (
     PRAssignmentPriority,
     ReviewerAssignmentBuilder,
     ReviewerProfile,
+    _filter_assignment_forbidden_prs,
     collect_assignment_statistics,
     compute_area_stats,
     rank_prs_for_assignment,
@@ -17,7 +18,7 @@ from analyzer.services.reviewer_assignment import (
     suggest_reviewers_many,
 )
 from core.models import Repository, ReviewerPreference, User
-from analyzer.models import ReviewerOptOut
+from analyzer.models import QueueRuleSet, ReviewerOptOut
 from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.models import CommitCheckRun, LabelDef, PRLabel, PullRequest
@@ -145,6 +146,19 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(result.all_potential_reviewers, ["bob", "alice"])
         self.assertEqual(result.all_available_reviewers, [])
         self.assertIsNone(result.suggested)
+
+    def test_filter_assignment_forbidden_prs_drops_matching_labels(self):
+        all_prs = {
+            1: {"labels": [{"name": "t-analysis"}]},
+            2: {"labels": [{"name": "t-analysis"}, {"name": "maintainer-merge"}]},
+            3: {"labels": [{"name": "Maintainer-Merge"}]},  # matched case-insensitively
+        }
+        kept = _filter_assignment_forbidden_prs([1, 2, 3], all_prs=all_prs, forbidden_labels={"maintainer-merge"})
+        self.assertEqual(kept, [1])
+
+    def test_filter_assignment_forbidden_prs_is_noop_without_forbidden_labels(self):
+        all_prs = {1: {"labels": [{"name": "maintainer-merge"}]}}
+        self.assertEqual(_filter_assignment_forbidden_prs([1], all_prs=all_prs, forbidden_labels=set()), [1])
 
     def test_pr_without_topic_label_is_not_auto_assigned(self):
         result = suggest_reviewer_for_pr(
@@ -751,6 +765,36 @@ class ReviewerAssignmentBuilderTests(TestCase):
         payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
 
         self.assertNotIn(15, payload["automatic_assignments"])
+
+    def test_build_excludes_assignment_forbidden_label_but_keeps_pr_on_queue(self):
+        # PR 20 is a normal queue PR; PR 21 also carries the maintainer-merge label.
+        self._make_pr(20, labels=("t-analysis",))
+        self._make_pr(21, labels=("t-analysis", "maintainer-merge"))
+
+        QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            is_default=True,
+            assignment_forbidden_label_names=["maintainer-merge"],
+        )
+
+        # bob is a non-author reviewer (PRs are authored by alice).
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        # The maintainer-merge PR stays on the review queue ...
+        self.assertIn(21, queue_snapshot.payload["lists"]["dashboards"]["Queue"])
+        # ... but is withheld from reviewer auto-assignment, while the normal PR is assigned.
+        self.assertIn(20, payload["automatic_assignments"])
+        self.assertNotIn(21, payload["automatic_assignments"])
 
     def test_build_skips_pr_already_assigned_to_active_reviewer(self):
         pr = self._make_pr(16, labels=("t-analysis",))

@@ -72,6 +72,18 @@ class QueueRuleSet(TimestampedModel):
 
     required_label_names = models.JSONField(default=list, blank=True)
     forbidden_label_names = models.JSONField(default=list, blank=True)
+    # Labels that keep a PR on the queue but exclude it from reviewer auto-assignment.
+    #
+    # Unlike ``forbidden_label_names`` (which removes a PR from the queue entirely), a PR
+    # carrying one of these labels stays on the review queue — so e.g. the stale
+    # auto-unassign sweep still applies to it — but is not offered to reviewers for
+    # auto-assignment. Intended for "post-review" signals such as ``maintainer-merge``
+    # (approved; awaiting a maintainer to merge), which a reviewer can take no further
+    # action on. Compared case-insensitively, like the other label lists.
+    #
+    # NOTE: this governs the reviewer assignment flow only. A future maintainer-assignment
+    # flow will source these PRs separately rather than reading this list.
+    assignment_forbidden_label_names = models.JSONField(default=list, blank=True)
     # Optional: specific CI contexts (job names) that must succeed for this rule set.
     # These are interpreted as case-insensitive substrings of CI context names.
     required_ci_contexts = models.JSONField(default=list, blank=True)
