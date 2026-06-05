@@ -5,11 +5,12 @@ import json
 import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Sequence
+from typing import Dict, Sequence, Set
 
 from django.utils.dateparse import parse_datetime
 
 from analyzer.models import AreaStatsSnapshot, QueueRuleSet, QueueSnapshot, ReviewerAssignmentSnapshot, ReviewerOptOut
+from analyzer.services.queue_rules import default_rule_set_for_repo, rules_for_rule_set
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from analyzer.services.reviewer_assignment_engine import (
     PRAssignmentPriority,
@@ -70,6 +71,45 @@ def _filter_prs_without_active_assignee(
             continue
         filtered.append(int(pr_number))
     return filtered
+
+
+def _assignment_forbidden_labels(repository: Repository, *, rule_set: QueueRuleSet | None = None) -> Set[str]:
+    """Resolve the repo's assignment-forbidden label set (normalized, lowercase).
+
+    Defaults to the repository's canonical rule set when one is not supplied.
+    """
+    obj = rule_set or default_rule_set_for_repo(repository)
+    if obj is None:
+        return set()
+    return set(rules_for_rule_set(obj).assignment_forbidden_labels or set())
+
+
+def _filter_assignment_forbidden_prs(
+    pr_numbers: Sequence[int],
+    *,
+    all_prs: Dict[int | str, dict],
+    forbidden_labels: Set[str],
+) -> list[int]:
+    """Drop PRs carrying an assignment-forbidden label from the candidate pool.
+
+    These PRs stay on the review queue (so the stale auto-unassign sweep still applies);
+    they are only withheld from reviewer auto-assignment. Used for "post-review" labels
+    such as ``maintainer-merge`` that a reviewer can take no further action on.
+    """
+    if not forbidden_labels:
+        return [int(n) for n in pr_numbers]
+    kept: list[int] = []
+    for pr_number in pr_numbers:
+        pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number)) or {}
+        label_names = {
+            str(label.get("name")).strip().lower()
+            for label in (pr_entry.get("labels") or [])
+            if isinstance(label, dict) and label.get("name")
+        }
+        if label_names & forbidden_labels:
+            continue
+        kept.append(int(pr_number))
+    return kept
 
 
 def _queue_time_seconds(pr_entry: dict) -> tuple[float | None, DataStatus]:
@@ -281,6 +321,11 @@ def build_reviewer_assignment_trace(
         all_prs=payload.get("prs", {}),
         reviewers=reviewers,
     )
+    assignable_queue_prs = _filter_assignment_forbidden_prs(
+        assignable_queue_prs,
+        all_prs=payload.get("prs", {}),
+        forbidden_labels=_assignment_forbidden_labels(repository),
+    )
 
     excluded_by_pr = _opt_outs_for_prs(repository, assignable_queue_prs)
     suggestions, per_pr = suggest_reviewers_many_with_trace(
@@ -427,6 +472,11 @@ class ReviewerAssignmentBuilder:
             queue_prs,
             all_prs=payload.get("prs", {}),
             reviewers=reviewers,
+        )
+        assignable_queue_prs = _filter_assignment_forbidden_prs(
+            assignable_queue_prs,
+            all_prs=payload.get("prs", {}),
+            forbidden_labels=_assignment_forbidden_labels(repository, rule_set=rule_set),
         )
 
         automatic_assignments = suggest_reviewers_many(

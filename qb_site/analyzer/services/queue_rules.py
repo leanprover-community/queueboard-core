@@ -27,6 +27,10 @@ class QueueRules:
     required_labels: Set[str] | None = None
     # None of these labels may be present.
     forbidden_labels: Set[str] | None = None
+    # Labels that keep a PR on the queue but exclude it from reviewer auto-assignment
+    # (e.g. ``maintainer-merge``). Not consulted by ``is_on_queue``; applied by the
+    # reviewer assignment flow when building its candidate pool.
+    assignment_forbidden_labels: Set[str] | None = None
     # CI contexts that must succeed for this rule set. Interpretation is delegated
     # to CI helper services; QueueRules treats ``ci_ok`` as an aggregate boolean.
     required_ci_contexts: Set[str] | None = None
@@ -67,6 +71,9 @@ class QueueRules:
 def rules_for_rule_set(obj: QueueRuleSet) -> QueueRules:
     required = {_normalize_label(n) for n in (obj.required_label_names or []) if isinstance(n, str) and n.strip()}
     forbidden = {_normalize_label(n) for n in (obj.forbidden_label_names or []) if isinstance(n, str) and n.strip()}
+    assignment_forbidden = {
+        _normalize_label(n) for n in (obj.assignment_forbidden_label_names or []) if isinstance(n, str) and n.strip()
+    }
     required_ci = {_normalize_label(n) for n in (obj.required_ci_contexts or []) if isinstance(n, str) and n.strip()}
     ci_mode = resolve_ci_gating_mode(require_ci_success=obj.require_ci_success, ci_gating_mode=obj.ci_gating_mode)
     return QueueRules(
@@ -76,6 +83,7 @@ def rules_for_rule_set(obj: QueueRuleSet) -> QueueRules:
         ci_gating_mode=ci_mode,
         required_labels=required or None,
         forbidden_labels=forbidden or None,
+        assignment_forbidden_labels=assignment_forbidden or None,
         required_ci_contexts=required_ci or None,
     )
 
