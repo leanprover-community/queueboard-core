@@ -200,6 +200,9 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
     label_rows = LabelDef.objects.filter(repository_id__in=repo_ids).values_list("repository_id", "name")
     for repository_id, label_name in label_rows:
         label_catalog_by_repo.setdefault(int(repository_id), []).append(str(label_name))
+    topic_label_pattern_by_repo: dict[int, str] = {
+        int(pref.repository_id): (pref.repository.assignment_topic_label_pattern or "") for pref in prefs
+    }
 
     submitted = request.method == "GET" and request.GET.get("saved") == "1"
     saved_at: datetime | None = None
@@ -208,7 +211,11 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
             formset = ReviewerPreferenceFormSet(
                 request.POST,
                 queryset=queryset,
-                form_kwargs={"user_timezone": user_timezone, "label_catalog_by_repo": label_catalog_by_repo},
+                form_kwargs={
+                    "user_timezone": user_timezone,
+                    "label_catalog_by_repo": label_catalog_by_repo,
+                    "topic_label_pattern_by_repo": topic_label_pattern_by_repo,
+                },
             )
             if formset.is_valid():
                 formset.save()
@@ -217,7 +224,11 @@ def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
         else:
             formset = ReviewerPreferenceFormSet(
                 queryset=queryset,
-                form_kwargs={"user_timezone": user_timezone, "label_catalog_by_repo": label_catalog_by_repo},
+                form_kwargs={
+                    "user_timezone": user_timezone,
+                    "label_catalog_by_repo": label_catalog_by_repo,
+                    "topic_label_pattern_by_repo": topic_label_pattern_by_repo,
+                },
             )
         if submitted:
             saved_at = timezone.localtime(timezone.now(), user_timezone)

@@ -246,6 +246,29 @@ class TestPrefsForm(TestCase):
         self.assertContains(response, "Legacy labels currently selected: legacy-topic.")
         self.assertContains(response, "legacy-topic (legacy: not in synced topic labels)")
 
+    def test_custom_repo_pattern_changes_offered_labels(self) -> None:
+        # By default "maintainer-merge" is not a topic label (see other tests). A
+        # per-repo pattern can opt it in alongside the t-* labels.
+        self.repo1.assignment_topic_label_pattern = r"t-.*|maintainer-merge"
+        self.repo1.save(update_fields=["assignment_topic_label_pattern"])
+        token = self._token()
+
+        response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": token}))
+        body = response.content.decode("utf-8")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('value="maintainer-merge"', body)
+        # "CI" no longer matches this repo's pattern, so it is not offered.
+        self.assertNotIn('value="CI"', body)
+
+        # And a POST selecting the now-valid label is accepted.
+        data, index_by_id = self._post_data()
+        pref1_i = index_by_id[self.pref1.id]
+        data[f"form-{pref1_i}-preferred_labels"] = ["t-algebra", "maintainer-merge"]
+        post = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data)
+        self.assertEqual(post.status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.preferred_labels, ["t-algebra", "maintainer-merge"])
+
     def test_invalid_token_returns_forbidden(self) -> None:
         response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": "not-a-token"}))
 

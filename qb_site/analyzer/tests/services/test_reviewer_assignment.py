@@ -18,6 +18,7 @@ from analyzer.services.reviewer_assignment import (
     suggest_reviewers_many,
 )
 from core.models import Repository, ReviewerPreference, User
+from core.services.topic_labels import make_topic_label_matcher
 from analyzer.models import QueueRuleSet, ReviewerOptOut
 from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus
 from syncer.services.pr_sync_service import PRSyncService
@@ -130,6 +131,63 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(analysis["num_reviewers"], 2)
         self.assertEqual(analysis["num_reviewers_on_rotation"], 2)
         self.assertFalse(analysis["at_max_capacity"])
+
+    def test_custom_topic_label_matcher_recognizes_non_default_labels(self):
+        # A PR labeled with a non-default topic label and a reviewer who prefers it.
+        pr_entry = {
+            "labels": [{"name": "area-analysis", "color": "123456"}],
+            "author": "dave",
+            "pr_status": "AwaitingReview",
+            "total_queue_time": {"status": "valid", "value_td": 10},
+        }
+        reviewers = [
+            ReviewerProfile(
+                github_login="erin",
+                maximum_capacity=5,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["area-analysis"],
+                preferred_labels_lower={"area-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            ),
+        ]
+
+        # Default matcher does not treat "area-analysis" as a topic label -> no match.
+        default_result = suggest_reviewer_for_pr(
+            pr_number=1,
+            pr_entry=pr_entry,
+            reviewers=reviewers,
+            assignment_stats={},
+            rng=random.Random(0),
+        )
+        self.assertIsNone(default_result.suggested)
+        self.assertEqual(default_result.reason, "missing-topic-label")
+
+        # A custom matcher selecting "area-*" labels enables the assignment.
+        custom_matcher = make_topic_label_matcher(r"area-.*")
+        custom_result = suggest_reviewer_for_pr(
+            pr_number=1,
+            pr_entry=pr_entry,
+            reviewers=reviewers,
+            assignment_stats={},
+            rng=random.Random(0),
+            topic_label_matcher=custom_matcher,
+        )
+        self.assertEqual(custom_result.suggested, "erin")
+
+        # compute_area_stats honors the same matcher.
+        area_stats = compute_area_stats(
+            existing_assignments={},
+            reviewers=reviewers,
+            queue_pr_numbers=[1],
+            all_prs={1: pr_entry},
+            rng=random.Random(0),
+            topic_label_matcher=custom_matcher,
+        )
+        self.assertIn("area-analysis", area_stats)
+        self.assertNotIn("t-analysis", area_stats)
 
     def test_opt_out_excludes_from_available_pool(self):
         stats = collect_assignment_statistics(self.snapshot)

@@ -215,6 +215,7 @@ class RepositoryAdmin(admin.ModelAdmin):
         "github_link",
         "default_branch",
         "is_active",
+        "assignment_topic_label_pattern",
         "github_node_id",
         "created_at",
         "updated_at",
