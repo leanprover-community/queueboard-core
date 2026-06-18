@@ -7,6 +7,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.models import User
+from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, _parse_single_issue_or_pr_ref
 from zulip_bot.services.close_pr_execution import PermissionOutcome
@@ -94,12 +95,11 @@ def label_pr_command(context: CommandContext, args: str) -> CommandResult:
     )
     ttl_seconds = int(getattr(settings, "ZULIP_LABEL_PR_TOKEN_TTL_SECONDS", 1800))
     expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-    expires_unix = int(expires_at.timestamp())
     ref_str = f"`{ref.owner}/{ref.repo}#{ref.number}`"
     title_suffix = f' ("{result.pr_title}")' if result.pr_title else ""
     dm_content = (
         f"Use this private link to [edit labels on {ref_str}{title_suffix}]({link}). "
-        f"It expires at <time:{expires_unix}>. "
+        f"It expires at {format_global_time(expires_at)}. "
         "The change will be attributed to the bot, not your personal GitHub account."
     )
     try:

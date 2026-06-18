@@ -7,6 +7,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.models import ReviewerPreference, User
+from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.prefs_links import PrefsLinkClaims, build_prefs_link
 from zulip_bot.services.registration_links import RegistrationLinkClaims, build_registration_link
@@ -38,11 +39,10 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
         )
         ttl_seconds = int(getattr(settings, "ZULIP_REGISTRATION_TOKEN_TTL_SECONDS", 1800))
         expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-        expires_unix = int(expires_at.timestamp())
         dm_content = (
             "No reviewer profile is linked to your Zulip account yet. "
             f"Use this private link to [start registration]({register_link}). "
-            f"It expires at <time:{expires_unix}>."
+            f"It expires at {format_global_time(expires_at)}."
         )
         return _send_dm(context.sender_id, dm_content, "prefs_registration_dm_failed")
 
@@ -61,8 +61,9 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
     )
     ttl_seconds = int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
     expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-    expires_unix = int(expires_at.timestamp())
-    dm_content = f"Use this private link to [open your reviewer preferences form]({link}). It expires at <time:{expires_unix}>."
+    dm_content = (
+        f"Use this private link to [open your reviewer preferences form]({link}). It expires at {format_global_time(expires_at)}."
+    )
     return _send_dm(context.sender_id, dm_content, "prefs_link_dm_failed")
 
 

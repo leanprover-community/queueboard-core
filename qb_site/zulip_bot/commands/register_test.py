@@ -6,6 +6,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 
+from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.registration_links import RegistrationLinkClaims, build_registration_link
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
@@ -34,9 +35,9 @@ def register_test_command(context: CommandContext, args: str) -> CommandResult:
     )
     ttl_seconds = int(getattr(settings, "ZULIP_REGISTRATION_TOKEN_TTL_SECONDS", 1800))
     expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-    expires_unix = int(expires_at.timestamp())
     dm_content = (
-        f"Use this private link to [test registration via GitHub OAuth]({register_link}). It expires at <time:{expires_unix}>."
+        f"Use this private link to [test registration via GitHub OAuth]({register_link}). "
+        f"It expires at {format_global_time(expires_at)}."
     )
     # Private links must be delivered via send_direct_message. See close_pr.py
     # for the rationale: Zulip webhook responses always go back to the triggering

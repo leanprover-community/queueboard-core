@@ -33,7 +33,7 @@ class TestRegisterTestCommand(SimpleTestCase):
         dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
         self.assertIn("[test registration via GitHub OAuth](", dm_content)
         self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
-        self.assertRegex(dm_content, re.compile(r"<time:\d+>"))
+        self.assertRegex(dm_content, re.compile(r"<time:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00>"))
 
     def test_register_test_handles_missing_sender_identity(self) -> None:
         result = register_test_command(self._context(sender_id=None), "")
