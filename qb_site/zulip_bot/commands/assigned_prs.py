@@ -15,6 +15,7 @@ from analyzer.services.reviewer_attention_format import (
 )
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
 from core.models import Repository, ReviewerPreference, User
+from core.utils.zulip_time import format_global_time
 from syncer.models import PRLabel, PullRequest
 from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
@@ -179,8 +180,7 @@ def _render_assigned_prs_report(
         lines.append("No assigned PR data is available for your configured repositories.")
         return "\n".join(lines)
 
-    now_unix = _now_utc_unix()
-    lines.append(f"Generated at <time:{now_unix}>.")
+    lines.append(f"Generated at {format_global_time(_now_utc_unix())}.")
 
     any_assigned = False
     for repo_label, report, extras_by_pr in reports:

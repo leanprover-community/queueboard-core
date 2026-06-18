@@ -26,6 +26,7 @@ from analyzer.services.reviewer_attention_format import (
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_operation_tokens import resolve_github_app_operation_token
 from core.models import Repository, User
+from core.utils.zulip_time import format_global_time
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 
@@ -295,7 +296,7 @@ def _render_reviewer_message(
     lines: list[str] = [
         "### Assigned queue PRs that may need your attention",
         "",
-        f"Generated at <time:{_now_utc_unix()}>.",
+        f"Generated at {format_global_time(_now_utc_unix())}.",
         "",
     ]
 

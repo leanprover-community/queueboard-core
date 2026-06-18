@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from analyzer.services.reviewer_attention import ReviewerAttentionItem
+from core.utils.zulip_time import format_global_time
 
 CONSECUTIVE_QUEUE_TIME_SINCE_ASSIGNMENT_LABEL = "Consecutive time on queue since latest assignment"
 TOTAL_QUEUE_TIME_LABEL = "Total queue time"
@@ -37,7 +38,7 @@ def format_since_timestamp(ts: datetime | None, *, now: datetime | None = None) 
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     total_seconds = max(int((now_ts - ts).total_seconds()), 0)
-    return f"<time:{int(ts.timestamp())}> ({format_compact_duration(total_seconds)} ago)"
+    return f"{format_global_time(ts)} ({format_compact_duration(total_seconds)} ago)"
 
 
 def sort_by_assignment_recency(items: list[ReviewerAttentionItem]) -> list[ReviewerAttentionItem]:

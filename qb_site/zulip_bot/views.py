@@ -17,6 +17,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from core.models import ReviewerPreference, User
+from core.utils.zulip_time import format_global_time
 from syncer.models import LabelDef
 from zulip_bot.commands import CommandResult, get_command
 from zulip_bot.commands import assign as _assign  # noqa: F401
@@ -897,7 +898,7 @@ def _send_registration_success_dm(
         content = (
             f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
             f"Next step: click this private link to [finalize your reviewer preferences]({prefs_link}). "
-            f"It expires at <time:{prefs_expires_unix}>."
+            f"It expires at {format_global_time(prefs_expires_unix)}."
         )
     else:
         content = (

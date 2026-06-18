@@ -38,7 +38,7 @@ class TestPrefsCommand(TestCase):
         dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
         self.assertIn("[open your reviewer preferences form](", dm_content)
         self.assertIn("https://queueboard.example/api/zulip/prefs/", dm_content)
-        self.assertRegex(dm_content, re.compile(r"<time:\d+>"))
+        self.assertRegex(dm_content, re.compile(r"<time:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00>"))
 
     @patch("zulip_bot.commands.prefs.ZulipClient")
     def test_prefs_command_handles_missing_user_link(self, MockZulipClient: MagicMock) -> None:
@@ -50,7 +50,7 @@ class TestPrefsCommand(TestCase):
         self.assertIn("No reviewer profile is linked", dm_content)
         self.assertIn("[start registration](", dm_content)
         self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
-        self.assertRegex(dm_content, re.compile(r"<time:\d+>"))
+        self.assertRegex(dm_content, re.compile(r"<time:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00>"))
 
     def test_prefs_command_handles_missing_preferences(self) -> None:
         User.objects.create(github_login="reviewer", zulip_user_id=101)
