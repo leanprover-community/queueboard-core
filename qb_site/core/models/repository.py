@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from django.db import models
 
+from core.services.topic_labels import validate_topic_label_pattern
+
 from .base import TimestampedModel
 
 
@@ -37,6 +39,23 @@ class Repository(TimestampedModel):
     # SYNCER_CI_* settings apply.
     ci_tracked_checkrun_names = models.JSONField(default=list, blank=True)
     ci_tracked_status_names = models.JSONField(default=list, blank=True)
+
+    # Per-repo definition of reviewer "topic" labels: a case-insensitive regex matched
+    # (full-match) against label names. Topic labels are the labels offered in the reviewer
+    # preferences form and matched against each reviewer's preferred labels during
+    # auto-assignment. Leave blank to use the default (``t-.*|ci|imo|tech debt|documentation``).
+    # See core.services.topic_labels.
+    assignment_topic_label_pattern = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        validators=[validate_topic_label_pattern],
+        help_text=(
+            "Case-insensitive regex (full-match) selecting which label names count as reviewer "
+            "topic labels for auto-assignment and the preferences form. Blank uses the default: "
+            "t-.*|ci|imo|tech debt|documentation"
+        ),
+    )
 
     class Meta:
         constraints = [

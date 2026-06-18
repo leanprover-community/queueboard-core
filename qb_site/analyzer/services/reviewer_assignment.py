@@ -18,13 +18,13 @@ from analyzer.services.reviewer_assignment_engine import (
     ReviewerProfile,
     ReviewerSuggestionResult,
     SimulationInputs,
-    _is_topic_label,
     _normalize_login,
     rank_prs_for_assignment,
     run_assignment_simulation,
     suggest_reviewer_for_pr,
 )
 from core.models import Repository, ReviewerPreference
+from core.services.topic_labels import TopicLabelMatcher, default_topic_label_matcher, topic_label_matcher_for_repo
 from queueboard.classify_pr_state import PRStatus
 
 DataStatus = str  # "valid" | "incomplete" | "missing"
@@ -259,6 +259,7 @@ def suggest_reviewers_many(
     rng: random.Random | None = None,
     excluded_by_pr: dict[int, set[str]] | None = None,
     priority_scorer: PRAssignmentPriorityScorer | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> dict[int, str]:
     """Suggest reviewers for many PRs using the pure assignment engine."""
     result = run_assignment_simulation(
@@ -268,6 +269,7 @@ def suggest_reviewers_many(
             prs_to_assign=prs_to_assign,
             all_prs=all_prs,
             excluded_by_pr=excluded_by_pr,
+            topic_label_matcher=topic_label_matcher,
         ),
         rng=rng,
         priority_scorer=priority_scorer,
@@ -285,6 +287,7 @@ def suggest_reviewers_many_with_trace(
     rng: random.Random | None = None,
     excluded_by_pr: dict[int, set[str]] | None = None,
     priority_scorer: PRAssignmentPriorityScorer | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> tuple[dict[int, str], dict[str, dict]]:
     """Suggest reviewers for many PRs and return the compact per-PR trace."""
     result = run_assignment_simulation(
@@ -294,6 +297,7 @@ def suggest_reviewers_many_with_trace(
             prs_to_assign=prs_to_assign,
             all_prs=all_prs,
             excluded_by_pr=excluded_by_pr,
+            topic_label_matcher=topic_label_matcher,
         ),
         rng=rng,
         priority_scorer=priority_scorer,
@@ -312,6 +316,7 @@ def build_reviewer_assignment_trace(
     current_time = now or datetime.now(timezone.utc)
     payload = queue_snapshot.payload
     reviewers = build_reviewer_catalog(repository, now=current_time)
+    topic_label_matcher = topic_label_matcher_for_repo(repository)
     assignment_stats = collect_assignment_statistics(payload)
 
     dashboards = payload.get("lists", {}).get("dashboards", {})
@@ -335,6 +340,7 @@ def build_reviewer_assignment_trace(
         all_prs=payload.get("prs", {}),
         rng=rng,
         excluded_by_pr=excluded_by_pr,
+        topic_label_matcher=topic_label_matcher,
     )
 
     reason_counts: dict[str, int] = {}
@@ -370,6 +376,7 @@ def compute_area_stats(
     queue_pr_numbers: Sequence[int],
     all_prs: Dict[int | str, dict],
     rng: random.Random | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> dict[str, dict]:
     """Compute area-level metrics for queued PRs."""
     area_data: dict[str, dict] = {}
@@ -379,7 +386,7 @@ def compute_area_stats(
         pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number))
         if not pr_entry:
             continue
-        topic_labels = [lab for lab in pr_entry.get("labels") or [] if _is_topic_label(lab.get("name"))]
+        topic_labels = [lab for lab in pr_entry.get("labels") or [] if topic_label_matcher(lab.get("name"))]
         assignees_lower = {_normalize_login(a) for a in pr_entry.get("assignees") or []}
         seconds, queue_status = _queue_time_seconds(pr_entry)
         missing_queue_time = queue_status != "valid" or seconds is None
@@ -422,6 +429,7 @@ def compute_area_stats(
             reviewers=reviewers,
             assignment_stats=existing_assignments,
             rng=rng,
+            topic_label_matcher=topic_label_matcher,
         )
         data["at_max_capacity"] = availability.suggested is None
 
@@ -486,6 +494,7 @@ class ReviewerAssignmentBuilder:
             all_prs=payload.get("prs", {}),
             rng=self.rng,
             excluded_by_pr=_opt_outs_for_prs(repository, assignable_queue_prs),
+            topic_label_matcher=topic_label_matcher_for_repo(repository),
         )
 
         rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")
@@ -573,6 +582,7 @@ class AreaStatsBuilder:
             queue_pr_numbers=queue_prs,
             all_prs=payload.get("prs", {}),
             rng=self.rng,
+            topic_label_matcher=topic_label_matcher_for_repo(repository),
         )
 
         rule_set_id = payload.get("meta", {}).get("rule_set_id", "default")

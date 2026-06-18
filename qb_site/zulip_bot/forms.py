@@ -11,6 +11,7 @@ from django.utils.safestring import mark_safe
 
 from core.models import ReviewerPreference
 from core.services.reviewer_notification_settings import MAX_AUTO_UNASSIGN_DAYS, parse_notification_policy
+from core.services.topic_labels import make_topic_label_matcher
 
 REVIEWER_PREFERENCE_EDITABLE_FIELDS: tuple[str, ...] = (
     "maximum_capacity",
@@ -48,13 +49,6 @@ def _dedupe_case_insensitive_preserve_first(values: Iterable[str]) -> list[str]:
         seen.add(key)
         out.append(value)
     return out
-
-
-def _is_assignment_topic_label(name: str | None) -> bool:
-    if not name:
-        return False
-    lowered = name.lower()
-    return lowered.startswith("t-") or lowered in {"ci", "imo", "tech debt"}
 
 
 class DelimitedListField(forms.CharField):
@@ -119,6 +113,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         *args: object,
         user_timezone: tzinfo | None = None,
         label_catalog_by_repo: Mapping[int, list[str]] | None = None,
+        topic_label_pattern_by_repo: Mapping[int, str] | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -127,7 +122,9 @@ class ReviewerPreferenceForm(forms.ModelForm):
 
         repo_id = getattr(self.instance, "repository_id", None)
         catalog_labels = list((label_catalog_by_repo or {}).get(int(repo_id), [])) if repo_id is not None else []
-        topic_labels = [name for name in catalog_labels if _is_assignment_topic_label(name)]
+        pattern = (topic_label_pattern_by_repo or {}).get(int(repo_id)) if repo_id is not None else None
+        is_topic_label = make_topic_label_matcher(pattern)
+        topic_labels = [name for name in catalog_labels if is_topic_label(name)]
         topic_labels = sorted(_dedupe_case_insensitive_preserve_first(topic_labels), key=str.casefold)
 
         catalog_by_casefold = {name.casefold(): name for name in topic_labels}
@@ -168,7 +165,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.initial["stale_nudge_days"] = policy.stale_nudge_days
         self.initial["auto_unassign_days"] = policy.auto_unassign_days
         if topic_labels:
-            labels_help = "Select topic labels used by auto-assignment (`t-*`, `CI`, `IMO`, `tech debt`)."
+            labels_help = "Select topic labels used by auto-assignment."
         else:
             labels_help = "No synced topic labels found for this repository yet."
         if legacy_labels:

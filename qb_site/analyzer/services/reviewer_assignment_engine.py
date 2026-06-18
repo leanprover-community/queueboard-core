@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from functools import partial
 import re
 from typing import Callable, Dict, Iterable, Sequence
+
+from core.services.topic_labels import TopicLabelMatcher, default_topic_label_matcher
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class SimulationInputs:
     prs_to_assign: Iterable[int]
     all_prs: Dict[int | str, dict]
     excluded_by_pr: dict[int, set[str]] | None = None
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher
 
 
 @dataclass(frozen=True)
@@ -59,19 +63,12 @@ def _normalize_login(login: str | None) -> str:
     return (login or "").strip().lower()
 
 
-def _is_topic_label(name: str | None) -> bool:
-    if not name:
-        return False
-    lowered = name.lower()
-    return lowered.startswith("t-") or lowered in {"ci", "imo", "tech debt"}
-
-
-def _topic_labels(pr_entry: dict) -> list[str]:
+def _topic_labels(pr_entry: dict, matcher: TopicLabelMatcher = default_topic_label_matcher) -> list[str]:
     labels = pr_entry.get("labels") or []
     names: list[str] = []
     for label in labels:
         name = label.get("name")
-        if _is_topic_label(name):
+        if matcher(name):
             names.append(name)
     return names
 
@@ -104,8 +101,9 @@ def _reviewer_candidate_state(
     reviewers: Sequence[ReviewerProfile],
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     excluded_logins: set[str] | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> tuple[list[str], list[str], list[float], str | None]:
-    labels = _topic_labels(pr_entry)
+    labels = _topic_labels(pr_entry, topic_label_matcher)
     labels_lower = [lab.lower() for lab in labels]
     if not labels_lower:
         return [], [], [], "missing-topic-label"
@@ -162,12 +160,15 @@ def _default_pr_assignment_priority(
     reviewers: Sequence[ReviewerProfile],
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     excluded_logins: set[str],
+    *,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> PRAssignmentPriority:
     _, available, available_weights, _ = _reviewer_candidate_state(
         pr_entry=pr_entry,
         reviewers=reviewers,
         assignment_stats=assignment_stats,
         excluded_logins=excluded_logins,
+        topic_label_matcher=topic_label_matcher,
     )
     queue_age_seconds = _queue_age_seconds(pr_entry)
     title_priority = _title_priority(pr_entry.get("title"))
@@ -186,7 +187,7 @@ def _default_pr_assignment_priority(
         ),
         details={
             "assignable_now": assignable_now,
-            "has_topic_label": bool(_topic_labels(pr_entry)),
+            "has_topic_label": bool(_topic_labels(pr_entry, topic_label_matcher)),
             "available_reviewer_count": available_reviewer_count,
             "total_remaining_capacity": total_remaining_capacity,
             "queue_age_seconds": queue_age_seconds,
@@ -204,8 +205,9 @@ def rank_prs_for_assignment(
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     excluded_by_pr: dict[int, set[str]] | None = None,
     priority_scorer: PRAssignmentPriorityScorer | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> tuple[list[int], dict[str, dict]]:
-    scorer = priority_scorer or _default_pr_assignment_priority
+    scorer = priority_scorer or partial(_default_pr_assignment_priority, topic_label_matcher=topic_label_matcher)
     ranked_items: list[tuple[tuple[object, ...], int, int]] = []
     trace: dict[str, dict] = {}
 
@@ -243,12 +245,14 @@ def suggest_reviewer_for_pr(
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     rng: random.Random | None = None,
     excluded_logins: set[str] | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> ReviewerSuggestionResult:
     all_potential, available, available_weights, unavailable_reason = _reviewer_candidate_state(
         pr_entry=pr_entry,
         reviewers=reviewers,
         assignment_stats=assignment_stats,
         excluded_logins=excluded_logins,
+        topic_label_matcher=topic_label_matcher,
     )
     if not all_potential:
         return ReviewerSuggestionResult(
@@ -275,9 +279,14 @@ def suggest_reviewer_for_pr(
     )
 
 
-def _pr_trace_base(pr_entry: dict, *, excluded_logins: set[str]) -> dict:
+def _pr_trace_base(
+    pr_entry: dict,
+    *,
+    excluded_logins: set[str],
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
+) -> dict:
     return {
-        "labels": _topic_labels(pr_entry),
+        "labels": _topic_labels(pr_entry, topic_label_matcher),
         "author": pr_entry.get("author") or "",
         "opt_outs": sorted(login for login in excluded_logins if login),
     }
@@ -290,12 +299,13 @@ def suggest_reviewer_for_pr_with_trace(
     assignment_stats: Dict[str, tuple[list[int], float, int]],
     rng: random.Random | None = None,
     excluded_logins: set[str] | None = None,
+    topic_label_matcher: TopicLabelMatcher = default_topic_label_matcher,
 ) -> tuple[ReviewerSuggestionResult, dict]:
-    labels = _topic_labels(pr_entry)
+    labels = _topic_labels(pr_entry, topic_label_matcher)
     labels_lower = [lab.lower() for lab in labels]
     if not labels_lower:
         excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
-        trace = _pr_trace_base(pr_entry, excluded_logins=excluded_lower)
+        trace = _pr_trace_base(pr_entry, excluded_logins=excluded_lower, topic_label_matcher=topic_label_matcher)
         trace["candidate_counts"] = {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0}
         result = ReviewerSuggestionResult(
             suggested=None,
@@ -310,7 +320,7 @@ def suggest_reviewer_for_pr_with_trace(
     author_norm = _normalize_login(author)
 
     excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
-    trace: dict = _pr_trace_base(pr_entry, excluded_logins=excluded_lower)
+    trace: dict = _pr_trace_base(pr_entry, excluded_logins=excluded_lower, topic_label_matcher=topic_label_matcher)
     filtered: dict[str, list[str]] = {
         "conflict_of_interest": [],
         "opt_out": [],
@@ -475,6 +485,7 @@ def run_assignment_simulation(
             assignment_stats=stats_copy,
             excluded_by_pr=inputs.excluded_by_pr,
             priority_scorer=priority_scorer,
+            topic_label_matcher=inputs.topic_label_matcher,
         )
         pr_number = ordered_prs[0]
 
@@ -509,6 +520,7 @@ def run_assignment_simulation(
                 assignment_stats=stats_copy,
                 rng=rng,
                 excluded_logins=excluded_logins,
+                topic_label_matcher=inputs.topic_label_matcher,
             )
             per_pr[str(pr_number)].update(trace)
         else:
@@ -519,6 +531,7 @@ def run_assignment_simulation(
                 assignment_stats=stats_copy,
                 rng=rng,
                 excluded_logins=excluded_logins,
+                topic_label_matcher=inputs.topic_label_matcher,
             )
 
         if result.suggested is None:
