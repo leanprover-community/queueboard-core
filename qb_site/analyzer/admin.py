@@ -18,6 +18,7 @@ from analyzer.models import (
     PRDependencyState,
     QueueSnapshot,
     ReviewerAssignmentSnapshot,
+    ReviewerAssignmentApplication,
     AreaStatsSnapshot,
     ReviewerOptOut,
     ReviewerAttentionDailyRun,
@@ -402,6 +403,35 @@ class ReviewerAssignmentSnapshotAdmin(ReadOnlyAdmin):
         build_reviewer_assignment.delay(repository_id=repo.id, cache_key=cache_key)
         self.message_user(request, f"Enqueued reviewer assignment build for {repo} (cache_key={cache_key})")
         return HttpResponseRedirect(reverse("admin:analyzer_reviewerassignmentsnapshot_changelist"))
+
+
+@admin.register(ReviewerAssignmentApplication)
+class ReviewerAssignmentApplicationAdmin(ReadOnlyAdmin):
+    list_display = (
+        "id",
+        "run_date",
+        "repository",
+        "pr_number",
+        "reviewer_login",
+        "status",
+        "applied_at",
+    )
+    list_filter = ("status", "repository", "run_date")
+    date_hierarchy = "run_date"
+    search_fields = ("repository__owner", "repository__name", "reviewer_login", "pr_number")
+    raw_id_fields = ("repository", "snapshot")
+    readonly_fields = (
+        "run_date",
+        "repository",
+        "pr_number",
+        "reviewer_login",
+        "snapshot",
+        "status",
+        "applied_at",
+        "error",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(AreaStatsSnapshot)

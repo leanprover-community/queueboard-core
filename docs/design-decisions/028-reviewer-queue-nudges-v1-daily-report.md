@@ -2,7 +2,7 @@
 
 ## Context
 - Queueboard needs queue-health enforcement for assigned reviewers without coupling to immediate assignment production changes.
-- Assignment production still runs in GitHub Actions (`.github/workflows/auto_assign_reviewers.yaml`, `scripts/assign_reviewers.py`).
+- Assignment *application* originally ran in GitHub Actions (`.github/workflows/auto_assign_reviewers.yaml`, `scripts/assign_reviewers.py`). It has since been migrated into the Django app as `analyzer.apply_reviewer_assignments`; see `046-apply-reviewer-assignments-in-django.md`.
 - Django already has the data and integrations required for policy evaluation and enforcement:
   - reviewer preferences (`core.ReviewerPreference`),
   - assignment timeline (`syncer.PRTimelineEvent`),
@@ -191,8 +191,7 @@
 - Whether to add per-repository threshold overrides in `notification_settings` beyond current per-reviewer global thresholds.
 
 ## References
-- `.github/workflows/auto_assign_reviewers.yaml`
-- `scripts/assign_reviewers.py`
+- `046-apply-reviewer-assignments-in-django.md` (assignment application migrated into Django)
 - `qb_site/core/models/reviewer_preference.py`
 - `qb_site/core/services/reviewer_notification_settings.py`
 - `qb_site/core/services/github_assignment.py`
