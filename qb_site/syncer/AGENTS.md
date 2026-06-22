@@ -86,7 +86,14 @@ front and expensive to recover from when skipped.
 
 ## Scheduling Notes
 - Beat periodically enqueues:
-  - `syncer.sync_active_repos` → fans out to `syncer.sync_repo_since` (discovery/watermark),
+  - `syncer.sync_active_repos` → fans out to `syncer.sync_repo_since` (discovery/watermark).
+    Coverage invariant: the watermark advances (`mark_success`) only when the scan reached
+    the cutoff AND every discovered number was enqueued or already in flight. When the batch
+    cap / rate budget leaves numbers `undrained`, the watermark is held and a near-term drain
+    continuation is scheduled, so the same window is rescanned until the tail is covered —
+    discovery never steps the watermark past a discovered-but-un-enqueued PR (closed PRs have
+    a frozen `updatedAt` and would otherwise never be revisited). `undrained` is in the task
+    result/log,
   - `syncer.sync_pr` — per-PR ingest (enqueued by discovery or admin),
   - `syncer.backfill_repo_history_active` → `syncer.backfill_repo_history`,
   - `syncer.backfill_repo_incomplete_prs_active` → `syncer.backfill_repo_incomplete_prs`

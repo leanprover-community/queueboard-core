@@ -668,20 +668,17 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 pass
 
         scan_complete = bool(discovery.reached_cutoff or discovery.next_cursor is None)
-        if scan_complete:
-            state.mark_success(cutoff_at=success_cutoff)
-        elif mode in ("fresh", "fresh_recovery"):
-            # Store fresh_base_cutoff as the intended watermark target so that when this
-            # continuation chain eventually completes it advances to near-now, not to the
-            # stale continuation_cutoff_at that would re-trap the watermark.
-            state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor, success_cutoff=fresh_base_cutoff)
-        else:
-            state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor)
+
+        threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
+        low_budget = isinstance(remaining, int) and remaining <= threshold
 
         enqueued = 0
         prs_skipped_dedupe = 0
-        threshold = int(getattr(settings, "SYNCER_RATE_REMAINING_MIN", 200))
-        low_budget = isinstance(remaining, int) and remaining <= threshold
+        # Discovered numbers we could not act on this tick (rate budget exhausted, or
+        # low_budget deferral). These are NOT lost: we hold the watermark below them so a
+        # later tick rediscovers and drains them. Closed PRs have a frozen updatedAt, so a
+        # number stepped over here would otherwise never be revisited.
+        undrained = 0
         continuation_scheduled = False
         continuation_reason: Optional[str] = None
         continuation_debounce_key: Optional[str] = None
@@ -706,41 +703,33 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             except Exception:
                 return False
 
+        # --- Enqueue per-PR sync tasks, sized by remaining rate budget ---
         if low_budget:
-            # Stop early; schedule a continuation at resetAt + small jitter if possible.
-            eta = None
-            if isinstance(reset_at, str):
-                try:
-                    rdt = dtparser.isoparse(reset_at)
-                    if timezone.is_naive(rdt):
-                        rdt = timezone.make_aware(rdt)
-                    # jitter of 5 seconds
-                    eta = rdt + timedelta(seconds=5)
-                except Exception:
-                    eta = None
-            if not scan_complete:
-                continuation_debounce_key = reset_at if isinstance(reset_at, str) else None
-                continuation_scheduled = _schedule_repo_continuation(debounce_key=continuation_debounce_key, eta=eta)
-                if continuation_scheduled:
-                    continuation_reason = "low_budget"
+            # Cannot afford any per-PR syncs this tick; defer the whole batch.
+            undrained = len(numbers)
         else:
-            # Proceed to enqueue per-PR tasks in batches sized by remaining budget.
             batch_max = int(getattr(settings, "SYNCER_REPO_ENQUEUE_BATCH_MAX", 30))
             est_cost = int(getattr(settings, "SYNCER_EST_COST_PER_PR", 150))
-            to_enqueue = len(numbers)
             if isinstance(remaining, int):
                 allowed = max(0, remaining - threshold)
                 dynamic_cap = allowed // max(1, est_cost)
                 if dynamic_cap <= 0:
-                    to_enqueue = min(batch_max, len(numbers), 1)
+                    budget = min(batch_max, len(numbers), 1)
                 else:
-                    to_enqueue = min(len(numbers), batch_max, int(dynamic_cap))
+                    budget = min(len(numbers), batch_max, int(dynamic_cap))
             else:
-                to_enqueue = min(len(numbers), batch_max)
+                budget = min(len(numbers), batch_max)
 
-            for num in numbers[:to_enqueue]:
+            pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+            # Iterate ALL discovered numbers but spend the budget only on *new* enqueues.
+            # Dedupe-skips are already in flight and cost nothing, so they must not consume
+            # a slot -- otherwise the budget is burnt on the positional head on every
+            # re-scan and the undrained tail never gets reached.
+            for idx, num in enumerate(numbers):
+                if enqueued >= budget:
+                    undrained = len(numbers) - idx
+                    break
                 pr_dedupe_key = sync_pr_enqueue_key(repo_id=repo.id, number=int(num))
-                pr_dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
                 if not claim_enqueue_slot(key=pr_dedupe_key, ttl_seconds=pr_dedupe_ttl):
                     prs_skipped_dedupe += 1
                     continue
@@ -758,25 +747,79 @@ def sync_repo_since_task(  # type: ignore[no-redef]
                 )
                 enqueued += 1
 
-            # If discovery did not reach cutoff, schedule a continuation even when budget is healthy.
-            if not scan_complete:
-                cap_delay_seconds = int(getattr(settings, "SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS", 5))
-                cap_eta = timezone.now() + timedelta(seconds=max(1, cap_delay_seconds))
+        # --- Watermark / continuation state ---
+        # Advance the watermark ONLY when the scan reached the cutoff AND every discovered
+        # number was covered (enqueued or already in flight). If any were left undrained,
+        # hold the watermark and clear any continuation cursor so the next tick re-scans
+        # this same window and drains the tail -- never step the watermark past a
+        # discovered-but-un-enqueued PR.
+        if scan_complete and undrained == 0:
+            state.mark_success(cutoff_at=success_cutoff)
+        elif not scan_complete:
+            if mode in ("fresh", "fresh_recovery"):
+                # Store fresh_base_cutoff as the intended watermark target so that when this
+                # continuation chain eventually completes it advances to near-now, not to the
+                # stale continuation_cutoff_at that would re-trap the watermark.
+                state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor, success_cutoff=fresh_base_cutoff)
+            else:
+                state.set_continuation(cutoff_at=effective_cutoff, cursor=discovery.next_cursor)
+        elif state.continuation_cursor is not None or state.continuation_cutoff_at is not None:
+            # scan_complete but undrained: drop any continuation cursor so the next tick is a
+            # fresh re-scan of the (held-watermark) window rather than a forward resume.
+            state.continuation_cutoff_at = None
+            state.continuation_cursor = None
+            state.continuation_started_at = None
+            state.continuation_success_cutoff = None
+            state.save(
+                update_fields=[
+                    "continuation_cutoff_at",
+                    "continuation_cursor",
+                    "continuation_started_at",
+                    "continuation_success_cutoff",
+                    "updated_at",
+                ]
+            )
+
+        # --- Schedule a near-term continuation when work remains in this window ---
+        if not scan_complete or undrained > 0:
+            cap_delay_seconds = int(getattr(settings, "SYNCER_DISCOVERY_CONTINUATION_DELAY_SECONDS", 5))
+            if low_budget:
+                # Resume after the rate window resets rather than hammering the limit.
+                eta = None
+                if isinstance(reset_at, str):
+                    try:
+                        rdt = dtparser.isoparse(reset_at)
+                        if timezone.is_naive(rdt):
+                            rdt = timezone.make_aware(rdt)
+                        eta = rdt + timedelta(seconds=5)
+                    except Exception:
+                        eta = None
+                continuation_debounce_key = reset_at if isinstance(reset_at, str) else None
+                reason = "low_budget"
+            elif not scan_complete:
+                eta = timezone.now() + timedelta(seconds=max(1, cap_delay_seconds))
                 continuation_debounce_key = f"cap:{cutoff_iso}:{discovery.next_cursor or ''}"
-                continuation_scheduled = _schedule_repo_continuation(
-                    debounce_key=continuation_debounce_key,
-                    eta=cap_eta,
-                )
-                if continuation_scheduled:
-                    continuation_reason = "cap_exhausted"
+                reason = "cap_exhausted"
+            else:
+                # Drain the undrained tail promptly -- within the per-PR enqueue dedupe TTL,
+                # so already-enqueued numbers are skipped and the budget reaches the tail.
+                # The debounce key varies with drain progress so each successive tick can
+                # schedule the next drain.
+                eta = timezone.now() + timedelta(seconds=max(1, cap_delay_seconds))
+                continuation_debounce_key = f"drain:{cutoff_iso}:{enqueued}:{prs_skipped_dedupe}"
+                reason = "undrained_tail"
+            continuation_scheduled = _schedule_repo_continuation(debounce_key=continuation_debounce_key, eta=eta)
+            if continuation_scheduled:
+                continuation_reason = reason
         log.info(
-            "sync_repo_since: repo=%s/%s mode=%s since=%s discovered=%s enqueued=%s remaining=%s resetAt=%s complete=%s next_cursor=%s continuation_scheduled=%s continuation_reason=%s",
+            "sync_repo_since: repo=%s/%s mode=%s since=%s discovered=%s enqueued=%s undrained=%s remaining=%s resetAt=%s complete=%s next_cursor=%s continuation_scheduled=%s continuation_reason=%s",
             repo.owner,
             repo.name,
             mode,
             cutoff_iso,
             len(numbers),
             enqueued,
+            undrained,
             rl.get("remaining"),
             rl.get("resetAt"),
             scan_complete,
@@ -793,6 +836,7 @@ def sync_repo_since_task(  # type: ignore[no-redef]
             "discovered": len(numbers),
             "enqueued": enqueued,
             "prs_skipped_dedupe": prs_skipped_dedupe,
+            "undrained": undrained,
             "rate_limit": rl,
             "low_budget": bool(low_budget),
             "scan_complete": scan_complete,
