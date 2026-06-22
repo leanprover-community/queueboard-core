@@ -47,6 +47,11 @@ Celery task names (as registered via `@shared_task(name=…)`):
 **Snapshot / assignment tasks**
 - `analyzer.build_queueboard_snapshot` / `analyzer.refresh_queueboard_snapshots`
 - `analyzer.build_reviewer_assignment` / `analyzer.refresh_reviewer_assignments`
+- `analyzer.apply_reviewer_assignments` — applies the latest default-rule-set
+  assignment snapshot to GitHub (POSTs assignees via the `assign_pr` operation),
+  recording outcomes in `ReviewerAssignmentApplication`. Gated by
+  `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED` (+ dry-run). Replaces the legacy
+  GitHub Actions auto-assign workflow; see design doc 046.
 - `analyzer.build_area_stats` / `analyzer.refresh_area_stats`
 
 **Reviewer attention tasks**

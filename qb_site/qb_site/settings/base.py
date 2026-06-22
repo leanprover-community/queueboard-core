@@ -354,10 +354,45 @@ ANALYZER_DEPENDENCY_SWEEP_BUILDER_VERSION = int(os.getenv("ANALYZER_DEPENDENCY_S
 ANALYZER_DEPENDENCY_SWEEP_FANOUT = env_bool(os.getenv("ANALYZER_DEPENDENCY_SWEEP_FANOUT"), True)
 ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS = int(os.getenv("ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS", 300))
 ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS = int(os.getenv("ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS", 300))
+# Reviewer assignment compute refresh. PERIOD_SECONDS > 0 enables scheduling (0 disables);
+# it runs daily at ANALYZER_REVIEWER_ASSIGNMENT_UTC_HOUR:MINUTE (default 00:30 UTC).
 ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS", 86400))
 ANALYZER_REVIEWER_ASSIGNMENT_TTL_SECONDS = int(
     os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_TTL_SECONDS", ANALYZER_QUEUEBOARD_SNAPSHOT_TTL_SECONDS)
 )
+ANALYZER_REVIEWER_ASSIGNMENT_UTC_HOUR = env_optional_bounded_int(
+    "ANALYZER_REVIEWER_ASSIGNMENT_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+ANALYZER_REVIEWER_ASSIGNMENT_UTC_MINUTE = env_optional_bounded_int(
+    "ANALYZER_REVIEWER_ASSIGNMENT_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
+# Applying proposed reviewer assignments to GitHub (design doc 046).
+# ENABLED actually POSTs assignees; DRY_RUN computes + records outcomes without mutating.
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED"), False)
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN = env_bool(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN"), False)
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_PERIOD_SECONDS", 86400))
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_HOUR = env_optional_bounded_int(
+    "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE = env_optional_bounded_int(
+    "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
+# Skip snapshots older than this many hours (guards against acting on stale compute).
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS", 48))
+# Do not re-apply the same (PR, reviewer) within this many days (sync-lag dedupe window).
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS", 7))
+# Cap GitHub assignment mutations per repo per run (0 = unlimited). A conservative
+# non-zero default bounds GitHub secondary-rate-limit exposure and drains any cutover
+# backlog gradually; capped-over proposals are left for the next run.
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 25))
 ANALYZER_REVIEWER_ATTENTION_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ATTENTION_ENABLED"), False)
 ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED = env_bool(
     os.getenv("ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED"),
@@ -562,14 +597,33 @@ if ANALYZER_QUEUEBOARD_SNAPSHOT_PERIOD_SECONDS > 0:
             "fanout": True,
         },
     }
+# Compute refresh runs daily at a fixed UTC clock time (default 00:30) so the apply step
+# downstream has a fresh snapshot. PERIOD_SECONDS <= 0 disables scheduling.
 if ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["refresh_reviewer_assignments"] = {
         "task": "analyzer.refresh_reviewer_assignments",
-        "schedule": ANALYZER_REVIEWER_ASSIGNMENT_PERIOD_SECONDS,
+        "schedule": crontab(
+            hour=ANALYZER_REVIEWER_ASSIGNMENT_UTC_HOUR if ANALYZER_REVIEWER_ASSIGNMENT_UTC_HOUR is not None else 0,
+            minute=ANALYZER_REVIEWER_ASSIGNMENT_UTC_MINUTE if ANALYZER_REVIEWER_ASSIGNMENT_UTC_MINUTE is not None else 30,
+        ),
         "kwargs": {
             "cache_key": "default",
             "fanout": True,
         },
+    }
+# Apply proposed reviewer assignments to GitHub daily at a fixed UTC clock time (default 00:45),
+# i.e. shortly after the compute refresh. PERIOD_SECONDS <= 0 disables scheduling. The task is
+# also gated by ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED, so scheduling it while that flag is
+# off is a cheap no-op (it returns feature_disabled).
+if ANALYZER_REVIEWER_ASSIGNMENT_APPLY_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["apply_reviewer_assignments"] = {
+        "task": "analyzer.apply_reviewer_assignments",
+        "schedule": crontab(
+            hour=ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_HOUR if ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_HOUR is not None else 0,
+            minute=(
+                ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE if ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE is not None else 45
+            ),
+        ),
     }
 reviewer_attention_schedule = None
 if (ANALYZER_REVIEWER_ATTENTION_UTC_HOUR is not None) or (ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE is not None):

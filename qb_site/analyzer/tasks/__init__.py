@@ -28,6 +28,7 @@ from analyzer.tasks.reviewer_assignment import (
     build_area_stats,
     refresh_area_stats_task,
 )
+from analyzer.tasks.reviewer_assignment_apply import apply_reviewer_assignments_task
 
 
 log = logging.getLogger(__name__)
@@ -158,4 +159,5 @@ __all__ = [
     "refresh_reviewer_assignments_task",
     "build_area_stats",
     "refresh_area_stats_task",
+    "apply_reviewer_assignments_task",
 ]

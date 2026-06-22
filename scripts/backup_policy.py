@@ -15,6 +15,7 @@ BACKUP_TABLES: tuple[str, ...] = (
     "analyzer_prrevisionbuildstate",
     "analyzer_queueruleset",
     "analyzer_queuesnapshot",
+    "analyzer_reviewerassignmentapplication",
     "analyzer_reviewerassignmentsnapshot",
     "analyzer_reviewerattentionautounassignrecord",
     "analyzer_reviewerattentiondailyrun",
@@ -80,6 +81,8 @@ TRUNCATE_TABLES: tuple[str, ...] = (
     "analyzer_reviewerattentiondailyrun",
     "analyzer_reviewerattentionnotificationrecord",
     "analyzer_reviewerattentionautounassignrecord",
+    # Reviewer assignment application audit/idempotency state
+    "analyzer_reviewerassignmentapplication",
     # Operational snapshots/metrics caches
     "analyzer_queuesnapshot",
     "analyzer_reviewerassignmentsnapshot",
