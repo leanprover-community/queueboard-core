@@ -68,7 +68,10 @@ class ApplyAssignmentsForRepoTests(TestCase):
         )
 
     def _apply(self, *, enabled=True, dry_run=False, max_per_repo=0, dedupe_days=7, max_age_hours=48, client=None, token="tok"):
-        client = client if client is not None else MagicMock()
+        if client is None:
+            client = MagicMock()
+            # Mirror GitHub's "add assignees" response: the login lands in the assignee set.
+            client.assign.side_effect = lambda **kwargs: (kwargs["github_login"],)
         sync = MagicMock()
         result = apply_assignments_for_repo(
             self.repo,
@@ -220,6 +223,25 @@ class ApplyAssignmentsForRepoTests(TestCase):
         record = ReviewerAssignmentApplication.objects.get(repository=self.repo, pr_number=101)
         self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_FAILED)
         self.assertIn("boom", record.error)
+
+    def test_records_failure_when_login_absent_from_result(self) -> None:
+        # GitHub's add-assignees endpoint silently ignores an unassignable login: it
+        # returns 200 without the login in the resulting set. That must record as a
+        # failure (not a successful application) and must not enqueue a post-apply sync.
+        self._make_snapshot({101: "alice"})
+        self._make_pr(101, assignees=[])
+        client = MagicMock()
+        client.assign.return_value = ()  # login absent from the resulting assignee set
+
+        result, _client, sync = self._apply(client=client)
+
+        self.assertEqual(result["stats"]["failed"], 1)
+        self.assertEqual(result["stats"]["applied"], 0)
+        sync.assert_not_called()
+        record = ReviewerAssignmentApplication.objects.get(repository=self.repo, pr_number=101)
+        self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_FAILED)
+        self.assertIn("alice", record.error)
+        self.assertIsNone(record.applied_at)
 
     def test_per_repo_cap_limits_mutations(self) -> None:
         self._make_snapshot({101: "alice", 102: "bob"})

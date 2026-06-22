@@ -149,6 +149,12 @@ def apply_assignments_for_repo(
     pr_numbers = [pr_number for pr_number, _ in proposals]
     eligible_logins = _active_reviewer_logins(build_reviewer_catalog(repository, now=now))
     opt_outs = _opt_outs_for_prs(repository, pr_numbers)
+    # We deliberately trust the last-synced PR rows here rather than forcing a fresh
+    # per-PR sync before mutating. The lag window is small and self-healing: opt-outs
+    # are recomputed on every pr_sync, an assign/unassign bumps the PR's updatedAt so
+    # the discovery sweep re-syncs it promptly, and `recently_applied` backstops the
+    # convergence gap. A synchronous pre-apply sync per candidate would add a GitHub
+    # round-trip and latency for marginal safety. See design doc 046.
     live_by_number = {
         int(pr.number): pr
         for pr in PullRequest.objects.filter(repository=repository, number__in=pr_numbers).only("number", "state", "assignees")
@@ -251,11 +257,25 @@ def apply_assignments_for_repo(
         if assignment_client is None:
             assignment_client = GitHubAssignmentClient(token=token)
         try:
-            assignment_client.assign(owner=owner, repo=name, number=pr_number, github_login=login)
+            resulting_assignees = assignment_client.assign(owner=owner, repo=name, number=pr_number, github_login=login)
         except AssignmentMutationError as exc:
             stats["failed"] += 1
             record.status = ReviewerAssignmentApplication.STATUS_FAILED
             record.error = str(exc)[:2000]
+            record.save(update_fields=["status", "error", "updated_at"])
+            continue
+        # GitHub's "add assignees" endpoint silently ignores logins that are not
+        # assignable (e.g. no repo access): it returns 200 with the login absent from
+        # the resulting set rather than erroring. Confirm the login actually landed
+        # before recording success, so we never claim an assignment that did not take.
+        resulting_logins = {_normalize_login(assignee) for assignee in resulting_assignees if assignee}
+        if login_norm not in resulting_logins:
+            stats["failed"] += 1
+            record.status = ReviewerAssignmentApplication.STATUS_FAILED
+            record.error = (
+                f"GitHub accepted the request but '{login}' was not in the resulting "
+                f"assignee set {sorted(resulting_logins)} (likely not an assignable user)."
+            )[:2000]
             record.save(update_fields=["status", "error", "updated_at"])
             continue
         applied_at = dj_timezone.now()
