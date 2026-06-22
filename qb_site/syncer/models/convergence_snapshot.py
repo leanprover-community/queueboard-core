@@ -30,6 +30,13 @@ class SyncerConvergenceSnapshot(models.Model):
     prs_missing_head_ci_state = models.IntegerField(default=0)
     prs_missing_head_sha = models.IntegerField(default=0)
     prs_missing_head_ci_contexts = models.IntegerField(default=0)
+    # Open PRs whose stored ``state``/``is_draft`` scalars contradict our own
+    # timeline events (closed-but-open or draft-drift). These look fully synced by
+    # every freshness metric, so they are otherwise invisible. Should sit at 0 in
+    # steady state; a non-zero, non-transient value flags recurrence of the
+    # GraphQL read-skew that strands a closed PR on the queue. The incomplete-PR
+    # backfill re-enqueues these for a self-healing sync.
+    inconsistent_open_prs = models.IntegerField(default=0)
     # Wave progress for the sync_schema_version upgrader.
     # ``sync_schema_version_target`` records the value of CURRENT_SYNC_SCHEMA_VERSION
     # in the codebase at collection time, so historical rows remain interpretable

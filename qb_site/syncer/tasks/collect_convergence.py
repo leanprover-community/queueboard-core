@@ -16,6 +16,7 @@ from syncer.models import (
     CommitCheckRun,
     CommitStatusContext,
 )
+from syncer.services.consistency import inconsistent_open_prs_queryset
 from syncer.services.sync_schema_upgrades import CURRENT_SYNC_SCHEMA_VERSION
 from core.models import Repository
 
@@ -100,6 +101,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             .count()
         )
 
+        inconsistent_open = inconsistent_open_prs_queryset(repo).count()
+
         SyncerConvergenceSnapshot.objects.create(
             repository=repo,
             collected_at=collected_at,
@@ -116,6 +119,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             prs_missing_head_ci_state=missing_head_ci,
             prs_missing_head_sha=missing_head_sha,
             prs_missing_head_ci_contexts=missing_head_contexts,
+            inconsistent_open_prs=inconsistent_open,
             prs_below_current_sync_schema_version=prs_below_target,
             sync_schema_version_target=CURRENT_SYNC_SCHEMA_VERSION,
             archive_pending=archive_pending,
@@ -146,6 +150,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                 "prs_missing_head_ci_state": missing_head_ci,
                 "prs_missing_head_sha": missing_head_sha,
                 "prs_missing_head_ci_contexts": missing_head_contexts,
+                "inconsistent_open_prs": inconsistent_open,
                 "prs_below_current_sync_schema_version": prs_below_target,
                 "sync_schema_version_target": CURRENT_SYNC_SCHEMA_VERSION,
                 "archive_pending": archive_pending,

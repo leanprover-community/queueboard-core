@@ -4,11 +4,12 @@ from typing import Any, Dict, Optional, Sequence
 
 from celery import shared_task
 from django.conf import settings
-from django.db.models import DateTimeField, ExpressionWrapper, F, OuterRef, Q, Subquery
+from django.db.models import DateTimeField, ExpressionWrapper, F, Q
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import PRTimelineEvent, PRTimelineEventType, PullRequest, RepoBackfillCursor
+from syncer.models import PullRequest, RepoBackfillCursor
+from syncer.services.consistency import inconsistent_open_prs_queryset
 from syncer.services.github_client import GitHubClient
 from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 from .sync_tasks import sync_pr_task
@@ -173,63 +174,16 @@ def backfill_repo_history_active_task() -> Dict[str, Any]:  # type: ignore[no-re
 
 
 def _select_inconsistent_open_prs(repo: Repository, *, limit: int) -> list[PullRequest]:
-    """Open PRs whose stored scalar state contradicts our own timeline events.
+    """Open PRs whose stored ``state``/``is_draft`` contradict our own timeline.
 
-    These rows look fully synced by every freshness metric (``last_synced_at`` is
-    recent, backfills are done), so the staleness selection below never picks them
-    up. They arise when a sync reads a GraphQL snapshot whose ``timelineItems``
-    already reflect a transition that the top-level scalars (``state`` /
-    ``isDraft``) have not yet caught up to -- most likely during a burst of rapid
-    mutations ending in a close. Re-syncing self-heals: ``sync_pr_task``'s
-    preflight forces a full bundle sync whenever the live header's state/draft
-    disagrees with the DB row.
-
-    Two queue-membership-relevant signals are detected, each via a single indexed
-    subquery over ``(pull_request, occurred_at)``:
-
-    - closed-but-open: the latest state-flip event is ``CLOSED`` (a ``CLOSED``
-      with no later ``REOPENED``) while ``state`` is still ``open``.
-    - draft drift: ``is_draft`` disagrees with the latest
-      ``READY_FOR_REVIEW`` / ``CONVERT_TO_DRAFT`` event.
-
-    Restricted to ``state='open'`` rows -- those are the only ones whose
-    open/draft scalars affect queue membership, which also bounds the scan to
-    roughly the live queue size. Merged-but-open is intentionally not covered
-    here: ``MergedEvent`` is not yet ingested into the timeline (tracked
-    separately), so there is no local witness for it.
+    Thin wrapper over :func:`inconsistent_open_prs_queryset` that orders by most
+    recently updated and bounds the result, for re-enqueuing offenders. Re-syncing
+    self-heals: ``sync_pr_task``'s preflight forces a full bundle sync whenever the
+    live header's state/draft disagrees with the DB row.
     """
     if limit <= 0:
         return []
-
-    latest_flip = Subquery(
-        PRTimelineEvent.objects.filter(
-            pull_request=OuterRef("pk"),
-            type__in=[PRTimelineEventType.CLOSED, PRTimelineEventType.REOPENED],
-        )
-        .order_by("-occurred_at", "-id")
-        .values("type")[:1]
-    )
-    latest_draft = Subquery(
-        PRTimelineEvent.objects.filter(
-            pull_request=OuterRef("pk"),
-            type__in=[PRTimelineEventType.READY_FOR_REVIEW, PRTimelineEventType.CONVERT_TO_DRAFT],
-        )
-        .order_by("-occurred_at", "-id")
-        .values("type")[:1]
-    )
-
-    closed_but_open = Q(latest_flip=PRTimelineEventType.CLOSED)
-    draft_drift = Q(is_draft=True, latest_draft=PRTimelineEventType.READY_FOR_REVIEW) | Q(
-        is_draft=False, latest_draft=PRTimelineEventType.CONVERT_TO_DRAFT
-    )
-
-    qs = (
-        PullRequest.objects.filter(repository=repo, state="open")
-        .annotate(latest_flip=latest_flip, latest_draft=latest_draft)
-        .filter(closed_but_open | draft_drift)
-        .order_by("-gh_updated_at", "-id")
-    )
-    return list(qs[:limit])
+    return list(inconsistent_open_prs_queryset(repo).order_by("-gh_updated_at", "-id")[:limit])
 
 
 @shared_task(name="syncer.backfill_repo_incomplete_prs")

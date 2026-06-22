@@ -100,7 +100,9 @@ front and expensive to recover from when skipped.
     (also reconciles open PRs whose stored `state`/`is_draft` scalars contradict our own
     timeline events — closed-but-open and draft-drift — re-enqueuing a full `sync_pr` whose
     preflight `state_mismatch`/`draft_mismatch` then self-heals the row; reported as
-    `inconsistent_found` in the task result),
+    `inconsistent_found` in the task result, and as the standing `inconsistent_open_prs`
+    count on `SyncerConvergenceSnapshot` via `syncer.collect_convergence`. The shared
+    detector is `syncer.services.consistency.inconsistent_open_prs_queryset`),
   - `syncer.refresh_pending_ci_for_active_repos` → `syncer.refresh_pending_ci_for_repo`,
   - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows),
   - `syncer.expire_old_webhook_deliveries` (daily by default; deletes GitHubWebhookDelivery rows older than SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS),
