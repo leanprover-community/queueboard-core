@@ -93,7 +93,11 @@ front and expensive to recover from when skipped.
     continuation is scheduled, so the same window is rescanned until the tail is covered —
     discovery never steps the watermark past a discovered-but-un-enqueued PR (closed PRs have
     a frozen `updatedAt` and would otherwise never be revisited). `undrained` is in the task
-    result/log,
+    result/log. Caveat: this hold-and-rescan covers single-page (fresh, scan-complete) and
+    low-budget ticks. In multi-page continuation mode under a rate cap, the continuation
+    *cursor* still advances past the undrained tail of a page; those PRs are recovered by the
+    next fresh-scan overlap (open PRs) or the consistency reconciler (closed-but-open), not by
+    the held-watermark rescan. See `docs/design-decisions/029-updatedat-discovery-watermark-and-catchup.md`,
   - `syncer.sync_pr` — per-PR ingest (enqueued by discovery or admin),
   - `syncer.backfill_repo_history_active` → `syncer.backfill_repo_history`,
   - `syncer.backfill_repo_incomplete_prs_active` → `syncer.backfill_repo_incomplete_prs`
