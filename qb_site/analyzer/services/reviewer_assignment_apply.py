@@ -174,8 +174,16 @@ def apply_assignments_for_repo(
     token: str | None = None
     token_attempted = False
 
-    def _record(pr_number: int, login: str, status: str, *, applied_at: datetime | None = None, error: str = "") -> bool:
-        _, created = ReviewerAssignmentApplication.objects.get_or_create(
+    def _record(
+        pr_number: int, login: str, status: str, *, applied_at: datetime | None = None, error: str = ""
+    ) -> ReviewerAssignmentApplication | None:
+        """Idempotently record one outcome row.
+
+        Returns the newly created row, or ``None`` when a row for this
+        ``(run_date, repo, pr, reviewer)`` already existed. A model instance is
+        truthy and ``None`` is falsy, so callers can branch on the return value.
+        """
+        obj, created = ReviewerAssignmentApplication.objects.get_or_create(
             run_date=run_date,
             repository=repository,
             pr_number=pr_number,
@@ -189,7 +197,8 @@ def apply_assignments_for_repo(
         )
         if not created:
             stats["skipped_already_recorded"] += 1
-        return created
+            return None
+        return obj
 
     for index, (pr_number, login) in enumerate(proposals):
         login_norm = _normalize_login(login)
@@ -249,11 +258,9 @@ def apply_assignments_for_repo(
             )
             break
 
-        if not _record(pr_number, login, ReviewerAssignmentApplication.STATUS_PENDING):
+        record = _record(pr_number, login, ReviewerAssignmentApplication.STATUS_PENDING)
+        if record is None:
             continue
-        record = ReviewerAssignmentApplication.objects.get(
-            run_date=run_date, repository=repository, pr_number=pr_number, reviewer_login=login
-        )
         if assignment_client is None:
             assignment_client = GitHubAssignmentClient(token=token)
         try:

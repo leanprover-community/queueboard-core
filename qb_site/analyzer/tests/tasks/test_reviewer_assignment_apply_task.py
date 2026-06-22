@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from io import StringIO
+from unittest.mock import patch
+
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -80,3 +84,43 @@ class ApplyReviewerAssignmentsTaskTests(TestCase):
 
         self.assertTrue(res["skipped"])
         self.assertEqual(res["reason"], "repo_not_found_or_inactive")
+
+    @override_settings(
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED=True,
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=False,
+    )
+    def test_one_repo_failure_does_not_abort_sweep(self) -> None:
+        # A failure applying one repo must be isolated: the sweep records it and
+        # continues to the remaining repos rather than aborting the whole run.
+        other = Repository.objects.create(owner="leanprover-community", name="other", default_branch="master")
+
+        def fake_apply(repo, **kwargs):
+            if repo.id == self.repo.id:
+                raise RuntimeError("boom")
+            return {"repo": f"{repo.owner}/{repo.name}", "repo_id": repo.id, "status": "ok", "stats": {"applied": 1}}
+
+        with patch("analyzer.tasks.reviewer_assignment_apply.apply_assignments_for_repo", side_effect=fake_apply):
+            res = apply_reviewer_assignments_task.apply().get()
+
+        self.assertFalse(res["skipped"])
+        self.assertEqual(res["repos"], 2)
+        self.assertEqual(res["repos_errored"], 1)
+        # The healthy repo (ordered after the failing one) is still processed.
+        self.assertEqual(res["totals"].get("applied"), 1)
+        statuses = {r["repo"]: r["status"] for r in res["per_repo"]}
+        self.assertEqual(statuses[f"{self.repo.owner}/{self.repo.name}"], "error")
+        self.assertEqual(statuses[f"{other.owner}/{other.name}"], "ok")
+
+    @override_settings(
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED=True,
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=True,
+    )
+    def test_command_honors_dry_run_setting_when_run_bare(self) -> None:
+        # ENABLED=True + DRY_RUN=True in settings; the command run with no flags must
+        # honor the dry-run safety net (record skipped_dry_run, perform no mutation).
+        self._seed_repo_with_proposal()
+
+        call_command("apply_reviewer_assignments", stdout=StringIO())
+
+        record = ReviewerAssignmentApplication.objects.get(repository=self.repo, pr_number=101)
+        self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_SKIPPED_DRY_RUN)

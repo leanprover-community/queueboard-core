@@ -46,12 +46,17 @@ class Command(BaseCommand):
             repository_id = int(repo.id)
 
         dry_run = bool(options.get("dry_run"))
-        enabled_override = True if options.get("enable") else (False if dry_run else None)
+        enable = bool(options.get("enable"))
+        # Explicit flags override; absent them, fall back to settings for BOTH knobs so a
+        # configured ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN safety net is honored when the
+        # command is run bare. --enable forces a real run (dry-run off); --dry-run forces preview.
+        enabled_override = True if enable else (False if dry_run else None)
+        dry_run_override = True if dry_run else (False if enable else None)
 
         result = apply_reviewer_assignments_task.run(
             repository_id=repository_id,
             include_inactive_repositories=bool(options.get("include_inactive")),
             enabled_override=enabled_override,
-            dry_run_override=dry_run,
+            dry_run_override=dry_run_override,
         )
         self.stdout.write(json.dumps(result, indent=2, default=str))

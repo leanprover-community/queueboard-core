@@ -53,7 +53,7 @@ def apply_reviewer_assignments_task(
 
     dedupe_days = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS", 7))
     max_age_hours = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS", 48))
-    max_per_repo = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 0))
+    max_per_repo = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 25))
 
     repos_qs = Repository.objects.only("id", "owner", "name")
     if not include_inactive_repositories:
@@ -73,18 +73,34 @@ def apply_reviewer_assignments_task(
     run_date = now.date()
     per_repo: list[dict[str, Any]] = []
     totals: dict[str, Any] = {}
+    repos_errored = 0
 
     for repo in repos:
-        repo_result = apply_assignments_for_repo(
-            repo,
-            run_date=run_date,
-            now=now,
-            enabled=enabled,
-            dry_run=dry_run,
-            dedupe_days=dedupe_days,
-            max_age_hours=max_age_hours,
-            max_per_repo=max_per_repo,
-        )
+        try:
+            repo_result = apply_assignments_for_repo(
+                repo,
+                run_date=run_date,
+                now=now,
+                enabled=enabled,
+                dry_run=dry_run,
+                dedupe_days=dedupe_days,
+                max_age_hours=max_age_hours,
+                max_per_repo=max_per_repo,
+            )
+        except Exception as exc:  # defensive: one repo's failure must not abort the whole sweep
+            repos_errored += 1
+            log.exception(
+                "analyzer.apply_reviewer_assignments: repo failed repo=%s/%s",
+                repo.owner,
+                repo.name,
+            )
+            repo_result = {
+                "repo": f"{repo.owner}/{repo.name}",
+                "repo_id": int(repo.id),
+                "status": "error",
+                "error": str(exc)[:2000],
+                "stats": {},
+            }
         per_repo.append(repo_result)
         _aggregate_key(totals, repo_result.get("stats", {}))
 
@@ -95,6 +111,7 @@ def apply_reviewer_assignments_task(
         "include_inactive_repositories": bool(include_inactive_repositories),
         "repository_id": int(repository_id) if repository_id is not None else None,
         "repos": len(repos),
+        "repos_errored": repos_errored,
         "run_date": run_date.isoformat(),
         "dedupe_days": dedupe_days,
         "max_age_hours": max_age_hours,
@@ -104,8 +121,9 @@ def apply_reviewer_assignments_task(
     }
 
     log.info(
-        "analyzer.apply_reviewer_assignments: repos=%s applied=%s failed=%s dry_run=%s enabled=%s",
+        "analyzer.apply_reviewer_assignments: repos=%s errored=%s applied=%s failed=%s dry_run=%s enabled=%s",
         len(repos),
+        repos_errored,
         totals.get("applied", 0),
         totals.get("failed", 0),
         dry_run,

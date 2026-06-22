@@ -129,7 +129,9 @@ Modeled on `ReviewerAttentionAutoUnassignRecord`. Fields:
   in a deterministic order.
 - `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS` (default 48)
 - `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS` (default 7)
-- `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO` (safety cap on mutations per run)
+- `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO` (safety cap on mutations per run; default 25,
+  `0` = unlimited). A conservative non-zero default bounds GitHub secondary-rate-limit exposure and
+  drains any cutover backlog gradually — capped-over proposals are left unrecorded for the next run.
 - Beat entry `apply_reviewer_assignments` in `CELERY_BEAT_SCHEDULE`.
 
 ### Idempotency semantics (important)

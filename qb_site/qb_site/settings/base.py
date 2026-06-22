@@ -389,8 +389,10 @@ ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE = env_optional_bounded_int(
 ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS", 48))
 # Do not re-apply the same (PR, reviewer) within this many days (sync-lag dedupe window).
 ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS", 7))
-# Cap GitHub assignment mutations per repo per run (0 = unlimited).
-ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 0))
+# Cap GitHub assignment mutations per repo per run (0 = unlimited). A conservative
+# non-zero default bounds GitHub secondary-rate-limit exposure and drains any cutover
+# backlog gradually; capped-over proposals are left for the next run.
+ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 25))
 ANALYZER_REVIEWER_ATTENTION_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ATTENTION_ENABLED"), False)
 ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED = env_bool(
     os.getenv("ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED"),
