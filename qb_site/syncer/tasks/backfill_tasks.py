@@ -4,11 +4,11 @@ from typing import Any, Dict, Optional, Sequence
 
 from celery import shared_task
 from django.conf import settings
-from django.db.models import DateTimeField, ExpressionWrapper, F, Q
+from django.db.models import DateTimeField, ExpressionWrapper, F, OuterRef, Q, Subquery
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import PullRequest, RepoBackfillCursor
+from syncer.models import PRTimelineEvent, PRTimelineEventType, PullRequest, RepoBackfillCursor
 from syncer.services.github_client import GitHubClient
 from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 from .sync_tasks import sync_pr_task
@@ -172,6 +172,66 @@ def backfill_repo_history_active_task() -> Dict[str, Any]:  # type: ignore[no-re
     return {"repos": len(repos), "enqueued": enqueued}
 
 
+def _select_inconsistent_open_prs(repo: Repository, *, limit: int) -> list[PullRequest]:
+    """Open PRs whose stored scalar state contradicts our own timeline events.
+
+    These rows look fully synced by every freshness metric (``last_synced_at`` is
+    recent, backfills are done), so the staleness selection below never picks them
+    up. They arise when a sync reads a GraphQL snapshot whose ``timelineItems``
+    already reflect a transition that the top-level scalars (``state`` /
+    ``isDraft``) have not yet caught up to -- most likely during a burst of rapid
+    mutations ending in a close. Re-syncing self-heals: ``sync_pr_task``'s
+    preflight forces a full bundle sync whenever the live header's state/draft
+    disagrees with the DB row.
+
+    Two queue-membership-relevant signals are detected, each via a single indexed
+    subquery over ``(pull_request, occurred_at)``:
+
+    - closed-but-open: the latest state-flip event is ``CLOSED`` (a ``CLOSED``
+      with no later ``REOPENED``) while ``state`` is still ``open``.
+    - draft drift: ``is_draft`` disagrees with the latest
+      ``READY_FOR_REVIEW`` / ``CONVERT_TO_DRAFT`` event.
+
+    Restricted to ``state='open'`` rows -- those are the only ones whose
+    open/draft scalars affect queue membership, which also bounds the scan to
+    roughly the live queue size. Merged-but-open is intentionally not covered
+    here: ``MergedEvent`` is not yet ingested into the timeline (tracked
+    separately), so there is no local witness for it.
+    """
+    if limit <= 0:
+        return []
+
+    latest_flip = Subquery(
+        PRTimelineEvent.objects.filter(
+            pull_request=OuterRef("pk"),
+            type__in=[PRTimelineEventType.CLOSED, PRTimelineEventType.REOPENED],
+        )
+        .order_by("-occurred_at", "-id")
+        .values("type")[:1]
+    )
+    latest_draft = Subquery(
+        PRTimelineEvent.objects.filter(
+            pull_request=OuterRef("pk"),
+            type__in=[PRTimelineEventType.READY_FOR_REVIEW, PRTimelineEventType.CONVERT_TO_DRAFT],
+        )
+        .order_by("-occurred_at", "-id")
+        .values("type")[:1]
+    )
+
+    closed_but_open = Q(latest_flip=PRTimelineEventType.CLOSED)
+    draft_drift = Q(is_draft=True, latest_draft=PRTimelineEventType.READY_FOR_REVIEW) | Q(
+        is_draft=False, latest_draft=PRTimelineEventType.CONVERT_TO_DRAFT
+    )
+
+    qs = (
+        PullRequest.objects.filter(repository=repo, state="open")
+        .annotate(latest_flip=latest_flip, latest_draft=latest_draft)
+        .filter(closed_but_open | draft_drift)
+        .order_by("-gh_updated_at", "-id")
+    )
+    return list(qs[:limit])
+
+
 @shared_task(name="syncer.backfill_repo_incomplete_prs")
 def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
     repo_id: int,
@@ -238,14 +298,34 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         }
 
     candidates: list[PullRequest] = []
-    # Prefer open PRs first when they are in scope.
-    if db_states is None or "open" in db_states:
-        open_qs = queryset.filter(state="open").order_by("-gh_updated_at", "-id")[:limit_int]
-        candidates.extend(open_qs)
-    remaining = max(limit_int - len(candidates), 0)
-    if remaining > 0:
-        qs_rest = queryset.exclude(state="open").order_by("-gh_updated_at", "-id")[:remaining]
-        candidates.extend(qs_rest)
+    seen_numbers: set[int] = set()
+
+    def _extend(prs) -> None:
+        for pr in prs:
+            n = int(pr.number)
+            if n not in seen_numbers:
+                seen_numbers.add(n)
+                candidates.append(pr)
+
+    open_in_scope = db_states is None or "open" in db_states
+
+    # 1) Consistency reconciliation (highest priority): open PRs whose stored
+    #    state/draft scalars contradict our own timeline. These look fully synced
+    #    by every freshness metric, so the staleness query below never finds them.
+    inconsistent_found = 0
+    if open_in_scope:
+        inconsistent = _select_inconsistent_open_prs(repo, limit=limit_int)
+        inconsistent_found = len(inconsistent)
+        _extend(inconsistent)
+
+    # 2) Incomplete/stale open PRs (preferred over non-open).
+    if open_in_scope:
+        _extend(queryset.filter(state="open").order_by("-gh_updated_at", "-id")[:limit_int])
+
+    # 3) Incomplete/stale non-open PRs fill any remaining slots.
+    _extend(queryset.exclude(state="open").order_by("-gh_updated_at", "-id")[:limit_int])
+
+    candidates = candidates[:limit_int]
 
     backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1))
     backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1))
@@ -270,6 +350,7 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         "repo_id": repo.id,
         "enqueued": enqueued,
         "deduped": deduped,
+        "inconsistent_found": inconsistent_found,
         "states": result_states,
     }
 
