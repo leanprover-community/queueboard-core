@@ -89,6 +89,257 @@ class TestPRRevisions(TestCase):
         self.assertEqual(revs[0].from_ts, pr.gh_created_at)
         self.assertIsNone(revs[0].to_ts)
 
+    def _seed_old_head_state(self, pr: PullRequest, old_head: str) -> None:
+        """Simulate the state left by a prior build: one window + CI for an old head."""
+        created = pr.gh_created_at
+        PRRevision.objects.create(pull_request=pr, head_sha=old_head, from_ts=created, to_ts=None, seq=0)
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id=f"CR_{old_head}",
+            head_sha=old_head,
+            name="ci",
+            status="COMPLETED",
+            conclusion="FAILURE",
+            details_url=None,
+            external_id=None,
+            gh_started_at=created + timezone.timedelta(minutes=5),
+            gh_completed_at=created + timezone.timedelta(minutes=10),
+        )
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=created + timezone.timedelta(minutes=10),
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+
+    def test_trailing_window_for_current_head_without_ci_or_force_push(self) -> None:
+        # A fork PR whose newest commit had CI skipped: head advanced via a plain push,
+        # so there is no force-push event and no CI for the current head. The builder
+        # must still open a trailing window for pr.head_sha instead of staying pinned to
+        # the old, failed commit. The boundary is dated from gh_updated_at (push-time
+        # proxy) since GitHub does not expose the actual push time.
+        pr = self._mk_pr(40)
+        created = pr.gh_created_at
+        old_head, new_head = "oldhead0", "newhead9"
+        self._seed_old_head_state(pr, old_head)
+        t_push = created + timezone.timedelta(hours=2)
+        pr.head_sha = new_head
+        pr.gh_updated_at = t_push  # bumped by the push
+        pr.save(update_fields=["head_sha", "gh_updated_at"])
+
+        res = rebuild_pr_revisions(pr)
+
+        self.assertNotEqual(res.strategy, "noop")
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 2)
+        self.assertEqual(revs[0].head_sha, old_head)
+        self.assertEqual(revs[0].from_ts, created)
+        self.assertEqual(revs[0].to_ts, t_push)
+        self.assertEqual(revs[1].head_sha, new_head)
+        self.assertEqual(revs[1].from_ts, t_push)
+        self.assertIsNone(revs[1].to_ts)
+
+    def test_trailing_window_stable_across_rebuilds(self) -> None:
+        # Once the trailing window exists, a later rebuild must not move its from_ts or
+        # churn the revision_version: the boundary is reused from the existing window,
+        # not recomputed from a since-drifted gh_updated_at.
+        pr = self._mk_pr(42)
+        created = pr.gh_created_at
+        old_head, new_head = "oldhead2", "newhead2"
+        self._seed_old_head_state(pr, old_head)
+        pr.head_sha = new_head
+        pr.gh_updated_at = created + timezone.timedelta(hours=2)
+        pr.save(update_fields=["head_sha", "gh_updated_at"])
+
+        rebuild_pr_revisions(pr)
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        version_after_first = state.revision_version
+        trailing_from = PRRevision.objects.filter(pull_request=pr, head_sha=new_head).get().from_ts
+        self.assertEqual(trailing_from, created + timezone.timedelta(hours=2))
+
+        # Later unrelated activity drifts gh_updated_at forward and a CI re-run on the old
+        # head advances the latest signal, forcing another rebuild pass.
+        pr.gh_updated_at = created + timezone.timedelta(hours=6)
+        pr.save(update_fields=["gh_updated_at"])
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CR_rerun",
+            head_sha=old_head,
+            name="ci",
+            status="COMPLETED",
+            conclusion="FAILURE",
+            details_url=None,
+            external_id=None,
+            gh_started_at=created + timezone.timedelta(hours=6),
+            gh_completed_at=created + timezone.timedelta(hours=6, minutes=5),
+        )
+
+        rebuild_pr_revisions(pr)
+
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 2)
+        self.assertEqual(revs[1].head_sha, new_head)
+        # Reused from the existing window — NOT moved to the drifted gh_updated_at.
+        self.assertEqual(revs[1].from_ts, trailing_from)
+        state.refresh_from_db()
+        self.assertEqual(state.revision_version, version_after_first)
+
+    def test_no_trailing_window_when_head_matches_force_push(self) -> None:
+        # Common case: pr.head_sha equals the last force-push after_sha -> no extra window.
+        pr = self._mk_pr(43)
+        t0 = pr.gh_created_at + timezone.timedelta(hours=1)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="h0",
+            after_sha="h1",
+        )
+        pr.head_sha = "h1"
+        pr.save(update_fields=["head_sha"])
+
+        rebuild_pr_revisions(pr)
+
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 2)
+        self.assertEqual(revs[-1].head_sha, "h1")
+        self.assertIsNone(revs[-1].to_ts)
+
+    def test_trailing_window_after_force_push_then_plain_push(self) -> None:
+        # Force-push to h1, then a plain commit push to h2 (no event, no CI): the builder
+        # appends a trailing window for h2 after the force-push-derived windows.
+        pr = self._mk_pr(44)
+        t0 = pr.gh_created_at + timezone.timedelta(hours=1)
+        t_push = pr.gh_created_at + timezone.timedelta(hours=3)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="h0",
+            after_sha="h1",
+        )
+        pr.head_sha = "h2"
+        pr.gh_updated_at = t_push
+        pr.save(update_fields=["head_sha", "gh_updated_at"])
+
+        rebuild_pr_revisions(pr)
+
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual(len(revs), 3)
+        self.assertEqual(revs[0].head_sha, "h0")
+        self.assertEqual(revs[0].to_ts, t0)
+        self.assertEqual(revs[1].head_sha, "h1")
+        self.assertEqual(revs[1].to_ts, t_push)
+        self.assertEqual(revs[2].head_sha, "h2")
+        self.assertEqual(revs[2].from_ts, t_push)
+        self.assertIsNone(revs[2].to_ts)
+
+    def test_head_mismatch_forces_rebuild_without_new_signal(self) -> None:
+        # A plain push with NO new CI and NO new timeline event does not advance any
+        # time-based signal, so the noop short-circuit would skip it. head_mismatch must
+        # force the rebuild so the current head is tracked.
+        pr = self._mk_pr(47)
+        created = pr.gh_created_at
+        PRRevision.objects.create(pull_request=pr, head_sha="h_old", from_ts=created, to_ts=None, seq=0)
+        built_through = created + timezone.timedelta(hours=1)
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            built_through_ts=built_through,
+            dirty_from_ts=None,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+        )
+        pr.head_sha = "h_new"
+        pr.gh_updated_at = created + timezone.timedelta(minutes=30)
+        pr.save(update_fields=["head_sha", "gh_updated_at"])
+
+        # latest_signal_ts (no CI/timeline) falls back to built_through, so only
+        # head_mismatch can prevent a noop here.
+        res = rebuild_pr_revisions(pr, latest_signal_ts=built_through)
+
+        self.assertNotEqual(res.strategy, "noop")
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual([r.head_sha for r in revs], ["h_new"])
+        self.assertIsNone(revs[-1].to_ts)
+
+    def test_trailing_window_handles_revert_to_prior_sha(self) -> None:
+        # Head A -> B (force-push), then reverted to A via a plain push (no event). A fresh
+        # A window is opened from the re-push (gh_updated_at), distinct from the original A
+        # window — the original window's start is NOT reused for the reverted head.
+        pr = self._mk_pr(45)
+        created = pr.gh_created_at
+        t0 = created + timezone.timedelta(hours=1)
+        t_repush = created + timezone.timedelta(hours=3)
+        PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=PRTimelineEventType.HEAD_FORCE_PUSHED,
+            occurred_at=t0,
+            before_sha="A",
+            after_sha="B",
+        )
+        pr.head_sha = "A"
+        pr.gh_updated_at = t_repush
+        pr.save(update_fields=["head_sha", "gh_updated_at"])
+
+        rebuild_pr_revisions(pr)
+
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual([r.head_sha for r in revs], ["A", "B", "A"])
+        self.assertEqual(revs[0].from_ts, created)
+        self.assertEqual(revs[0].to_ts, t0)
+        self.assertEqual(revs[1].from_ts, t0)
+        self.assertEqual(revs[1].to_ts, t_repush)
+        self.assertEqual(revs[2].from_ts, t_repush)
+        self.assertIsNone(revs[2].to_ts)
+
+    def test_trailing_window_redates_when_ci_arrives_later(self) -> None:
+        # A fork PR's CI-less current head gets a synthetic window from the push; later CI
+        # actually runs for it. The window is re-dated to the CI time WITHOUT leaving a
+        # coverage gap (the prior window's to_ts moves too), and then converges.
+        pr = self._mk_pr(46)
+        created = pr.gh_created_at
+        old_head, new_head = "oldhead6", "newhead6"
+        self._seed_old_head_state(pr, old_head)
+        t_push = created + timezone.timedelta(hours=2)
+        pr.head_sha = new_head
+        pr.gh_updated_at = t_push
+        pr.save(update_fields=["head_sha", "gh_updated_at"])
+
+        rebuild_pr_revisions(pr)
+        new_rev = PRRevision.objects.get(pull_request=pr, head_sha=new_head)
+        self.assertEqual(new_rev.from_ts, t_push)  # dated from the push, no CI yet
+
+        # CI finally runs for the current head (e.g. a maintainer approved the fork run).
+        t_ci = created + timezone.timedelta(hours=5)
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CR_new6",
+            head_sha=new_head,
+            name="ci",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            details_url=None,
+            external_id=None,
+            gh_started_at=t_ci,
+            gh_completed_at=t_ci + timezone.timedelta(minutes=5),
+        )
+
+        rebuild_pr_revisions(pr)
+
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts"))
+        self.assertEqual([r.head_sha for r in revs], [old_head, new_head])
+        # No gap: the old-head window now closes exactly where the new-head window opens.
+        self.assertEqual(revs[0].to_ts, t_ci)
+        self.assertEqual(revs[1].from_ts, t_ci)
+        self.assertIsNone(revs[1].to_ts)
+
+        # Converged: a further rebuild changes nothing.
+        state = PRRevisionBuildState.objects.get(pull_request=pr)
+        version_after = state.revision_version
+        res = rebuild_pr_revisions(pr)
+        self.assertEqual(res.strategy, "noop")
+        state.refresh_from_db()
+        self.assertEqual(state.revision_version, version_after)
+
     def test_build_state_updated_on_full_rebuild(self) -> None:
         pr = self._mk_pr(9)
         created = pr.gh_created_at

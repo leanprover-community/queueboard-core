@@ -19,7 +19,7 @@
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test analyzer
 
 # Rebuild revisions command
-docker compose exec -T web python qb_site/manage.py rebuild_revisions --repo leanprover-community/mathlib4 --number 30723
+docker compose exec -T web python qb_site/manage.py rebuild_revisions --repo leanprover-community/mathlib4 --pr 30723
 
 # Plan CI backfill command
 docker compose exec -T web python qb_site/manage.py plan_ci_backfill --repo leanprover-community/mathlib4 --enqueue

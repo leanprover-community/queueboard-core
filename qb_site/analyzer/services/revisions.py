@@ -319,6 +319,92 @@ def _latest_signal_ts(pr: PullRequest) -> Optional[datetime]:
     return latest
 
 
+def _current_head_change_ts(
+    pr: PullRequest,
+    *,
+    prev_from_ts: Optional[datetime],
+    existing_head_from_ts: Optional[datetime],
+) -> datetime:
+    """Pick a stable timestamp for when ``pr.head_sha`` became the current head.
+
+    GitHub does not expose when a commit was *pushed* to the branch (commit
+    ``committedDate`` is the author/commit time, which for rebases can be much
+    earlier than the push). The closest signal we have is ``gh_updated_at``: the
+    push bumps the PR's ``updatedAt``, and our detection of the new head is itself
+    triggered by that bump, so at first detection ``gh_updated_at`` approximates the
+    push time and is an upper bound (conservative — it under-counts queue time
+    rather than over-counting it).
+
+    Preference order:
+    1. The ``from_ts`` of an already-recorded window for this head, but only when it
+       sits *after* the last derived window — i.e. it is a genuine continuation from a
+       prior rebuild (reused so the boundary stays stable when ``gh_updated_at`` later
+       drifts on unrelated comment/label activity). An earlier existing window for the
+       same head means the head was superseded and has now returned (a revert), so we
+       do NOT reuse it.
+    2. ``pr.gh_updated_at`` — the push-time proxy used on first detection / re-push.
+
+    The result is clamped to never sit in the future and to fall strictly after the
+    previous window's start so window ordering stays valid. This timestamp affects
+    only queue-time accounting; on/off-queue determination is correct for any
+    ``from_ts <= now``.
+    """
+    now = timezone.now()
+    if existing_head_from_ts is not None and (prev_from_ts is None or existing_head_from_ts > prev_from_ts):
+        ts = existing_head_from_ts
+    else:
+        ts = getattr(pr, "gh_updated_at", None) or now
+    if timezone.is_naive(ts):
+        ts = timezone.make_aware(ts)
+    if ts > now:
+        ts = now
+    if prev_from_ts is not None and ts <= prev_from_ts:
+        ts = prev_from_ts + timedelta(seconds=1)
+    return ts
+
+
+def _ensure_current_head_window(
+    pr: PullRequest,
+    windows: List[Tuple[datetime, str, Optional[datetime]]],
+) -> List[Tuple[datetime, str, Optional[datetime]]]:
+    """Ensure the trailing open-ended window tracks ``pr.head_sha``.
+
+    The builder derives heads from HEAD_FORCE_PUSHED events and CI-bearing commits.
+    A plain commit push whose CI never ran (e.g. a fork PR whose workflows were
+    skipped or are awaiting approval) leaves ``pr.head_sha`` ahead of every derived
+    head, so the trailing window would otherwise track a stale commit and gate the
+    PR on outdated CI. When the current head differs from the last derived head,
+    close the previous window and append a trailing window for the real current head.
+
+    No-op when ``pr.head_sha`` is unset or already matches the last derived head (the
+    common case, including force-push PRs whose final after_sha is the current head).
+    """
+    head = (getattr(pr, "head_sha", None) or "").strip()
+    if not head:
+        return windows
+    if windows and (windows[-1][1] or "") == head:
+        return windows
+    existing_head_from_ts = (
+        PRRevision.objects.filter(pull_request=pr, head_sha=head)
+        .order_by("from_ts", "seq", "id")
+        .values_list("from_ts", flat=True)
+        .first()
+    )
+    if not windows:
+        start = pr.gh_created_at if pr.gh_created_at else timezone.now()
+        return [(start, head, None)]
+    last_from, last_head, _last_to = windows[-1]
+    change_ts = _current_head_change_ts(
+        pr,
+        prev_from_ts=last_from,
+        existing_head_from_ts=existing_head_from_ts,
+    )
+    new_windows = list(windows)
+    new_windows[-1] = (last_from, last_head, change_ts)
+    new_windows.append((change_ts, head, None))
+    return new_windows
+
+
 @transaction.atomic
 def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] = None) -> RebuildResult:
     """Rebuild head revision windows for a PR from timeline events and CI.
@@ -361,8 +447,18 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         needs_full = True
 
     has_existing = PRRevision.objects.filter(pull_request=pr).exists()
+    # Force a rebuild when the PR's current head is not yet the trailing revision head.
+    # A plain commit push (no force-push event) whose CI never ran does not advance any
+    # time-based signal past built_through_ts, so without this the noop short-circuit
+    # would leave the analyzer pinned to a stale head (see design decision 047).
+    current_head = (pr.head_sha or "").strip()
+    head_mismatch = False
+    if current_head:
+        tail_rev = PRRevision.objects.filter(pull_request=pr).order_by("-from_ts", "-seq", "-id").first()
+        head_mismatch = tail_rev is None or (tail_rev.head_sha or "") != current_head
     if (
         not needs_full
+        and not head_mismatch
         and state.built_through_ts
         and latest_signal_ts
         and latest_signal_ts <= state.built_through_ts
@@ -397,6 +493,10 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
                 start = pr.gh_created_at if pr.gh_created_at else timezone.now()
                 expected.append((start, seed, None))
 
+    # Make sure the trailing window reflects the PR's actual current head, even when no
+    # force-push event or CI exists for it (e.g. a fork PR whose CI was skipped).
+    expected = _ensure_current_head_window(pr, expected)
+
     created = 0
 
     # When appending, preserve prefix windows and only rewrite from the current tail onward.
@@ -406,10 +506,27 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         tail = PRRevision.objects.filter(pull_request=pr).order_by("-from_ts", "-seq", "-id").first()
         if tail:
             append_from_ts = tail.from_ts
-            seq_offset = PRRevision.objects.filter(pull_request=pr, from_ts__lt=append_from_ts).count()
-            expected = [(ft, sha, tt) for (ft, sha, tt) in expected if ft >= append_from_ts]
-            if not expected:
-                strategy = "noop"
+            # Append only rewrites windows from the tail onward and assumes the earlier
+            # windows are immutable. That assumption breaks when a prior synthetic
+            # current-head window is being superseded by a CI/force-push-derived window at
+            # a different time: an earlier window's to_ts would then need to move, which
+            # append would skip — leaving a coverage gap. Verify the immutable prefix still
+            # matches what we now derive; if not, fall back to a full rebuild.
+            prefix_expected = [(ft, sha, tt) for (ft, sha, tt) in expected if ft < append_from_ts]
+            prefix_existing = list(
+                PRRevision.objects.filter(pull_request=pr, from_ts__lt=append_from_ts)
+                .order_by("from_ts", "seq", "id")
+                .values_list("from_ts", "head_sha", "to_ts")
+            )
+            if prefix_expected != prefix_existing:
+                strategy = "full"
+                append_from_ts = None
+                seq_offset = 0
+            else:
+                seq_offset = len(prefix_existing)
+                expected = [(ft, sha, tt) for (ft, sha, tt) in expected if ft >= append_from_ts]
+                if not expected:
+                    strategy = "noop"
     if strategy == "noop":
         return RebuildResult(created=0, deleted=0, strategy="noop")
 
