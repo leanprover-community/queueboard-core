@@ -6,6 +6,8 @@ from django.utils import timezone
 from core.models import Repository
 from syncer.models import (
     PullRequest,
+    PRTimelineEvent,
+    PRTimelineEventType,
     CommitCheckRun,
     CommitHistoryHarvest,
     RepoBackfillCursor,
@@ -113,6 +115,9 @@ class TestCollectConvergenceTask(TestCase):
         # so the wave-progress canary reports 3 below target.
         self.assertEqual(snap.prs_below_current_sync_schema_version, 3)
         self.assertEqual(snap.sync_schema_version_target, 3)
+        # None of these PRs have contradicting timeline events.
+        self.assertEqual(snap.inconsistent_open_prs, 0)
+        self.assertEqual(res["per_repo"][0]["inconsistent_open_prs"], 0)
         self.assertEqual(res["per_repo"][0]["discovery_continuation_active"], True)
         self.assertIsNotNone(res["per_repo"][0]["discovery_lag_seconds"])
         self.assertEqual(res["per_repo"][0]["prs_below_current_sync_schema_version"], 3)
@@ -244,6 +249,58 @@ class TestCollectConvergenceTask(TestCase):
         snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
         self.assertIsNotNone(snap)
         self.assertEqual(snap.prs_missing_head_ci_contexts, 1)
+
+    def test_counts_inconsistent_open_prs(self) -> None:
+        now = timezone.now()
+
+        def _open_pr(number: int, *, is_draft: bool = False) -> PullRequest:
+            return PullRequest.objects.create(
+                repository=self.repo,
+                number=number,
+                state="open",
+                is_draft=is_draft,
+                timeline_backfill_done=True,
+                commits_backfill_done=True,
+                last_synced_at=now,
+                head_sha="a" * 40,
+                gh_created_at=now,
+                gh_updated_at=now,
+                base_ref_name="master",
+                head_ref_name="branch",
+                head_repo_owner_login="o",
+                head_repo_name="r",
+                title=f"t{number}",
+                body="",
+                additions=0,
+                deletions=0,
+                changed_files_count=0,
+            )
+
+        # closed-but-open: latest state-flip is CLOSED while state stays open.
+        closed_but_open = _open_pr(1)
+        PRTimelineEvent.objects.create(
+            pull_request=closed_but_open, type=PRTimelineEventType.CLOSED, occurred_at=now - timezone.timedelta(minutes=1)
+        )
+        # draft drift: latest draft event says draft, but is_draft is False.
+        draft_drift = _open_pr(2, is_draft=False)
+        PRTimelineEvent.objects.create(
+            pull_request=draft_drift, type=PRTimelineEventType.CONVERT_TO_DRAFT, occurred_at=now - timezone.timedelta(minutes=1)
+        )
+        # Consistent: closed then later reopened -> not counted.
+        reopened = _open_pr(3)
+        PRTimelineEvent.objects.create(
+            pull_request=reopened, type=PRTimelineEventType.CLOSED, occurred_at=now - timezone.timedelta(minutes=10)
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=reopened, type=PRTimelineEventType.REOPENED, occurred_at=now - timezone.timedelta(minutes=1)
+        )
+
+        res = collect_syncer_convergence_task.apply().get()
+        snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).order_by("-collected_at").first()
+        self.assertIsNotNone(snap)
+        assert snap is not None
+        self.assertEqual(snap.inconsistent_open_prs, 2)
+        self.assertEqual(res["per_repo"][0]["inconsistent_open_prs"], 2)
 
     def test_sync_schema_version_target_reflects_module_constant(self) -> None:
         # Mix of PRs at v=0 (below target), v=1 (at-or-above target depending on

@@ -6,7 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import Repository
-from syncer.models import PullRequest
+from syncer.models import PRTimelineEvent, PRTimelineEventType, PullRequest
 from syncer.tasks.backfill_tasks import backfill_repo_incomplete_prs_task
 from syncer.tests.factories import make_repo, make_pr
 
@@ -164,4 +164,98 @@ class TestIncompletePrBackfillTask(TestCase):
 
         self.assertEqual(res.get("enqueued"), 0)
         self.assertEqual(res.get("deduped"), 1)
+        mock_sync_pr_task.delay.assert_not_called()
+
+
+class TestIncompletePrBackfillConsistency(TestCase):
+    """Reconciliation of open PRs whose stored scalars contradict the timeline.
+
+    Each PR here is fully synced by every freshness metric (recent
+    ``last_synced_at``, backfills done), so it is only ever enqueued via the
+    consistency scan, never the staleness query.
+    """
+
+    def setUp(self) -> None:
+        self.repo: Repository = make_repo()
+
+    def _make_synced_pr(self, number: int, *, state: str = "open", is_draft: bool = False) -> PullRequest:
+        return make_pr(
+            self.repo,
+            number,
+            state=state,
+            is_draft=is_draft,
+            timeline_backfill_done=True,
+            commits_backfill_done=True,
+            last_synced_at=timezone.now(),
+        )
+
+    def _add_event(self, pr: PullRequest, type_: str, *, minutes_ago: int = 0) -> PRTimelineEvent:
+        return PRTimelineEvent.objects.create(
+            pull_request=pr,
+            type=type_,
+            occurred_at=timezone.now() - timezone.timedelta(minutes=minutes_ago),
+        )
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_enqueues_closed_but_open(self, mock_sync_pr_task) -> None:
+        pr = self._make_synced_pr(1, state="open")
+        self._add_event(pr, PRTimelineEventType.CLOSED, minutes_ago=1)
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("inconsistent_found"), 1)
+        self.assertEqual(res.get("enqueued"), 1)
+        mock_sync_pr_task.delay.assert_called_once_with(
+            self.repo.id,
+            pr.number,
+            backfill_timeline_pages=mock.ANY,
+            backfill_commit_pages=mock.ANY,
+        )
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_skips_closed_then_reopened(self, mock_sync_pr_task) -> None:
+        pr = self._make_synced_pr(2, state="open")
+        self._add_event(pr, PRTimelineEventType.CLOSED, minutes_ago=10)
+        self._add_event(pr, PRTimelineEventType.REOPENED, minutes_ago=1)
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("inconsistent_found"), 0)
+        self.assertEqual(res.get("enqueued"), 0)
+        mock_sync_pr_task.delay.assert_not_called()
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_enqueues_draft_drift(self, mock_sync_pr_task) -> None:
+        # Stored as ready-for-review, but the latest draft event says it was
+        # converted back to draft -> wrongly shown on the queue.
+        pr = self._make_synced_pr(3, state="open", is_draft=False)
+        self._add_event(pr, PRTimelineEventType.READY_FOR_REVIEW, minutes_ago=10)
+        self._add_event(pr, PRTimelineEventType.CONVERT_TO_DRAFT, minutes_ago=1)
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("inconsistent_found"), 1)
+        self.assertEqual(res.get("enqueued"), 1)
+        mock_sync_pr_task.delay.assert_called_once()
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_skips_consistent_draft(self, mock_sync_pr_task) -> None:
+        pr = self._make_synced_pr(4, state="open", is_draft=False)
+        self._add_event(pr, PRTimelineEventType.READY_FOR_REVIEW, minutes_ago=1)
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10)
+
+        self.assertEqual(res.get("inconsistent_found"), 0)
+        self.assertEqual(res.get("enqueued"), 0)
+        mock_sync_pr_task.delay.assert_not_called()
+
+    @mock.patch("syncer.tasks.backfill_tasks.sync_pr_task")
+    def test_inconsistency_scan_skipped_when_open_not_in_scope(self, mock_sync_pr_task) -> None:
+        pr = self._make_synced_pr(5, state="open")
+        self._add_event(pr, PRTimelineEventType.CLOSED, minutes_ago=1)
+
+        res = backfill_repo_incomplete_prs_task(self.repo.id, limit=10, states=["CLOSED", "MERGED"])
+
+        self.assertEqual(res.get("inconsistent_found"), 0)
+        self.assertEqual(res.get("enqueued"), 0)
         mock_sync_pr_task.delay.assert_not_called()

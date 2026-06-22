@@ -86,10 +86,27 @@ front and expensive to recover from when skipped.
 
 ## Scheduling Notes
 - Beat periodically enqueues:
-  - `syncer.sync_active_repos` → fans out to `syncer.sync_repo_since` (discovery/watermark),
+  - `syncer.sync_active_repos` → fans out to `syncer.sync_repo_since` (discovery/watermark).
+    Coverage invariant: the watermark advances (`mark_success`) only when the scan reached
+    the cutoff AND every discovered number was enqueued or already in flight. When the batch
+    cap / rate budget leaves numbers `undrained`, the watermark is held and a near-term drain
+    continuation is scheduled, so the same window is rescanned until the tail is covered —
+    discovery never steps the watermark past a discovered-but-un-enqueued PR (closed PRs have
+    a frozen `updatedAt` and would otherwise never be revisited). `undrained` is in the task
+    result/log. Caveat: this hold-and-rescan covers single-page (fresh, scan-complete) and
+    low-budget ticks. In multi-page continuation mode under a rate cap, the continuation
+    *cursor* still advances past the undrained tail of a page; those PRs are recovered by the
+    next fresh-scan overlap (open PRs) or the consistency reconciler (closed-but-open), not by
+    the held-watermark rescan. See `docs/design-decisions/029-updatedat-discovery-watermark-and-catchup.md`,
   - `syncer.sync_pr` — per-PR ingest (enqueued by discovery or admin),
   - `syncer.backfill_repo_history_active` → `syncer.backfill_repo_history`,
-  - `syncer.backfill_repo_incomplete_prs_active` → `syncer.backfill_repo_incomplete_prs`,
+  - `syncer.backfill_repo_incomplete_prs_active` → `syncer.backfill_repo_incomplete_prs`
+    (also reconciles open PRs whose stored `state`/`is_draft` scalars contradict our own
+    timeline events — closed-but-open and draft-drift — re-enqueuing a full `sync_pr` whose
+    preflight `state_mismatch`/`draft_mismatch` then self-heals the row; reported as
+    `inconsistent_found` in the task result, and as the standing `inconsistent_open_prs`
+    count on `SyncerConvergenceSnapshot` via `syncer.collect_convergence`. The shared
+    detector is `syncer.services.consistency.inconsistent_open_prs_queryset`),
   - `syncer.refresh_pending_ci_for_active_repos` → `syncer.refresh_pending_ci_for_repo`,
   - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows),
   - `syncer.expire_old_webhook_deliveries` (daily by default; deletes GitHubWebhookDelivery rows older than SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS),

@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from core.models import Repository
 from syncer.models import PullRequest, RepoBackfillCursor
+from syncer.services.consistency import inconsistent_open_prs_queryset
 from syncer.services.github_client import GitHubClient
 from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
 from .sync_tasks import sync_pr_task
@@ -172,6 +173,19 @@ def backfill_repo_history_active_task() -> Dict[str, Any]:  # type: ignore[no-re
     return {"repos": len(repos), "enqueued": enqueued}
 
 
+def _select_inconsistent_open_prs(repo: Repository, *, limit: int) -> list[PullRequest]:
+    """Open PRs whose stored ``state``/``is_draft`` contradict our own timeline.
+
+    Thin wrapper over :func:`inconsistent_open_prs_queryset` that orders by most
+    recently updated and bounds the result, for re-enqueuing offenders. Re-syncing
+    self-heals: ``sync_pr_task``'s preflight forces a full bundle sync whenever the
+    live header's state/draft disagrees with the DB row.
+    """
+    if limit <= 0:
+        return []
+    return list(inconsistent_open_prs_queryset(repo).order_by("-gh_updated_at", "-id")[:limit])
+
+
 @shared_task(name="syncer.backfill_repo_incomplete_prs")
 def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
     repo_id: int,
@@ -238,14 +252,34 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         }
 
     candidates: list[PullRequest] = []
-    # Prefer open PRs first when they are in scope.
-    if db_states is None or "open" in db_states:
-        open_qs = queryset.filter(state="open").order_by("-gh_updated_at", "-id")[:limit_int]
-        candidates.extend(open_qs)
-    remaining = max(limit_int - len(candidates), 0)
-    if remaining > 0:
-        qs_rest = queryset.exclude(state="open").order_by("-gh_updated_at", "-id")[:remaining]
-        candidates.extend(qs_rest)
+    seen_numbers: set[int] = set()
+
+    def _extend(prs) -> None:
+        for pr in prs:
+            n = int(pr.number)
+            if n not in seen_numbers:
+                seen_numbers.add(n)
+                candidates.append(pr)
+
+    open_in_scope = db_states is None or "open" in db_states
+
+    # 1) Consistency reconciliation (highest priority): open PRs whose stored
+    #    state/draft scalars contradict our own timeline. These look fully synced
+    #    by every freshness metric, so the staleness query below never finds them.
+    inconsistent_found = 0
+    if open_in_scope:
+        inconsistent = _select_inconsistent_open_prs(repo, limit=limit_int)
+        inconsistent_found = len(inconsistent)
+        _extend(inconsistent)
+
+    # 2) Incomplete/stale open PRs (preferred over non-open).
+    if open_in_scope:
+        _extend(queryset.filter(state="open").order_by("-gh_updated_at", "-id")[:limit_int])
+
+    # 3) Incomplete/stale non-open PRs fill any remaining slots.
+    _extend(queryset.exclude(state="open").order_by("-gh_updated_at", "-id")[:limit_int])
+
+    candidates = candidates[:limit_int]
 
     backfill_timeline_pages = int(getattr(settings, "SYNCER_TIMELINE_BACKFILL_PAGES", 1))
     backfill_commit_pages = int(getattr(settings, "SYNCER_COMMITS_BACKFILL_PAGES", 1))
@@ -270,6 +304,7 @@ def backfill_repo_incomplete_prs_task(  # type: ignore[no-redef]
         "repo_id": repo.id,
         "enqueued": enqueued,
         "deduped": deduped,
+        "inconsistent_found": inconsistent_found,
         "states": result_states,
     }
 

@@ -40,6 +40,29 @@ uv run python qb_site/manage.py test zulip_bot
 - Backup policy coverage is enforced by `scripts/validate_backup_policy.py` and runs as part of `scripts/repo_check_compose.sh`.
 - When adding/removing Django tables in backup scope, update `scripts/backup_policy.py` in the same change.
 - That script starts Docker Compose services (Postgres/Redis/web) and may fail in sandboxed or restricted environments.
+- If Docker *is* available but you want fast, focused Django tests (sandbox or
+  local) without building/running the full `web` image, run the tests on the host
+  against the dockerized Postgres:
+  ```bash
+  # 1. Ensure only the DB is up (publishes 127.0.0.1:5432; creds from docker-compose.yml).
+  docker compose up -d db
+  # 2. Run host tests with CI settings, pointing the DB env at the container.
+  DJANGO_SETTINGS_MODULE=qb_site.settings.ci \
+  DJANGO_DB_HOST=127.0.0.1 DJANGO_DB_PORT=5432 \
+  DJANGO_DB_NAME=queueboard DJANGO_DB_USER=queueboard DJANGO_DB_PASSWORD=queueboard \
+  uv run python qb_site/manage.py test syncer            # or a dotted path to one module
+  ```
+  Gotchas:
+  - Use `DJANGO_DB_HOST=127.0.0.1`, not `localhost` — `localhost` resolves to `::1`
+    (IPv6) first and fails with `connection refused` / `no password supplied`.
+  - The compose `queueboard` role is a Postgres superuser, so Django can create the
+    `test_queueboard` database — no extra grants needed.
+  - A bare host invocation does NOT load `.env`, so tests that build a real
+    `GitHubClient` (e.g. `test_commit_history_tasks.py`) fail with "GitHub token not
+    found". Export `GH_TOKEN`/`GITHUB_TOKEN` (or run just those modules inside
+    Compose, which loads `.env` via `env_file`).
+  - This is for quick iteration only; `scripts/repo_check_compose.sh` stays canonical
+    (it also runs migrations via the `migrate` service and backup-policy validation).
 - If Docker/Compose is unavailable:
   - run non-DB checks (`ruff`, GraphQL validation, pure-Python tests where applicable),
   - run targeted tests that do not require the DB,

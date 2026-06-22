@@ -66,20 +66,35 @@
      - continuation mode uses fixed persisted continuation cutoff; `success_cutoff`
        is taken from `continuation_success_cutoff` (set by the originating fresh run).
   4. Run structured discovery.
-  5. Persist state transition:
-     - complete scan (`reached_cutoff` or no `next_cursor`): `mark_success`,
+  5. Enqueue `sync_pr` tasks under existing dynamic batch/rate budget rules,
+     tracking `undrained` — discovered numbers not enqueued or already in flight
+     this tick (see Undrained-Tail Coverage below). Dedupe-skips (already in
+     flight) do not consume budget, so the budget reaches *new* numbers further
+     down the list rather than burning on the positional head every rescan.
+  6. Persist state transition (uses both scan completion *and* `undrained`):
+     - complete scan (`reached_cutoff` or no `next_cursor`) **and `undrained == 0`**:
+       `mark_success`,
      - incomplete scan: `set_continuation`; fresh/fresh_recovery runs pass
-       `fresh_base_cutoff` as `success_cutoff` so it is stored for later use.
-  6. Enqueue `sync_pr` tasks under existing dynamic batch/rate budget rules.
-  7. Schedule continuation when needed.
+       `fresh_base_cutoff` as `success_cutoff` so it is stored for later use,
+     - complete scan but `undrained > 0`: hold the watermark and clear any
+       continuation cursor, so the next tick re-scans the same (held) window
+       rather than resuming forward.
+  7. Schedule continuation when work remains (`not scan_complete or undrained > 0`).
 
 ### Continuation Scheduling
 - Low-budget path (existing behavior retained):
   - if remaining GitHub budget is low, defer to `resetAt` with debounce.
 - Cap/page exhaustion path (new):
   - if scan incomplete even with healthy budget, schedule near-term continuation.
+- Undrained-tail path (new): scan reached the cutoff but the batch cap left
+  numbers `undrained`; schedule a near-term drain (`undrained_tail`) that
+  re-scans the held window. The drain debounce key varies with drain progress
+  (`drain:{cutoff}:{enqueued}:{prs_skipped_dedupe}`) so successive ticks are not
+  suppressed; the delay stays within the per-PR enqueue dedupe TTL so already-
+  enqueued numbers are skipped and the budget reaches the tail.
 - Both paths use `debounce_repo_schedule(...)` to suppress duplicate scheduling.
-- Continuation reasons are surfaced in task result (`low_budget` / `cap_exhausted`).
+- Continuation reasons are surfaced in task result (`low_budget` /
+  `cap_exhausted` / `undrained_tail`).
 
 ### Failure Handling
 - If continuation discovery fails (for example stale/invalid cursor):
@@ -91,6 +106,11 @@
 - Watermark invariant:
   - `last_successful_cutoff_at` represents fully scanned coverage only.
   - It must not advance on partial discovery progress.
+  - It advances only when the scan reached the cutoff **and** every discovered
+    number was enqueued or already in flight (`undrained == 0`); a discovered
+    tail left undrained by the batch cap holds the watermark (see
+    Undrained-Tail Coverage). Note the caveat there: the hold protects
+    single-page and low-budget ticks, not the multi-page continuation cursor.
   - In fresh mode, successful completion advances watermark to `base_cutoff` (the target boundary), not to older overlap-expanded scan start.
 - Continuation invariant:
   - continuation cutoff is fixed for a continuation sequence.
@@ -169,6 +189,45 @@
   `RepoDiscoveryState` and `discovery_catchup_lag_seconds` to
   `SyncerConvergenceSnapshot`.
 
+## Undrained-Tail Coverage (and Continuation Caveat)
+- **Motivation.** A single discovery tick can discover more numbers than the
+  dynamic batch/rate budget can enqueue. The pre-fix code advanced the watermark
+  on `scan_complete` alone, so any numbers beyond the batch cap — and, on a
+  low-budget tick, *every* discovered number (the enqueue block was skipped
+  entirely) — were stepped over. Open PRs are eventually rediscovered when their
+  `updatedAt` moves, but a **closed** PR has a frozen `updatedAt`: once the
+  watermark passes it, a fresh scan never revisits it. This is how a closed PR
+  gets stranded on the queue with no staleness signal to recover it.
+- **Fix.** The enqueue loop tracks `undrained` (discovered numbers neither
+  enqueued nor already in flight this tick). `mark_success` requires
+  `scan_complete and undrained == 0`. When the scan reached the cutoff but a tail
+  is undrained, the watermark is held, any continuation cursor is cleared, and an
+  `undrained_tail` drain continuation re-scans the same window. Because
+  dedupe-skips do not consume budget and the drain fires within the per-PR enqueue
+  dedupe TTL, each successive tick skips the already-enqueued head and spends the
+  budget on the tail, draining to `undrained == 0` over a bounded number of ticks
+  before the watermark finally advances.
+- **Caveat — multi-page continuation under a rate cap.** The hold-and-rescan
+  above protects single-page fresh scans (`scan_complete`) and low-budget ticks.
+  It does **not** cover continuation mode when discovery hit its count limit
+  (`next_cursor` set ⇒ `scan_complete == False`) *and* the rate budget capped the
+  batch: the `set_continuation` branch advances the continuation *cursor* to
+  `next_cursor`, stepping past the undrained tail of that page. Holding the cursor
+  instead is not viable — discovery stops at `SYNCER_DISCOVERY_LIMIT`, so a held
+  cursor would re-scan only the first page forever and never paginate deeper.
+  Those skipped numbers are recovered by the next fresh-scan overlap (open PRs) or
+  by the consistency reconciler — `inconsistent_open_prs_queryset` re-enqueues
+  closed-but-open / draft-drift rows for a self-healing sync (see
+  `qb_site/syncer/services/consistency.py` and the `inconsistent_open_prs`
+  convergence metric). The watermark invariant ("never advance past an
+  un-enqueued PR") is therefore tight for the common path; the continuation +
+  rate-cap path relies on these secondary layers rather than the held-watermark
+  rescan. Closing it fully (e.g. tracking per-page undrained offsets within a
+  continuation) is deferred — it is rarely reached under the default OPEN-only
+  discovery, and the reconciler bounds the blast radius.
+- Schema change: migration `0051` adds `inconsistent_open_prs` to
+  `SyncerConvergenceSnapshot`.
+
 ## Out of Scope
 - Queue isolation / dedicated GitHub queue strategy changes.
 - Analyzer scheduling redesign.
@@ -177,7 +236,9 @@
 ## References
 - `qb_site/syncer/models/repo_discovery_state.py`
 - `qb_site/syncer/services/github_client.py`
+- `qb_site/syncer/services/consistency.py`
 - `qb_site/syncer/tasks/sync_tasks.py`
+- `qb_site/syncer/tasks/backfill_tasks.py`
 - `qb_site/syncer/tasks/collect_convergence.py`
 - `qb_site/syncer/models/convergence_snapshot.py`
 - `qb_site/syncer/admin.py`
