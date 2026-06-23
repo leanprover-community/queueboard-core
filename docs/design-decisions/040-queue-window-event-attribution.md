@@ -256,6 +256,10 @@ Our GraphQL queries request `ClosedEvent` but not `MergedEvent`. This is intenti
 `ClosedEvent.createdAt` equals `pr.mergedAt` for merged PRs, so we get the correct timestamp
 for free and do not need a separate `MergedEvent` row.
 
+A parallel decision applies to the state/timeline reconciler
+(`syncer.services.consistency`): merged-but-open PRs are healed via the `ClosedEvent` they
+also carry, so it likewise needs no `MergedEvent` row -- see that module's docstring.
+
 For merged PRs, `pr.closed_at == pr.merged_at`. `closed_ts = pr.closed_at or pr.merged_at`
 therefore always resolves to the merge timestamp regardless of which field is populated.
 

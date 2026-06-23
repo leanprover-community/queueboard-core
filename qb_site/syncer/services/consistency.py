@@ -26,8 +26,14 @@ def inconsistent_open_prs_queryset(repository: Repository) -> QuerySet[PullReque
 
     Restricted to ``state='open'`` rows -- the only ones whose open/draft scalars
     affect queue membership, which also bounds the scan to roughly the live queue
-    size. Merged-but-open is intentionally not covered: ``MergedEvent`` is not yet
-    ingested into the timeline, so there is no local witness for it.
+    size. Merged-but-open is not detected by a dedicated witness (we do not
+    ingest ``MergedEvent``), but it does not slip through: GitHub fires a
+    ``ClosedEvent`` alongside the ``MergedEvent`` on merge, and we ingest that,
+    so a merged-but-open row matches the closed-but-open branch above and
+    self-heals on re-sync (its ``state`` then resolves to ``merged``). Ingesting
+    ``MergedEvent`` would only add a separately-labeled metric / defense-in-depth
+    against a merge path that emits no ``ClosedEvent`` -- not new recovery
+    coverage for queue-stranding.
 
     Shared by the incomplete-PR backfill (which re-enqueues offenders for a
     self-healing sync) and the convergence snapshot (which counts standing
