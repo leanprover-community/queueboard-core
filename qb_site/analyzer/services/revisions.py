@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Max
+from django.db.models import F, Max
 from django.utils import timezone
 
 from syncer.models import (
@@ -178,6 +178,17 @@ def _build_ci_head_windows(
     start = pr.gh_created_at if pr.gh_created_at else timezone.now()
     # Sort head_shas by earliest timestamp.
     ordered = sorted(first_seen.items(), key=lambda item: item[1])
+    # Clamp to creation (design decision 048): commit-scoped CI for a head can be
+    # observed *before* the PR was opened (commits pushed to the branch pre-PR),
+    # which would otherwise anchor window-0 at `start`=gh_created while a later
+    # head's earlier first-seen opens a backwards window. Such heads were never the
+    # open PR's head, so collapse every head first seen before `start` into a single
+    # window that begins at `start` carrying the last such head (the head at
+    # creation time). Heads first seen at/after `start` keep their own boundary.
+    pre = [(sha, ts) for sha, ts in ordered if ts < start]
+    post = [(sha, ts) for sha, ts in ordered if ts >= start]
+    if pre:
+        ordered = [(pre[-1][0], start)] + post
     windows: List[Tuple[datetime, str, Optional[datetime]]] = []
     for i, (sha, ts) in enumerate(ordered):
         if i == 0:
@@ -230,6 +241,19 @@ def _build_force_push_head_windows(
             seg_end = None
         baseline = ev.after_sha or ""
         segments.append((seg_start, seg_end, baseline))
+
+    # Clamp to creation (design decision 048): a force push whose occurred_at
+    # precedes gh_created reflects pre-PR branch history. Drop any segment that
+    # ends at or before creation, and clamp the start of the segment covering
+    # creation to `start`, so the first window never begins before the PR exists.
+    clamped_segments: List[Tuple[datetime, Optional[datetime], str]] = []
+    for seg_start, seg_end, baseline in segments:
+        if seg_end is not None and seg_end <= start:
+            continue
+        if seg_start < start:
+            seg_start = start
+        clamped_segments.append((seg_start, seg_end, baseline))
+    segments = clamped_segments
 
     windows: List[Tuple[datetime, str, Optional[datetime]]] = []
 
@@ -405,6 +429,31 @@ def _ensure_current_head_window(
     return new_windows
 
 
+def _normalize_windows(
+    windows: List[Tuple[datetime, str, Optional[datetime]]],
+) -> List[Tuple[datetime, str, Optional[datetime]]]:
+    """Defensive backstop (design decision 048): never persist a malformed window.
+
+    Drops any window with ``to_ts <= from_ts`` (backwards or zero-width) and any
+    with a non-increasing ``from_ts``, then re-stitches contiguity so each
+    window's ``to_ts`` equals the next window's ``from_ts`` and only the final
+    window stays open-ended. With the builders' clamp-to-creation logic this is a
+    no-op on real input; it guards against future regressions in either builder.
+    """
+    forward: List[Tuple[datetime, str, Optional[datetime]]] = []
+    for from_ts, sha, to_ts in sorted(windows, key=lambda w: w[0]):
+        if to_ts is not None and to_ts <= from_ts:
+            continue
+        if forward and from_ts <= forward[-1][0]:
+            continue
+        forward.append((from_ts, sha, to_ts))
+    stitched: List[Tuple[datetime, str, Optional[datetime]]] = []
+    for i, (from_ts, sha, to_ts) in enumerate(forward):
+        new_to = forward[i + 1][0] if i + 1 < len(forward) else to_ts
+        stitched.append((from_ts, sha, new_to))
+    return stitched
+
+
 @transaction.atomic
 def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] = None) -> RebuildResult:
     """Rebuild head revision windows for a PR from timeline events and CI.
@@ -444,6 +493,12 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     if builder_version_changed:
         needs_full = True
     if dirty_was_set:
+        needs_full = True
+    # Self-healing cleanup (design decision 048): a malformed window (to_ts <
+    # from_ts) holding max(from_ts) escapes the append delete sweep and re-noops on
+    # every rebuild. Force a full rebuild so the corrected builder output replaces
+    # it. Converges: once cleaned, no malformed row remains and this is a no-op.
+    if not needs_full and PRRevision.objects.filter(pull_request=pr, to_ts__isnull=False, to_ts__lt=F("from_ts")).exists():
         needs_full = True
 
     has_existing = PRRevision.objects.filter(pull_request=pr).exists()
@@ -496,6 +551,9 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
     # Make sure the trailing window reflects the PR's actual current head, even when no
     # force-push event or CI exists for it (e.g. a fork PR whose CI was skipped).
     expected = _ensure_current_head_window(pr, expected)
+
+    # Backstop: never persist a malformed/non-contiguous window (design 048).
+    expected = _normalize_windows(expected)
 
     created = 0
 
