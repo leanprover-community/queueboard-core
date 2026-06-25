@@ -19,7 +19,11 @@ self-continues if it runs low on GitHub quota.
 
 The SHA universe is intentionally slightly over-inclusive (re-fetching a SHA that
 already has the job is a harmless no-op):
-  1. PRRevision head SHAs whose window was active on/after the cutoff.
+  1. PRRevision head SHAs whose window was active on/after the cutoff: closed
+     windows that ended at/after the cutoff, plus the trailing open-ended window
+     of any PR touched (gh_updated_at) on/after the cutoff. (The trailing window
+     is never closed by the builder, so it is bounded by the PR's gh_updated_at
+     to avoid pulling in the current head of every PR ever.)
   2. PullRequest.head_sha for PRs touched (gh_updated_at) on/after the cutoff.
 
 Modes
@@ -43,17 +47,17 @@ Two diagnostics are produced when enabled:
 Usage (Heroku)
 --------------
   # Dry run -- just the counts:
-  heroku run -a YOUR_APP bash -c \
+  heroku run -a YOUR_APP -- bash -c \
     'REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=1 \
      python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py'
 
   # Smoke test inline (prints tally + before/after), good for a 1-2 day window:
-  heroku run -a YOUR_APP bash -c \
+  heroku run -a YOUR_APP -- bash -c \
     'REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=0 REQUEUE_SYNC=1 \
      python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py'
 
   # Distribute across workers (large window):
-  heroku run -a YOUR_APP bash -c \
+  heroku run -a YOUR_APP -- bash -c \
     'REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=0 \
      python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py'
 
@@ -119,11 +123,18 @@ def check_name_count() -> int | None:
 
 
 # 1) Revision head SHAs whose window was active at or after the cutoff.
-#    A window [from_ts, to_ts) is still "live" past the cutoff iff it never
-#    ended (to_ts IS NULL) or ended at/after the cutoff.
+#    A closed window [from_ts, to_ts) is "live" past the cutoff iff it ended
+#    at/after the cutoff (to_ts >= cutoff).
+#
+#    The trailing window of every PR is open-ended (to_ts IS NULL) -- the
+#    revision builder never closes it, even after the PR is merged/closed. So
+#    `to_ts IS NULL` alone matches the current head of *every PR ever*, not just
+#    recently-active ones. Bound the open-ended branch by the PR's gh_updated_at
+#    so it only contributes heads of PRs touched on/after the cutoff (matching
+#    query 2's notion of "active").
 rev_shas = (
     PRRevision.objects.filter(pull_request__repository=repo)
-    .filter(Q(to_ts__isnull=True) | Q(to_ts__gte=cutoff))
+    .filter(Q(to_ts__gte=cutoff) | Q(to_ts__isnull=True, pull_request__gh_updated_at__gte=cutoff))
     .values_list("head_sha", flat=True)
 )
 
