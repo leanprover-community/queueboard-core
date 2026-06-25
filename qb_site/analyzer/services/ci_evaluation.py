@@ -172,8 +172,13 @@ def _evaluate_required_contexts(
     any_missing = False
 
     for ctx_name in required_contexts:
-        cr_matches = [cr for cr in check_runs if ctx_name in (cr.get("name") or "").lower()]
-        sc_matches = [sc for sc in status_contexts if ctx_name in (sc.get("name") or "").lower()]
+        fragment = (ctx_name or "").strip().lower()
+        if not fragment:
+            # An empty/blank required context must not match every check (``"" in name`` is always
+            # True). Skip it, mirroring the guard in queueboard_snapshot._context_name_matches.
+            continue
+        cr_matches = [cr for cr in check_runs if fragment in (cr.get("name") or "").lower()]
+        sc_matches = [sc for sc in status_contexts if fragment in (sc.get("name") or "").lower()]
         status = context_aggregate_status(cr_matches, sc_matches)
         if status == "pass":
             continue

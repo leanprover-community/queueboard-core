@@ -722,7 +722,7 @@ def determine_pr_dashboards(
     prs_to_list[Dashboard.OtherBase] = [pr for pr in nondraft_PRs if base_branch[pr.number] != "master"]
     prs_to_list[Dashboard.NotFromFork] = prs_not_from_fork
 
-    prs_to_list[Dashboard.NeedsHelp] = prs_with_any_label(nondraft_PRs, ["help-wanted", "please_adopt"])
+    prs_to_list[Dashboard.NeedsHelp] = prs_with_any_label(nondraft_PRs, ["help-wanted", "please-adopt"])
     prs_to_list[Dashboard.NeedsDecision] = prs_with_label(nondraft_PRs, "awaiting-zulip")
 
     # Compute all PRs on the review queue (and well as several sub-filters).

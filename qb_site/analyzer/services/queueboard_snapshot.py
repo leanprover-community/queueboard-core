@@ -564,15 +564,14 @@ class QueueboardSnapshotBuilder:
                     stale_ready_to_merge.append(pr.number)
             if "delegated" in label_names_lc and pr.gh_updated_at < stale_ready_threshold and not pr.is_draft:
                 stale_delegated.append(pr.number)
-            if "maintainer-merge" in label_names_lc and not any(
-                lbl in label_names_lc for lbl in ("ready-to-merge", "auto-merge-after-ci")
-            ):
-                # NOTE(parity): legacy AllMaintainerMerge only includes PRs older than a day;
-                # we currently keep all maintainer-merge PRs here and use staleness only for the stale subset.
+            if "maintainer-merge" in label_names_lc and "ready-to-merge" not in label_names_lc and not pr.is_draft:
+                # Parity with legacy: AllMaintainerMerge is all *non-draft* maintainer-merge PRs minus
+                # ready-to-merge; it is NOT age-gated (StaleMaintainerMerge is the >1-day-old subset).
+                # Legacy excludes only ready-to-merge here, not auto-merge-after-CI.
                 all_maintainer_merge.append(pr.number)
                 if pr.gh_updated_at < stale_ready_threshold:
                     stale_maintainer_merge.append(pr.number)
-            if "new-contributor" in label_names_lc and pr.gh_updated_at < stale_new_contrib_threshold:
+            if "new-contributor" in label_names_lc and pr.gh_updated_at < stale_new_contrib_threshold and not pr.is_draft:
                 stale_new_contributor.append(pr.number)
 
         dashboards = {

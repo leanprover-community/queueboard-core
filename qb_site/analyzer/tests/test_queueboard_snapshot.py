@@ -500,6 +500,34 @@ class QueueboardSnapshotBuilderTests(TestCase):
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
         self.assertNotIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
 
+    def test_maintainer_merge_dashboards_parity(self):
+        # Legacy AllMaintainerMerge = all NON-DRAFT maintainer-merge PRs minus ready-to-merge,
+        # NOT age-gated and NOT excluding auto-merge-after-CI.
+        a = self._make_pr(70, labels=("maintainer-merge",))
+        b = self._make_pr(71, labels=("maintainer-merge", "auto-merge-after-CI"))
+        c = self._make_pr(72, labels=("maintainer-merge", "ready-to-merge"))
+        d = self._make_pr(73, is_draft=True, labels=("maintainer-merge",))
+        rule_set = QueueRuleSet.objects.create(repository=self.repo, version=1, require_ci_success=False)
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        all_mm = snapshot["lists"]["dashboards"]["AllMaintainerMerge"]
+        self.assertIn(a.number, all_mm)
+        self.assertIn(b.number, all_mm)  # auto-merge-after-CI is NOT excluded (legacy parity)
+        self.assertNotIn(c.number, all_mm)  # ready-to-merge is excluded
+        self.assertNotIn(d.number, all_mm)  # draft is excluded (legacy operates on non-draft PRs)
+
+    def test_stale_new_contributor_excludes_drafts(self):
+        # gh_updated_at is set to a fixed past date in _make_pr, so these are "stale" vs the live
+        # 7-day threshold. Legacy StaleNewContributor operates on non-draft PRs only.
+        nondraft = self._make_pr(74, labels=("new-contributor",))
+        draft = self._make_pr(75, is_draft=True, labels=("new-contributor",))
+        rule_set = QueueRuleSet.objects.create(repository=self.repo, version=1, require_ci_success=False)
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
+        stale_nc = snapshot["lists"]["dashboards"]["StaleNewContributor"]
+        self.assertIn(nondraft.number, stale_nc)
+        self.assertNotIn(draft.number, stale_nc)  # draft excluded (legacy parity)
+
     def test_no_required_failures_allows_missing_context_on_queue(self):
         pr = self._make_pr(57, author=self.user, labels=("t-analysis",))
         rule_set = QueueRuleSet.objects.create(
