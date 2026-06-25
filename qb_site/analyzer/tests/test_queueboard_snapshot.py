@@ -513,6 +513,9 @@ class QueueboardSnapshotBuilderTests(TestCase):
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
         self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "missing")
         self.assertIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
+        # Under 'no_required_failures', a missing required context must not be classified as
+        # work-in-progress: the triage status stays consistent with queue eligibility.
+        self.assertEqual(snapshot["prs"][pr.number]["pr_status"], "AwaitingReview")
 
     def test_no_required_failures_allows_running_context_on_queue(self):
         pr = self._make_pr(58, author=self.user, labels=("t-analysis",))
@@ -528,6 +531,8 @@ class QueueboardSnapshotBuilderTests(TestCase):
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
         self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "running")
         self.assertIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
+        # A still-running required context is likewise tolerated under 'no_required_failures'.
+        self.assertEqual(snapshot["prs"][pr.number]["pr_status"], "AwaitingReview")
 
     def test_no_required_failures_still_blocks_observed_failure(self):
         pr = self._make_pr(59, author=self.user, labels=("t-analysis",))
@@ -543,6 +548,8 @@ class QueueboardSnapshotBuilderTests(TestCase):
         snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo, rule_set=rule_set)
         self.assertEqual(snapshot["prs"][pr.number]["ci_status"], "fail")
         self.assertNotIn(pr.number, snapshot["lists"]["dashboards"]["Queue"])
+        # An actual required-context failure still marks the PR not ready, even under this mode.
+        self.assertEqual(snapshot["prs"][pr.number]["pr_status"], "NotReady")
 
     def test_queue_includes_fail_inessential_when_required_contexts_pass(self):
         pr = self._make_pr(56, author=self.user, labels=("t-analysis",))

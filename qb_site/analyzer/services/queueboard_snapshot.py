@@ -312,16 +312,26 @@ def _label_url(repo: Repository, name: str) -> str:
 
 
 def _classify_pr_status(
-    *, label_names: set[str], ci_status: CIStatus, is_draft: bool, head_repo_owner: str, repo_owner: str
+    *,
+    label_names: set[str],
+    ci_status: CIStatus,
+    is_draft: bool,
+    head_repo_owner: str,
+    repo_owner: str,
+    ci_gating_mode: str | None = None,
 ) -> str:
-    """Use legacy classify_pr_state logic."""
+    """Use legacy classify_pr_state logic.
+
+    ``ci_gating_mode`` is the rule set's effective CI gating mode; it keeps the triage
+    classification consistent with queue eligibility (e.g. under 'no_required_failures' a
+    missing/running required job does not mark the PR as work in progress)."""
     kinds = []
     for name in label_names:
         if name in label_categorisation_rules:
             kinds.append(label_categorisation_rules[name])
     from_fork = head_repo_owner.lower() != repo_owner.lower()
     state = PRState(kinds, ci_status, is_draft, from_fork)
-    status = determine_PR_status(datetime.now(timezone.utc), state)
+    status = determine_PR_status(datetime.now(timezone.utc), state, ci_gating_mode)
     return status.value
 
 
@@ -365,6 +375,7 @@ class QueueboardSnapshotBuilder:
         generated_at = datetime.now(timezone.utc)
         effective_rule_set = rule_set or self._default_rule_set(repository)
         required_contexts = self._required_contexts(effective_rule_set)
+        ci_gating_mode = effective_rule_set.effective_ci_gating_mode() if effective_rule_set else None
         need_ci_data = bool(required_contexts)
         pr_qs = (
             PullRequest.objects.filter(repository=repository, state=PullRequestState.OPEN)
@@ -470,6 +481,7 @@ class QueueboardSnapshotBuilder:
                 is_draft=pr.is_draft,
                 head_repo_owner=pr.head_repo_owner_login,
                 repo_owner=repository.owner,
+                ci_gating_mode=ci_gating_mode,
             )
             entry = self._build_pr_entry(
                 pr,
