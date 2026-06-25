@@ -50,7 +50,7 @@ def sep(n: int) -> datetime:
 # These tests are just some basic smoketests and not exhaustive.
 def test_determine_state_changes() -> None:
     def check(events: List[Event], expected: PRState) -> None:
-        initial = PRState([], CIStatus.Pass, False, False)
+        initial = PRState([], CIStatus.Pass, False, True)
         compute = determine_state_changes(datetime(2024, 7, 15, tzinfo=tz.tzutc()), initial, events)
         actual = compute[-1][1]
         assert expected == actual, f"expected PR state {expected} from events {events}, got {actual}"
@@ -124,7 +124,7 @@ def test_determine_state_changes() -> None:
 
 def test_total_queue_time() -> None:
     def check_basic(created: datetime, now: datetime, events: List[Event], expected: relativedelta) -> None:
-        ((_, wait), _) = total_queue_time_inner(now, Metadata(created, events, False, False))
+        ((_, wait), _) = total_queue_time_inner(now, Metadata(created, events, False, True))
         assert wait == expected, f"basic test failed: expected total time of {expected} in review, obtained {wait} instead"
 
     def check_with_initial(now: datetime, state: Metadata, expected: relativedelta) -> None:
@@ -254,7 +254,7 @@ def test_total_queue_time() -> None:
     # Adapted from PR 16666: created in draft state.
     events = [Event.add_label(sep(10), "t-meta"), Event.undraft(sep(10)), Event.add_label(sep(29), "ready-to-merge")]
     check_basic(sep(1), sep(30), events, relativedelta(days=28))
-    check_with_initial(sep(30), Metadata(sep(1), events, True, False), relativedelta(days=19))
+    check_with_initial(sep(30), Metadata(sep(1), events, True, True), relativedelta(days=19))
 
     # Minimised from PR 14269
     events = [
@@ -264,7 +264,7 @@ def test_total_queue_time() -> None:
         Event.add_label(july(1), "awaiting-author"),
         Event.remove_label(july(1), "awaiting-author"),
     ]
-    check_with_initial(sep(30), Metadata(june(28), events, False, False), relativedelta(days=2))
+    check_with_initial(sep(30), Metadata(june(28), events, False, True), relativedelta(days=2))
 
     # Subtle detail: the awaiting-review flag is not removed on July 9th (for these data),
     # so a new assessment of the state only happens at the later label changes.
@@ -289,7 +289,7 @@ def test_total_queue_time() -> None:
         Event.remove_label(sep(20), "help-wanted"),
         Event.add_label(sep(22), "awaiting-author"),
     ]
-    check_with_initial(sep(25), Metadata(june(29), events, False, False), relativedelta(days=4))
+    check_with_initial(sep(25), Metadata(june(29), events, False, True), relativedelta(days=4))
 
     events = [
         Event.add_label(june(29), "awaiting-review-DONT-USE"),
@@ -314,7 +314,7 @@ def test_total_queue_time() -> None:
         Event.remove_label(sep(23), "awaiting-author"),
         # on the queue now
     ]
-    check_with_initial(sep(27), Metadata(june(29), events, False, False), relativedelta(days=8))
+    check_with_initial(sep(27), Metadata(june(29), events, False, True), relativedelta(days=8))
 
     events = [
         Event.draft(sep(3)),
@@ -324,7 +324,7 @@ def test_total_queue_time() -> None:
         Event.add_label(sep(29), "ready-to-merge"),
     ]
     # total review time windows: sep 1-3, sep 10-15: 7 days
-    check_with_initial(sep(30), Metadata(sep(1), events, False, False), relativedelta(days=7))
+    check_with_initial(sep(30), Metadata(sep(1), events, False, True), relativedelta(days=7))
 
 
 # Some basic tests for last_status_update and first time on the queue.
@@ -342,14 +342,14 @@ def test_last_status_update():
     def check_basic(
         created: datetime, now: datetime, events: List[Event], expected: Tuple[datetime, relativedelta, PRStatus]
     ) -> None:
-        check_with_initial(now, Metadata(created, events, False, False), expected)
+        check_with_initial(now, Metadata(created, events, False, True), expected)
 
     def check_first(metadata: Metadata, expected: datetime) -> None:
         actual = first_on_queue_inner(metadata)
         assert actual == expected, f"expect first time on the queue of {expected}, obtained {actual} instead"
 
     def check_first_basic(created: datetime, events: List[Event], expected: datetime) -> None:
-        check_first(Metadata(created, events, False, False), expected)
+        check_first(Metadata(created, events, False, True), expected)
 
     events = [
         Event.add_label(sep(10), "blocked-by-other-PR"),
@@ -391,7 +391,7 @@ def test_last_status_update():
     # Adapted from PR 16666: created in draft state.
     events = [Event.add_label(sep(10), "t-meta"), Event.undraft(sep(11)), Event.add_label(sep(25), "ready-to-merge")]
     check_basic(sep(1), sep(30), events, (sep(25), relativedelta(days=5), PRStatus.AwaitingBors))
-    check_with_initial(sep(28), Metadata(sep(1), events, True, False), (sep(25), relativedelta(days=3), PRStatus.AwaitingBors))
+    check_with_initial(sep(28), Metadata(sep(1), events, True, True), (sep(25), relativedelta(days=3), PRStatus.AwaitingBors))
     check_first_basic(sep(9), events, sep(9))
 
     events = [
@@ -401,7 +401,7 @@ def test_last_status_update():
         Event.draft(sep(15)),
         Event.add_label(sep(29), "WIP-to-merge"),
     ]
-    check_with_initial(sep(30), Metadata(sep(1), events, False, False), (sep(29), relativedelta(days=1), PRStatus.NotReady))
+    check_with_initial(sep(30), Metadata(sep(1), events, False, True), (sep(29), relativedelta(days=1), PRStatus.NotReady))
     check_first_basic(sep(3), events, sep(10))
     # Minimised from PR 14269
     events = [
@@ -412,7 +412,7 @@ def test_last_status_update():
         Event.remove_label(july(1), "awaiting-author"),
     ]
     check_with_initial(
-        sep(30), Metadata(june(28), events, False, False), (july(1), relativedelta(months=2, days=29), PRStatus.AwaitingAuthor)
+        sep(30), Metadata(june(28), events, False, True), (july(1), relativedelta(months=2, days=29), PRStatus.AwaitingAuthor)
     )
     check_first_basic(june(29), events, june(29))
     events = [
@@ -422,7 +422,7 @@ def test_last_status_update():
         Event.add_remove_labels(july(1), ["awaiting-author"], ["awaiting-author"]),
     ]
     check_with_initial(
-        sep(30), Metadata(june(28), events, False, False), (july(1), relativedelta(months=2, days=29), PRStatus.AwaitingAuthor)
+        sep(30), Metadata(june(28), events, False, True), (july(1), relativedelta(months=2, days=29), PRStatus.AwaitingAuthor)
     )
     check_first_basic(june(28), events, june(29))
 
@@ -441,7 +441,7 @@ def test_last_status_update():
         Event.remove_label(july(13), "WIP"),
     ]
     check_with_initial(
-        aug(30), Metadata(june(28), events, False, False), (july(13), relativedelta(months=1, days=17), PRStatus.AwaitingReview)
+        aug(30), Metadata(june(28), events, False, True), (july(13), relativedelta(months=1, days=17), PRStatus.AwaitingReview)
     )
     check_first_basic(june(28), events, june(29))
 
@@ -454,7 +454,7 @@ def test_last_status_update():
         Event.remove_label(aug(13), "WIP"),
     ]
     check_with_initial(
-        aug(30), Metadata(june(27), events, False, False), (aug(13), relativedelta(days=17), PRStatus.AwaitingReview)
+        aug(30), Metadata(june(27), events, False, True), (aug(13), relativedelta(days=17), PRStatus.AwaitingReview)
     )
     check_first_basic(june(27), events, june(29))
 
@@ -473,7 +473,7 @@ def test_last_status_update():
         Event.add_label(july(13), "help-wanted"),
         Event.add_label(aug(8), "awaiting-author"),
     ]
-    check_with_initial(aug(30), Metadata(june(28), events, False, False), (aug(8), relativedelta(days=22), PRStatus.HelpWanted))
+    check_with_initial(aug(30), Metadata(june(28), events, False, True), (aug(8), relativedelta(days=22), PRStatus.HelpWanted))
     check_first_basic(june(28), events, june(29))
 
     events = [
@@ -495,7 +495,7 @@ def test_last_status_update():
         Event.remove_label(sep(23), "awaiting-author"),
     ]
     check_with_initial(
-        sep(30), Metadata(june(28), events, False, False), (sep(23), relativedelta(days=7), PRStatus.AwaitingReview)
+        sep(30), Metadata(june(28), events, False, True), (sep(23), relativedelta(days=7), PRStatus.AwaitingReview)
     )
     check_first_basic(june(28), events, june(29))
 

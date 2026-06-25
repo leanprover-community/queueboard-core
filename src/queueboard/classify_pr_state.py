@@ -44,16 +44,19 @@ class PRState(NamedTuple):
 
     @staticmethod
     def with_labels(labels: List[LabelKind]):
-        """Create a PR state with just these labels, passing CI and ready for review"""
-        return PRState(labels, CIStatus.Pass, False, False)
+        """Create a PR state with just these labels, passing CI and ready for review.
+
+        The state is from a fork (``from_fork=True``): otherwise it would classify as
+        ``NotFromFork`` regardless of labels/CI, which is not what these helpers model."""
+        return PRState(labels, CIStatus.Pass, False, True)
 
     @staticmethod
     def with_labels_and_ci(labels: List[LabelKind], ci: CIStatus):
-        return PRState(labels, ci, False, False)
+        return PRState(labels, ci, False, True)
 
     @staticmethod
     def with_labels_ci_draft(labels: List[LabelKind], ci: CIStatus, is_draft: bool):
-        return PRState(labels, ci, is_draft, False)
+        return PRState(labels, ci, is_draft, True)
 
 
 # Map a label name (as a string) to a `LabelKind`.
@@ -317,9 +320,9 @@ def test_determine_status() -> None:
     # Tests for handling draft and CI state.
     # These take precedence over any other labels.
     # Failing CI marks a PR as "not ready".
-    check2(PRState([], CIStatus.Pass, True, False), PRStatus.NotReady)
-    check2(PRState([], CIStatus.Fail, False, False), PRStatus.NotReady)
-    check2(PRState([], CIStatus.Fail, True, False), PRStatus.NotReady)
+    check2(PRState([], CIStatus.Pass, True, True), PRStatus.NotReady)
+    check2(PRState([], CIStatus.Fail, False, True), PRStatus.NotReady)
+    check2(PRState([], CIStatus.Fail, True, True), PRStatus.NotReady)
     # Running CI is treated as "failing" for the purposes of our classification.
     # The awaiting-CI label has the same effect as a "running" CI state.
     check2(PRState.with_labels_and_ci([], CIStatus.Running), PRStatus.NotReady)
