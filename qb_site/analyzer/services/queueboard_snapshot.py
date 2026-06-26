@@ -286,27 +286,6 @@ def _ci_status_for_pr(
     return (required_status, ci_ok)
 
 
-def _forbidden_queue_labels(default_branch: str) -> set[str]:
-    base = {
-        "blocked-by-other-pr",
-        "blocked-by-core-pr",
-        "blocked-by-batt-pr",
-        "blocked-by-qq-pr",
-        "awaiting-ci",
-        "awaiting-author",
-        "awaiting-zulip",
-        "please-adopt",
-        "help-wanted",
-        "wip",
-        "delegated",
-        "auto-merge-after-ci",
-        "ready-to-merge",
-    }
-    # Align with legacy queue filter: queue only considers default branch PRs.
-    _ = default_branch  # placeholder for future branch-specific rules
-    return base
-
-
 def _label_url(repo: Repository, name: str) -> str:
     return f"https://github.com/{repo.owner}/{repo.name}/labels/{name}"
 
