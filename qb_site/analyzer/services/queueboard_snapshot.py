@@ -286,42 +286,31 @@ def _ci_status_for_pr(
     return (required_status, ci_ok)
 
 
-def _forbidden_queue_labels(default_branch: str) -> set[str]:
-    base = {
-        "blocked-by-other-pr",
-        "blocked-by-core-pr",
-        "blocked-by-batt-pr",
-        "blocked-by-qq-pr",
-        "awaiting-ci",
-        "awaiting-author",
-        "awaiting-zulip",
-        "please-adopt",
-        "help-wanted",
-        "wip",
-        "delegated",
-        "auto-merge-after-ci",
-        "ready-to-merge",
-    }
-    # Align with legacy queue filter: queue only considers default branch PRs.
-    _ = default_branch  # placeholder for future branch-specific rules
-    return base
-
-
 def _label_url(repo: Repository, name: str) -> str:
     return f"https://github.com/{repo.owner}/{repo.name}/labels/{name}"
 
 
 def _classify_pr_status(
-    *, label_names: set[str], ci_status: CIStatus, is_draft: bool, head_repo_owner: str, repo_owner: str
+    *,
+    label_names: set[str],
+    ci_status: CIStatus,
+    is_draft: bool,
+    head_repo_owner: str,
+    repo_owner: str,
+    ci_gating_mode: str | None = None,
 ) -> str:
-    """Use legacy classify_pr_state logic."""
+    """Use legacy classify_pr_state logic.
+
+    ``ci_gating_mode`` is the rule set's effective CI gating mode; it keeps the triage
+    classification consistent with queue eligibility (e.g. under 'no_required_failures' a
+    missing/running required job does not mark the PR as work in progress)."""
     kinds = []
     for name in label_names:
         if name in label_categorisation_rules:
             kinds.append(label_categorisation_rules[name])
     from_fork = head_repo_owner.lower() != repo_owner.lower()
     state = PRState(kinds, ci_status, is_draft, from_fork)
-    status = determine_PR_status(datetime.now(timezone.utc), state)
+    status = determine_PR_status(datetime.now(timezone.utc), state, ci_gating_mode)
     return status.value
 
 
@@ -365,6 +354,7 @@ class QueueboardSnapshotBuilder:
         generated_at = datetime.now(timezone.utc)
         effective_rule_set = rule_set or self._default_rule_set(repository)
         required_contexts = self._required_contexts(effective_rule_set)
+        ci_gating_mode = effective_rule_set.effective_ci_gating_mode() if effective_rule_set else None
         need_ci_data = bool(required_contexts)
         pr_qs = (
             PullRequest.objects.filter(repository=repository, state=PullRequestState.OPEN)
@@ -470,6 +460,7 @@ class QueueboardSnapshotBuilder:
                 is_draft=pr.is_draft,
                 head_repo_owner=pr.head_repo_owner_login,
                 repo_owner=repository.owner,
+                ci_gating_mode=ci_gating_mode,
             )
             entry = self._build_pr_entry(
                 pr,
@@ -552,15 +543,14 @@ class QueueboardSnapshotBuilder:
                     stale_ready_to_merge.append(pr.number)
             if "delegated" in label_names_lc and pr.gh_updated_at < stale_ready_threshold and not pr.is_draft:
                 stale_delegated.append(pr.number)
-            if "maintainer-merge" in label_names_lc and not any(
-                lbl in label_names_lc for lbl in ("ready-to-merge", "auto-merge-after-ci")
-            ):
-                # NOTE(parity): legacy AllMaintainerMerge only includes PRs older than a day;
-                # we currently keep all maintainer-merge PRs here and use staleness only for the stale subset.
+            if "maintainer-merge" in label_names_lc and "ready-to-merge" not in label_names_lc and not pr.is_draft:
+                # Parity with legacy: AllMaintainerMerge is all *non-draft* maintainer-merge PRs minus
+                # ready-to-merge; it is NOT age-gated (StaleMaintainerMerge is the >1-day-old subset).
+                # Legacy excludes only ready-to-merge here, not auto-merge-after-CI.
                 all_maintainer_merge.append(pr.number)
                 if pr.gh_updated_at < stale_ready_threshold:
                     stale_maintainer_merge.append(pr.number)
-            if "new-contributor" in label_names_lc and pr.gh_updated_at < stale_new_contrib_threshold:
+            if "new-contributor" in label_names_lc and pr.gh_updated_at < stale_new_contrib_threshold and not pr.is_draft:
                 stale_new_contributor.append(pr.number)
 
         dashboards = {

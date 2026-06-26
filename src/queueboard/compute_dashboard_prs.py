@@ -612,7 +612,7 @@ def gather_pr_statistics(
         # We should guard number_percent(...) or rephrase to skip the percentage when total == 0.
         PRStatus.MergeConflict: f"have a merge conflict: among these, <b>{number_percent(len(justmerge_prs), number_prs[PRStatus.MergeConflict])}</b> would be ready for review otherwise: {link_to(Dashboard.NeedsMerge, 'these')}",
         PRStatus.Contradictory: f"have contradictory labels ({link_to(Dashboard.ContradictoryLabels)})",
-        PRStatus.NotReady: "are marked as draft or work in progress",
+        PRStatus.NotReady: "are marked as draft or work in progress, or do not (yet) pass CI",
     }
     assert set(instatus.keys()) == set(statusses)
     color = {
@@ -722,7 +722,7 @@ def determine_pr_dashboards(
     prs_to_list[Dashboard.OtherBase] = [pr for pr in nondraft_PRs if base_branch[pr.number] != "master"]
     prs_to_list[Dashboard.NotFromFork] = prs_not_from_fork
 
-    prs_to_list[Dashboard.NeedsHelp] = prs_with_any_label(nondraft_PRs, ["help-wanted", "please_adopt"])
+    prs_to_list[Dashboard.NeedsHelp] = prs_with_any_label(nondraft_PRs, ["help-wanted", "please-adopt"])
     prs_to_list[Dashboard.NeedsDecision] = prs_with_label(nondraft_PRs, "awaiting-zulip")
 
     # Compute all PRs on the review queue (and well as several sub-filters).

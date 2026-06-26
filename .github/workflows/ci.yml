@@ -54,6 +54,14 @@ jobs:
         run: |
           uv run python -m queueboard.test_process
 
+      - name: Test PR state classification
+        run: |
+          uv run python -m queueboard.classify_pr_state
+
+      - name: Test PR state evolution
+        run: |
+          uv run python -m queueboard.test_state_evolution
+
       - name: Run dashboard_data in test/newtest
         working-directory: test/newtest
         run: |

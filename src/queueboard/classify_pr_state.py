@@ -44,16 +44,19 @@ class PRState(NamedTuple):
 
     @staticmethod
     def with_labels(labels: List[LabelKind]):
-        """Create a PR state with just these labels, passing CI and ready for review"""
-        return PRState(labels, CIStatus.Pass, False, False)
+        """Create a PR state with just these labels, passing CI and ready for review.
+
+        The state is from a fork (``from_fork=True``): otherwise it would classify as
+        ``NotFromFork`` regardless of labels/CI, which is not what these helpers model."""
+        return PRState(labels, CIStatus.Pass, False, True)
 
     @staticmethod
     def with_labels_and_ci(labels: List[LabelKind], ci: CIStatus):
-        return PRState(labels, ci, False, False)
+        return PRState(labels, ci, False, True)
 
     @staticmethod
     def with_labels_ci_draft(labels: List[LabelKind], ci: CIStatus, is_draft: bool):
-        return PRState(labels, ci, is_draft, False)
+        return PRState(labels, ci, is_draft, True)
 
 
 # Map a label name (as a string) to a `LabelKind`.
@@ -157,6 +160,31 @@ class PRStatus(StrEnum):
         }.get(value)
 
 
+# CI gating mode string matching analyzer.QueueRuleSet.CIGatingMode.NO_REQUIRED_FAILURES.
+# Kept as a bare string so this standalone module need not import the Django model.
+CI_GATING_NO_REQUIRED_FAILURES = "no_required_failures"
+
+
+def ci_status_blocks_readiness(ci: CIStatus, ci_gating_mode: str | None) -> bool:
+    """Whether a CI status should mark a PR as "not ready", given the repo's CI gating mode.
+
+    This mirrors the queue-eligibility logic in the analyzer's snapshot builder
+    (``_ci_status_is_queue_eligible``), so the triage classification and the actual queue
+    membership stay consistent about CI:
+
+    - ``"no_required_failures"``: only an *actual failure* of a required job blocks. A
+      missing or still-running required job is tolerated (the PR can sit on the queue),
+      so it must not be classified as work-in-progress on that basis alone.
+    - any other mode, including no explicit gating (``None``): require passing CI, i.e. any
+      non-passing status (failing, inessential-failing, missing or running) blocks. This is
+      the historical behaviour assumed by the legacy file-based dashboard pipeline and the
+      state-evolution replay, neither of which carry a gating mode.
+    """
+    if ci_gating_mode == CI_GATING_NO_REQUIRED_FAILURES:
+        return ci == CIStatus.Fail
+    return ci in [CIStatus.Fail, CIStatus.FailInessential, CIStatus.Missing, CIStatus.Running]
+
+
 def label_to_prstatus(label: LabelKind) -> PRStatus:
     return {
         LabelKind.WIP: PRStatus.NotReady,
@@ -172,24 +200,29 @@ def label_to_prstatus(label: LabelKind) -> PRStatus:
     }[label]
 
 
-def determine_PR_status(date: datetime, state: PRState) -> PRStatus:
-    """Determine a PR's status from its state
-    'date' is necessary as the interpretation of the awaiting-review label changes over time"""
+def determine_PR_status(date: datetime, state: PRState, ci_gating_mode: str | None = None) -> PRStatus:
+    """Determine a PR's status from its state.
+
+    'date' is necessary as the interpretation of the awaiting-review label changes over time.
+    'ci_gating_mode' is the repository's effective CI gating mode (see
+    ``ci_status_blocks_readiness``); when ``None`` (the default, used by the legacy
+    file-based pipeline and state-evolution replay) any non-passing CI marks a PR not ready."""
     if not state.from_fork:
         return PRStatus.NotFromFork
 
-    # Failing (or missing or running) CI counts like the WIP label.
-    # In particular, it is compared against other labels.
-    # Note: some CI failures are "inessential" (i.e., some infra job failing for unrelated reasons).
-    # Always treating this as "fine" seems wrong (for some infra PRs, it means "there's a bug somewhere").
-    # Instead, we treat it like a failing job, but have an extra dashboard exposing these
-    # (so one can take a look quickly).
-    if state.draft or state.ci in [CIStatus.Fail, CIStatus.FailInessential, CIStatus.Missing]:
+    # Whether the CI state counts like a WIP label, comparing against other labels.
+    # What counts as "blocking" depends on the repo's CI gating mode: under
+    # 'no_required_failures' a missing or running required job is tolerated (and so must not,
+    # on its own, mark the PR as work in progress), whereas the default strict mode treats any
+    # non-passing CI (failing, inessential-failing, missing or running) as not ready.
+    # Note: some CI failures are "inessential" (i.e., some infra job failing for unrelated
+    # reasons). Under strict gating we still treat this like a failing job (but expose them in
+    # an extra dashboard); under 'no_required_failures' it is tolerated like a non-failure.
+    if state.draft or ci_status_blocks_readiness(state.ci, ci_gating_mode):
         notready = True
-    # The 'awaiting-CI' label or 'running' CI also mark a PR as 'not ready' yet:
-    # this ought to be a transient state; when a CI run completes, the PR status
-    # (in hindsight) will be set accordingly.
-    elif state.ci == CIStatus.Running or LabelKind.AwaitingCI in state.labels:
+    # The 'awaiting-CI' label always marks a PR as 'not ready' yet, independently of the CI
+    # gating mode: it is an explicit author/maintainer signal rather than a CI rollup.
+    elif LabelKind.AwaitingCI in state.labels:
         notready = True
     else:
         notready = False
@@ -287,9 +320,9 @@ def test_determine_status() -> None:
     # Tests for handling draft and CI state.
     # These take precedence over any other labels.
     # Failing CI marks a PR as "not ready".
-    check2(PRState([], CIStatus.Pass, True, False), PRStatus.NotReady)
-    check2(PRState([], CIStatus.Fail, False, False), PRStatus.NotReady)
-    check2(PRState([], CIStatus.Fail, True, False), PRStatus.NotReady)
+    check2(PRState([], CIStatus.Pass, True, True), PRStatus.NotReady)
+    check2(PRState([], CIStatus.Fail, False, True), PRStatus.NotReady)
+    check2(PRState([], CIStatus.Fail, True, True), PRStatus.NotReady)
     # Running CI is treated as "failing" for the purposes of our classification.
     # The awaiting-CI label has the same effect as a "running" CI state.
     check2(PRState.with_labels_and_ci([], CIStatus.Running), PRStatus.NotReady)
@@ -375,5 +408,54 @@ def test_determine_status() -> None:
     check([LabelKind.Bors, LabelKind.Bors], PRStatus.AwaitingBors)
 
 
+def test_ci_gating_mode() -> None:
+    """The CI gating mode controls when CI marks a PR as 'not ready'.
+
+    Self-contained (does not rely on the ``with_labels*`` helpers, which build ``from_fork=False``
+    states), so it can run independently of ``test_determine_status``."""
+    date = datetime(2024, 8, 1, tzinfo=tz.tzutc())
+    nrf = CI_GATING_NO_REQUIRED_FAILURES
+
+    def st(labels: List[LabelKind], ci: CIStatus, draft: bool = False) -> PRState:
+        return PRState(labels, ci, draft, from_fork=True)
+
+    def check(state: PRState, mode: str | None, expected: PRStatus) -> None:
+        actual = determine_PR_status(date, state, mode)
+        assert expected == actual, f"expected {expected} from state {state} (mode={mode}), got {actual}"
+
+    # Unit-level coverage of the blocking predicate itself.
+    assert ci_status_blocks_readiness(CIStatus.Fail, nrf)
+    assert not ci_status_blocks_readiness(CIStatus.Missing, nrf)
+    assert not ci_status_blocks_readiness(CIStatus.Running, nrf)
+    assert not ci_status_blocks_readiness(CIStatus.FailInessential, nrf)
+    assert not ci_status_blocks_readiness(CIStatus.Pass, nrf)
+    for ci in [CIStatus.Fail, CIStatus.FailInessential, CIStatus.Missing, CIStatus.Running]:
+        assert ci_status_blocks_readiness(ci, None), ci
+    assert not ci_status_blocks_readiness(CIStatus.Pass, None)
+
+    # Under 'no_required_failures': missing / running / passing CI no longer forces NotReady;
+    # the underlying labels decide the status.
+    check(st([], CIStatus.Missing), nrf, PRStatus.AwaitingReview)
+    check(st([], CIStatus.Running), nrf, PRStatus.AwaitingReview)
+    check(st([], CIStatus.Pass), nrf, PRStatus.AwaitingReview)
+    check(st([LabelKind.MergeConflict], CIStatus.Missing), nrf, PRStatus.MergeConflict)
+    check(st([LabelKind.Author], CIStatus.Running), nrf, PRStatus.AwaitingAuthor)
+    check(st([LabelKind.Bors], CIStatus.Missing), nrf, PRStatus.AwaitingBors)
+    # An actual required-job failure still marks the PR not ready, even under this mode.
+    check(st([], CIStatus.Fail), nrf, PRStatus.NotReady)
+    check(st([LabelKind.MergeConflict], CIStatus.Fail), nrf, PRStatus.NotReady)
+    # The explicit awaiting-CI label and draft state are independent of CI gating.
+    check(st([LabelKind.AwaitingCI], CIStatus.Pass), nrf, PRStatus.NotReady)
+    check(st([], CIStatus.Missing, draft=True), nrf, PRStatus.NotReady)
+
+    # The default (None) mode preserves the strict legacy behaviour: any non-passing CI blocks.
+    check(st([], CIStatus.Missing), None, PRStatus.NotReady)
+    check(st([], CIStatus.Running), None, PRStatus.NotReady)
+    check(st([LabelKind.MergeConflict], CIStatus.Missing), None, PRStatus.NotReady)
+    check(st([], CIStatus.Pass), None, PRStatus.AwaitingReview)
+    print("test_ci_gating_mode: all tests pass")
+
+
 if __name__ == "__main__":
+    test_ci_gating_mode()
     test_determine_status()
