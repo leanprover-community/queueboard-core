@@ -7,14 +7,10 @@ from django.utils import timezone
 from django.db.models import Count, Exists, F, Min, OuterRef, Q
 
 from analyzer.models import PRQueueWindow, PRQueueWindowBuildState, PRRevision, PRRevisionBuildState, QueueRuleSet
-from analyzer.models.queue_window import QueueWindowEventType
 from analyzer.services.queue_window_build_state import record_queue_window_build_states
 from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
-
-
-_CI_ATTRIBUTION_TYPES = [QueueWindowEventType.CI_PASSED, QueueWindowEventType.CI_FAILED]
 
 
 def _is_ruleset_stale_for_pr(
@@ -48,15 +44,24 @@ def _is_ruleset_stale_for_pr(
     - Label/state change (``gh_updated_at``) → ``min_ruleset_state_windows_built_at < gh_updated_at``
     - CI write since last build (``latest_ci_synced_at``) → ``min_ruleset_state_windows_built_at < revision_build_state__latest_ci_synced_at``
     - Rollup fields missing           → ``has_rollup_backfill=True`` (Exists subquery)
-    - Attribution fields missing/inconsistent → ``has_attribution_backfill=True`` (Exists subquery)
-      Covers: pre-migration windows (opened_by_event_type IS NULL) and post-expire-task
-      partial failures (CI event_type with both CI FKs null).
+    - Attribution event_type missing  → ``has_attribution_backfill=True`` (Exists subquery)
+      Covers pre-migration windows (``opened_by_event_type IS NULL``); a rebuild repairs
+      them by recomputing attribution from scratch.
+
+      NOTE (doc 049): a CI ``event_type`` (CI_PASSED/CI_FAILED) with both CI FKs null is
+      deliberately *not* treated as stale. The window builder legitimately produces
+      FK-less CI attribution whenever a CI-eligibility flip cannot be tied to a surviving
+      ``CommitCheckRun``/``CommitStatusContext`` row (CI rows expired by
+      ``syncer.expire_stale_ci_for_repo``, or an unresolved head at the boundary). A
+      rebuild reproduces the identical FK-less attribution, so flagging it produced a
+      permanent stale loop. The underlying revision-gap cause is fixed separately by the
+      revision contiguity self-heal (doc 049).
     """
     # Existing windows have missing rollup fields (window_count=0 or first_on_queue_ts=None).
     if has_rollup_backfill:
         return True
 
-    # Existing windows have missing or inconsistent attribution fields.
+    # Existing windows are pre-migration (event_type not yet populated).
     if has_attribution_backfill:
         return True
 
@@ -118,23 +123,14 @@ def rebuild_queue_windows_sweep_task(
             pull_request=OuterRef("pk"),
             rule_set_id__in=rule_set_ids,
         ).filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
+        # Pre-migration windows whose event_type was never populated; a rebuild repairs
+        # them.  A CI event_type with both CI FKs null is intentionally excluded — that
+        # is a legitimate terminal state, not a defect (see _is_ruleset_stale_for_pr and
+        # doc 049).
         attribution_backfill = PRQueueWindow.objects.filter(
             pull_request=OuterRef("pk"),
             rule_set_id__in=rule_set_ids,
-        ).filter(
-            # Pre-migration: event_type not yet populated.
-            Q(opened_by_event_type__isnull=True)
-            # Post-expire-task partial failure: CI event type but both CI FKs null.
-            | Q(
-                opened_by_event_type__in=_CI_ATTRIBUTION_TYPES,
-                opened_by_check_run__isnull=True,
-                opened_by_status_context__isnull=True,
-            )
-            | Q(
-                closed_by_event_type__in=_CI_ATTRIBUTION_TYPES,
-                closed_by_check_run__isnull=True,
-                closed_by_status_context__isnull=True,
-            )
+            opened_by_event_type__isnull=True,
         )
 
         pr_qs = PullRequest.objects.filter(repository=repo, timeline_backfill_done=True)
@@ -285,25 +281,14 @@ def rebuild_queue_windows_sweep_task(
                 .filter(Q(window_count=0) | Q(first_on_queue_ts__isnull=True))
                 .values_list("pull_request_id", "rule_set_id")
             )
+            # Mirror the prefilter's attribution_backfill subquery: only pre-migration
+            # null event_type counts (doc 049 — FK-less CI attribution is not a defect).
             attribution_backfill_pairs = set(
                 PRQueueWindow.objects.filter(
                     pull_request_id__in=pr_ids,
                     rule_set_id__in=rule_set_ids,
-                )
-                .filter(
-                    Q(opened_by_event_type__isnull=True)
-                    | Q(
-                        opened_by_event_type__in=_CI_ATTRIBUTION_TYPES,
-                        opened_by_check_run__isnull=True,
-                        opened_by_status_context__isnull=True,
-                    )
-                    | Q(
-                        closed_by_event_type__in=_CI_ATTRIBUTION_TYPES,
-                        closed_by_check_run__isnull=True,
-                        closed_by_status_context__isnull=True,
-                    )
-                )
-                .values_list("pull_request_id", "rule_set_id")
+                    opened_by_event_type__isnull=True,
+                ).values_list("pull_request_id", "rule_set_id")
             )
 
             for pr in pr_batch:
