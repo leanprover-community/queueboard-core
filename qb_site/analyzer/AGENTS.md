@@ -26,6 +26,9 @@ docker compose exec -T web python qb_site/manage.py plan_ci_backfill --repo lean
 
 # Backfill reviewer opt-outs command
 docker compose exec -T web python qb_site/manage.py backfill_reviewer_opt_outs --dry-run
+
+# Audit PRRevision window contiguity (read-only; design decision 049)
+docker compose exec -T web python qb_site/manage.py audit_revision_contiguity --repo leanprover-community/mathlib4
 ```
 
 ## Task Surface
