@@ -106,3 +106,45 @@ class TestAuditRevisionContiguityCommand(TestCase):
         self.assertIn("gap=1", text)
         self.assertIn("PR #2", text)
         self.assertNotIn("PR #1", text)
+
+    def test_fix_heals_gappy_pr(self) -> None:
+        from analyzer.models import PRRevisionBuildState, QueueRuleSet
+        from analyzer.services.revisions import PR_REVISION_BUILDER_VERSION
+        from syncer.models import CommitCheckRun
+
+        QueueRuleSet.objects.create(
+            repository=self.repo, version=1, require_open=True, require_not_draft=True, require_ci_success=False
+        )
+        pr = self._pr(5)
+        pr.head_sha = "hLate"
+        pr.save(update_fields=["head_sha"])
+        # Gappy revisions: hEarly ends at +30, hLate starts at +60.
+        self._rev(pr, "hEarly", 0, 30, 0)
+        self._rev(pr, "hLate", 60, None, 1)
+        for head, c in (("hEarly", 5), ("hLate", 65)):
+            CommitCheckRun.objects.create(
+                repository=self.repo,
+                github_node_id=f"cr_{head}",
+                head_sha=head,
+                name="ci",
+                status="COMPLETED",
+                conclusion="SUCCESS",
+                gh_started_at=self._at(c - 5),
+                gh_completed_at=self._at(c),
+            )
+        # Clean build state so a revision rebuild would otherwise noop.
+        PRRevisionBuildState.objects.create(
+            pull_request=pr,
+            revision_version=1,
+            builder_version=PR_REVISION_BUILDER_VERSION,
+            built_through_ts=self._at(70),
+            dirty_from_ts=None,
+        )
+
+        out, err = StringIO(), StringIO()
+        call_command("audit_revision_contiguity", "--repo", "o/r", "--fix", stdout=out, stderr=err)
+
+        revs = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id"))
+        for a, b in zip(revs, revs[1:]):
+            self.assertEqual(a.to_ts, b.from_ts, "revisions must be contiguous after --fix")
+        self.assertIn("healed 1", out.getvalue())
