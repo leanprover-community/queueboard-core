@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F, Max
+from django.db.models import Max
 from django.utils import timezone
 
 from syncer.models import (
@@ -454,6 +454,32 @@ def _normalize_windows(
     return stitched
 
 
+def _revisions_need_recontiguation(pr: PullRequest) -> bool:
+    """Return True if a PR's persisted revision windows violate contiguity.
+
+    Invariant (design decisions 048 + 049): rows ordered by ``from_ts`` must satisfy
+    ``to_ts[i] == from_ts[i+1]`` for every adjacent pair, every non-final window must
+    be closed and forward (``from_ts < to_ts``), and only the final window may be
+    open-ended. Any violation — a malformed window (``to_ts <= from_ts``), a gap or
+    overlap between neighbours (``to_ts[i] != from_ts[i+1]``), or a non-final window
+    with a null ``to_ts`` — means the rows escape the append delete sweep and re-noop
+    forever, so we force a healing full rebuild. A no-op on `_normalize_windows`
+    output, which already guarantees the invariant.
+    """
+    rows = list(PRRevision.objects.filter(pull_request=pr).order_by("from_ts", "seq", "id").values_list("from_ts", "to_ts"))
+    last = len(rows) - 1
+    for i, (from_ts, to_ts) in enumerate(rows):
+        if i == last:
+            # Final window may be open-ended, but if closed it must be forward.
+            if to_ts is not None and to_ts <= from_ts:
+                return True
+            continue
+        # Non-final window must be closed, forward, and meet the next window's start.
+        if to_ts is None or to_ts <= from_ts or to_ts != rows[i + 1][0]:
+            return True
+    return False
+
+
 @transaction.atomic
 def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] = None) -> RebuildResult:
     """Rebuild head revision windows for a PR from timeline events and CI.
@@ -494,11 +520,18 @@ def rebuild_pr_revisions(pr: PullRequest, latest_signal_ts: Optional[datetime] =
         needs_full = True
     if dirty_was_set:
         needs_full = True
-    # Self-healing cleanup (design decision 048): a malformed window (to_ts <
-    # from_ts) holding max(from_ts) escapes the append delete sweep and re-noops on
-    # every rebuild. Force a full rebuild so the corrected builder output replaces
-    # it. Converges: once cleaned, no malformed row remains and this is a no-op.
-    if not needs_full and PRRevision.objects.filter(pull_request=pr, to_ts__isnull=False, to_ts__lt=F("from_ts")).exists():
+    # Self-healing cleanup (design decisions 048 + 049): legacy rows that violate
+    # the contiguity invariant escape the append delete sweep and re-noop on every
+    # rebuild. Force a full rebuild so `_normalize_windows` re-stitches them.
+    # Converges: once stitched, the invariant holds and this is a no-op.
+    #
+    # Doc 048's original self-heal only caught a single malformed window
+    # (`to_ts < from_ts`). Doc 049 extends it to *gaps and overlaps* between
+    # adjacent windows (`to_ts[i] != from_ts[i+1]`): a head dropped by a pre-048
+    # builder leaves individually-valid rows with a hole between them, which pins
+    # the analyzer to a "missing head" inside the gap and makes the queue-window
+    # builder emit FK-less CI attribution that loops forever in the staleness sweep.
+    if not needs_full and _revisions_need_recontiguation(pr):
         needs_full = True
 
     has_existing = PRRevision.objects.filter(pull_request=pr).exists()

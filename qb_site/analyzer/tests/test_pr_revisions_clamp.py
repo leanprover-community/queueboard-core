@@ -21,6 +21,7 @@ from analyzer.services.revisions import (
     _build_ci_head_windows,
     _build_force_push_head_windows,
     _normalize_windows,
+    _revisions_need_recontiguation,
     rebuild_pr_revisions,
 )
 
@@ -337,6 +338,47 @@ class TestRebuildIntegration(ClampTestBase):
         self.assertEqual(revs[0].from_ts, self._at(0))
         self.assertEqual(revs[-1].to_ts, None)
 
+    def test_self_heals_gap_between_windows(self) -> None:
+        # Doc 049: a GAP between adjacent windows (to_ts[i] < from_ts[i+1]) where each
+        # row is individually valid. The 048 malformed self-heal (to_ts < from_ts only)
+        # misses it, so it would noop forever. The contiguity self-heal must rebuild.
+        pr = self._mk_pr(40, created_min=0, head_sha="hC")
+        # seq0 ends at 30 but seq1 starts at 60 -> a 30-minute coverage hole.
+        PRRevision.objects.create(pull_request=pr, head_sha="h0", from_ts=self._at(0), to_ts=self._at(30), seq=0)
+        PRRevision.objects.create(pull_request=pr, head_sha="hC", from_ts=self._at(60), to_ts=None, seq=1)
+        self._ci("h0", start_min=5)
+        self._ci("hC", start_min=60)
+        self._seed_state(pr, built_through_min=65)
+
+        self.assertTrue(_revisions_need_recontiguation(pr), "gap must be detected")
+
+        res = rebuild_pr_revisions(pr)
+        self.assertNotEqual(res.strategy, "noop", "gap must force a full rebuild, not noop")
+        self.assert_db_windows_valid(pr)
+        self.assertFalse(_revisions_need_recontiguation(pr), "gap must be healed")
+
+        # Converges: a second rebuild is a clean noop.
+        res2 = rebuild_pr_revisions(pr)
+        self.assertEqual(res2.strategy, "noop")
+        self.assert_db_windows_valid(pr)
+
+    def test_self_heals_overlap_between_windows(self) -> None:
+        # Doc 049: an OVERLAP / out-of-order pair (to_ts[i] > from_ts[i+1]); each row is
+        # individually valid (to_ts > from_ts) so the malformed self-heal misses it.
+        pr = self._mk_pr(41, created_min=0, head_sha="hC")
+        PRRevision.objects.create(pull_request=pr, head_sha="h0", from_ts=self._at(0), to_ts=self._at(90), seq=0)
+        PRRevision.objects.create(pull_request=pr, head_sha="hC", from_ts=self._at(60), to_ts=None, seq=1)
+        self._ci("h0", start_min=5)
+        self._ci("hC", start_min=60)
+        self._seed_state(pr, built_through_min=95)
+
+        self.assertTrue(_revisions_need_recontiguation(pr), "overlap must be detected")
+
+        res = rebuild_pr_revisions(pr)
+        self.assertNotEqual(res.strategy, "noop", "overlap must force a full rebuild, not noop")
+        self.assert_db_windows_valid(pr)
+        self.assertFalse(_revisions_need_recontiguation(pr), "overlap must be healed")
+
     def test_ci_only_pre_creation_then_force_push(self) -> None:
         # Build CI-only (commits before creation) -> clamped; then a force push lands.
         pr = self._mk_pr(12, created_min=0, head_sha="h1")
@@ -442,3 +484,60 @@ class TestRebuildIntegration(ClampTestBase):
             res2 = rebuild_pr_revisions(pr)
             self.assertEqual(res2.strategy, "noop", f"pattern {pattern} should converge")
             self.assert_db_windows_valid(pr)
+
+
+class TestRevisionsNeedRecontiguation(ClampTestBase):
+    """Unit coverage for the contiguity violation detector (design decision 049)."""
+
+    def _rev(self, pr: PullRequest, head: str, from_min: int, to_min: int | None, seq: int) -> None:
+        PRRevision.objects.create(
+            pull_request=pr,
+            head_sha=head,
+            from_ts=self._at(from_min),
+            to_ts=None if to_min is None else self._at(to_min),
+            seq=seq,
+        )
+
+    def test_empty_is_clean(self) -> None:
+        pr = self._mk_pr(50)
+        self.assertFalse(_revisions_need_recontiguation(pr))
+
+    def test_single_open_window_is_clean(self) -> None:
+        pr = self._mk_pr(51, head_sha="a")
+        self._rev(pr, "a", 0, None, 0)
+        self.assertFalse(_revisions_need_recontiguation(pr))
+
+    def test_contiguous_chain_is_clean(self) -> None:
+        pr = self._mk_pr(52, head_sha="b")
+        self._rev(pr, "a", 0, 30, 0)
+        self._rev(pr, "b", 30, None, 1)
+        self.assertFalse(_revisions_need_recontiguation(pr))
+
+    def test_gap_is_detected(self) -> None:
+        pr = self._mk_pr(53, head_sha="b")
+        self._rev(pr, "a", 0, 30, 0)
+        self._rev(pr, "b", 60, None, 1)
+        self.assertTrue(_revisions_need_recontiguation(pr))
+
+    def test_overlap_is_detected(self) -> None:
+        pr = self._mk_pr(54, head_sha="b")
+        self._rev(pr, "a", 0, 90, 0)
+        self._rev(pr, "b", 60, None, 1)
+        self.assertTrue(_revisions_need_recontiguation(pr))
+
+    def test_backward_non_final_window_is_detected(self) -> None:
+        pr = self._mk_pr(55, head_sha="b")
+        self._rev(pr, "a", 30, 10, 0)  # to_ts < from_ts
+        self._rev(pr, "b", 40, None, 1)
+        self.assertTrue(_revisions_need_recontiguation(pr))
+
+    def test_non_final_open_window_is_detected(self) -> None:
+        pr = self._mk_pr(56, head_sha="b")
+        self._rev(pr, "a", 0, None, 0)  # non-final but open-ended
+        self._rev(pr, "b", 30, None, 1)
+        self.assertTrue(_revisions_need_recontiguation(pr))
+
+    def test_backward_final_window_is_detected(self) -> None:
+        pr = self._mk_pr(57, head_sha="a")
+        self._rev(pr, "a", 30, 10, 0)  # lone closed window, to_ts < from_ts
+        self.assertTrue(_revisions_need_recontiguation(pr))

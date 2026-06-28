@@ -1,8 +1,9 @@
-"""Tests for W4b: sweep staleness extension for attribution backfill.
+"""Tests for sweep staleness handling of queue-window attribution.
 
-Verifies that the rebuild_queue_windows_sweep_task detects and rebuilds:
-- Pre-migration windows with null opened_by_event_type.
-- Windows with CI event_type but both CI FKs null (post-expire-task partial failure).
+Verifies that the rebuild_queue_windows_sweep_task:
+- Detects and rebuilds pre-migration windows with null opened_by_event_type.
+- Does NOT flag windows whose CI event_type carries null CI FKs — that is a
+  legitimate terminal state, not a defect, and flagging it looped forever (doc 049).
 """
 
 from __future__ import annotations
@@ -100,11 +101,17 @@ class TestSweepAttributionBackfill(_Base):
         # After rebuild, INITIAL_STATE should be populated.
         self.assertEqual(win.opened_by_event_type, QueueWindowEventType.INITIAL_STATE)
 
-    def test_ci_event_type_with_null_fks_triggers_rebuild(self) -> None:
-        """Window with CI_PASSED event_type but both CI FKs null is detected and rebuilt."""
+    def test_ci_event_type_with_null_fks_is_not_stale(self) -> None:
+        """opened_by CI_PASSED with both CI FKs null is an accepted terminal state
+        (doc 049): the sweep must neither flag nor rebuild it."""
         pr = self._mk_pr(2)
-        self._seed_up_to_date_build_state(pr)
-        # Simulate post-expire-task partial failure: FK was nulled, event_type still set.
+        state = self._seed_up_to_date_build_state(pr)
+        # Make every non-attribution staleness signal up to date so attribution is the
+        # only thing that could flag this PR.
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=state.windows_built_at - timezone.timedelta(minutes=1))
+        # FK-less CI attribution: produced legitimately when a CI-eligibility flip
+        # cannot be tied to a surviving CI row.  A rebuild reproduces it identically,
+        # so flagging it would loop forever.
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
@@ -120,11 +127,10 @@ class TestSweepAttributionBackfill(_Base):
 
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
 
-        # Rebuild fires; since no CI rows exist for this label-only ruleset, the window
-        # is rebuilt from scratch with INITIAL_STATE.
-        self.assertEqual(res["windows_rebuilt"], 1)
+        self.assertEqual(res["windows_rebuilt"], 0)
+        self.assertEqual(res["prs_stale_ruleset"], 0)
         win = PRQueueWindow.objects.get(pull_request=pr, rule_set=self.rule_set)
-        self.assertNotEqual(win.opened_by_event_type, QueueWindowEventType.CI_PASSED)
+        self.assertEqual(win.opened_by_event_type, QueueWindowEventType.CI_PASSED)
 
     def test_window_with_correct_attribution_not_spuriously_rebuilt(self) -> None:
         """Window with proper INITIAL_STATE attribution is not detected as stale."""
@@ -145,10 +151,11 @@ class TestSweepAttributionBackfill(_Base):
 
         self.assertEqual(res["windows_rebuilt"], 0)
 
-    def test_closed_by_ci_event_type_with_null_fks_triggers_rebuild(self) -> None:
-        """Window with CI_FAILED closed_by_event_type but both closed CI FKs null is detected."""
+    def test_closed_by_ci_event_type_with_null_fks_is_not_stale(self) -> None:
+        """closed_by CI_FAILED with both closed CI FKs null is likewise accepted (doc 049)."""
         pr = self._mk_pr(4)
-        self._seed_up_to_date_build_state(pr)
+        state = self._seed_up_to_date_build_state(pr)
+        QueueRuleSet.objects.filter(pk=self.rule_set.pk).update(updated_at=state.windows_built_at - timezone.timedelta(minutes=1))
         PRQueueWindow.objects.create(
             pull_request=pr,
             rule_set=self.rule_set,
@@ -165,4 +172,5 @@ class TestSweepAttributionBackfill(_Base):
 
         res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
 
-        self.assertEqual(res["windows_rebuilt"], 1)
+        self.assertEqual(res["windows_rebuilt"], 0)
+        self.assertEqual(res["prs_stale_ruleset"], 0)
