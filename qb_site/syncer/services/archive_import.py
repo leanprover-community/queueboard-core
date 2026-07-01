@@ -22,13 +22,17 @@ import requests
 from dateutil import parser as dtparser
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 
 from core.models.repository import Repository
 from syncer.models import (
+    ArchiveImportItem,
+    ArchiveImportItemStatus,
     CommitCheckRun,
     CommitStatusContext,
     PRTimelineEvent,
+    PRTimelineEventType,
     PullRequest,
 )
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
@@ -151,6 +155,35 @@ def _split_contexts(
     return check_runs, status_contexts
 
 
+def archive_touched_live_prs_queryset(repository: Repository | None = None) -> QuerySet[PullRequest]:
+    """Live PRs (not *created* by the importer) that its UPDATE path processed.
+
+    These are the rows exposed to the pre-hardening core-field regression: the
+    importer ran ``upsert_pull_request`` on a PR that already existed live and,
+    when the archive snapshot was older, still rewound the un-gated core fields
+    (``gh_updated_at``, ``additions``/``deletions``/``changed_files_count``,
+    ref/repo names, ``author``) to the stale snapshot value. It is also a
+    superset of the resurrected-label PRs.
+
+    ``PullRequest.archive_imported_at`` is stamped only on rows the importer
+    *created*, so ``IS NULL`` isolates pre-existing live rows; the
+    ``ArchiveImportItem`` worklist records every ``(archive, number)`` the
+    importer processed, so a completed item is the "importer touched this
+    number" witness. Force-resyncing this set re-fetches GitHub truth and heals
+    both the scalar regression and the label resurrection in one pass. Returns
+    an unordered, unsliced queryset; callers add their own ordering/slicing.
+    """
+    completed_item = ArchiveImportItem.objects.filter(
+        repository_id=OuterRef("repository_id"),
+        pr_number=OuterRef("number"),
+        status=ArchiveImportItemStatus.COMPLETED,
+    )
+    qs = PullRequest.objects.filter(archive_imported_at__isnull=True).filter(Exists(completed_item))
+    if repository is not None:
+        qs = qs.filter(repository=repository)
+    return qs
+
+
 def _label_names_from_payload(payload: Dict[str, Any]) -> list[str]:
     labels = (payload.get("labels") or {}).get("nodes") or []
     out: list[str] = []
@@ -160,6 +193,36 @@ def _label_names_from_payload(payload: Dict[str, Any]) -> list[str]:
             if isinstance(name, str) and name:
                 out.append(name)
     return out
+
+
+def _live_removed_label_names_lower(pr: PullRequest) -> set[str]:
+    """Lowercased label names the live timeline shows as currently removed.
+
+    A name is "removed" when the latest LABELED/UNLABELED event already
+    persisted for the PR is an ``UNLABELED``. The archive snapshot is strictly
+    older than live, so its ``labels.nodes`` can still list a label the live
+    syncer legitimately detached after the snapshot was taken. Re-attaching it
+    (additive-only sync never sees the newer ``UNLABELED``) is the resurrection
+    bug behind this fix -- so we drop those names before the additive add.
+
+    Reads only the timeline already on disk, which is populated by prior live
+    syncs; the archive's own timeline is ingested later in the same call and
+    predates the removal, so it cannot mask it. For a never-live-synced PR the
+    set is empty and every archive label is attached as before.
+    """
+    latest: dict[str, str] = {}
+    for name, etype in (
+        PRTimelineEvent.objects.filter(
+            pull_request=pr,
+            type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED],
+            label_name__isnull=False,
+        )
+        .order_by("occurred_at", "id")
+        .values_list("label_name", "type")
+    ):
+        if name:
+            latest[name.lower()] = etype
+    return {name for name, etype in latest.items() if etype == PRTimelineEventType.UNLABELED}
 
 
 def import_pr_info_payload(
@@ -202,8 +265,16 @@ def import_pr_info_payload(
         result.pr = pr
         result.pr_created = upsert.created
 
-        # Labels — additive only.
-        label_res = sync_pr_labels(pr, _label_names_from_payload(payload), additive_only=True)
+        # Labels — additive only, but never resurrect a label the live timeline
+        # already shows as removed. The archive's labels.nodes is an older
+        # point-in-time snapshot; a label detached live *after* that snapshot
+        # would otherwise be re-attached with a fresh created_at because the
+        # additive-only sync skips the detach pass and never sees the newer
+        # UNLABELED event. See ``resurrected_prlabels_queryset`` and the
+        # ``heal_resurrected_labels`` command for the matching cleanup.
+        removed_lower = _live_removed_label_names_lower(pr)
+        archive_label_names = [n for n in _label_names_from_payload(payload) if n.lower() not in removed_lower]
+        label_res = sync_pr_labels(pr, archive_label_names, additive_only=True)
         result.labels_attached = label_res.created
 
         # Timeline events — archive-mode skips dismissed-review parent synthesis.

@@ -13,25 +13,6 @@ from .core_entities_sync import upsert_user_from_github
 from syncer.models.pull_request import PullRequest
 
 
-# Fields gated by the newer-wins guard (design doc 043 §Subtleties /
-# "Newer-wins guard for PR core"). When the existing row's gh_updated_at is
-# newer than the snapshot's updatedAt, an archive-mode upsert must not
-# regress these fields. head_sha is the critical one — overwriting it with
-# an archive-stale value silently corrupts every analyzer artifact that
-# uses it as a SHA-by-time anchor.
-_NEWER_WINS_GATED_FIELDS = frozenset(
-    [
-        "state",
-        "is_draft",
-        "title",
-        "body",
-        "head_sha",
-        "closed_at",
-        "merged_at",
-    ]
-)
-
-
 @dataclass
 class PullRequestUpsertResult:
     pr: PullRequest
@@ -84,11 +65,14 @@ def upsert_pull_request(
 
     Optional archive-mode parameters (design doc 043):
       - ``if_newer_than``: when set and the existing row's ``gh_updated_at``
-        is later, the gated set defined by ``_NEWER_WINS_GATED_FIELDS`` is
-        omitted from the update. Other fields (additions/deletions/file
-        counts/etc.) still flow through; ``gh_updated_at`` itself is left
-        ungated per the doc, since the archive snapshot is older anyway and
-        a subsequent live sync will move it forward.
+        is later than the snapshot, the *entire* core update is skipped — an
+        older snapshot can never carry a more-recent core value, so it must
+        not regress any field. The create path and the archive-is-newer case
+        are unaffected (all fields flow through). (Originally only a subset
+        of "primary semantic" fields was gated while additions/deletions/
+        refs/gh_updated_at flowed through; that silently rewound those on
+        closed PRs the archive touched but that never get resynced — see
+        design doc 043 §Labels follow-up.)
       - ``skip_watermark``: when True, do NOT set ``last_synced_at`` on the
         create path. Required by the archive importer so the live discovery
         preflight (``gh_updated_at > last_synced_at``) can still pick the
@@ -131,11 +115,12 @@ def upsert_pull_request(
         return PullRequestUpsertResult(pr=pr, created=True, updated_fields=tuple(core_values.keys()))
 
     # Newer-wins guard. Triggered only when callers explicitly pass an
-    # ``if_newer_than`` cutoff (archive ingest does; live sync does not).
-    # The fields removed here cover the analyzer's primary semantic surface;
-    # additions/deletions/etc. are advisory and still flow through.
+    # ``if_newer_than`` cutoff (archive ingest does; live sync does not). When
+    # the existing row already reflects a state newer than this snapshot, the
+    # snapshot is strictly stale, so skip the whole core update rather than
+    # regress any field (head_sha, gh_updated_at, additions/deletions, refs …).
     if if_newer_than is not None and pr.gh_updated_at is not None and pr.gh_updated_at > if_newer_than:
-        core_values = {k: v for k, v in core_values.items() if k not in _NEWER_WINS_GATED_FIELDS}
+        return PullRequestUpsertResult(pr=pr, created=False, updated_fields=tuple())
 
     # Existing: update only changed core fields.
     # Note: last_synced_at is intentionally NOT advanced here. It is advanced only

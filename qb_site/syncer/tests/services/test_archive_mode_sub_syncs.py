@@ -61,8 +61,8 @@ class TestUpsertPullRequestArchiveParams(TestCase):
         pr = PullRequest.objects.get(repository=self.repo, number=2)
         self.assertIsNotNone(pr.last_synced_at)
 
-    def test_if_newer_than_gates_state_title_body_head_sha_when_existing_is_newer(self) -> None:
-        # Live sync first: pr.gh_updated_at = 2025-06-01.
+    def test_if_newer_than_skips_entire_core_update_when_existing_is_newer(self) -> None:
+        # Live sync first: pr.gh_updated_at = 2025-06-01, with concrete diff stats.
         upsert_pull_request(
             _bundle(
                 number=3,
@@ -74,6 +74,9 @@ class TestUpsertPullRequestArchiveParams(TestCase):
                 updatedAt="2025-06-01T00:00:00Z",
                 closedAt=None,
                 mergedAt=None,
+                additions=100,
+                deletions=50,
+                changedFiles=9,
             ),
             self.repo,
         )
@@ -96,9 +99,10 @@ class TestUpsertPullRequestArchiveParams(TestCase):
         )
         res = upsert_pull_request(archive_bundle, self.repo, if_newer_than=archive_updated_at)
         self.assertFalse(res.created)
+        self.assertEqual(res.updated_fields, tuple())  # older snapshot: nothing written
         pr = PullRequest.objects.get(repository=self.repo, number=3)
 
-        # Gated fields preserved from live.
+        # Semantic fields preserved from live.
         self.assertEqual(pr.title, "Live title")
         self.assertEqual(pr.body, "Live body")
         self.assertEqual(pr.state, "open")
@@ -106,10 +110,12 @@ class TestUpsertPullRequestArchiveParams(TestCase):
         self.assertEqual(pr.head_sha, "live-sha")
         self.assertIsNone(pr.closed_at)
 
-        # Non-gated fields (additions etc.) flow through.
-        self.assertEqual(pr.additions, 42)
-        self.assertEqual(pr.deletions, 7)
-        self.assertEqual(pr.changed_files_count, 3)
+        # Formerly-"advisory" fields are now ALSO preserved: an older archive
+        # snapshot must not rewind live diff stats / timestamps.
+        self.assertEqual(pr.additions, 100)
+        self.assertEqual(pr.deletions, 50)
+        self.assertEqual(pr.changed_files_count, 9)
+        self.assertEqual(pr.gh_updated_at, datetime(2025, 6, 1, tzinfo=_tz.utc))
 
     def test_if_newer_than_does_not_gate_when_archive_is_newer(self) -> None:
         upsert_pull_request(_bundle(number=4, title="Old", updatedAt="2025-01-01T00:00:00Z"), self.repo)

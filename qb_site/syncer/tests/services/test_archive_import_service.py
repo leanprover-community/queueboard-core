@@ -122,6 +122,64 @@ class TestImportPRInfoPayloadCore(TestCase):
         self.assertEqual(attached, ["bug"])
         self.assertFalse(LabelDef.objects.filter(repository=self.repo, name="unknown").exists())
 
+    def test_does_not_resurrect_label_removed_live_after_snapshot(self) -> None:
+        # Live state: PR exists, label was attached then detached (LABELED then a
+        # newer UNLABELED), so there is no live PRLabel. The older archive snapshot
+        # still lists the label; additive-only sync must NOT re-attach it.
+        LabelDef.objects.create(repository=self.repo, name="maintainer-merge", color="ededed")
+        live_pr = make_pr(self.repo, 200, state="closed")
+        PRTimelineEvent.objects.create(
+            pull_request=live_pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=datetime(2026, 2, 1, tzinfo=_tz.utc),
+            label_name="maintainer-merge",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=live_pr,
+            type=PRTimelineEventType.UNLABELED,
+            occurred_at=datetime(2026, 3, 11, tzinfo=_tz.utc),
+            label_name="maintainer-merge",
+        )
+
+        payload = _archive_payload(number=200, state="CLOSED", label_names=["maintainer-merge"])
+        import_pr_info_payload(
+            self.repo,
+            payload,
+            archive_name="queueboard-archive2",
+            archive_timestamp=self.archive_ts,
+        )
+
+        self.assertFalse(PRLabel.objects.filter(pull_request=live_pr, label_def__name="maintainer-merge").exists())
+
+    def test_reattaches_label_whose_latest_event_is_labeled(self) -> None:
+        # Contrast case: removed then re-added live (latest event is LABELED), but
+        # the live PRLabel is missing (e.g. a prior gap). Archive re-attach is
+        # correct here because the timeline says the label is currently on.
+        LabelDef.objects.create(repository=self.repo, name="WIP", color="ffff00")
+        live_pr = make_pr(self.repo, 201, state="open")
+        PRTimelineEvent.objects.create(
+            pull_request=live_pr,
+            type=PRTimelineEventType.UNLABELED,
+            occurred_at=datetime(2026, 3, 11, tzinfo=_tz.utc),
+            label_name="WIP",
+        )
+        PRTimelineEvent.objects.create(
+            pull_request=live_pr,
+            type=PRTimelineEventType.LABELED,
+            occurred_at=datetime(2026, 4, 1, tzinfo=_tz.utc),
+            label_name="WIP",
+        )
+
+        payload = _archive_payload(number=201, label_names=["WIP"])
+        import_pr_info_payload(
+            self.repo,
+            payload,
+            archive_name="queueboard-archive2",
+            archive_timestamp=self.archive_ts,
+        )
+
+        self.assertTrue(PRLabel.objects.filter(pull_request=live_pr, label_def__name="WIP").exists())
+
     def test_newer_wins_guard_preserves_live_pr_core(self) -> None:
         # Create live PR via the live upsert path (newer updatedAt).
         live_pr = make_pr(
@@ -159,6 +217,10 @@ class TestImportPRInfoPayloadCore(TestCase):
         self.assertFalse(live_pr.is_draft)
         # head_sha is critical — stamping archive's stale value would corrupt analyzer.
         self.assertEqual(live_pr.head_sha, "live-sha")
+        # Formerly-"advisory" fields are preserved too: the older snapshot's
+        # additions (1) must not overwrite live's value (0).
+        self.assertEqual(live_pr.additions, 0)
+        self.assertEqual(live_pr.gh_updated_at, datetime(2025, 6, 1, tzinfo=_tz.utc))
 
     def test_status_context_gh_created_at_synthesized_from_committed_date(self) -> None:
         # Legacy fragment lacks createdAt for StatusContext entries. The

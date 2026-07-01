@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from django.db.models import OuterRef, Q, QuerySet, Subquery
+from django.db.models.functions import Lower
 
-from syncer.models import PRTimelineEvent, PRTimelineEventType, PullRequest
+from syncer.models import PRLabel, PRTimelineEvent, PRTimelineEventType, PullRequest
 from core.models import Repository
 
 
@@ -67,3 +68,45 @@ def inconsistent_open_prs_queryset(repository: Repository) -> QuerySet[PullReque
         .annotate(latest_flip=latest_flip, latest_draft=latest_draft)
         .filter(closed_but_open | draft_drift)
     )
+
+
+def resurrected_prlabels_queryset(repository: Repository | None = None) -> QuerySet[PRLabel]:
+    """PRLabel rows that contradict the PR's own label timeline.
+
+    Returns attachments whose *latest* LABELED/UNLABELED timeline event for that
+    label (case-insensitive on ``label_name``) is an ``UNLABELED`` -- i.e. the
+    timeline says the label is currently removed, yet a ``PRLabel`` row still
+    attaches it.
+
+    This is the fingerprint of the archive importer's additive-only label sync
+    (design doc 043) resurrecting a label that the live syncer had already
+    detached: the archive snapshot predates the removal, so its ``labels.nodes``
+    still lists the label, and ``sync_pr_labels(additive_only=True)`` re-creates
+    the ``PRLabel`` with a fresh ``created_at`` (the import time) while never
+    seeing the newer ``UNLABELED`` event. Live full-reconcile ingest cannot
+    produce this state, so the match set is exactly the resurrected rows.
+
+    Matching is case-insensitive because ``PRTimelineEvent.label_name`` and
+    ``LabelDef.name`` both store GitHub's display casing independently. Pass
+    ``repository`` to scope the scan; ``None`` covers all repos. Returns an
+    unordered, unsliced queryset -- callers add their own ordering/slicing.
+    """
+    latest_label_event = Subquery(
+        PRTimelineEvent.objects.filter(
+            pull_request=OuterRef("pull_request_id"),
+            type__in=[PRTimelineEventType.LABELED, PRTimelineEventType.UNLABELED],
+            label_name__isnull=False,
+        )
+        .annotate(_lname=Lower("label_name"))
+        .filter(_lname=OuterRef("_label_name_lower"))
+        .order_by("-occurred_at", "-id")
+        .values("type")[:1]
+    )
+    qs = (
+        PRLabel.objects.annotate(_label_name_lower=Lower("label_def__name"))
+        .annotate(latest_label_event=latest_label_event)
+        .filter(latest_label_event=PRTimelineEventType.UNLABELED)
+    )
+    if repository is not None:
+        qs = qs.filter(pull_request__repository=repository)
+    return qs
