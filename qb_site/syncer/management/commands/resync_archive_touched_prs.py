@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Case, F, IntegerField, Value, When
 
 from core.models import Repository
+from syncer.models import PullRequestState
 from syncer.services.archive_import import archive_touched_live_prs_queryset
 from syncer.tasks.sync_tasks import sync_pr_task
 
@@ -14,7 +16,14 @@ class Command(BaseCommand):
         "core fields (gh_updated_at, additions/deletions, refs, author) rewound to "
         "an older archive snapshot, and they are a superset of the resurrected-label "
         "PRs. A forced sync re-fetches GitHub truth and heals both in one pass. "
-        "Dry-run by default; pass --apply to enqueue sync_pr(force=True) tasks."
+        "PRs already re-synced live since their last archive touch are excluded by "
+        "default (they are provably healed); pass --include-healed to keep them. "
+        "Ordering is open PRs first, then stalest last_synced_at, so repeated "
+        "--limit batches prioritize user-visible rows and make monotone progress. "
+        "Dry-run by default; pass --apply to enqueue sync_pr(force=True) tasks. "
+        "Operational note: each forced sync costs GitHub GraphQL budget and the "
+        "tasks share the default Celery queue, so drip-feed with --limit (~1000/h) "
+        "instead of enqueueing the full set at once."
     )
 
     def add_arguments(self, parser):  # type: ignore[override]
@@ -30,6 +39,14 @@ class Command(BaseCommand):
             default=0,
             help="Cap the number of PRs enqueued (0 = no cap)",
         )
+        parser.add_argument(
+            "--include-healed",
+            action="store_true",
+            help=(
+                "Also target PRs whose last_synced_at is newer than their last archive "
+                "touch (a live sync already re-fetched GitHub truth for those)"
+            ),
+        )
 
     def handle(self, *args, **opts):  # type: ignore[override]
         repo: Repository | None = None
@@ -42,19 +59,42 @@ class Command(BaseCommand):
             if repo is None:
                 raise CommandError(f"Repository not found: {repo_opt}")
 
-        qs = archive_touched_live_prs_queryset(repo).order_by("repository_id", "number")
+        include_healed = bool(opts.get("include_healed"))
+        qs = archive_touched_live_prs_queryset(repo, exclude_healed=not include_healed)
+        # Open PRs first (user-visible), then stalest-synced first so a forced
+        # sync (which advances last_synced_at) pushes handled rows behind the
+        # remaining ones and successive --limit batches always progress.
+        qs = qs.annotate(
+            _open_first=Case(
+                When(state=PullRequestState.OPEN, then=Value(0)),
+                default=Value(1),
+                output_field=IntegerField(),
+            )
+        ).order_by("_open_first", F("last_synced_at").asc(nulls_first=True), "repository_id", "number")
+
         limit = int(opts.get("limit") or 0)
         values = qs.values_list("repository_id", "number")
         rows = list(values[:limit] if limit > 0 else values)
 
+        if not include_healed:
+            touched_total = archive_touched_live_prs_queryset(repo).count()
+            remaining_total = qs.count() if (limit > 0) else len(rows)
+            healed_total = touched_total - remaining_total
+            self.stdout.write(
+                f"{touched_total} archive-touched live PR(s); {healed_total} already healed by a live sync "
+                f"since their last archive touch (excluded), {remaining_total} remaining"
+            )
+
         if not rows:
-            self.stdout.write(self.style.SUCCESS("No archive-touched live PRs found."))
+            self.stdout.write(self.style.SUCCESS("No archive-touched live PRs to resync."))
             return
 
         apply = bool(opts.get("apply"))
         self.stdout.write(
             self.style.WARNING(
-                f"{len(rows)} archive-touched live PR(s) to force-resync" + ("" if apply else " (dry-run; nothing enqueued)")
+                f"{len(rows)} archive-touched live PR(s) to force-resync"
+                + (f" (limited from {qs.count()})" if limit > 0 else "")
+                + ("" if apply else " (dry-run; nothing enqueued)")
             )
         )
 

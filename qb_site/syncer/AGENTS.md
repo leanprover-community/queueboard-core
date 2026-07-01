@@ -39,9 +39,13 @@ docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
 # Force-resync the live PRs the archive importer's UPDATE path processed
 # (design doc 043 follow-up). Heals both the resurrected labels AND the
 # un-gated core-field regression in one pass by re-fetching GitHub truth.
+# Skips PRs already healed by a live sync since their last archive touch
+# (--include-healed disables); orders open-first then stalest last_synced_at
+# so repeated --limit batches progress. Drip-feed ~1000/hour — forced syncs
+# spend shared GraphQL budget and queue on the single default Celery queue.
 # Dry-run by default; --apply enqueues sync_pr(force=True) tasks.
 docker compose exec -T web python qb_site/manage.py resync_archive_touched_prs \
-  --repo leanprover-community/mathlib4 --apply
+  --repo leanprover-community/mathlib4 --apply --limit 1000
 
 # App tests
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer

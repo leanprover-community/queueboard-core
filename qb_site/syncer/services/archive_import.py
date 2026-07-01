@@ -22,7 +22,7 @@ import requests
 from dateutil import parser as dtparser
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Exists, OuterRef, QuerySet
+from django.db.models import Exists, F, OuterRef, Q, QuerySet, Subquery
 from django.utils import timezone
 
 from core.models.repository import Repository
@@ -155,7 +155,11 @@ def _split_contexts(
     return check_runs, status_contexts
 
 
-def archive_touched_live_prs_queryset(repository: Repository | None = None) -> QuerySet[PullRequest]:
+def archive_touched_live_prs_queryset(
+    repository: Repository | None = None,
+    *,
+    exclude_healed: bool = False,
+) -> QuerySet[PullRequest]:
     """Live PRs (not *created* by the importer) that its UPDATE path processed.
 
     These are the rows exposed to the pre-hardening core-field regression: the
@@ -172,6 +176,14 @@ def archive_touched_live_prs_queryset(repository: Repository | None = None) -> Q
     number" witness. Force-resyncing this set re-fetches GitHub truth and heals
     both the scalar regression and the label resurrection in one pass. Returns
     an unordered, unsliced queryset; callers add their own ordering/slicing.
+
+    ``exclude_healed=True`` drops PRs whose ``last_synced_at`` is newer than
+    the latest completed archive touch (``ArchiveImportItem.completed_at``).
+    The importer deliberately never advances ``last_synced_at``, so a value
+    past the last touch proves a real live sync re-fetched GitHub truth after
+    any possible clobber — the PR is already healed and a forced resync would
+    only burn rate budget. PRs with a NULL ``last_synced_at``, or with no
+    ``completed_at``-stamped touch item at all, are conservatively kept.
     """
     completed_item = ArchiveImportItem.objects.filter(
         repository_id=OuterRef("repository_id"),
@@ -181,6 +193,14 @@ def archive_touched_live_prs_queryset(repository: Repository | None = None) -> Q
     qs = PullRequest.objects.filter(archive_imported_at__isnull=True).filter(Exists(completed_item))
     if repository is not None:
         qs = qs.filter(repository=repository)
+    if exclude_healed:
+        last_touch = Subquery(completed_item.order_by(F("completed_at").desc(nulls_last=True)).values("completed_at")[:1])
+        healed = Q(
+            last_synced_at__isnull=False,
+            last_archive_touched_at__isnull=False,
+            last_synced_at__gt=F("last_archive_touched_at"),
+        )
+        qs = qs.annotate(last_archive_touched_at=last_touch).exclude(healed)
     return qs
 
 

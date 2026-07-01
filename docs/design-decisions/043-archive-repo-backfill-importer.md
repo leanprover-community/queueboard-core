@@ -186,6 +186,19 @@ per the project rule for env-backed settings.
     `manage.py resync_archive_touched_prs`, which force-resyncs that set
     (`sync_pr(force=True)` bypasses the up-to-date preflight) and heals
     both the scalar regression and the label resurrection from GitHub truth.
+    Because the touched set is large (~35k PRs on mathlib4) and every forced
+    sync spends GitHub GraphQL budget on the shared token, the command is
+    built for drip-feeding rather than one big enqueue: it excludes PRs
+    already healed by a live sync since their last archive touch (the
+    importer never advances `last_synced_at`, so
+    `last_synced_at > max(ArchiveImportItem.completed_at)` proves a
+    post-clobber re-fetch; `--include-healed` disables the filter), and it
+    orders open PRs first, then stalest `last_synced_at` (NULLs first), so
+    repeated `--apply --limit N` batches prioritize user-visible rows and
+    make monotone progress — a forced sync advances `last_synced_at`,
+    dropping the PR out of the default target set. Recommended cadence:
+    ~1000/hour, leaving GraphQL headroom for the live pipeline (all tasks
+    share the single `default` Celery queue and hourly 5k-point budget).
 - **Labels are additive only.** `additive_only=True` skips the detach
   pass. Archive labels whose `LabelDef` does not exist for the repo are
   dropped (live syncer is the catalog source of truth). The function is

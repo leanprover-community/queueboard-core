@@ -14,13 +14,14 @@ class TestArchiveTouchedLivePRsQueryset(TestCase):
     def setUp(self) -> None:
         self.repo = make_repo(owner="leanprover-community", name="mathlib4")
 
-    def _item(self, number: int, status=ArchiveImportItemStatus.COMPLETED, archive="queueboard-archive2"):
+    def _item(self, number: int, status=ArchiveImportItemStatus.COMPLETED, archive="queueboard-archive2", completed_at=None):
         return ArchiveImportItem.objects.create(
             repository=self.repo,
             archive_name=archive,
             pr_number=number,
             archive_path=f"data/{number}/pr_info.json",
             status=status,
+            completed_at=completed_at,
         )
 
     def test_matches_preexisting_pr_with_completed_item(self) -> None:
@@ -53,3 +54,65 @@ class TestArchiveTouchedLivePRsQueryset(TestCase):
         other = make_repo(owner="o2", name="r2")
         self.assertEqual(archive_touched_live_prs_queryset(other).count(), 0)
         self.assertEqual(archive_touched_live_prs_queryset(None).count(), 1)
+
+
+class TestExcludeHealed(TestCase):
+    """exclude_healed drops PRs a live sync already re-fetched after the last archive touch."""
+
+    def setUp(self) -> None:
+        self.repo = make_repo(owner="leanprover-community", name="mathlib4")
+        self.touch = timezone.now() - timezone.timedelta(days=7)
+
+    def _item(self, number: int, completed_at, archive="queueboard-archive2"):
+        return ArchiveImportItem.objects.create(
+            repository=self.repo,
+            archive_name=archive,
+            pr_number=number,
+            archive_path=f"data/{number}/pr_info.json",
+            status=ArchiveImportItemStatus.COMPLETED,
+            completed_at=completed_at,
+        )
+
+    def _healed_count(self) -> int:
+        return archive_touched_live_prs_queryset(self.repo, exclude_healed=True).count()
+
+    def test_synced_after_touch_is_excluded(self) -> None:
+        make_pr(self.repo, 20, state="closed", last_synced_at=self.touch + timezone.timedelta(days=1))
+        self._item(20, self.touch)
+        self.assertEqual(self._healed_count(), 0)
+        # …but still present without the flag (superset semantics unchanged).
+        self.assertEqual(archive_touched_live_prs_queryset(self.repo).count(), 1)
+
+    def test_synced_before_touch_is_kept(self) -> None:
+        pr = make_pr(self.repo, 21, state="closed", last_synced_at=self.touch - timezone.timedelta(days=1))
+        self._item(21, self.touch)
+        self.assertEqual([p.id for p in archive_touched_live_prs_queryset(self.repo, exclude_healed=True)], [pr.id])
+
+    def test_never_synced_is_kept(self) -> None:
+        # NULL last_synced_at must not be excluded (SQL NULL-comparison trap).
+        pr = make_pr(self.repo, 22, state="closed", last_synced_at=None)
+        self._item(22, self.touch)
+        self.assertEqual([p.id for p in archive_touched_live_prs_queryset(self.repo, exclude_healed=True)], [pr.id])
+
+    def test_null_completed_at_is_kept(self) -> None:
+        # A completed item without completed_at cannot prove healing; keep the PR.
+        pr = make_pr(self.repo, 23, state="closed", last_synced_at=timezone.now())
+        self._item(23, None)
+        self.assertEqual([p.id for p in archive_touched_live_prs_queryset(self.repo, exclude_healed=True)], [pr.id])
+
+    def test_latest_touch_across_archives_wins(self) -> None:
+        # Synced between the two touches → the later touch could still have
+        # clobbered it, so it is NOT healed.
+        later_touch = self.touch + timezone.timedelta(days=2)
+        pr = make_pr(self.repo, 24, state="closed", last_synced_at=self.touch + timezone.timedelta(days=1))
+        self._item(24, self.touch, archive="queueboard-archive")
+        self._item(24, later_touch, archive="queueboard-archive2")
+        self.assertEqual([p.id for p in archive_touched_live_prs_queryset(self.repo, exclude_healed=True)], [pr.id])
+
+    def test_latest_touch_ignores_null_completed_at_rows(self) -> None:
+        # A NULL completed_at on one archive's item must not mask a real,
+        # older touch timestamp on the other (DESC would sort NULL first).
+        make_pr(self.repo, 25, state="closed", last_synced_at=self.touch + timezone.timedelta(days=1))
+        self._item(25, None, archive="queueboard-archive")
+        self._item(25, self.touch, archive="queueboard-archive2")
+        self.assertEqual(self._healed_count(), 0)
