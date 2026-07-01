@@ -65,6 +65,14 @@ class ArchiveImportItem(TimestampedModel):
                 fields=["status", "last_attempted_at"],
                 name="syncer_archiveitem_status_idx",
             ),
+            # Correlated probes by (repository, pr_number) — e.g. the
+            # healed-exclusion subquery in archive_touched_live_prs_queryset,
+            # which Postgres runs once per candidate PR and cannot flatten
+            # into a join. Without this, each probe seq-scans the worklist.
+            models.Index(
+                fields=["repository", "pr_number"],
+                name="syncer_archiveitem_repo_pr_idx",
+            ),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
