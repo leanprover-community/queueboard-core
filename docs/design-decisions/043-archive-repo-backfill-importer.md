@@ -163,14 +163,52 @@ per the project rule for env-backed settings.
   the v=2/v=3 expansions have been satisfied even though the legacy
   payload doesn't carry that data.
 - **Newer-wins guard on PR core.** `upsert_pull_request(if_newer_than=…)`
-  gates `state`, `draft`, `title`, `body`, `head_sha`, `closed_at`,
-  `merged_at`. `head_sha` is explicitly part of the guard: overwriting
-  it with an archive-stale value silently corrupts every analyzer
-  artifact keyed on SHA-by-time.
+  gates the PR core fields when the live row is newer than the snapshot.
+  `head_sha` is the motivating case: overwriting it with an archive-stale
+  value silently corrupts every analyzer artifact keyed on SHA-by-time.
+  - **Follow-up (gate the whole core).** The guard originally gated only a
+    subset — `state`, `draft`, `title`, `body`, `head_sha`, `closed_at`,
+    `merged_at` — and let "advisory" fields (`gh_updated_at`, `additions`,
+    `deletions`, `changed_files_count`, ref/repo names, `author`) flow
+    through, on the assumption that a later live sync would move them
+    forward. That assumption fails for closed PRs, which never get
+    resynced: the importer rewound those fields to the older snapshot and
+    they stuck. The guard now **skips the entire core update** when the
+    live row is newer — an older snapshot can never carry a more-recent
+    core value. (Create path and the archive-is-newer case are unchanged.)
+  - **Provenance gap.** `PullRequest.archive_imported_at` is stamped only
+    on rows the importer *created*, so pre-existing live rows it *updated*
+    carry no marker. The population is instead reconstructed from the
+    `ArchiveImportItem` worklist (a `completed` item whose PR has
+    `archive_imported_at IS NULL`) by
+    `syncer.services.archive_import.archive_touched_live_prs_queryset`. The
+    one-shot remediation for the pre-fix regression is
+    `manage.py resync_archive_touched_prs`, which force-resyncs that set
+    (`sync_pr(force=True)` bypasses the up-to-date preflight) and heals
+    both the scalar regression and the label resurrection from GitHub truth.
 - **Labels are additive only.** `additive_only=True` skips the detach
   pass. Archive labels whose `LabelDef` does not exist for the repo are
   dropped (live syncer is the catalog source of truth). The function is
   otherwise full-replace.
+  - **Follow-up (resurrection guard).** Additive-only was originally a
+    pure add pass, which had a latent bug: because the archive snapshot
+    is strictly *older* than live, its `labels.nodes` still lists a label
+    the live syncer legitimately detached *after* the snapshot. The add
+    pass then re-created the `PRLabel` with a fresh `created_at` (the
+    import time) — a label that GitHub had already removed reappeared,
+    "attached" on the import date, with a live `UNLABELED` timeline event
+    proving the removal. `import_pr_info_payload` now drops any archive
+    label name whose latest live LABELED/UNLABELED event is `UNLABELED`
+    (`_live_removed_label_names_lower`) before the additive add. Pre-fix
+    data (labels resurrected before this guard existed) is repaired by
+    `manage.py resync_archive_touched_prs`, which re-fetches GitHub truth
+    for every importer-touched live PR (a superset of the resurrected-label
+    set) and lets the live full-replace label sync drop the stale
+    attachment. A timeline-only detector was considered and rejected: a
+    `PRLabel` present while the latest stored LABELED/UNLABELED event is
+    `UNLABELED` is indistinguishable from a still-valid label whose re-add
+    event we simply have not ingested, so deleting on that signal alone
+    would silently drop valid labels on closed PRs that never resync.
 - **CI archive-mode merge.** `_upsert_commit_check_run` /
   `_upsert_commit_status_context` strip NULL keys from `commit_values`
   *before* `update_if_changed` when `archive_mode=True`. Without this,
