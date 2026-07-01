@@ -199,10 +199,16 @@ per the project rule for env-backed settings.
     "attached" on the import date, with a live `UNLABELED` timeline event
     proving the removal. `import_pr_info_payload` now drops any archive
     label name whose latest live LABELED/UNLABELED event is `UNLABELED`
-    (`_live_removed_label_names_lower`) before the additive add. The
-    matching detector for pre-fix data is
-    `syncer.services.consistency.resurrected_prlabels_queryset`; the
-    one-shot cleanup is `manage.py heal_resurrected_labels`.
+    (`_live_removed_label_names_lower`) before the additive add. Pre-fix
+    data (labels resurrected before this guard existed) is repaired by
+    `manage.py resync_archive_touched_prs`, which re-fetches GitHub truth
+    for every importer-touched live PR (a superset of the resurrected-label
+    set) and lets the live full-replace label sync drop the stale
+    attachment. A timeline-only detector was considered and rejected: a
+    `PRLabel` present while the latest stored LABELED/UNLABELED event is
+    `UNLABELED` is indistinguishable from a still-valid label whose re-add
+    event we simply have not ingested, so deleting on that signal alone
+    would silently drop valid labels on closed PRs that never resync.
 - **CI archive-mode merge.** `_upsert_commit_check_run` /
   `_upsert_commit_status_context` strip NULL keys from `commit_values`
   *before* `update_if_changed` when `archive_mode=True`. Without this,

@@ -270,8 +270,9 @@ def import_pr_info_payload(
         # point-in-time snapshot; a label detached live *after* that snapshot
         # would otherwise be re-attached with a fresh created_at because the
         # additive-only sync skips the detach pass and never sees the newer
-        # UNLABELED event. See ``resurrected_prlabels_queryset`` and the
-        # ``heal_resurrected_labels`` command for the matching cleanup.
+        # UNLABELED event. Pre-fix data (labels resurrected before this guard
+        # existed) is repaired by re-fetching GitHub truth via the
+        # ``resync_archive_touched_prs`` command.
         removed_lower = _live_removed_label_names_lower(pr)
         archive_label_names = [n for n in _label_names_from_payload(payload) if n.lower() not in removed_lower]
         label_res = sync_pr_labels(pr, archive_label_names, additive_only=True)

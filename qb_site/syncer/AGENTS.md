@@ -36,12 +36,6 @@ docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
   --archive queueboard-archive --repo leanprover-community/mathlib4 \
   --diff-against queueboard-archive2
 
-# Heal labels resurrected by the archive importer's additive-only label sync
-# (PRLabel present but the label's latest LABELED/UNLABELED timeline event is
-# UNLABELED). Dry-run by default; --apply deletes the stale attachments.
-docker compose exec -T web python qb_site/manage.py heal_resurrected_labels \
-  --repo leanprover-community/mathlib4 --apply
-
 # Force-resync the live PRs the archive importer's UPDATE path processed
 # (design doc 043 follow-up). Heals both the resurrected labels AND the
 # un-gated core-field regression in one pass by re-fetching GitHub truth.
