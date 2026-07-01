@@ -44,6 +44,9 @@ docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
 # so repeated --limit batches progress. Drip-feed ~1000/hour — forced syncs
 # spend shared GraphQL budget and queue on the single default Celery queue.
 # Dry-run by default; --apply enqueues sync_pr(force=True) tasks.
+# For an unattended drain, prefer the beat task instead: set
+# ARCHIVE_RESYNC_PER_TICK > 0 (see Scheduling Notes) and leave this command
+# for dry-run inspection of the remaining target set.
 docker compose exec -T web python qb_site/manage.py resync_archive_touched_prs \
   --repo leanprover-community/mathlib4 --apply --limit 1000
 
@@ -126,6 +129,7 @@ front and expensive to recover from when skipped.
   - `syncer.upgrade_schema_versions_active` → `syncer.upgrade_schema_versions` (advances `PullRequest.sync_schema_version` toward `CURRENT_SYNC_SCHEMA_VERSION`; see Sync Schema Versioning below),
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
   - `syncer.archive_import_tick` → `syncer.archive_import_pr_item` — beat-driven worklist drain for the archive backfill importer (design doc 043). Tick runs every `ARCHIVE_IMPORT_TICK_SECONDS` (default 60s) and gates on `ARCHIVE_IMPORT_ENABLED` so operators can toggle activity without restarting beat. Status surface: `python manage.py archive_import_status [--repo OWNER/NAME] [--errors N]`.
+  - `syncer.resync_archive_touched_tick` — beat-driven drain for the doc-043 forced-resync remediation. Every `ARCHIVE_RESYNC_TICK_SECONDS` (default 600s) it enqueues up to `ARCHIVE_RESYNC_PER_TICK` (default 0 = disabled) `sync_pr(force=True)` tasks from `archive_touched_resync_targets` (open first, stalest `last_synced_at` first, healed PRs excluded), skipping the tick when the cached GraphQL budget is below `ARCHIVE_RESYNC_MIN_RATE_REMAINING` and deduping against still-queued sync_pr enqueues. Self-completing: returns `status=drained` once the target set is empty; `remaining` in the task result tracks progress, and `syncer.collect_convergence` records the same count as `archive_resync_remaining` on `SyncerConvergenceSnapshot` for admin monitoring.
   - `syncer.collect_convergence` — records syncer convergence metrics,
   - `syncer.collect_metrics` — records sync throughput/lag metrics.
 - Keep task behavior idempotent and retry-safe; prefer explicit status/reason payloads in return dicts.

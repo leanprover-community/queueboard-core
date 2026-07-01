@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.test import TestCase
+from django.utils import timezone
 
 from syncer.models import (
     ArchiveImportItem,
@@ -10,7 +11,7 @@ from syncer.models import (
     SyncerConvergenceSnapshot,
 )
 from syncer.tasks.collect_convergence import collect_syncer_convergence_task
-from syncer.tests.factories import make_repo
+from syncer.tests.factories import make_pr, make_repo
 
 
 class TestCollectSyncerConvergenceArchiveCounters(TestCase):
@@ -43,3 +44,19 @@ class TestCollectSyncerConvergenceArchiveCounters(TestCase):
         self.assertEqual(snap.archive_pending, 4)
         self.assertEqual(snap.archive_completed, 3)
         self.assertEqual(snap.archive_failed_permanent, 1)
+        # Completed items whose numbers have no live PR row contribute nothing
+        # to the forced-resync target count.
+        self.assertEqual(snap.archive_resync_remaining, 0)
+
+    def test_archive_resync_remaining_counts_unhealed_touched_prs(self) -> None:
+        touch = timezone.now() - timezone.timedelta(days=7)
+        ArchiveImportItem.objects.filter(status=ArchiveImportItemStatus.COMPLETED).update(completed_at=touch)
+        # Item 5: unhealed touched live PR → counted.
+        make_pr(self.repo, 5, state="closed", last_synced_at=touch - timezone.timedelta(days=1))
+        # Item 6: healed (live-synced after the touch) → not counted.
+        make_pr(self.repo, 6, state="closed", last_synced_at=touch + timezone.timedelta(days=1))
+        # Item 7: importer-created row → not a regression target.
+        make_pr(self.repo, 7, state="closed", archive_imported_at=timezone.now())
+        collect_syncer_convergence_task()
+        snap = SyncerConvergenceSnapshot.objects.filter(repository=self.repo).latest("collected_at")
+        self.assertEqual(snap.archive_resync_remaining, 1)

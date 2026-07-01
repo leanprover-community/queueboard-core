@@ -447,6 +447,14 @@ ARCHIVE_IMPORT_RAW_BASE_URL = os.getenv("ARCHIVE_IMPORT_RAW_BASE_URL", "https://
 ARCHIVE_IMPORT_FETCH_TIMEOUT_SECONDS = int(os.getenv("ARCHIVE_IMPORT_FETCH_TIMEOUT_SECONDS", 30))
 ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS = int(os.getenv("ARCHIVE_IMPORT_MAX_TRANSIENT_ATTEMPTS", 5))
 
+# Forced-resync drain for archive-touched live PRs (design doc 043 follow-up).
+# PER_TICK gates activity inside the beat task (0 = disabled, the default), so
+# operators enable/disable the drain via env var. MIN_RATE_REMAINING makes a
+# tick skip enqueueing when the cached GraphQL budget is below the floor.
+ARCHIVE_RESYNC_PER_TICK = int(os.getenv("ARCHIVE_RESYNC_PER_TICK", 0))
+ARCHIVE_RESYNC_TICK_SECONDS = int(os.getenv("ARCHIVE_RESYNC_TICK_SECONDS", 600))
+ARCHIVE_RESYNC_MIN_RATE_REMAINING = int(os.getenv("ARCHIVE_RESYNC_MIN_RATE_REMAINING", 2500))
+
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
@@ -517,6 +525,13 @@ if ARCHIVE_IMPORT_TICK_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["archive_import_tick"] = {
         "task": "syncer.archive_import_tick",
         "schedule": ARCHIVE_IMPORT_TICK_SECONDS,
+    }
+if ARCHIVE_RESYNC_TICK_SECONDS > 0:
+    # Beat fires unconditionally; ``ARCHIVE_RESYNC_PER_TICK`` gates activity
+    # inside the task so operators can toggle without restarting beat.
+    CELERY_BEAT_SCHEDULE["resync_archive_touched_tick"] = {
+        "task": "syncer.resync_archive_touched_tick",
+        "schedule": ARCHIVE_RESYNC_TICK_SECONDS,
     }
 if SYNCER_COMMIT_HISTORY_SWEEP_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["harvest_commit_history"] = {

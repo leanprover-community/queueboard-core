@@ -199,6 +199,18 @@ per the project rule for env-backed settings.
     dropping the PR out of the default target set. Recommended cadence:
     ~1000/hour, leaving GraphQL headroom for the live pipeline (all tasks
     share the single `default` Celery queue and hourly 5k-point budget).
+    For unattended remediation, `syncer.resync_archive_touched_tick`
+    (beat-driven, mirroring `archive_import_tick`) drains the same ordered
+    target set automatically: every `ARCHIVE_RESYNC_TICK_SECONDS` it
+    enqueues up to `ARCHIVE_RESYNC_PER_TICK` forced syncs (0 = disabled,
+    the default), skips the tick while the cached rate snapshot is below
+    `ARCHIVE_RESYNC_MIN_RATE_REMAINING`, and dedupes against still-queued
+    enqueues via the standard sync_pr enqueue slot. The drain is
+    self-completing (healed PRs leave the target set) and reports
+    `remaining` in each task result; `syncer.collect_convergence` also
+    snapshots the count as `archive_resync_remaining` on
+    `SyncerConvergenceSnapshot`, so drain progress is visible in the
+    admin changelist alongside the other archive counters.
 - **Labels are additive only.** `additive_only=True` skips the detach
   pass. Archive labels whose `LabelDef` does not exist for the repo are
   dropped (live syncer is the catalog source of truth). The function is

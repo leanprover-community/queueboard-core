@@ -16,6 +16,7 @@ from syncer.models import (
     CommitCheckRun,
     CommitStatusContext,
 )
+from syncer.services.archive_import import archive_touched_resync_targets
 from syncer.services.consistency import inconsistent_open_prs_queryset
 from syncer.services.sync_schema_upgrades import CURRENT_SYNC_SCHEMA_VERSION
 from core.models import Repository
@@ -84,6 +85,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
         ).count()
         archive_completed = archive_qs.filter(status=ArchiveImportItemStatus.COMPLETED).count()
         archive_failed_permanent = archive_qs.filter(status=ArchiveImportItemStatus.FAILED_PERMANENT).count()
+        archive_resync_remaining = archive_touched_resync_targets(repo).count()
 
         missing_head_ci = qs.filter(head_ci_state__isnull=True).count()
         missing_head_sha = qs.filter(Q(head_sha__isnull=True) | Q(head_sha="")).count()
@@ -125,6 +127,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             archive_pending=archive_pending,
             archive_completed=archive_completed,
             archive_failed_permanent=archive_failed_permanent,
+            archive_resync_remaining=archive_resync_remaining,
         )
         rows += 1
         per_repo.append(
@@ -156,6 +159,7 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                 "archive_pending": archive_pending,
                 "archive_completed": archive_completed,
                 "archive_failed_permanent": archive_failed_permanent,
+                "archive_resync_remaining": archive_resync_remaining,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo, "request_meta": request_meta}

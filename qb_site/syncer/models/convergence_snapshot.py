@@ -53,6 +53,12 @@ class SyncerConvergenceSnapshot(models.Model):
     archive_pending = models.IntegerField(default=0)
     archive_completed = models.IntegerField(default=0)
     archive_failed_permanent = models.IntegerField(default=0)
+    # Remaining targets of the doc-043 forced-resync remediation: live PRs the
+    # importer's UPDATE path touched that no live sync has re-fetched since
+    # (see archive_touched_resync_targets). Trends to 0 while the
+    # resync_archive_touched_tick drain runs; a plateau above 0 with the drain
+    # enabled means ticks are being rate-skipped or the worker is backlogged.
+    archive_resync_remaining = models.IntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

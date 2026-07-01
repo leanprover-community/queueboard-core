@@ -22,7 +22,7 @@ import requests
 from dateutil import parser as dtparser
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Exists, F, OuterRef, Q, QuerySet, Subquery
+from django.db.models import Case, Exists, F, IntegerField, OuterRef, Q, QuerySet, Subquery, Value, When
 from django.utils import timezone
 
 from core.models.repository import Repository
@@ -34,6 +34,7 @@ from syncer.models import (
     PRTimelineEvent,
     PRTimelineEventType,
     PullRequest,
+    PullRequestState,
 )
 from syncer.services.sub.ci_sync import sync_check_runs, sync_status_contexts
 from syncer.services.sub.labels_sync import sync_pr_labels
@@ -202,6 +203,30 @@ def archive_touched_live_prs_queryset(
         )
         qs = qs.annotate(last_archive_touched_at=last_touch).exclude(healed)
     return qs
+
+
+def archive_touched_resync_targets(
+    repository: Repository | None = None,
+    *,
+    include_healed: bool = False,
+) -> QuerySet[PullRequest]:
+    """Ordered target set for the forced-resync remediation.
+
+    Shared by the ``resync_archive_touched_prs`` command and the
+    ``syncer.resync_archive_touched_tick`` drain so both walk the same
+    sequence: open PRs first (user-visible), then stalest ``last_synced_at``
+    (NULLs first). A forced sync advances ``last_synced_at`` and thereby
+    drops the PR out of the default (healed-excluded) target set, so
+    repeated fixed-size batches make monotone progress.
+    """
+    qs = archive_touched_live_prs_queryset(repository, exclude_healed=not include_healed)
+    return qs.annotate(
+        _open_first=Case(
+            When(state=PullRequestState.OPEN, then=Value(0)),
+            default=Value(1),
+            output_field=IntegerField(),
+        )
+    ).order_by("_open_first", F("last_synced_at").asc(nulls_first=True), "repository_id", "number")
 
 
 def _label_names_from_payload(payload: Dict[str, Any]) -> list[str]:

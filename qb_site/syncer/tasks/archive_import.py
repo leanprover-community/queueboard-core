@@ -21,6 +21,16 @@ Two tasks:
     ones), enqueues each as ``import_archive_pr_item.delay(item_id)``.
     Honors ``ARCHIVE_IMPORT_ENABLED`` inside the task — operators flip
     the env var to enable/disable activity without restarting beat.
+
+  - ``resync_archive_touched_tick()`` — beat-driven drain for the
+    forced-resync remediation (doc 043 follow-up). Each tick enqueues up
+    to ``ARCHIVE_RESYNC_PER_TICK`` ``sync_pr(force=True)`` tasks from
+    ``archive_touched_resync_targets`` (open first, stalest sync first).
+    Disabled by default (``ARCHIVE_RESYNC_PER_TICK=0``); skips a tick
+    when the cached GitHub rate budget is below
+    ``ARCHIVE_RESYNC_MIN_RATE_REMAINING`` so the live pipeline keeps
+    headroom. Self-completing: healed PRs drop out of the target set, so
+    once the set is empty the tick is a cheap no-op.
 """
 
 from __future__ import annotations
@@ -36,13 +46,19 @@ from django.db import transaction
 from django.db.models import F
 from django.utils import timezone
 
+from core.models import Repository
 from syncer.models import ArchiveImportItem, ArchiveImportItemStatus
 from syncer.services.archive_import import (
     ArchivePayloadError,
+    archive_touched_resync_targets,
     fetch_pr_info,
     import_pr_info_payload,
     unwrap_pr_info_payload,
 )
+from syncer.services.github_client import GitHubClient
+from syncer.services.rate_budget import get_rate_snapshot
+from syncer.services.task_dedupe import claim_enqueue_slot, sync_pr_enqueue_key
+from syncer.tasks.sync_tasks import sync_pr_task
 
 log = logging.getLogger(__name__)
 
@@ -209,3 +225,90 @@ def archive_import_tick(self) -> Dict[str, Any]:
         async_result = import_archive_pr_item.delay(item_id)
         enqueued.append((item_id, getattr(async_result, "id", "")))
     return {"status": "ok", "enqueued": len(enqueued), "items": enqueued}
+
+
+@shared_task(name="syncer.resync_archive_touched_tick", bind=True)
+def resync_archive_touched_tick(self) -> Dict[str, Any]:
+    """Drip-feed forced resyncs of archive-touched live PRs (doc 043 follow-up).
+
+    Beat fires this unconditionally on its cadence; ``ARCHIVE_RESYNC_PER_TICK``
+    (0 = disabled, the default) gates activity inside the task so operators
+    enable/disable the drain via env var. Each active tick:
+
+    - skips entirely when the cached rate snapshot for the repo's sync token
+      reports fewer than ``ARCHIVE_RESYNC_MIN_RATE_REMAINING`` points, so the
+      drain never eats the live pipeline's GraphQL headroom (no snapshot /
+      no token → fail open; ``sync_pr`` has its own low-budget deferral),
+    - takes the next ``ARCHIVE_RESYNC_PER_TICK`` targets from
+      ``archive_touched_resync_targets`` (open first, stalest sync first),
+    - claims the standard sync_pr enqueue-dedupe slot per PR so a still-queued
+      or budget-deferred task from a previous tick is not enqueued twice,
+    - enqueues ``sync_pr(force=True)`` for each claimed target.
+
+    A successful forced sync advances ``last_synced_at``, dropping the PR out
+    of the healed-excluded target set — the drain converges and the tick
+    becomes a cheap no-op (``status=drained``) once remediation is complete.
+    """
+    per_tick = int(getattr(settings, "ARCHIVE_RESYNC_PER_TICK", 0))
+    if per_tick <= 0:
+        return {"status": "disabled", "enqueued": 0}
+
+    rate_floor = int(getattr(settings, "ARCHIVE_RESYNC_MIN_RATE_REMAINING", 2500))
+    dedupe_ttl = int(getattr(settings, "SYNCER_SYNC_PR_DEDUPE_TTL_SECONDS", 300))
+
+    targets = archive_touched_resync_targets()
+    remaining = targets.count()
+    if remaining == 0:
+        return {"status": "drained", "enqueued": 0, "remaining": 0}
+
+    # Over-fetch so dedupe-skipped rows do not shrink the effective chunk.
+    rows = list(targets.values_list("repository_id", "number")[: per_tick * 2])
+
+    repo_allowed: Dict[int, bool] = {}
+
+    def _rate_allows(repo_id: int) -> bool:
+        if repo_id not in repo_allowed:
+            allowed = True
+            try:
+                repo = Repository.objects.get(id=repo_id)
+                client = GitHubClient(operation="syncer_pr_read", owner=repo.owner, repo=repo.name)
+                snap = get_rate_snapshot(client.token_id) or {}
+                remaining_pts = snap.get("remaining")
+                if isinstance(remaining_pts, int) and remaining_pts < rate_floor:
+                    allowed = False
+            except Exception:
+                allowed = True
+            repo_allowed[repo_id] = allowed
+        return repo_allowed[repo_id]
+
+    enqueued = 0
+    skipped_dedupe = 0
+    skipped_rate = 0
+    for repo_id, number in rows:
+        if enqueued >= per_tick:
+            break
+        if not _rate_allows(repo_id):
+            skipped_rate += 1
+            continue
+        key = sync_pr_enqueue_key(repo_id=repo_id, number=int(number))
+        if not claim_enqueue_slot(key=key, ttl_seconds=dedupe_ttl):
+            skipped_dedupe += 1
+            continue
+        sync_pr_task.delay(repo_id, int(number), force=True)
+        enqueued += 1
+
+    log.info(
+        "resync_archive_touched_tick: enqueued=%s skipped_rate=%s skipped_dedupe=%s remaining=%s",
+        enqueued,
+        skipped_rate,
+        skipped_dedupe,
+        remaining,
+    )
+    return {
+        "status": "ok" if enqueued else "skipped",
+        "enqueued": enqueued,
+        "skipped_rate_budget": skipped_rate,
+        "skipped_dedupe": skipped_dedupe,
+        "remaining": remaining,
+        "per_tick": per_tick,
+    }

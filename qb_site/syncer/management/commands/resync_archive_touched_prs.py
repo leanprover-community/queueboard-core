@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db.models import Case, F, IntegerField, Value, When
 
 from core.models import Repository
-from syncer.models import PullRequestState
-from syncer.services.archive_import import archive_touched_live_prs_queryset
+from syncer.services.archive_import import (
+    archive_touched_live_prs_queryset,
+    archive_touched_resync_targets,
+)
 from syncer.tasks.sync_tasks import sync_pr_task
 
 
@@ -23,7 +24,9 @@ class Command(BaseCommand):
         "Dry-run by default; pass --apply to enqueue sync_pr(force=True) tasks. "
         "Operational note: each forced sync costs GitHub GraphQL budget and the "
         "tasks share the default Celery queue, so drip-feed with --limit (~1000/h) "
-        "instead of enqueueing the full set at once."
+        "instead of enqueueing the full set at once — or, for an unattended drain, "
+        "enable the beat task syncer.resync_archive_touched_tick by setting "
+        "ARCHIVE_RESYNC_PER_TICK > 0."
     )
 
     def add_arguments(self, parser):  # type: ignore[override]
@@ -60,17 +63,7 @@ class Command(BaseCommand):
                 raise CommandError(f"Repository not found: {repo_opt}")
 
         include_healed = bool(opts.get("include_healed"))
-        qs = archive_touched_live_prs_queryset(repo, exclude_healed=not include_healed)
-        # Open PRs first (user-visible), then stalest-synced first so a forced
-        # sync (which advances last_synced_at) pushes handled rows behind the
-        # remaining ones and successive --limit batches always progress.
-        qs = qs.annotate(
-            _open_first=Case(
-                When(state=PullRequestState.OPEN, then=Value(0)),
-                default=Value(1),
-                output_field=IntegerField(),
-            )
-        ).order_by("_open_first", F("last_synced_at").asc(nulls_first=True), "repository_id", "number")
+        qs = archive_touched_resync_targets(repo, include_healed=include_healed)
 
         limit = int(opts.get("limit") or 0)
         values = qs.values_list("repository_id", "number")
