@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from django.db import IntegrityError, transaction
+
 from core.models.repository import Repository
 from core.models.user import User
 from core.utils.db import update_if_changed
@@ -74,32 +76,37 @@ def upsert_user_from_github(
     created = False
     updated_fields: list[str] = []
 
-    if gid:
-        user = User.objects.filter(github_node_id=gid).first()
-        if user is None and login:
-            user = User.objects.filter(github_login__iexact=login).first()
-        if user is None and create_missing and (login or gid):
-            user = User.objects.create(
-                github_node_id=gid,
-                github_login=login,
-                name=name or None,
-                avatar_url=avatar or None,
-                is_active=True,
-            )
-            return user, True, ()
-    elif login:
-        user = User.objects.filter(github_login__iexact=login).first()
-        if user is None and create_missing:
-            user = User.objects.create(
-                github_login=login,
-                name=name or None,
-                avatar_url=avatar or None,
-                is_active=True,
-            )
-            return user, True, ()
-    else:
+    def _resolve_existing() -> Optional[User]:
+        found: Optional[User] = None
+        if gid:
+            found = User.objects.filter(github_node_id=gid).first()
+        if found is None and login:
+            found = User.objects.filter(github_login__iexact=login).first()
+        return found
+
+    if not gid and not login:
         # no usable identity
         return None, False, ()
+
+    user = _resolve_existing()
+    if user is None and create_missing:
+        try:
+            # Savepoint: two concurrent syncs ingesting the same new actor race on
+            # the case-insensitive github_login unique constraint. Losing must not
+            # poison the caller's transaction; re-resolve and update instead.
+            with transaction.atomic():
+                user = User.objects.create(
+                    github_node_id=gid or None,
+                    github_login=login,
+                    name=name or None,
+                    avatar_url=avatar or None,
+                    is_active=True,
+                )
+            return user, True, ()
+        except IntegrityError:
+            user = _resolve_existing()
+            if user is None:
+                raise
 
     # Update mutable fields if changed
     if user is None:

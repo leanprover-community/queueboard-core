@@ -64,15 +64,21 @@ def rebuild_pr_dependencies(pr: PullRequest) -> DependencyRebuildResult:
         target_pr = targets.get(number)
         key = (pr.repository_id, number)
         dep = existing.get(key)
+        created_now = False
         if dep is None:
-            PRDependency.objects.create(
+            # The per-PR dependency task and the dependencies sweep can rebuild the
+            # same PR concurrently; get_or_create absorbs losing the insert race on
+            # the (pull_request, depends_on_repository, depends_on_number) key and
+            # falls through to the update path with the winner's row.
+            dep, created_now = PRDependency.objects.get_or_create(
                 pull_request=pr,
                 depends_on_repository=pr.repository,
                 depends_on_number=number,
-                depends_on_pull_request=target_pr,
+                defaults={"depends_on_pull_request": target_pr},
             )
-            created += 1
-        else:
+            if created_now:
+                created += 1
+        if not created_now:
             desired_target_id = target_pr.id if target_pr else None
             if dep.depends_on_pull_request_id != desired_target_id:
                 dep.depends_on_pull_request = target_pr

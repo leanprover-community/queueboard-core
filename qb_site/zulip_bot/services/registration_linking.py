@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from core.models import User
 from core.services.github_oauth import GitHubUserIdentity
@@ -40,16 +40,34 @@ def link_or_create_user_from_registration(
             )
 
     if user is None:
-        created = User.objects.create(
-            github_node_id=identity.github_node_id,
-            github_login=identity.github_login,
-            name=identity.github_name,
-            avatar_url=identity.github_avatar_url,
-            zulip_user_id=zulip_user_id,
-            zulip_full_name=zulip_full_name,
-            is_active=True,
-        )
-        return RegistrationLinkResult(user=created, outcome="created")
+        try:
+            # Savepoint: select_for_update above cannot lock a row that does not
+            # exist yet, so a concurrent writer (typically the syncer ingesting
+            # this GitHub user's activity) can insert the same login between our
+            # lookup and this create. Re-resolve and fall through to the linking
+            # path instead of failing the registration.
+            with transaction.atomic():
+                created = User.objects.create(
+                    github_node_id=identity.github_node_id,
+                    github_login=identity.github_login,
+                    name=identity.github_name,
+                    avatar_url=identity.github_avatar_url,
+                    zulip_user_id=zulip_user_id,
+                    zulip_full_name=zulip_full_name,
+                    is_active=True,
+                )
+            return RegistrationLinkResult(user=created, outcome="created")
+        except IntegrityError:
+            user = User.objects.select_for_update().filter(github_node_id=identity.github_node_id).first()
+            if user is None:
+                user = User.objects.select_for_update().filter(github_login__iexact=identity.github_login).first()
+                if user and user.github_node_id and user.github_node_id != identity.github_node_id:
+                    raise RegistrationLinkConflict(
+                        reason="github_login_bound_to_different_node_id",
+                        message="This GitHub login is already associated with a different GitHub account in Queueboard.",
+                    )
+            if user is None:
+                raise
 
     if user.zulip_user_id not in (None, zulip_user_id):
         raise RegistrationLinkConflict(

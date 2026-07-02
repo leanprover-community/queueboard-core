@@ -55,3 +55,40 @@ class TestCoreEntitiesSync(TestCase):
         self.assertFalse(created2)
         self.assertIn("github_node_id", updated2)
         self.assertEqual(user2.github_node_id, "U2")
+
+
+class TestUserUpsertInsertRace(TestCase):
+    """Losing the insert race on the case-insensitive login constraint must
+    re-resolve the winner's row and fall through to the update path."""
+
+    def test_upsert_user_converges_on_lost_insert_race(self) -> None:
+        from unittest import mock
+
+        from core.models import User
+        from syncer.services.sub.core_entities_sync import upsert_user_from_github
+
+        winner = User.objects.create(github_login="Octo")
+
+        # Simulate the loser's view: both resolve lookups (node id, login) miss
+        # because the winner commits between them and our create.
+        real_filter = User.objects.filter
+        calls = {"n": 0}
+
+        def stale_then_real_filter(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                return User.objects.none()
+            return real_filter(*args, **kwargs)
+
+        with mock.patch.object(User.objects, "filter", side_effect=stale_then_real_filter):
+            user, created, updated_fields = upsert_user_from_github(
+                {"__typename": "User", "id": "NODE1", "login": "octo", "name": "O", "avatarUrl": "https://x/a.png"}
+            )
+
+        self.assertFalse(created)
+        self.assertIsNotNone(user)
+        self.assertEqual(user.pk, winner.pk)
+        winner.refresh_from_db()
+        self.assertEqual(winner.github_node_id, "NODE1")
+        self.assertEqual(winner.github_login, "octo")
+        self.assertEqual(User.objects.count(), 1)

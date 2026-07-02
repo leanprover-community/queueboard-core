@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, List, Optional, Tuple
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from core.models import Repository
@@ -954,6 +954,29 @@ def _attribution_kwargs(attr: Optional[WindowAttribution], prefix: str) -> dict[
     }
 
 
+# Every PRQueueWindow field the rebuild recomputes. Shared by the bulk_create
+# upsert (conflict update_fields) and bulk_update so the two write paths cannot
+# drift apart.
+QUEUE_WINDOW_MUTABLE_FIELDS = [
+    "to_ts",
+    "cycle_index",
+    "duration_seconds_closed",
+    "cumulative_seconds_closed",
+    "window_count",
+    "first_on_queue_ts",
+    "opened_by_event_type",
+    "opened_by_timeline_event",
+    "opened_by_check_run",
+    "opened_by_status_context",
+    "opened_at_head_sha",
+    "closed_by_event_type",
+    "closed_by_timeline_event",
+    "closed_by_check_run",
+    "closed_by_status_context",
+    "closed_at_head_sha",
+]
+
+
 def rebuild_queue_windows_for_ruleset(
     *,
     pr: PullRequest,
@@ -1015,107 +1038,103 @@ def rebuild_queue_windows_for_ruleset(
     first_on_queue_ts = windows[0].from_ts if windows else None
     cumulative_seconds = 0
 
-    existing_by_start = {obj.from_ts: obj for obj in PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)}
-    to_create: list[PRQueueWindow] = []
-    to_update: list[PRQueueWindow] = []
+    # Concurrent writers exist for the same (PR, ruleset) windows: analyzer.process_pr
+    # rebuilds unconditionally after every sync while the staleness sweep independently
+    # picks freshly-updated PRs, plus admin/management-command rebuilds. The atomic
+    # block keeps the create/update/delete trio consistent for readers, and the
+    # bulk_create upsert (update_conflicts) makes losing an insert race converge on the
+    # other writer's row instead of raising IntegrityError on prqwin_pr_ruleset_from_unique.
+    with transaction.atomic():
+        existing_by_start = {obj.from_ts: obj for obj in PRQueueWindow.objects.filter(pull_request=pr, rule_set=rule_set)}
+        to_create: list[PRQueueWindow] = []
+        to_update: list[PRQueueWindow] = []
 
-    for cycle_index, w in enumerate(windows):
-        start, end = w.from_ts, w.to_ts
-        duration_seconds = 0
-        if end is not None:
-            duration_seconds = int((end - start).total_seconds())
-        cumulative_seconds += duration_seconds
-        opened_kwargs = _attribution_kwargs(w.opened_by, "opened_by")
-        closed_kwargs = _attribution_kwargs(w.closed_by, "closed_by")
+        for cycle_index, w in enumerate(windows):
+            start, end = w.from_ts, w.to_ts
+            duration_seconds = 0
+            if end is not None:
+                duration_seconds = int((end - start).total_seconds())
+            cumulative_seconds += duration_seconds
+            opened_kwargs = _attribution_kwargs(w.opened_by, "opened_by")
+            closed_kwargs = _attribution_kwargs(w.closed_by, "closed_by")
 
-        obj = existing_by_start.pop(start, None)
-        if obj is None:
-            to_create.append(
-                PRQueueWindow(
-                    pull_request=pr,
-                    rule_set=rule_set,
-                    from_ts=start,
-                    to_ts=end,
-                    cycle_index=cycle_index,
-                    duration_seconds_closed=duration_seconds,
-                    cumulative_seconds_closed=cumulative_seconds,
-                    window_count=window_count,
-                    first_on_queue_ts=first_on_queue_ts,
-                    **opened_kwargs,
-                    **closed_kwargs,
+            obj = existing_by_start.pop(start, None)
+            if obj is None:
+                to_create.append(
+                    PRQueueWindow(
+                        pull_request=pr,
+                        rule_set=rule_set,
+                        from_ts=start,
+                        to_ts=end,
+                        cycle_index=cycle_index,
+                        duration_seconds_closed=duration_seconds,
+                        cumulative_seconds_closed=cumulative_seconds,
+                        window_count=window_count,
+                        first_on_queue_ts=first_on_queue_ts,
+                        **opened_kwargs,
+                        **closed_kwargs,
+                    )
                 )
+                continue
+
+            changed = False
+            if obj.to_ts != end:
+                obj.to_ts = end
+                changed = True
+            if obj.cycle_index != cycle_index:
+                obj.cycle_index = cycle_index
+                changed = True
+            if obj.duration_seconds_closed != duration_seconds:
+                obj.duration_seconds_closed = duration_seconds
+                changed = True
+            if obj.cumulative_seconds_closed != cumulative_seconds:
+                obj.cumulative_seconds_closed = cumulative_seconds
+                changed = True
+            if obj.window_count != window_count:
+                obj.window_count = window_count
+                changed = True
+            if obj.first_on_queue_ts != first_on_queue_ts:
+                obj.first_on_queue_ts = first_on_queue_ts
+                changed = True
+            # Attribution fields: always overwrite since they reflect the current
+            # computation. Compare by FK id to avoid unnecessary updates.
+            for field, val in {**opened_kwargs, **closed_kwargs}.items():
+                if field.endswith("_id"):
+                    continue  # skipped; we set the object field, not the _id field
+                cur = getattr(obj, field)
+                # For FK fields Django exposes both .field (object) and .field_id (int).
+                # Compare by id to avoid fetching the related object.
+                if hasattr(obj, f"{field}_id"):
+                    cur_id = getattr(obj, f"{field}_id")
+                    new_id = val.pk if val is not None else None
+                    if cur_id != new_id:
+                        setattr(obj, field, val)
+                        changed = True
+                else:
+                    if cur != val:
+                        setattr(obj, field, val)
+                        changed = True
+            if changed:
+                to_update.append(obj)
+
+        if to_create:
+            PRQueueWindow.objects.bulk_create(
+                to_create,
+                batch_size=200,
+                update_conflicts=True,
+                unique_fields=["pull_request", "rule_set", "from_ts"],
+                update_fields=QUEUE_WINDOW_MUTABLE_FIELDS,
             )
-            continue
+        if to_update:
+            PRQueueWindow.objects.bulk_update(
+                to_update,
+                QUEUE_WINDOW_MUTABLE_FIELDS,
+                batch_size=200,
+            )
 
-        changed = False
-        if obj.to_ts != end:
-            obj.to_ts = end
-            changed = True
-        if obj.cycle_index != cycle_index:
-            obj.cycle_index = cycle_index
-            changed = True
-        if obj.duration_seconds_closed != duration_seconds:
-            obj.duration_seconds_closed = duration_seconds
-            changed = True
-        if obj.cumulative_seconds_closed != cumulative_seconds:
-            obj.cumulative_seconds_closed = cumulative_seconds
-            changed = True
-        if obj.window_count != window_count:
-            obj.window_count = window_count
-            changed = True
-        if obj.first_on_queue_ts != first_on_queue_ts:
-            obj.first_on_queue_ts = first_on_queue_ts
-            changed = True
-        # Attribution fields: always overwrite since they reflect the current
-        # computation. Compare by FK id to avoid unnecessary updates.
-        for field, val in {**opened_kwargs, **closed_kwargs}.items():
-            if field.endswith("_id"):
-                continue  # skipped; we set the object field, not the _id field
-            cur = getattr(obj, field)
-            # For FK fields Django exposes both .field (object) and .field_id (int).
-            # Compare by id to avoid fetching the related object.
-            if hasattr(obj, f"{field}_id"):
-                cur_id = getattr(obj, f"{field}_id")
-                new_id = val.pk if val is not None else None
-                if cur_id != new_id:
-                    setattr(obj, field, val)
-                    changed = True
-            else:
-                if cur != val:
-                    setattr(obj, field, val)
-                    changed = True
-        if changed:
-            to_update.append(obj)
-
-    if to_create:
-        PRQueueWindow.objects.bulk_create(to_create, batch_size=200)
-    if to_update:
-        PRQueueWindow.objects.bulk_update(
-            to_update,
-            [
-                "to_ts",
-                "cycle_index",
-                "duration_seconds_closed",
-                "cumulative_seconds_closed",
-                "window_count",
-                "first_on_queue_ts",
-                "opened_by_event_type",
-                "opened_by_timeline_event",
-                "opened_by_check_run",
-                "opened_by_status_context",
-                "opened_at_head_sha",
-                "closed_by_event_type",
-                "closed_by_timeline_event",
-                "closed_by_check_run",
-                "closed_by_status_context",
-                "closed_at_head_sha",
-            ],
-            batch_size=200,
-        )
-
-    deleted = 0
-    if existing_by_start:
-        deleted, _ = PRQueueWindow.objects.filter(id__in=[obj.id for obj in existing_by_start.values()]).delete()
+        deleted = 0
+        if existing_by_start:
+            deleted, _ = PRQueueWindow.objects.filter(id__in=[obj.id for obj in existing_by_start.values()]).delete()
 
     return QueueWindowRebuildResult(
         created=len(to_create),

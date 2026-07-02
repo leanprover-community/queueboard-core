@@ -925,3 +925,73 @@ class TestRebuildQueueWindowsSweepTask(TestCase):
         self.assertEqual(res2["windows_rebuilt"], 0)
         rs_state.refresh_from_db()
         self.assertEqual(rs_state.windows_built_at, first_built_at)
+
+
+class TestSweepIntegrityErrorContainment(TestCase):
+    """A write conflict on one PR must not abort the rest of the sweep run."""
+
+    def setUp(self) -> None:
+        self.repo = Repository.objects.create(owner="o", name="r", default_branch="master", is_active=True)
+        self.rule_set = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+        )
+
+    def _mk_stale_pr(self, number: int) -> PullRequest:
+        now = timezone.now()
+        pr = PullRequest.objects.create(
+            repository=self.repo,
+            number=number,
+            author=None,
+            state="open",
+            is_draft=False,
+            gh_created_at=now - timezone.timedelta(days=1),
+            gh_updated_at=now - timezone.timedelta(hours=1),
+            base_ref_name="master",
+            head_ref_name="branch",
+            head_repo_owner_login="o",
+            head_repo_name="fork",
+            title="t",
+            body="",
+            additions=0,
+            deletions=0,
+            changed_files_count=0,
+            timeline_backfill_done=True,
+            commits_backfill_done=True,
+        )
+        PRRevision.objects.create(pull_request=pr, head_sha="a1", from_ts=pr.gh_created_at, to_ts=None, seq=0)
+        PRRevisionBuildState.objects.create(pull_request=pr, revision_version=1)
+        return pr
+
+    def test_integrity_error_on_one_pr_is_contained(self) -> None:
+        from unittest import mock
+
+        from django.db import IntegrityError
+
+        from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
+
+        pr_a = self._mk_stale_pr(1)
+        pr_b = self._mk_stale_pr(2)
+
+        real_rebuild = rebuild_queue_windows_for_pr
+
+        def rebuild_conflicting_on_a(*, pr, rule_sets):
+            if pr.id == pr_a.id:
+                raise IntegrityError('duplicate key value violates unique constraint "prqwin_pr_ruleset_from_unique"')
+            return real_rebuild(pr=pr, rule_sets=rule_sets)
+
+        with mock.patch(
+            "analyzer.tasks.rebuild_queue_windows_sweep.rebuild_queue_windows_for_pr",
+            side_effect=rebuild_conflicting_on_a,
+        ):
+            res = rebuild_queue_windows_sweep_task.apply(kwargs={"max_prs_per_repo": 5}).get()
+
+        # The conflicting PR was skipped, the other PR was still processed.
+        self.assertEqual(res["prs_conflict_skipped"], 1)
+        self.assertEqual(res["prs_checked"], 2)
+        self.assertTrue(PRQueueWindowBuildState.objects.filter(pull_request=pr_b, rule_set=self.rule_set).exists())
+        # The skipped PR recorded no build state, so the next sweep retries it.
+        self.assertFalse(PRQueueWindowBuildState.objects.filter(pull_request=pr_a, rule_set=self.rule_set).exists())
