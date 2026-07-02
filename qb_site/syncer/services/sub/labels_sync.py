@@ -35,10 +35,15 @@ def sync_label_catalog(repo: Repository, labels: Iterable[Dict[str, Any]]) -> La
         if not name:
             continue
         color = (node.get("color") or "").strip().lower()
-        # Case-insensitive match within repo
-        ld = LabelDef.objects.filter(repository=repo, name__iexact=name).first()
-        if ld is None:
-            LabelDef.objects.create(repository=repo, name=name, color=color or "000000")
+        # Case-insensitive match within repo. Concurrent PR syncs (and the hourly
+        # catalog task) can race to insert the same new label; get_or_create
+        # absorbs losing the race on the (repository, lower(name)) unique key.
+        ld, was_created = LabelDef.objects.get_or_create(
+            repository=repo,
+            name__iexact=name,
+            defaults={"name": name, "color": color or "000000"},
+        )
+        if was_created:
             created += 1
         else:
             new_color = (color or ld.color or "").lower()
@@ -122,9 +127,18 @@ def sync_full_label_catalog(repo: Repository, labels: Iterable[Dict[str, Any]]) 
         for key, node in desired.items():
             ld = existing_by_lower.get(key)
             if ld is None:
-                LabelDef.objects.create(repository=repo, name=node["name"], color=node["color"])
-                created += 1
-                continue
+                # select_for_update above only locks rows that already exist; a
+                # concurrent PR-bundle sync can still insert the same new label.
+                # get_or_create absorbs that race (savepoint inside this atomic
+                # block) and falls through to the update path with the winner's row.
+                ld, was_created = LabelDef.objects.get_or_create(
+                    repository=repo,
+                    name__iexact=node["name"],
+                    defaults={"name": node["name"], "color": node["color"]},
+                )
+                if was_created:
+                    created += 1
+                    continue
             updates: Dict[str, Any] = {}
             if ld.name != node["name"]:
                 updates["name"] = node["name"]

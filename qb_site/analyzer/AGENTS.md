@@ -80,3 +80,8 @@ Keep tasks idempotent and resumable; prefer explicit summary payloads to aid adm
 ## Operational Notes
 - Large sweeps can contend with sync tasks on shared worker capacity; tune per-repo limits before broadening cadence.
 - Keep admin/object-tool commands available for targeted per-PR recovery paths.
+- Sweeps and `analyzer.process_pr` rebuild the same derived rows concurrently (sweeps
+  preferentially pick freshly-updated PRs — the same ones process_pr is handling).
+  Follow "Concurrent Writers and Unique Keys" in `qb_site/AGENTS.md`: upsert instead of
+  check-then-create, wrap rebuilds in `transaction.atomic()`, and contain per-PR
+  `IntegrityError` in sweeps so one conflict cannot abort the run.

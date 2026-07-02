@@ -118,3 +118,63 @@ class TestSyncFullLabelCatalog(TestCase):
         nodes = fetch_repo_label_catalog(self.repo, fetcher)
         self.assertEqual([n["name"] for n in nodes], ["a", "b"])
         self.assertEqual(seen_cursors, [None, "c1"])
+
+
+class TestLabelSyncInsertRace(TestCase):
+    """Losing the insert race on (repository, lower(name)) must converge, not raise.
+
+    Simulated by making get_or_create's initial get miss once: the create then
+    conflicts with the pre-existing "winner" row and Django's conflict-retry get
+    must recover it via the name__iexact lookup — pinning that the lookup covers
+    the case-insensitive unique constraint.
+    """
+
+    def setUp(self) -> None:
+        self.repo = make_repo()
+
+    def _flaky_get(self):
+        from django.db.models.query import QuerySet
+
+        real_get = QuerySet.get
+        state = {"missed": False}
+
+        def flaky(qs_self, *args, **kwargs):
+            if not state["missed"]:
+                state["missed"] = True
+                raise qs_self.model.DoesNotExist
+            return real_get(qs_self, *args, **kwargs)
+
+        return flaky
+
+    def test_sync_label_catalog_converges_on_lost_insert_race(self) -> None:
+        from unittest import mock
+
+        from django.db.models.query import QuerySet
+
+        LabelDef.objects.create(repository=self.repo, name="Easy", color="111111")
+
+        with mock.patch.object(QuerySet, "get", self._flaky_get()):
+            res = sync_label_catalog(self.repo, [{"name": "easy", "color": "abcdef"}])
+
+        self.assertEqual(res.created, 0)
+        rows = list(LabelDef.objects.filter(repository=self.repo))
+        self.assertEqual(len(rows), 1)
+        # Fell through to the update path against the winner's row.
+        self.assertEqual(rows[0].color, "abcdef")
+
+    def test_sync_full_label_catalog_converges_on_lost_insert_race(self) -> None:
+        from unittest import mock
+
+        LabelDef.objects.create(repository=self.repo, name="Fresh", color="111111")
+
+        # A concurrent PR-bundle sync inserted "Fresh" after this reconcile took
+        # its select_for_update snapshot: simulate the stale snapshot by making
+        # it come back empty, so the create path collides with the winner's row.
+        with mock.patch.object(LabelDef.objects, "select_for_update", return_value=LabelDef.objects.none()):
+            res = sync_full_label_catalog(self.repo, [{"name": "fresh", "color": "abcdef"}])
+
+        self.assertEqual(res.created, 0)
+        rows = list(LabelDef.objects.filter(repository=self.repo))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].name, "fresh")
+        self.assertEqual(rows[0].color, "abcdef")

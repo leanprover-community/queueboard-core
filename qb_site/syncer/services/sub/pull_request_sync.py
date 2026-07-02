@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
 from dateutil import parser as dtparser
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from core.models.repository import Repository
@@ -108,11 +109,21 @@ def upsert_pull_request(
     }
 
     if pr is None:
-        pr = PullRequest(repository=repo, number=number, **core_values)
+        new_pr = PullRequest(repository=repo, number=number, **core_values)
         if not skip_watermark:
-            pr.last_synced_at = timezone.now()
-        pr.save()
-        return PullRequestUpsertResult(pr=pr, created=True, updated_fields=tuple(core_values.keys()))
+            new_pr.last_synced_at = timezone.now()
+        try:
+            # Savepoint: concurrent writers can race to insert the same
+            # (repository, number) row — live sync_pr vs the archive importer vs
+            # admin-enqueued syncs. Losing the race falls through to the normal
+            # update path against the winner's row.
+            with transaction.atomic():
+                new_pr.save()
+            return PullRequestUpsertResult(pr=new_pr, created=True, updated_fields=tuple(core_values.keys()))
+        except IntegrityError:
+            pr = PullRequest.objects.filter(repository=repo, number=number).first()
+            if pr is None:
+                raise
 
     # Newer-wins guard. Triggered only when callers explicitly pass an
     # ``if_newer_than`` cutoff (archive ingest does; live sync does not). When

@@ -138,6 +138,11 @@ front and expensive to recover from when skipped.
 - GraphQL bundle query: `qb_site/syncer/queries/pr_bundle.graphql`.
 - Sub-sync modules under `qb_site/syncer/services/sub/` should remain narrow and composable.
 - Preserve boundary: `syncer` stores raw facts; analyzer owns higher-level derived queue/revision semantics.
+- Multiple sync paths write the same rows concurrently (live `sync_pr`, archive importer,
+  admin enqueues, catalog tasks). Follow "Concurrent Writers and Unique Keys" in
+  `qb_site/AGENTS.md`: never filter-then-create against a unique key — use
+  `get_or_create`, conflict-aware `bulk_create`, or the savepoint + `IntegrityError`
+  re-fetch pattern (`ci_sync._archive_mode_upsert`, `core_entities_sync.upsert_user_from_github`).
 
 ## Timeline ingest invariants
 The same logical "page of timeline items" is processed by **three** distinct

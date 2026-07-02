@@ -75,7 +75,16 @@ def record_queue_window_build_states(
             to_update.append(row)
 
     if to_create:
-        PRQueueWindowBuildState.objects.bulk_create(to_create, batch_size=200)
+        # analyzer.process_pr and the queue-window sweep both record build state
+        # for the same (PR, ruleset) pairs; upsert so losing the insert race
+        # converges on the other writer's row instead of raising IntegrityError.
+        PRQueueWindowBuildState.objects.bulk_create(
+            to_create,
+            batch_size=200,
+            update_conflicts=True,
+            unique_fields=["pull_request", "rule_set"],
+            update_fields=["revision_version_built", "windows_built_at", "last_status", "last_reason", "updated_at"],
+        )
     if to_update:
         PRQueueWindowBuildState.objects.bulk_update(
             to_update,

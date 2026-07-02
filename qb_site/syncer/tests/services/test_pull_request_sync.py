@@ -161,3 +161,55 @@ class TestPullRequestSync(TestCase):
         self.assertEqual(pr.author.github_login, "alice")
         self.assertEqual(pr.author.name, "Alice A.")
         self.assertTrue(pr.author.avatar_url.endswith("a.png"))
+
+
+class TestPullRequestUpsertInsertRace(TestCase):
+    """Losing the insert race on (repository, number) — e.g. live sync vs the
+    archive importer — must fall through to the update path, not raise."""
+
+    def setUp(self) -> None:
+        self.repo = make_repo()
+
+    def test_upsert_converges_on_lost_insert_race(self) -> None:
+        from unittest import mock
+
+        winner = make_pr(self.repo, 1)
+
+        bundle = {
+            "number": 1,
+            "state": "OPEN",
+            "isDraft": False,
+            "title": "Racy title",
+            "body": "body",
+            "createdAt": "2025-10-20T10:00:00Z",
+            "updatedAt": "2025-10-20T10:05:00Z",
+            "baseRefName": "master",
+            "headRefName": "b",
+            "headRefOid": "abc123",
+            "headRepositoryOwner": {"login": "o"},
+            "headRepository": {"name": "fork"},
+            "additions": 1,
+            "deletions": 0,
+            "changedFiles": 1,
+            "author": None,
+        }
+
+        # Simulate the loser's stale existence check: the winner's row commits
+        # between the filter and our insert.
+        real_filter = PullRequest.objects.filter
+        state = {"missed": False}
+
+        def stale_then_real_filter(*args, **kwargs):
+            if not state["missed"]:
+                state["missed"] = True
+                return PullRequest.objects.none()
+            return real_filter(*args, **kwargs)
+
+        with mock.patch.object(PullRequest.objects, "filter", side_effect=stale_then_real_filter):
+            res = upsert_pull_request(bundle, self.repo)
+
+        self.assertFalse(res.created)
+        self.assertEqual(res.pr.pk, winner.pk)
+        self.assertEqual(PullRequest.objects.filter(repository=self.repo, number=1).count(), 1)
+        winner.refresh_from_db()
+        self.assertEqual(winner.title, "Racy title")

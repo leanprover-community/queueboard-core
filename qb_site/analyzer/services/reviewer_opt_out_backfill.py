@@ -104,23 +104,20 @@ def backfill_reviewer_opt_outs(
                     },
                 )
             else:
-                obj = ReviewerOptOut.objects.filter(
+                # This backfill can run while live syncs upsert the same
+                # (repository, pr_number, reviewer_login) row; get_or_create
+                # absorbs losing the insert race and updates the winner's row.
+                obj, was_created = ReviewerOptOut.objects.get_or_create(
                     repository_id=pr.repository_id,
                     pr_number=pr.number,
                     reviewer_login=login,
-                ).first()
-                if obj is None:
-                    obj = ReviewerOptOut.objects.create(
-                        repository_id=pr.repository_id,
-                        pr_number=pr.number,
-                        reviewer_login=login,
-                        active=False,
-                        opted_out_at=occurred_at,
-                        cleared_at=occurred_at,
-                    )
-                    was_created = True
-                else:
-                    was_created = False
+                    defaults={
+                        "active": False,
+                        "opted_out_at": occurred_at,
+                        "cleared_at": occurred_at,
+                    },
+                )
+                if not was_created:
                     if obj.active or obj.cleared_at != occurred_at:
                         obj.active = False
                         obj.cleared_at = occurred_at

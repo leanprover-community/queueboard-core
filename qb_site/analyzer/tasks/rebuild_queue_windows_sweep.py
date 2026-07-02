@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from celery import shared_task
 from datetime import datetime
+from django.db import IntegrityError
 from django.utils import timezone
 
 from django.db.models import Count, Exists, F, Min, OuterRef, Q
@@ -11,6 +14,8 @@ from analyzer.services.queue_window_build_state import record_queue_window_build
 from analyzer.services.queue_windows import rebuild_queue_windows_for_pr
 from core.models import Repository
 from syncer.models import PullRequest
+
+logger = logging.getLogger(__name__)
 
 
 def _is_ruleset_stale_for_pr(
@@ -106,6 +111,7 @@ def rebuild_queue_windows_sweep_task(
     repos = list(Repository.objects.filter(is_active=True).only("id", "owner", "name"))
     total_rebuilt = 0
     total_prs = 0
+    total_prs_conflict_skipped = 0
     total_prs_skipped_up_to_date = 0
     total_rulesets_skipped_out_of_bounds = 0
     total_prs_stale_ruleset = 0
@@ -243,7 +249,7 @@ def rebuild_queue_windows_sweep_task(
             continue
 
         def _process_batch(pr_batch: list[PullRequest]) -> None:
-            nonlocal repo_limit_hit, repo_rebuilt, repo_prs, total_prs
+            nonlocal repo_limit_hit, repo_rebuilt, repo_prs, total_prs, total_prs_conflict_skipped
             if not pr_batch:
                 return
 
@@ -328,7 +334,23 @@ def rebuild_queue_windows_sweep_task(
                             repo_prs_skipped_up_to_date.append(pr_num)
                     continue
 
-                summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=stale_rule_sets)
+                try:
+                    summary = rebuild_queue_windows_for_pr(pr=pr, rule_sets=stale_rule_sets)
+                except IntegrityError:
+                    # Residual write race with a concurrent per-PR rebuild
+                    # (analyzer.process_pr / admin action). The PR's build state
+                    # was not recorded, so it stays stale and the next sweep
+                    # retries it; one conflicted PR must not abort the run.
+                    logger.warning(
+                        "rebuild_queue_windows_sweep: integrity conflict on pr_id=%s (#%s); skipping this run",
+                        pr.id,
+                        pr.number,
+                        exc_info=True,
+                    )
+                    total_prs_conflict_skipped += 1
+                    repo_prs += 1
+                    total_prs += 1
+                    continue
                 per_ruleset = summary.get("per_ruleset", {}) or {}
                 pr_num = int(pr.number)
                 if any(
@@ -397,6 +419,7 @@ def rebuild_queue_windows_sweep_task(
         "prs_checked": total_prs,
         "prs_checked_numbers": processed_pr_numbers,
         "windows_rebuilt": total_rebuilt,
+        "prs_conflict_skipped": total_prs_conflict_skipped,
         "prs_skipped_up_to_date": total_prs_skipped_up_to_date,
         "rulesets_skipped_out_of_bounds": total_rulesets_skipped_out_of_bounds,
         "prs_stale_ruleset": total_prs_stale_ruleset,

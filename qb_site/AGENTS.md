@@ -69,6 +69,49 @@ uv run python qb_site/manage.py test zulip_bot
   - or ask the user to run `scripts/repo_check_compose.sh` and share results.
 - When reporting verification, explicitly state what was and was not runnable.
 
+## Concurrent Writers and Unique Keys
+Celery workers overlap: per-PR tasks (`syncer.sync_pr`, `analyzer.process_pr`), periodic
+sweeps, admin actions, and management commands can all write the same rows at the same
+time. Sweeps even *prefer* recently-changed PRs, so they collide with the per-PR task for
+exactly the same row. Never assume your code path is the only writer.
+
+**Rule: for any model with a unique constraint, "check if it exists, then create" is a
+bug.** Between the check and the insert, another worker can create the row, and the
+resulting `IntegrityError` poisons the enclosing transaction (and, in a sweep, kills the
+whole run). This applies equally to `filter(...).first()` + `create(...)` and to
+snapshot-diff loops that collect `to_create` lists for `bulk_create`.
+`select_for_update()` does not help here — it cannot lock a row that does not exist yet.
+
+Use one of these instead (all are in the codebase as reference patterns):
+
+- `get_or_create` / `update_or_create` with lookup kwargs that **exactly cover the unique
+  constraint** (extra values go in `defaults`; constraint fields must not be in
+  `defaults`). Django retries the get under a savepoint on conflict, so this is
+  race-safe. For case-insensitive keys, put the `__iexact` lookup in kwargs and the
+  concrete value in `defaults` (see `syncer/services/sub/labels_sync.py`).
+- `bulk_create(..., ignore_conflicts=True)` for insert-only paths where losing the race
+  needs no follow-up (see `syncer/services/sub/labels_sync.py` PRLabel attach).
+- `bulk_create(..., update_conflicts=True, unique_fields=[...], update_fields=[...])`
+  for upserts where both writers compute the row from the same source data and
+  last-writer-wins is correct (see `analyzer/services/queue_windows.py` and
+  `analyzer/services/queue_window_build_state.py`).
+- Savepoint + catch `IntegrityError` + re-fetch and fall through to the update path,
+  when you need the created-vs-updated distinction or custom conflict handling (see
+  `syncer/services/sub/ci_sync.py:_archive_mode_upsert`,
+  `syncer/services/sub/core_entities_sync.py:upsert_user_from_github`). The
+  `with transaction.atomic():` around the `create()` is mandatory — without the
+  savepoint, catching the error leaves the outer transaction unusable.
+
+Additional expectations:
+- Wrap multi-statement rebuilds (delete + create + update of a derived row set) in
+  `transaction.atomic()` so readers and crashes never observe a half-written state.
+- Sweep tasks must contain per-item failures (`except IntegrityError: log, count,
+  continue`) so one conflicted row cannot abort the rest of the run — see
+  `analyzer/tasks/rebuild_queue_windows_sweep.py` and the `prs_conflict_skipped`
+  counter it reports.
+- When adding a `UniqueConstraint` to an existing model, audit every write site for the
+  patterns above in the same change.
+
 ## Migration and DB Notes
 - Generate migration files on the host and commit them; do not create migrations from inside containers.
 - Running `makemigrations` on host may emit a Postgres connection warning when DB is not running; file generation still works.
