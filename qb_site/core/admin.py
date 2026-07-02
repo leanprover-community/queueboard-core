@@ -1043,6 +1043,33 @@ try:
     except admin.sites.NotRegistered:  # pragma: no cover
         pass
 
+    class RegisteredTaskNameFilter(admin.SimpleListFilter):
+        """task_name filter fed from the Celery registry instead of the table.
+
+        The stock ``AllValuesFieldListFilter`` runs ``SELECT DISTINCT task_name``
+        over the whole table on every changelist load; Postgres has no loose
+        index scan, so that walks the full index each time. The registry gives
+        the same choices for free. ``parameter_name = "task_name"`` keeps
+        existing ``?task_name=...`` links working.
+        """
+
+        title = "task name"
+        parameter_name = "task_name"
+
+        def lookups(self, request, model_admin):
+            try:
+                from qb_site.celery import app as celery_app
+
+                names = sorted(name for name in celery_app.tasks.keys() if not name.startswith("celery."))
+            except Exception:  # pragma: no cover - registry unavailable
+                names = []
+            return [(name, name) for name in names]
+
+        def queryset(self, request, queryset):
+            if self.value():
+                return queryset.filter(task_name=self.value())
+            return queryset
+
     @admin.register(TaskResult)
     class EnhancedTaskResultAdmin(TaskResultAdmin):  # type: ignore[misc]
         change_form_template = "admin/django_celery_results/taskresult/change_form.html"
@@ -1057,7 +1084,12 @@ try:
             "date_done",
         )
         list_display_links = ("short_id",)
-        list_filter = getattr(TaskResultAdmin, "list_filter", tuple()) + ("task_name",)
+        # Deliberately NOT the stock list_filter: its periodic_task_name /
+        # task_name / worker entries are AllValues filters that each scan the
+        # whole table per page load (part of an admin-timeout incident).
+        list_filter = ("status", "date_done", RegisteredTaskNameFilter)
+        # Skip the unfiltered COUNT(*) when a filter is active.
+        show_full_result_count = False
         search_fields = getattr(TaskResultAdmin, "search_fields", tuple()) + (
             "task_id",
             "result",
