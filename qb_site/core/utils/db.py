@@ -25,6 +25,7 @@ def update_if_changed(
     values: Dict[str, Any],
     *,
     touch_updated_at: bool = True,
+    savepoint: bool = False,
 ) -> Tuple[bool, Tuple[str, ...]]:
     """Set attributes on an instance and save only if any values differ.
 
@@ -35,6 +36,11 @@ def update_if_changed(
     Notes
     - If ``touch_updated_at`` and the model has an ``updated_at`` field, it is added to
       ``update_fields`` on save; otherwise only changed fields are written.
+    - ``savepoint=True`` wraps the UPDATE in a savepoint so an IntegrityError (e.g.
+      a unique-constraint collision) leaves the caller's enclosing transaction usable.
+      Required whenever the caller catches the error and keeps issuing queries inside
+      an outer ``atomic`` block; a bare failed UPDATE would poison that transaction
+      and turn every subsequent query into a TransactionManagementError.
     - Returns (updated: bool, updated_fields: tuple[str, ...]).
     """
     changed, fields = _diff_fields(obj, values)
@@ -43,7 +49,11 @@ def update_if_changed(
     update_fields = list(fields)
     if touch_updated_at and hasattr(obj, "updated_at") and "updated_at" not in update_fields:
         update_fields.append("updated_at")
-    obj.save(update_fields=update_fields)
+    if savepoint:
+        with transaction.atomic():
+            obj.save(update_fields=update_fields)
+    else:
+        obj.save(update_fields=update_fields)
     return True, fields
 
 
@@ -65,6 +75,10 @@ def upsert_if_changed(
     Notes
     - Uses a SELECT first; on create, wraps in a savepoint and retries SELECT on
       IntegrityError to tolerate rare races.
+    - Both create and update run under a savepoint, so an IntegrityError that
+      escapes to the caller (create race lost to a row with a different lookup
+      key, or an UPDATE colliding with another unique constraint) leaves the
+      enclosing transaction usable for fallback handling.
     - Avoids unnecessary UPDATEs so that auto-managed ``updated_at`` doesn't churn.
     - Not intended for bulk operations or M2M relations.
     """
@@ -77,9 +91,9 @@ def upsert_if_changed(
         except IntegrityError:
             # Another writer won the race: fall back to update path.
             obj = model.objects.get(**lookup)
-            updated, fields = update_if_changed(obj, values, touch_updated_at=touch_updated_at)
+            updated, fields = update_if_changed(obj, values, touch_updated_at=touch_updated_at, savepoint=True)
             return obj, False, updated, fields
         return obj, True, False, tuple()
 
-    updated, fields = update_if_changed(obj, values, touch_updated_at=touch_updated_at)
+    updated, fields = update_if_changed(obj, values, touch_updated_at=touch_updated_at, savepoint=True)
     return obj, False, updated, fields

@@ -499,6 +499,8 @@ class TestCISync(TestCase):
 
     def test_checkrun_external_id_conflict_does_not_crash(self) -> None:
         head_sha = "abc1234"
+        # Stored attempt is older than the incoming snapshot, so the merge's
+        # recency guard lets the incoming attempt win.
         CommitCheckRun.objects.create(
             repository=self.repo,
             github_node_id="CR_EXISTING",
@@ -507,7 +509,7 @@ class TestCISync(TestCase):
             status="IN_PROGRESS",
             conclusion=None,
             external_id="ext-conflict",
-            gh_started_at=timezone.now() - timezone.timedelta(minutes=5),
+            gh_started_at=timezone.datetime(2025, 10, 20, 0, 0, 0, tzinfo=timezone.timezone.utc),
         )
 
         sync_check_runs(
@@ -529,6 +531,154 @@ class TestCISync(TestCase):
 
         row = CommitCheckRun.objects.get(external_id="ext-conflict")
         self.assertEqual(row.status, "COMPLETED")
+        self.assertEqual(row.conclusion, "SUCCESS")
+
+    def test_checkrun_update_conflict_with_archive_dup_merges(self) -> None:
+        """UPDATE-path composite collision: merge instead of poisoning the transaction.
+
+        The archive importer (doc 043) created an ext-NULL duplicate for one
+        re-run attempt's gid because legacy payloads carry no externalId. A
+        forced live resync then sees both attempts sharing the deterministic
+        external_id: the first ctx inserts the composite owner, the second
+        ctx's UPDATE (ext NULL -> real) collides with it. Pre-fix this
+        IntegrityError poisoned the @atomic bundle and every subsequent query
+        raised TransactionManagementError, failing the whole sync_pr task.
+        TestCase wraps each test in an atomic block, so this test reproduces
+        the poisoning shape faithfully.
+        """
+        head_sha = "59d64ad9bd7aa434e70368e4c1b19fe31507ac3c"
+        synth_ts = timezone.datetime(2025, 5, 31, 23, 56, 9, tzinfo=timezone.timezone.utc)
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CR_ARCHIVE_DUP",
+            head_sha=head_sha,
+            name="Lint style",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            external_id=None,
+            gh_started_at=synth_ts,
+            gh_completed_at=synth_ts,
+            archive_imported_at=timezone.now(),
+        )
+        ctxs = [
+            {
+                "id": "CR_NEW_ATTEMPT",
+                "name": "Lint style",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": "2025-06-01T01:00:00Z",
+                "completedAt": "2025-06-01T01:10:00Z",
+                "detailsUrl": None,
+                "externalId": "bb3c2cd1-4387-5b21-a60d-eba2268826dc",
+            },
+            {
+                "id": "CR_ARCHIVE_DUP",
+                "name": "Lint style",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "startedAt": "2025-05-31T23:58:00Z",
+                "completedAt": "2025-06-01T00:05:00Z",
+                "detailsUrl": None,
+                "externalId": "bb3c2cd1-4387-5b21-a60d-eba2268826dc",
+            },
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+
+        rows = CommitCheckRun.objects.filter(repository=self.repo, head_sha=head_sha, name="Lint style")
+        self.assertEqual(rows.count(), 1)
+        row = rows.get()
+        # The newer attempt's facts survive; the superseded attempt's FAILURE
+        # and the archive duplicate are both gone.
+        self.assertEqual(row.github_node_id, "CR_NEW_ATTEMPT")
+        self.assertEqual(row.external_id, "bb3c2cd1-4387-5b21-a60d-eba2268826dc")
+        self.assertEqual(row.conclusion, "SUCCESS")
+        # The transaction is still usable (this query would raise
+        # TransactionManagementError pre-fix).
+        self.assertEqual(CommitCheckRun.objects.filter(github_node_id="CR_ARCHIVE_DUP").count(), 0)
+
+    def test_checkrun_update_conflict_archive_dup_processed_first(self) -> None:
+        """Same merge shape, reverse payload order: archive-gid ctx first.
+
+        The archive row absorbs the first ctx's real values (including the
+        external_id), then the second ctx's CREATE collides and the fallback
+        rewrites the surviving row to the newer attempt's gid and facts.
+        """
+        head_sha = "59d64ad9bd7aa434e70368e4c1b19fe31507ac3c"
+        synth_ts = timezone.datetime(2025, 5, 31, 23, 56, 9, tzinfo=timezone.timezone.utc)
+        CommitCheckRun.objects.create(
+            repository=self.repo,
+            github_node_id="CR_ARCHIVE_DUP",
+            head_sha=head_sha,
+            name="Lint style",
+            status="COMPLETED",
+            conclusion="SUCCESS",
+            external_id=None,
+            gh_started_at=synth_ts,
+            gh_completed_at=synth_ts,
+            archive_imported_at=timezone.now(),
+        )
+        ctxs = [
+            {
+                "id": "CR_ARCHIVE_DUP",
+                "name": "Lint style",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "startedAt": "2025-05-31T23:58:00Z",
+                "completedAt": "2025-06-01T00:05:00Z",
+                "detailsUrl": None,
+                "externalId": "bb3c2cd1-4387-5b21-a60d-eba2268826dc",
+            },
+            {
+                "id": "CR_NEW_ATTEMPT",
+                "name": "Lint style",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": "2025-06-01T01:00:00Z",
+                "completedAt": "2025-06-01T01:10:00Z",
+                "detailsUrl": None,
+                "externalId": "bb3c2cd1-4387-5b21-a60d-eba2268826dc",
+            },
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+
+        rows = CommitCheckRun.objects.filter(repository=self.repo, head_sha=head_sha, name="Lint style")
+        self.assertEqual(rows.count(), 1)
+        row = rows.get()
+        self.assertEqual(row.github_node_id, "CR_NEW_ATTEMPT")
+        self.assertEqual(row.external_id, "bb3c2cd1-4387-5b21-a60d-eba2268826dc")
+        self.assertEqual(row.conclusion, "SUCCESS")
+
+    def test_superseded_attempt_does_not_clobber_newer_conclusion(self) -> None:
+        """Recency guard: an older attempt in the payload can't overwrite a newer one."""
+        head_sha = "abc1234"
+        ctxs = [
+            {
+                "id": "CR_ATTEMPT_2",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": "2025-10-20T02:00:00Z",
+                "completedAt": "2025-10-20T02:30:00Z",
+                "detailsUrl": None,
+                "externalId": "job-ext-id",
+            },
+            {
+                "id": "CR_ATTEMPT_1",
+                "name": "build",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "startedAt": "2025-10-20T00:00:00Z",
+                "completedAt": "2025-10-20T00:30:00Z",
+                "detailsUrl": None,
+                "externalId": "job-ext-id",
+            },
+        ]
+        sync_check_runs(self.pr, ctxs, head_sha)
+
+        rows = CommitCheckRun.objects.filter(repository=self.repo, head_sha=head_sha, name="build")
+        self.assertEqual(rows.count(), 1)
+        row = rows.get()
+        self.assertEqual(row.github_node_id, "CR_ATTEMPT_2")
         self.assertEqual(row.conclusion, "SUCCESS")
 
 

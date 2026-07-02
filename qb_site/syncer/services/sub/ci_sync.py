@@ -150,6 +150,22 @@ def _archive_mode_upsert(
         return existing, False, was_updated, updated_fields
 
 
+def _incoming_check_run_is_older(existing: CommitCheckRun, commit_values: dict[str, Any]) -> bool:
+    """True when the incoming snapshot predates the stored row's timestamps.
+
+    Used by the composite-conflict merge: GitHub Actions re-run attempts share
+    the job's deterministic ``external_id``, and the rollup can carry both the
+    superseded and the current attempt. Whichever attempt is processed second
+    lands in the conflict fallback, so without this guard a superseded
+    attempt's facts (e.g. the pre-re-run FAILURE) could clobber the newer
+    attempt's row. Rows or snapshots without timestamps can't be ordered;
+    they conservatively let the update proceed.
+    """
+    incoming = commit_values.get("gh_started_at") or commit_values.get("gh_completed_at")
+    current = existing.gh_started_at or existing.gh_completed_at
+    return incoming is not None and current is not None and incoming < current
+
+
 def _upsert_commit_check_run(
     pr: PullRequest,
     values: dict[str, Any],
@@ -206,6 +222,14 @@ def _upsert_commit_check_run(
             commit_values,
         )
     except (IntegrityError, ObjectDoesNotExist):
+        # Two shapes land here; both mean the composite (repo, sha, name,
+        # external_id) is already owned by a row with a different node id:
+        #   - CREATE collided: gid unseen, e.g. a re-run attempt sharing the
+        #     job's deterministic external_id with the row that owns it.
+        #   - UPDATE collided: gid matched a row whose composite differs —
+        #     typically an archive-created duplicate with external_id NULL
+        #     (doc 043: legacy payloads carry no externalId, so the importer
+        #     could not composite-match and created a second row).
         fallback_obj = None
         ext_id = values.get("external_id")
         if ext_id:
@@ -225,20 +249,31 @@ def _upsert_commit_check_run(
                 ext_id,
             )
             return False, False, tuple()
-        try:
-            was_updated, updated_fields = update_if_changed(fallback_obj, commit_values)
+        # Merge: the composite owner survives. Delete any other row still
+        # holding this gid (the UPDATE-collision loser) so the owner can take
+        # over the node id without tripping cckr_nodeid_uniq. Its FKs are all
+        # SET_NULL, matching what the daily superseded-row expiry would do.
+        CommitCheckRun.objects.filter(github_node_id=gid).exclude(pk=fallback_obj.pk).delete()
+        if _incoming_check_run_is_older(fallback_obj, commit_values):
             was_created = False
+            was_updated = False
+            updated_fields = tuple()
             commit_obj = fallback_obj
-        except IntegrityError:
-            log.warning(
-                "CommitCheckRun fallback update conflict for %s sha=%s gid=%s name=%s external_id=%s",
-                pr.repository,
-                values.get("head_sha"),
-                gid,
-                values.get("name"),
-                ext_id,
-            )
-            return False, False, tuple()
+        else:
+            try:
+                was_updated, updated_fields = update_if_changed(fallback_obj, commit_values, savepoint=True)
+                was_created = False
+                commit_obj = fallback_obj
+            except IntegrityError:
+                log.warning(
+                    "CommitCheckRun fallback update conflict for %s sha=%s gid=%s name=%s external_id=%s",
+                    pr.repository,
+                    values.get("head_sha"),
+                    gid,
+                    values.get("name"),
+                    ext_id,
+                )
+                return False, False, tuple()
     CommitCheckRun.objects.filter(pk=commit_obj.pk).update(last_synced_at=now)
     return was_created, was_updated, updated_fields
 
@@ -289,7 +324,7 @@ def _upsert_commit_status_context(
             )
             return False, False, tuple()
         try:
-            was_updated, updated_fields = update_if_changed(fallback_obj, commit_values)
+            was_updated, updated_fields = update_if_changed(fallback_obj, commit_values, savepoint=True)
             was_created = False
             commit_obj = fallback_obj
         except IntegrityError:

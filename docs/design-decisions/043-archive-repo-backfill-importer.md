@@ -240,6 +240,31 @@ per the project rule for env-backed settings.
   archive's missing `external_id` / `gh_started_at` / `gh_completed_at`
   (the legacy fragment doesn't request them) would silently downgrade
   live's non-null values to NULL.
+  - **Follow-up (ext-NULL duplicate rows vs the forced resync).**
+    Because the legacy fragment carries no `externalId`, the importer's
+    composite-key fallback (`repo+sha+name+external_id`) is disabled and
+    a snapshot check run whose node id wasn't already stored got a *new*
+    row with `external_id NULL` — invisible to the partial unique
+    constraint `cckr_repo_sha_name_ext_uniq` (`WHERE external_id IS NOT
+    NULL`). The forced-resync drain then hit these rows: GitHub Actions
+    re-run attempts share the job's deterministic `external_id` and the
+    rollup lists both attempts, so within one `sync_check_runs` pass the
+    first attempt INSERTed the composite owner and the second attempt's
+    UPDATE (filling ext NULL → real on the archive duplicate) collided
+    with it. The bare UPDATE poisoned the `@transaction.atomic` bundle
+    (`TransactionManagementError` on the fallback query), rolled back the
+    whole `sync_pr`, and — since a failed sync never advances
+    `last_synced_at` — the PR was re-enqueued and re-failed every tick
+    (~20% of each drain batch, ordering-dependent). Fix:
+    `update_if_changed(savepoint=True)` on the upsert/fallback UPDATE
+    paths so the conflict is handleable, plus a merge in
+    `_upsert_commit_check_run`'s conflict handler — the composite owner
+    survives, any other row still holding the incoming gid (the archive
+    duplicate) is deleted (FKs are all SET_NULL, same effect as the daily
+    superseded-row expiry), and a recency guard keeps a superseded
+    attempt from clobbering the newer attempt's conclusion. No manual
+    data repair needed: the resync itself heals the rows once syncs stop
+    rolling back.
 - **`gh_created_at` synthesis for `CommitStatusContext`.** The legacy
   fragment doesn't request `createdAt` but the column is `NOT NULL`. When
   the payload lacks `createdAt`, archive-mode sets `gh_created_at =
