@@ -173,6 +173,30 @@ class TestExpireStaleCITask(TestCase):
         self.assertEqual(result["deleted_superseded_status_contexts"], 0)
 
     # ------------------------------------------------------------------ #
+    # Batched deletion                                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_batched_deletion_converges_with_tiny_batch_size(self) -> None:
+        """All passes drain fully even when each batch holds a single row."""
+        from unittest.mock import patch
+
+        # Pass 1 fodder: two stale pending check runs.
+        _cr(self.repo, node_id="STALE_A", sha="sA", started_delta=timedelta(days=40))
+        _cr(self.repo, node_id="STALE_B", sha="sB", started_delta=timedelta(days=41))
+        # Pass 3 fodder: three superseded + one latest in the same group.
+        for i in range(4):
+            _cr(self.repo, node_id=f"SUP_{i}", sha="shaX", name="build", status="COMPLETED", conclusion="SUCCESS")
+
+        with patch("syncer.tasks.sync_tasks._EXPIRE_DELETE_BATCH_SIZE", 1):
+            result = expire_stale_ci_for_repo_task(self.repo.id, stale_pending_days=30)
+
+        self.assertEqual(result["deleted_stale_pending_check_runs"], 2)
+        self.assertEqual(result["deleted_superseded_check_runs"], 3)
+        remaining = CommitCheckRun.objects.filter(repository=self.repo)
+        self.assertEqual(remaining.count(), 1)
+        self.assertEqual(remaining.get().github_node_id, "SUP_3")
+
+    # ------------------------------------------------------------------ #
     # Cross-repo isolation                                                #
     # ------------------------------------------------------------------ #
 

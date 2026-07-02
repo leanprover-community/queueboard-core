@@ -318,6 +318,9 @@ SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR = int(os.getenv("SYNCER_PENDING_CI_REF
 # CI row expiry / superseded-row cleanup
 SYNCER_CI_EXPIRY_PERIOD_SECONDS = int(os.getenv("SYNCER_CI_EXPIRY_PERIOD_SECONDS", 86400))
 SYNCER_CI_STALE_PENDING_DAYS = int(os.getenv("SYNCER_CI_STALE_PENDING_DAYS", 30))
+# Per-statement Postgres timeout inside the expiry task; a runaway plan once ran for
+# days and blocked vacuum database-wide. 0 disables the guard.
+SYNCER_CI_EXPIRY_STATEMENT_TIMEOUT_SECONDS = int(os.getenv("SYNCER_CI_EXPIRY_STATEMENT_TIMEOUT_SECONDS", 300))
 
 # Webhook delivery log cleanup
 SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS", 7))

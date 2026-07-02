@@ -122,7 +122,7 @@ front and expensive to recover from when skipped.
     count on `SyncerConvergenceSnapshot` via `syncer.collect_convergence`. The shared
     detector is `syncer.services.consistency.inconsistent_open_prs_queryset`),
   - `syncer.refresh_pending_ci_for_active_repos` → `syncer.refresh_pending_ci_for_repo`,
-  - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows),
+  - `syncer.expire_stale_ci_for_active_repos` → `syncer.expire_stale_ci_for_repo` (daily; deletes phantom pending and superseded same-SHA+name CI rows in bounded id-cursor batches under a per-statement Postgres timeout, `SYNCER_CI_EXPIRY_STATEMENT_TIMEOUT_SECONDS`. The superseded passes must stay written as correlated-`Exists` anti-joins — an `exclude(id__in=<grouped subquery>)` here once planned as an O(n²) per-row subplan that ran for days and pinned the vacuum xmin horizon database-wide),
   - `syncer.expire_old_webhook_deliveries` (daily by default; deletes GitHubWebhookDelivery rows older than SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS),
   - `syncer.sync_label_catalog_for_active_repos` → `syncer.sync_label_catalog` (hourly by default via SYNCER_LABEL_CATALOG_PERIOD_SECONDS; pages through `repository.labels` and reconciles `LabelDef` rows, deleting labels removed upstream — cascades to `PRLabel`),
   - `syncer.sync_ci_for_shas` / `syncer.sync_ci_for_repo_shas` — CI-by-SHA ingestion,
