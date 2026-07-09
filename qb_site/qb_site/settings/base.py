@@ -455,6 +455,21 @@ ANALYZER_ASSIGNMENT_PROPOSE_UTC_MINUTE = env_optional_bounded_int(
 # supersede those whose PR left the queue) and is intentionally NOT gated by the master switch,
 # so flipping the gate off lets existing proposals drain. PERIOD_SECONDS <= 0 disables it.
 ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS", 3600))
+# Delivery task schedule (daily; default 01:00 UTC, shortly after propose creates the day's
+# proposals at 00:45). PERIOD_SECONDS <= 0 disables scheduling. Actual sending is additionally
+# gated inside the task by ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED AND _DELIVERY_ENABLED (+ dry-run),
+# so scheduling it while off is a cheap no-op (feature_disabled).
+ANALYZER_ASSIGNMENT_DELIVER_PERIOD_SECONDS = int(os.getenv("ANALYZER_ASSIGNMENT_DELIVER_PERIOD_SECONDS", 86400))
+ANALYZER_ASSIGNMENT_DELIVER_UTC_HOUR = env_optional_bounded_int(
+    "ANALYZER_ASSIGNMENT_DELIVER_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+ANALYZER_ASSIGNMENT_DELIVER_UTC_MINUTE = env_optional_bounded_int(
+    "ANALYZER_ASSIGNMENT_DELIVER_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
 ANALYZER_REVIEWER_ATTENTION_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ATTENTION_ENABLED"), False)
 ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED = env_bool(
     os.getenv("ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED"),
@@ -720,6 +735,18 @@ if ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["expire_assignment_proposals"] = {
         "task": "analyzer.expire_assignment_proposals",
         "schedule": ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS,
+    }
+# Deliver the per-reviewer proposal digest DM (design doc 050), daily at a fixed UTC clock time
+# (default 01:00, just after the propose run). Beat fires unconditionally; the task no-ops unless
+# ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED AND _DELIVERY_ENABLED (+ dry-run). PERIOD_SECONDS <= 0
+# disables scheduling.
+if ANALYZER_ASSIGNMENT_DELIVER_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["deliver_assignment_proposals"] = {
+        "task": "analyzer.deliver_assignment_proposals",
+        "schedule": crontab(
+            hour=ANALYZER_ASSIGNMENT_DELIVER_UTC_HOUR if ANALYZER_ASSIGNMENT_DELIVER_UTC_HOUR is not None else 1,
+            minute=ANALYZER_ASSIGNMENT_DELIVER_UTC_MINUTE if ANALYZER_ASSIGNMENT_DELIVER_UTC_MINUTE is not None else 0,
+        ),
     }
 reviewer_attention_schedule = None
 if (ANALYZER_REVIEWER_ATTENTION_UTC_HOUR is not None) or (ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE is not None):

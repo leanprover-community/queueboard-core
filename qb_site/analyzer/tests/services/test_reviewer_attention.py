@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.test import TestCase
 
-from analyzer.models import PRQueueWindow, QueueRuleSet
+from analyzer.models import AssignmentProposal, PRQueueWindow, QueueRuleSet
 from analyzer.services.reviewer_attention import build_reviewer_attention_reports
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest, PRTimelineEvent, PRTimelineEventType
@@ -243,3 +243,65 @@ class ReviewerAttentionServiceTests(TestCase):
         item = reports[0].items[0]
 
         self.assertFalse(item.needs_new_assignment_ping)
+
+    def _make_accepted_proposal(self, *, pr_number: int, reviewer_login: str, decided_at: datetime, decided_via: str) -> None:
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=pr_number,
+            reviewer_login=reviewer_login,
+            state=AssignmentProposal.STATE_ACCEPTED,
+            expires_at=self.now - timedelta(days=1),
+            decided_at=decided_at,
+            decided_via=decided_via,
+        )
+
+    def test_new_assignment_ping_suppressed_after_console_accept(self) -> None:
+        # design doc 050 Chunk 5: the proposal DM already covered this assignment, so the attention
+        # sweep must not also ping "newly assigned" for it.
+        pr = self._mk_pr(111, assignees=["alice"])
+        self._add_assignment_event(pr=pr, assignee_login="alice", occurred_at=self.now - timedelta(hours=2))
+        self._make_accepted_proposal(
+            pr_number=111,
+            reviewer_login="Alice",  # case-insensitive match against the login
+            decided_at=self.now - timedelta(hours=2),
+            decided_via=AssignmentProposal.DECIDED_VIA_CONSOLE,
+        )
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            new_assignment_ping_window_seconds=24 * 60 * 60,
+        )
+        item = reports[0].items[0]
+
+        self.assertFalse(item.needs_new_assignment_ping)
+
+    def test_new_assignment_ping_not_suppressed_by_old_or_non_console_accept(self) -> None:
+        # An accept outside the ping window, or one not made via the console (e.g. a direct assign),
+        # does not suppress the ping.
+        pr_old = self._mk_pr(112, assignees=["alice"])
+        self._add_assignment_event(pr=pr_old, assignee_login="alice", occurred_at=self.now - timedelta(hours=2))
+        self._make_accepted_proposal(
+            pr_number=112,
+            reviewer_login="alice",
+            decided_at=self.now - timedelta(days=3),  # before the 24h ping window
+            decided_via=AssignmentProposal.DECIDED_VIA_CONSOLE,
+        )
+        pr_noncon = self._mk_pr(113, assignees=["alice"])
+        self._add_assignment_event(pr=pr_noncon, assignee_login="alice", occurred_at=self.now - timedelta(hours=2))
+        self._make_accepted_proposal(
+            pr_number=113,
+            reviewer_login="alice",
+            decided_at=self.now - timedelta(hours=2),
+            decided_via=AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED,
+        )
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            new_assignment_ping_window_seconds=24 * 60 * 60,
+        )
+        items = {item.pr_number: item for item in reports[0].items}
+
+        self.assertTrue(items[112].needs_new_assignment_ping)
+        self.assertTrue(items[113].needs_new_assignment_ping)

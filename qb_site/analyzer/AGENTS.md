@@ -72,6 +72,14 @@ Celery task names (as registered via `@shared_task(name=…)`):
   human assignee, or left the review queue (per the `proposal_validity` predicate and
   `ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT`). Performs no GitHub writes and is
   intentionally **not** gated by the master switch, so existing proposals keep draining.
+- `analyzer.deliver_assignment_proposals` — sends one per-reviewer Zulip DM digest
+  (design doc 050) of their pending, not-yet-notified proposals across all repos, linking
+  to the console. Dedupe is carried by `AssignmentProposal.notified_at` (stamped after a
+  successful send; no separate record model). Requires BOTH
+  `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` and `ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED`
+  to actually send (+ `_DRY_RUN` computes the would-send set). Reachability is
+  `core.User.zulip_user_id`. Command:
+  `manage.py deliver_assignment_proposals [--repo o/n] [--dry-run] [--enable]`.
 - `analyzer.build_area_stats` / `analyzer.refresh_area_stats`
 
 **Reviewer attention tasks**

@@ -1,6 +1,6 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunks 1–4 and 6 landed; Chunk 5 next).
+> Status: Living implementation plan (in progress — Chunks 1–6 landed; Chunk 7 (surfacing) next).
 > Captures decisions, invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
@@ -390,22 +390,26 @@ not new *flags* but new *infrastructure config*:
    (per-reviewer branch: `auto` → 046 path; `confirm` reachable → proposal; `confirm`
    unreachable → fallback), `analyzer.propose_reviewer_assignments` task, expiry sweep task,
    settings/flags/beat. Dry-run + flags. Unit + task tests.
-5. **Notification** *(NEXT — ready to build; console from Chunk 6 provides the link)*: per-reviewer
-   digest DM. **Build plan (resolved):**
-   - New task `analyzer.deliver_assignment_proposals` (or fold into the propose task — prefer a
-     separate task so delivery stays independently schedulable/gated). Gated by the already-defined
-     `ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED` (+ reuse the master `_ENABLED`/dry-run).
-   - Dedup key = **`AssignmentProposal.notified_at`** (already on the model): a reviewer's digest
-     covers their `state=proposed, notified_at IS NULL` proposals; stamp `notified_at=now` after a
-     successful send; new proposals next cycle → next digest. No separate record model needed.
-   - Reuse `zulip_bot.services.zulip_client.ZulipClient.send_direct_message`; reachability =
-     `core.User.zulip_user_id` (unreachable reviewers never get proposals — they fell back to
-     auto in Chunk 4). Link via `core.services.site_urls.build_site_url(reverse("console:home"))`.
-   - De-dupe vs the attention "newly assigned" ping: the overlap is narrow — it only arises *after*
-     an accept assigns the reviewer. Suppress the attention newly-assigned ping for a PR whose
-     assignee arrived via a just-accepted proposal (detect via a recent `AssignmentProposal`
-     `state=accepted, decided_via=console` or the `ReviewerAssignmentApplication`), so the proposal
-     DM is the single touch for that lifecycle. (Confirm this suppression rule when implementing.)
+5. ✅ **(landed)** **Notification** *(console from Chunk 6 provides the link)*: per-reviewer
+   digest DM. **As built:**
+   - New task `analyzer.deliver_assignment_proposals` (separate from propose so delivery stays
+     independently schedulable/gated) + service `assignment_proposal_delivery.py` + management
+     command. Requires BOTH the master `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` **and**
+     `ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED` to send; `_DRY_RUN` computes the would-send set.
+   - Dedup key = **`AssignmentProposal.notified_at`**: a reviewer's digest covers their
+     `state=proposed, notified_at IS NULL` proposals; stamp `notified_at=now` (conditional
+     `UPDATE ... WHERE state='proposed' AND notified_at IS NULL`, race-safe) after a successful send;
+     new proposals next cycle → next digest. No separate record model.
+   - One DM per reviewer **across all repos** (not one per repo); reuses
+     `ZulipClient.send_direct_message`; reachability = `core.User.zulip_user_id` (matched
+     case-insensitively to `reviewer_login`; unreachable reviewers are skipped defensively but never
+     get proposals — they fell back to auto in Chunk 4). Link via
+     `build_site_url(reverse("console:home"))`.
+   - De-dupe vs the attention "newly assigned" ping **(confirmed)**: suppress the attention
+     newly-assigned ping for a `(pr, reviewer)` whose assignee arrived via a recently
+     `state=accepted, decided_via=console` `AssignmentProposal` (keyed to the same ping window), so
+     the proposal DM is the single touch for that lifecycle. Data-driven/ungated (no accepted rows →
+     no effect), matching the Chunk 3 builder-integration precedent.
 6. ✅ **(landed)** **Console** *(built before Chunk 5)*: dedicated `console/` app — GitHub-OAuth
    reviewer session, list view, accept/decline handlers (accept reuses the 046 mutation path),
    templates, live re-validation, tests.
@@ -472,6 +476,31 @@ not new *flags* but new *infrastructure config*:
 
 ## Progress Notes
 
+- 2026-07-09: **Chunk 5 landed (Notification).** Built the per-reviewer proposal digest DM. Pieces:
+  - **Service** `analyzer/services/assignment_proposal_delivery.py::deliver_assignment_proposals`:
+    queries `state=proposed, notified_at IS NULL` proposals across the given repos, groups by
+    reviewer login (case-insensitive), resolves `core.User` for Zulip reachability, batches PR titles,
+    renders one Markdown digest DM (console link + per-repo PR list with a Zulip-localized expiry
+    time), sends via `ZulipClient.send_direct_message`, then stamps `notified_at` with a conditional
+    `UPDATE ... WHERE state='proposed' AND notified_at IS NULL` (race-safe vs a concurrent
+    accept/expire). `dry_run` computes the would-send set with no DM and no stamp; a `None` client
+    when enabled counts `failed` rather than raising.
+  - **Task** `analyzer.deliver_assignment_proposals` (+ `deliver_assignment_proposals` management
+    command mirroring propose). Sends only when BOTH `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` **and**
+    `ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED` are on; `_DRY_RUN` previews. Constructs the
+    `ZulipClient` (handles init failure), wraps the service call defensively so a failure never
+    crashes beat. Daily beat entry at a fixed UTC clock (default 01:00, just after the 00:45 propose
+    run) via new `ANALYZER_ASSIGNMENT_DELIVER_PERIOD_SECONDS`/`_UTC_HOUR`/`_UTC_MINUTE` settings
+    (`base.py` + `.env.example`).
+  - **De-dupe vs the attention "newly assigned" ping:** `build_reviewer_attention_reports` now
+    suppresses `needs_new_assignment_ping` for a `(pr, reviewer)` whose assignee arrived via a recent
+    `state=accepted, decided_via=console` proposal (same ping window), so the proposal DM is the
+    single touch for that lifecycle. Ungated/data-driven.
+  - Updated `analyzer/AGENTS.md` task surface.
+  Validation: 33 focused tests (14 delivery service, 7 delivery task/command, +3 attention
+  suppression) + full `analyzer` suite (477) green on dockerized Postgres; `makemigrations --check`
+  clean (no model changes — `notified_at` already existed from Chunk 2); beat entry verified; ruff
+  clean. No real Zulip sends exercised (client mocked) — a staging end-to-end DM remains manual.
 - 2026-07-09: **Chunk 6 landed (built before Chunk 5).** New `console/` Django app at `/console/`
   — a GitHub-OAuth, session-backed reviewer console. Decisions (via checkpoint): dedicated app
   (not folded into `zulip_bot`); OAuth consolidated into `core`; console before notification so
