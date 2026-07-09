@@ -10,6 +10,12 @@ from core.models import Repository, ReviewerPreference
 from core.services.reviewer_notification_settings import parse_notification_policy
 from syncer.models import PRTimelineEvent, PRTimelineEventType, PullRequest
 
+# The console accept performs the GitHub assign moments before decided_at is stamped, so the
+# acceptance-produced ASSIGNED event's occurred_at lands within seconds of decided_at. A generous
+# tolerance absorbs clock skew while still separating the acceptance's own assignment from a later
+# unrelated re-assignment of the same (pr, reviewer).
+CONSOLE_ACCEPT_MATCH_TOLERANCE_SECONDS = 3600
+
 
 def _normalize_login(login: str | None) -> str:
     return (login or "").strip().lower()
@@ -152,18 +158,27 @@ def build_reviewer_attention_reports(
 
     # De-dupe against the acceptance-gate proposal DM (design doc 050): when an assignee arrived
     # because the reviewer just accepted a proposal on the console, they already got the proposal DM,
-    # so suppress the redundant "newly assigned" ping for that (pr, reviewer). Keyed to the same ping
-    # window as the ping itself. Data-driven: no accepted-via-console rows -> no effect.
-    recently_accepted_via_console: set[tuple[int, str]] = set()
+    # so suppress the redundant "newly assigned" ping for that (pr, reviewer). Suppression is tied to
+    # the acceptance that *produced* the assignment (event time within a small tolerance of
+    # decided_at), so a later unrelated re-assignment of the same pair still pings, and an acceptance
+    # just before the window still suppresses its own assignment landing just inside it.
+    # Data-driven: no accepted-via-console rows -> no effect.
+    console_accept_decided_at: dict[tuple[int, str], datetime] = {}
     if pr_by_number:
         accepted_rows = AssignmentProposal.objects.filter(
             repository=repository,
             pr_number__in=list(pr_by_number.keys()),
             state=AssignmentProposal.STATE_ACCEPTED,
             decided_via=AssignmentProposal.DECIDED_VIA_CONSOLE,
-            decided_at__gte=new_assignment_ping_cutoff,
-        ).values_list("pr_number", "reviewer_login")
-        recently_accepted_via_console = {(int(n), _normalize_login(str(login))) for n, login in accepted_rows}
+            decided_at__gte=new_assignment_ping_cutoff - timedelta(seconds=CONSOLE_ACCEPT_MATCH_TOLERANCE_SECONDS),
+        ).values_list("pr_number", "reviewer_login", "decided_at")
+        for n, login, decided_at in accepted_rows:
+            if decided_at is None:
+                continue
+            key = (int(n), _normalize_login(str(login)))
+            prev = console_accept_decided_at.get(key)
+            if prev is None or decided_at > prev:
+                console_accept_decided_at[key] = decided_at
 
     reports: list[ReviewerAttentionReport] = []
     for pref in prefs:
@@ -213,12 +228,13 @@ def build_reviewer_attention_reports(
                     days_since_anchor = int(total_seconds // 86400)
                     needs_auto_unassign = days_since_anchor >= policy.auto_unassign_days
                     needs_nudge = (days_since_anchor >= policy.stale_nudge_days) and not needs_auto_unassign
-            if (
-                last_assigned_at is not None
-                and last_assigned_at >= new_assignment_ping_cutoff
-                and (pr_number, reviewer_login) not in recently_accepted_via_console
-            ):
-                needs_new_assignment_ping = True
+            if last_assigned_at is not None and last_assigned_at >= new_assignment_ping_cutoff:
+                accepted_at = console_accept_decided_at.get(assignment_key)
+                produced_by_console_accept = (
+                    accepted_at is not None
+                    and abs((last_assigned_at - accepted_at).total_seconds()) <= CONSOLE_ACCEPT_MATCH_TOLERANCE_SECONDS
+                )
+                needs_new_assignment_ping = not produced_by_console_accept
 
             items.append(
                 ReviewerAttentionItem(
