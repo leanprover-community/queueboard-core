@@ -276,6 +276,29 @@ class ReviewerAttentionServiceTests(TestCase):
 
         self.assertFalse(item.needs_new_assignment_ping)
 
+    def test_later_manual_reassignment_still_pings_after_console_accept(self) -> None:
+        # The suppression is tied to the assignment the acceptance produced. A reviewer who accepts,
+        # self-unassigns, and is later manually re-assigned within the same ping window must still be
+        # pinged for the unrelated re-assignment.
+        pr = self._mk_pr(114, assignees=["alice"])
+        self._make_accepted_proposal(
+            pr_number=114,
+            reviewer_login="alice",
+            decided_at=self.now - timedelta(hours=10),
+            decided_via=AssignmentProposal.DECIDED_VIA_CONSOLE,
+        )
+        # The latest ASSIGNED event is hours after the acceptance -> a different assignment.
+        self._add_assignment_event(pr=pr, assignee_login="alice", occurred_at=self.now - timedelta(hours=2))
+
+        reports = build_reviewer_attention_reports(
+            repository=self.repo,
+            as_of=self.now,
+            new_assignment_ping_window_seconds=24 * 60 * 60,
+        )
+        item = reports[0].items[0]
+
+        self.assertTrue(item.needs_new_assignment_ping)
+
     def test_new_assignment_ping_not_suppressed_by_old_or_non_console_accept(self) -> None:
         # An accept outside the ping window, or one not made via the console (e.g. a direct assign),
         # does not suppress the ping.
