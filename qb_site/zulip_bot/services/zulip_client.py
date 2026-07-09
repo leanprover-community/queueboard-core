@@ -7,6 +7,39 @@ from typing import Any, Iterable
 import requests
 from django.conf import settings
 
+# Zulip rejects messages over 10000 characters; leave headroom for server-side rendering overhead.
+MAX_MESSAGE_CHARS = 9000
+
+
+def split_message_chunks(*, content: str, max_chars: int = MAX_MESSAGE_CHARS) -> list[str]:
+    """Split a long message on line boundaries so each chunk fits Zulip's size ceiling.
+
+    The shared chunker for every multi-message Zulip send (assigned-prs command, reviewer
+    attention DMs, assignment-proposal digests) — do not re-implement per call site. A single
+    line longer than ``max_chars`` is hard-split mid-line so no chunk can ever exceed the
+    ceiling and fail the whole send.
+    """
+    if len(content) <= max_chars:
+        return [content]
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in content.splitlines():
+        line_len = len(line) + 1
+        if current and current_len + line_len > max_chars:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        if line_len > max_chars:
+            for start in range(0, len(line), max_chars):
+                chunks.append(line[start : start + max_chars])
+            continue
+        current.append(line)
+        current_len += line_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
 
 @dataclass(frozen=True)
 class ZulipApiError(RuntimeError):

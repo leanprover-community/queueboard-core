@@ -9,7 +9,8 @@ from analyzer.services.reviewer_attention_format import format_compact_duration
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import LabelDef, PRLabel, PullRequest, PRTimelineEvent, PRTimelineEventType
 from zulip_bot.commands import CommandContext
-from zulip_bot.commands.assigned_prs import _split_message_chunks, assigned_prs_command
+from zulip_bot.commands.assigned_prs import assigned_prs_command
+from zulip_bot.services.zulip_client import split_message_chunks
 
 
 def _dt(year: int, month: int, day: int, hour: int = 0) -> datetime:
@@ -339,10 +340,21 @@ class TestAssignedPrsCommand(TestCase):
 class TestSplitMessageChunks(TestCase):
     def test_splits_when_message_exceeds_limit(self) -> None:
         content = "line-1\nline-2\nline-3\nline-4"
-        chunks = _split_message_chunks(content=content, max_chars=12)
+        chunks = split_message_chunks(content=content, max_chars=12)
 
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 12 for chunk in chunks))
+
+    def test_single_oversized_line_is_hard_split(self) -> None:
+        # No chunk may ever exceed the ceiling — an oversized chunk fails the whole Zulip send.
+        content = "short\n" + "x" * 30 + "\nshort-2"
+        chunks = split_message_chunks(content=content, max_chars=12)
+
+        self.assertTrue(all(len(chunk) <= 12 for chunk in chunks))
+        self.assertEqual("".join(chunks).replace("\n", ""), content.replace("\n", ""))
+
+    def test_short_message_is_untouched(self) -> None:
+        self.assertEqual(split_message_chunks(content="hello\nthere", max_chars=100), ["hello\nthere"])
 
 
 class TestFormatDuration(TestCase):

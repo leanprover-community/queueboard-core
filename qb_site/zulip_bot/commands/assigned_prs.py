@@ -19,9 +19,7 @@ from core.models import Repository, ReviewerPreference, User
 from core.utils.zulip_time import format_global_time
 from syncer.models import PRLabel, PullRequest
 from zulip_bot.commands import CommandContext, CommandResult, register_command
-from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
-
-MAX_MESSAGE_CHARS = 9000
+from zulip_bot.services.zulip_client import MAX_MESSAGE_CHARS, ZulipApiError, ZulipClient, split_message_chunks
 
 _NO_REQUIRED_FAILURES = "no_required_failures"
 
@@ -100,7 +98,7 @@ def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
         mention_map=mention_map,
         load_by_repo_id=load_by_repo_id,
     )
-    chunks = _split_message_chunks(content=content, max_chars=MAX_MESSAGE_CHARS)
+    chunks = split_message_chunks(content=content, max_chars=MAX_MESSAGE_CHARS)
 
     try:
         client = ZulipClient()
@@ -418,38 +416,6 @@ def _ci_emoji(ci_status: str, ci_requires_success: bool) -> str:
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
-
-
-def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
-    if len(content) <= max_chars:
-        return [content]
-
-    lines = content.splitlines()
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for line in lines:
-        line_len = len(line) + 1
-        if current and current_len + line_len > max_chars:
-            chunks.append("\n".join(current))
-            current = [line]
-            current_len = line_len
-            continue
-        if not current and line_len > max_chars:
-            start = 0
-            while start < len(line):
-                end = min(start + max_chars, len(line))
-                chunks.append(line[start:end])
-                start = end
-            current = []
-            current_len = 0
-            continue
-        current.append(line)
-        current_len += line_len
-
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
 
 
 def _now_utc_unix() -> int:

@@ -33,11 +33,9 @@ from core.models import Repository, User
 from core.services.site_urls import build_site_url
 from core.utils.zulip_time import format_global_time
 from syncer.models import PullRequest
-from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
+from zulip_bot.services.zulip_client import MAX_MESSAGE_CHARS, ZulipApiError, ZulipClient, split_message_chunks
 
 log = logging.getLogger(__name__)
-
-MAX_MESSAGE_CHARS = 9000
 
 
 def _empty_stats() -> dict[str, int]:
@@ -53,27 +51,6 @@ def _empty_stats() -> dict[str, int]:
         "skipped_disabled": 0,
         "proposals_notified": 0,
     }
-
-
-def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
-    """Split a long message on line boundaries so each chunk fits Zulip's size ceiling."""
-    if len(content) <= max_chars:
-        return [content]
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for line in content.splitlines():
-        line_len = len(line) + 1
-        if current and current_len + line_len > max_chars:
-            chunks.append("\n".join(current))
-            current = [line]
-            current_len = line_len
-            continue
-        current.append(line)
-        current_len += line_len
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
 
 
 def _resolve_users_by_login(login_norms: Iterable[str]) -> dict[str, User]:
@@ -234,7 +211,7 @@ def deliver_assignment_proposals(
         )
         stats["attempted"] += 1
         try:
-            for chunk in _split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS):
+            for chunk in split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS):
                 client.send_direct_message(to=[int(user.zulip_user_id)], content=chunk)
         except ZulipApiError as exc:
             stats["failed"] += 1
@@ -259,4 +236,4 @@ def deliver_assignment_proposals(
     return result
 
 
-__all__ = ["deliver_assignment_proposals", "MAX_MESSAGE_CHARS"]
+__all__ = ["deliver_assignment_proposals"]

@@ -28,11 +28,10 @@ from core.services.github_assignment import AssignmentMutationError, GitHubAssig
 from core.services.github_operation_tokens import resolve_github_app_operation_token
 from core.models import Repository, User
 from core.utils.zulip_time import format_global_time
-from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
+from zulip_bot.services.zulip_client import MAX_MESSAGE_CHARS, ZulipApiError, ZulipClient, split_message_chunks
 
 
 log = logging.getLogger(__name__)
-MAX_MESSAGE_CHARS = 9000
 
 
 def _iter_item_notification_categories(item: ReviewerAttentionItem) -> list[str]:
@@ -243,36 +242,6 @@ def _coerce_utc_datetime(raw: Any) -> datetime | None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
     return None
-
-
-def _split_message_chunks(*, content: str, max_chars: int) -> list[str]:
-    if len(content) <= max_chars:
-        return [content]
-
-    lines = content.splitlines()
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-    for line in lines:
-        line_len = len(line) + 1
-        if current and current_len + line_len > max_chars:
-            chunks.append("\n".join(current))
-            current = [line]
-            current_len = line_len
-            continue
-        if not current and line_len > max_chars:
-            start = 0
-            while start < len(line):
-                end = min(start + max_chars, len(line))
-                chunks.append(line[start:end])
-                start = end
-            continue
-        current.append(line)
-        current_len += line_len
-
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
 
 
 def _format_item_line(item: ReviewerAttentionItem) -> str:
@@ -747,7 +716,7 @@ def reviewer_attention_daily_task(
             unassign_outcomes=unassign_outcomes,
             loads_by_repo_id=loads_by_repo_id,
         )
-        chunks = _split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS)
+        chunks = split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS)
         delivery_stats["attempted"] += 1
         try:
             for chunk in chunks:
