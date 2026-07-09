@@ -4,12 +4,20 @@ import hashlib
 import json
 import random
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Sequence, Set
 
+from django.conf import settings
 from django.utils.dateparse import parse_datetime
 
-from analyzer.models import AreaStatsSnapshot, QueueRuleSet, QueueSnapshot, ReviewerAssignmentSnapshot, ReviewerOptOut
+from analyzer.models import (
+    AreaStatsSnapshot,
+    AssignmentProposal,
+    QueueRuleSet,
+    QueueSnapshot,
+    ReviewerAssignmentSnapshot,
+    ReviewerOptOut,
+)
 from analyzer.services.queue_rules import default_rule_set_for_repo, rules_for_rule_set
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from analyzer.services.reviewer_assignment_engine import (
@@ -19,6 +27,7 @@ from analyzer.services.reviewer_assignment_engine import (
     ReviewerSuggestionResult,
     SimulationInputs,
     _normalize_login,
+    add_pending_proposal_load,
     rank_prs_for_assignment,
     run_assignment_simulation,
     suggest_reviewer_for_pr,
@@ -48,6 +57,79 @@ def _opt_outs_for_prs(repository: Repository, pr_numbers: Sequence[int]) -> dict
     for pr_number, reviewer_login in rows:
         opt_outs.setdefault(int(pr_number), set()).add(_normalize_login(reviewer_login))
     return opt_outs
+
+
+def _active_proposal_rows(repository: Repository) -> list[tuple[int, str]]:
+    """All active (``proposed``) assignment proposals for the repo as ``(pr_number, login)``.
+
+    One repo-wide query feeds both proposal-aware builder additions (design doc 050): the set
+    of PRs to withhold from re-proposal and the per-reviewer pending load. Login casing matches
+    the snapshot / ``ReviewerProfile.github_login`` keying, so the load lookup lines up with the
+    engine's exact-match capacity gate.
+    """
+    return [
+        (int(pr_number), reviewer_login)
+        for pr_number, reviewer_login in AssignmentProposal.objects.filter(
+            repository=repository,
+            state=AssignmentProposal.STATE_PROPOSED,
+        ).values_list("pr_number", "reviewer_login")
+    ]
+
+
+def _pending_proposal_load(rows: Sequence[tuple[int, str]], *, weight: float) -> dict[str, float]:
+    """Weighted pending-proposal load per reviewer login (one slot per active proposal)."""
+    load: dict[str, float] = {}
+    for _pr_number, reviewer_login in rows:
+        load[reviewer_login] = load.get(reviewer_login, 0.0) + weight
+    return load
+
+
+def _filter_prs_without_active_proposal(pr_numbers: Sequence[int], *, prs_with_active_proposal: Set[int]) -> list[int]:
+    """Drop PRs that already have an active proposal.
+
+    Enforces "one proposal per PR at a time": never re-propose a PR that is mid-proposal, and
+    never propose it to a second reviewer while the first is deciding.
+    """
+    return [int(n) for n in pr_numbers if int(n) not in prs_with_active_proposal]
+
+
+def _proposal_cooldowns_for_prs(
+    repository: Repository,
+    pr_numbers: Sequence[int],
+    *,
+    now: datetime,
+    cooldown_days: int,
+) -> dict[int, set[str]]:
+    """Reviewers on soft cooldown per PR from a recently ``expired`` proposal (design doc 050).
+
+    A silent timeout is soft: skip the reviewer for this PR for ``cooldown_days`` after the
+    proposal expired, then let them be a candidate again. Unlike a decline (a permanent
+    ``ReviewerOptOut``), this only advances the PR to other candidates now without foreclosing
+    a reviewer who was merely away. Returns an ``excluded_by_pr`` fragment mergeable with the
+    opt-out exclusions.
+    """
+    if not pr_numbers or cooldown_days <= 0:
+        return {}
+    cutoff = now - timedelta(days=cooldown_days)
+    cooldowns: dict[int, set[str]] = {}
+    rows = AssignmentProposal.objects.filter(
+        repository=repository,
+        pr_number__in=[int(n) for n in pr_numbers],
+        state=AssignmentProposal.STATE_EXPIRED,
+        decided_at__gte=cutoff,
+    ).values_list("pr_number", "reviewer_login")
+    for pr_number, reviewer_login in rows:
+        cooldowns.setdefault(int(pr_number), set()).add(_normalize_login(reviewer_login))
+    return cooldowns
+
+
+def _merge_excluded_by_pr(*maps: dict[int, set[str]]) -> dict[int, set[str]]:
+    """Union several ``{pr_number: {login, ...}}`` exclusion maps into one."""
+    merged: dict[int, set[str]] = {}
+    for mapping in maps:
+        for pr_number, logins in mapping.items():
+            merged.setdefault(int(pr_number), set()).update(logins)
+    return merged
 
 
 def _active_reviewer_logins(reviewers: Sequence[ReviewerProfile]) -> set[str]:
@@ -306,6 +388,71 @@ def suggest_reviewers_many_with_trace(
     return result.suggestions, result.per_pr
 
 
+@dataclass
+class _AssignmentInputs:
+    """Proposal-aware candidate/load inputs shared by the builder and the trace."""
+
+    reviewers: list[ReviewerProfile]
+    assignments: Dict[str, tuple[list[int], float, int]]
+    queue_prs: list[int]
+    assignable_queue_prs: list[int]
+    excluded_by_pr: dict[int, set[str]]
+
+
+def _prepare_assignment_inputs(
+    repository: Repository,
+    *,
+    payload: dict,
+    now: datetime,
+    rule_set: QueueRuleSet | None,
+) -> _AssignmentInputs:
+    """Assemble the candidate pool, reviewer load, and exclusions for a build.
+
+    Beyond the legacy filters (active-assignee / assignment-forbidden labels / opt-outs) this
+    folds in the three proposal-aware additions from design doc 050 so the builder and the
+    diagnostic trace agree: pending proposals contribute weighted load, PRs with an active
+    proposal are withheld from re-proposal, and reviewers with a recently expired proposal for a
+    PR are excluded for it (soft cooldown, merged into the per-PR exclusion set alongside
+    opt-outs).
+    """
+    reviewers = build_reviewer_catalog(repository, now=now)
+    assignment_stats = collect_assignment_statistics(payload)
+
+    proposal_weight = float(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT", 1.0))
+    active_proposal_rows = _active_proposal_rows(repository)
+    prs_with_active_proposal = {pr_number for pr_number, _ in active_proposal_rows}
+    assignments = add_pending_proposal_load(
+        assignment_stats.assignments,
+        _pending_proposal_load(active_proposal_rows, weight=proposal_weight),
+    )
+
+    all_prs = payload.get("prs", {})
+    dashboards = payload.get("lists", {}).get("dashboards", {})
+    queue_prs = list(dashboards.get("Queue", []))
+    assignable_queue_prs = _filter_prs_without_active_assignee(queue_prs, all_prs=all_prs, reviewers=reviewers)
+    assignable_queue_prs = _filter_assignment_forbidden_prs(
+        assignable_queue_prs,
+        all_prs=all_prs,
+        forbidden_labels=_assignment_forbidden_labels(repository, rule_set=rule_set),
+    )
+    assignable_queue_prs = _filter_prs_without_active_proposal(
+        assignable_queue_prs, prs_with_active_proposal=prs_with_active_proposal
+    )
+
+    cooldown_days = int(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS", 14))
+    excluded_by_pr = _merge_excluded_by_pr(
+        _opt_outs_for_prs(repository, assignable_queue_prs),
+        _proposal_cooldowns_for_prs(repository, assignable_queue_prs, now=now, cooldown_days=cooldown_days),
+    )
+    return _AssignmentInputs(
+        reviewers=reviewers,
+        assignments=assignments,
+        queue_prs=queue_prs,
+        assignable_queue_prs=assignable_queue_prs,
+        excluded_by_pr=excluded_by_pr,
+    )
+
+
 def build_reviewer_assignment_trace(
     repository: Repository,
     *,
@@ -315,31 +462,18 @@ def build_reviewer_assignment_trace(
 ) -> dict:
     current_time = now or datetime.now(timezone.utc)
     payload = queue_snapshot.payload
-    reviewers = build_reviewer_catalog(repository, now=current_time)
     topic_label_matcher = topic_label_matcher_for_repo(repository)
-    assignment_stats = collect_assignment_statistics(payload)
+    inputs = _prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=None)
+    queue_prs = inputs.queue_prs
+    assignable_queue_prs = inputs.assignable_queue_prs
 
-    dashboards = payload.get("lists", {}).get("dashboards", {})
-    queue_prs = dashboards.get("Queue", [])
-    assignable_queue_prs = _filter_prs_without_active_assignee(
-        queue_prs,
-        all_prs=payload.get("prs", {}),
-        reviewers=reviewers,
-    )
-    assignable_queue_prs = _filter_assignment_forbidden_prs(
-        assignable_queue_prs,
-        all_prs=payload.get("prs", {}),
-        forbidden_labels=_assignment_forbidden_labels(repository),
-    )
-
-    excluded_by_pr = _opt_outs_for_prs(repository, assignable_queue_prs)
     suggestions, per_pr = suggest_reviewers_many_with_trace(
-        reviewers=reviewers,
-        assignments=assignment_stats.assignments,
+        reviewers=inputs.reviewers,
+        assignments=inputs.assignments,
         prs_to_assign=assignable_queue_prs,
         all_prs=payload.get("prs", {}),
         rng=rng,
-        excluded_by_pr=excluded_by_pr,
+        excluded_by_pr=inputs.excluded_by_pr,
         topic_label_matcher=topic_label_matcher,
     )
 
@@ -471,29 +605,15 @@ class ReviewerAssignmentBuilder:
         queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
         payload = queue_obj.payload
 
-        reviewers = build_reviewer_catalog(repository, now=current_time)
-        assignment_stats = collect_assignment_statistics(payload)
-
-        dashboards = payload.get("lists", {}).get("dashboards", {})
-        queue_prs = dashboards.get("Queue", [])
-        assignable_queue_prs = _filter_prs_without_active_assignee(
-            queue_prs,
-            all_prs=payload.get("prs", {}),
-            reviewers=reviewers,
-        )
-        assignable_queue_prs = _filter_assignment_forbidden_prs(
-            assignable_queue_prs,
-            all_prs=payload.get("prs", {}),
-            forbidden_labels=_assignment_forbidden_labels(repository, rule_set=rule_set),
-        )
+        inputs = _prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=rule_set)
 
         automatic_assignments = suggest_reviewers_many(
-            reviewers=reviewers,
-            assignments=assignment_stats.assignments,
-            prs_to_assign=assignable_queue_prs,
+            reviewers=inputs.reviewers,
+            assignments=inputs.assignments,
+            prs_to_assign=inputs.assignable_queue_prs,
             all_prs=payload.get("prs", {}),
             rng=self.rng,
-            excluded_by_pr=_opt_outs_for_prs(repository, assignable_queue_prs),
+            excluded_by_pr=inputs.excluded_by_pr,
             topic_label_matcher=topic_label_matcher_for_repo(repository),
         )
 
@@ -647,6 +767,7 @@ __all__ = [
     "ReviewerAssignmentBuilder",
     "ReviewerProfile",
     "ReviewerSuggestionResult",
+    "add_pending_proposal_load",
     "build_reviewer_assignment_trace",
     "build_reviewer_catalog",
     "collect_assignment_statistics",

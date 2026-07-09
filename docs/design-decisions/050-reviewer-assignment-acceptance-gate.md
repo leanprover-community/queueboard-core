@@ -1,6 +1,6 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunks 1–2 landed). Captures decisions,
+> Status: Living implementation plan (in progress — Chunks 1–3 landed). Captures decisions,
 > invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
@@ -363,8 +363,9 @@ a later step.
 2. ✅ **(landed)** **Model:** `analyzer.AssignmentProposal` + migration (partial-unique
    index), admin (`ReadOnlyAdmin`), backup-policy coverage (BACKUP + TRUNCATE, like the
    sibling reviewer tables) (`scripts/backup_policy.py`).
-3. **Builder/engine integration:** candidate exclusion, pending-load contribution, cooldown
-   exclusion; pure-engine seams with unit tests (assignability, scarcity, cooldown).
+3. ✅ **(landed)** **Builder/engine integration:** candidate exclusion, pending-load
+   contribution, cooldown exclusion; pure-engine seams with unit tests (assignability,
+   scarcity, cooldown).
 4. **Propose service + task + expiry sweep:** `propose_assignments_for_repo` (per-reviewer
    branch: `auto` → 046 path; `confirm` reachable → proposal; `confirm` unreachable →
    fallback), `analyzer.propose_reviewer_assignments` task, expiry sweep task, settings/
@@ -436,6 +437,25 @@ a later step.
 
 ## Progress Notes
 
+- 2026-07-08: **Chunk 3 landed.** Made `ReviewerAssignmentBuilder` proposal-aware via three
+  additions, all routed through a new shared `_prepare_assignment_inputs` helper so the builder
+  and the diagnostic `build_reviewer_assignment_trace` cannot diverge: (1) **candidate
+  exclusion** — a repo-wide `state=proposed` query yields the set of PRs to withhold from
+  re-proposal (`_filter_prs_without_active_proposal`); (2) **pending-load contribution** — the
+  same rows feed a per-reviewer load map folded into the engine's weighted load by the new pure
+  seam `reviewer_assignment_engine.add_pending_proposal_load` (weight
+  `ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT`, default 1.0; a proposal occupies a slot,
+  open-list/total untouched); (3) **cooldown exclusion** — reviewers with an `expired` proposal
+  for a PR within `ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS` (default 14, `decided_at`
+  window; 0 disables) are merged into the per-PR `excluded_by_pr` set alongside opt-outs
+  (`_proposal_cooldowns_for_prs` + `_merge_excluded_by_pr`). The integration is data-driven and
+  ungated (no proposals ⇒ no-op), matching the opt-out precedent — the master kill switch and
+  the propose task land in Chunk 4. Added the two tuning settings to `settings/base.py` **and**
+  `.env.example`. Validation: 8 new tests (2 pure-engine: merge-without-mutating,
+  capacity-consumption; 6 builder: active-proposal excludes PR, terminal proposal does not,
+  pending load reroutes to another reviewer, expired within/after cooldown, cooldown-disabled)
+  + full `analyzer` suite (411) green on dockerized Postgres; `makemigrations --check` clean
+  (no model changes); ruff clean.
 - 2026-07-08: **Chunk 2 landed.** Added `analyzer.AssignmentProposal` (migration
   `analyzer/0031`) with the `STATE_*`/`DECIDED_VIA_*` choices, the **partial unique
   constraint** `an_ap_one_active_proposal_per_pr` on `(repository, pr_number) WHERE
