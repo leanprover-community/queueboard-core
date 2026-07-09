@@ -7,37 +7,39 @@
     <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
   </p>
 
-  <h2 style="font-size:1.15rem;margin-top:1.5rem;">Proposals awaiting your acceptance</h2>
-  {% if proposal_rows %}
-    {% for row in proposal_rows %}
-      <div class="card">
-        <h2><a href="{{ row.url }}">{{ row.owner }}/{{ row.repo }} #{{ row.pr_number }}</a></h2>
-        <div>{{ row.title }}</div>
-        {% if row.matched_labels %}
-          <div class="labels">
-            <span class="meta">Matches your areas:</span>
-            {% for label in row.matched_labels %}<span class="label">{{ label }}</span>{% endfor %}
+  {% if repo_groups %}
+    {% for group in repo_groups %}
+      <section class="repo">
+        <h2 class="repo-title">{{ group.repo_label }}</h2>
+        <p class="loadline">
+          {{ group.load.assigned_open }} assigned + {{ group.load.pending }} pending / capacity {{ group.load.capacity|default_if_none:"—" }}
+        </p>
+        {% for row in group.proposals %}
+          <div class="card">
+            <h3><a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}</h3>
+            {% if row.matched_labels %}
+              <div class="labels">
+                <span class="meta">Matches your areas:</span>
+                {% for label in row.matched_labels %}<span class="label">{{ label }}</span>{% endfor %}
+              </div>
+            {% endif %}
+            <div class="expiry">
+              Expires
+              <time datetime="{{ row.expires_at_iso }}">{{ row.expires_at|date:"Y-m-d H:i" }} UTC</time>
+            </div>
+            <div class="actions">
+              <form class="inline" method="post" action="{% url 'console:accept' row.proposal.id %}">
+                {% csrf_token %}<button class="accept" type="submit">Accept</button>
+              </form>
+              <form class="inline" method="post" action="{% url 'console:decline' row.proposal.id %}">
+                {% csrf_token %}<button class="decline" type="submit">Decline</button>
+              </form>
+            </div>
           </div>
-        {% endif %}
-        <div class="expiry">Expires {{ row.expires_at|date:"Y-m-d H:i" }} UTC</div>
-        <div class="actions">
-          <form class="inline" method="post" action="{% url 'console:accept' row.proposal.id %}">
-            {% csrf_token %}<button class="accept" type="submit">Accept</button>
-          </form>
-          <form class="inline" method="post" action="{% url 'console:decline' row.proposal.id %}">
-            {% csrf_token %}<button class="decline" type="submit">Decline</button>
-          </form>
-        </div>
-      </div>
+        {% endfor %}
+      </section>
     {% endfor %}
   {% else %}
     <p class="empty">You have no proposals awaiting acceptance right now.</p>
-  {% endif %}
-
-  {% if load_rows %}
-    <h2 style="font-size:1.15rem;margin-top:1.5rem;">Your load</h2>
-    {% for load in load_rows %}
-      <p class="loadline">{{ load.assigned_open }} assigned + {{ load.pending }} pending / capacity {{ load.capacity }}</p>
-    {% endfor %}
   {% endif %}
 {% endblock %}

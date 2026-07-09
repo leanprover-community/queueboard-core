@@ -10,8 +10,10 @@
            max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
     h1 { font-size: 1.5rem; margin-bottom: .25rem; }
     .meta { color: #6b7280; font-size: .9rem; margin-top: 0; }
-    .card { border: 1px solid #d1d5db; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
-    .card h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
+    .repo { margin-top: 1.75rem; }
+    .repo-title { font-size: 1.15rem; margin: 0 0 .1rem; padding-bottom: .3rem; border-bottom: 2px solid #d1d5db; }
+    .card { border: 1px solid #d1d5db; border-radius: 10px; padding: 1rem; margin: .75rem 0; }
+    .card h3 { font-size: 1.02rem; font-weight: 600; margin: 0 0 .25rem; }
     .labels { margin: .35rem 0; }
     .label { display: inline-block; font-size: .78rem; background: #eef2ff; color: #3730a3;
              border-radius: 999px; padding: .1rem .55rem; margin: .1rem .2rem .1rem 0; }
@@ -24,10 +26,11 @@
     .btn { display: inline-block; background: #111827; color: #fff; padding: .55rem 1rem;
            border-radius: 8px; text-decoration: none; }
     .empty { color: #6b7280; }
-    .loadline { font-size: .9rem; color: #374151; }
+    .loadline { font-size: .9rem; color: #374151; margin: .1rem 0 .5rem; }
     form.inline { display: inline; }
     @media (prefers-color-scheme: dark) {
       body { background: #0b0f19; color: #e5e7eb; }
+      .repo-title { border-bottom-color: #374151; }
       .card { border-color: #374151; }
       .label { background: #1e1b4b; color: #c7d2fe; }
       .btn { background: #e5e7eb; color: #0b0f19; }
@@ -37,5 +40,21 @@
 </head>
 <body>
   {% block body %}{% endblock %}
+  <script>
+    // Render server-emitted UTC timestamps in the viewer's own timezone (progressive enhancement;
+    // each <time> keeps a readable "… UTC" text fallback when JS is unavailable).
+    (function () {
+      var fmt;
+      try {
+        fmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+      } catch (e) { return; }
+      document.querySelectorAll("time[datetime]").forEach(function (el) {
+        var iso = el.getAttribute("datetime");
+        if (!iso) { return; }
+        var d = new Date(iso);
+        if (!isNaN(d.getTime())) { el.textContent = fmt.format(d); }
+      });
+    })();
+  </script>
 </body>
 </html>
