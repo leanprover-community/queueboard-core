@@ -1,6 +1,6 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunk 1 landed). Captures decisions,
+> Status: Living implementation plan (in progress — Chunks 1–2 landed). Captures decisions,
 > invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
@@ -164,7 +164,8 @@ This is intentionally kept open to future change, because opinions may differ:
 - `reviewer_login` (str)  — matches `ReviewerOptOut` / snapshot login keying
 - `snapshot` FK → `ReviewerAssignmentSnapshot` (`on_delete=SET_NULL`, provenance)
 - `state`: `proposed` / `accepted` / `declined` / `expired` / `superseded`
-- `proposed_at`, `expires_at`, `decided_at` (nullable), `notified_at` (nullable)
+- `expires_at`, `decided_at` (nullable), `notified_at` (nullable). `created_at` (from
+  `TimestampedModel`) is the proposal time — no separate `proposed_at`.
 - `decided_via`: `console` / `auto_expire` / `sync_superseded` (and future `command`)
 - `created_at` / `updated_at`
 - **Partial unique index on `(repository, pr_number) WHERE state='proposed'`** — enforces
@@ -359,9 +360,9 @@ a later step.
 1. ✅ **(landed)** **Config field:** `ReviewerPreference.assignment_acceptance` + data
    migration (existing → `auto`), admin `list_display`/`list_filter`, importer create-only
    handling, bulk admin action to set mode. Unit tests for default behavior.
-2. **Model:** `analyzer.AssignmentProposal` + migration (partial-unique index), admin
-   (`ReadOnlyAdmin`), backup-policy coverage classifying it as **durable retained history**
-   (`scripts/backup_policy.py`).
+2. ✅ **(landed)** **Model:** `analyzer.AssignmentProposal` + migration (partial-unique
+   index), admin (`ReadOnlyAdmin`), backup-policy coverage (BACKUP + TRUNCATE, like the
+   sibling reviewer tables) (`scripts/backup_policy.py`).
 3. **Builder/engine integration:** candidate exclusion, pending-load contribution, cooldown
    exclusion; pure-engine seams with unit tests (assignability, scarcity, cooldown).
 4. **Propose service + task + expiry sweep:** `propose_assignments_for_repo` (per-reviewer
@@ -435,6 +436,18 @@ a later step.
 
 ## Progress Notes
 
+- 2026-07-08: **Chunk 2 landed.** Added `analyzer.AssignmentProposal` (migration
+  `analyzer/0031`) with the `STATE_*`/`DECIDED_VIA_*` choices, the **partial unique
+  constraint** `an_ap_one_active_proposal_per_pr` on `(repository, pr_number) WHERE
+  state='proposed'`, and indexes on `(repository, reviewer_login, state, decided_at)` and
+  `(repository, pr_number, state)`. `created_at` (from `TimestampedModel`) is the proposal
+  time — no redundant `proposed_at` column. Registered a `ReadOnlyAdmin`; added
+  `analyzer_assignmentproposal` to `BACKUP_TABLES` + `TRUNCATE_TABLES` (carries
+  `reviewer_login`, retained in real backups, truncated from the sanitized public dump like
+  its siblings). Validation: 4 model tests (defaults; one-active-per-PR enforced;
+  terminal states don't block re-proposal; distinct-PR proposals allowed) + full `analyzer`
+  suite (403) green on Postgres; backup-policy validator passes; `makemigrations --check`
+  clean; ruff clean.
 - 2026-07-08: **Chunk 1 landed.** Added `ReviewerPreference.assignment_acceptance`
   (`CharField(max_length=16, choices auto/confirm, default confirm)`) with `ACCEPTANCE_*`
   constants; migration `core/0007` adds the field (so future rows → `confirm`) plus a

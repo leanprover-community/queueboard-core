@@ -7,6 +7,7 @@ from __future__ import annotations
 BACKUP_TABLES: tuple[str, ...] = (
     "analyzer_analyzerconvergencesnapshot",
     "analyzer_areastatssnapshot",
+    "analyzer_assignmentproposal",
     "analyzer_prdependency",
     "analyzer_prdependencystate",
     "analyzer_prqueuewindow",
@@ -83,6 +84,9 @@ TRUNCATE_TABLES: tuple[str, ...] = (
     "analyzer_reviewerattentionautounassignrecord",
     # Reviewer assignment application audit/idempotency state
     "analyzer_reviewerassignmentapplication",
+    # Reviewer assignment proposal lifecycle/history (design doc 050); carries reviewer_login,
+    # retained in real backups but truncated from the sanitized public dump like its siblings.
+    "analyzer_assignmentproposal",
     # Operational snapshots/metrics caches
     "analyzer_queuesnapshot",
     "analyzer_reviewerassignmentsnapshot",
