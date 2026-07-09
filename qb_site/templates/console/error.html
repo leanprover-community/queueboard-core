@@ -1,0 +1,7 @@
+{% extends "console/base.html" %}
+{% block title %}Sign-in problem — Reviewer console{% endblock %}
+{% block body %}
+  <h1>Sign-in problem</h1>
+  <p>{{ message }}</p>
+  <p><a class="btn" href="{% url 'console:home' %}">Back to the console</a></p>
+{% endblock %}

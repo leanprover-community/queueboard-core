@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Reviewer console{% endblock %}</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; line-height: 1.5;
+           max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+    h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+    .meta { color: #6b7280; font-size: .9rem; margin-top: 0; }
+    .card { border: 1px solid #d1d5db; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
+    .card h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
+    .labels { margin: .35rem 0; }
+    .label { display: inline-block; font-size: .78rem; background: #eef2ff; color: #3730a3;
+             border-radius: 999px; padding: .1rem .55rem; margin: .1rem .2rem .1rem 0; }
+    .expiry { font-size: .85rem; color: #6b7280; }
+    .actions { margin-top: .75rem; display: flex; gap: .5rem; }
+    button { font: inherit; padding: .45rem .9rem; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+    button.accept { background: #16a34a; color: #fff; }
+    button.decline { background: #fff; color: #b91c1c; border-color: #b91c1c; }
+    button.linklike { background: none; border: none; color: #2563eb; text-decoration: underline; padding: 0; }
+    .btn { display: inline-block; background: #111827; color: #fff; padding: .55rem 1rem;
+           border-radius: 8px; text-decoration: none; }
+    .empty { color: #6b7280; }
+    .loadline { font-size: .9rem; color: #374151; }
+    form.inline { display: inline; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0b0f19; color: #e5e7eb; }
+      .card { border-color: #374151; }
+      .label { background: #1e1b4b; color: #c7d2fe; }
+      .btn { background: #e5e7eb; color: #0b0f19; }
+      .loadline { color: #d1d5db; }
+    }
+  </style>
+</head>
+<body>
+  {% block body %}{% endblock %}
+</body>
+</html>

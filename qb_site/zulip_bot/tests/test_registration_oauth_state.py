@@ -32,13 +32,13 @@ class TestRegistrationOAuthState(SimpleTestCase):
             validate_registration_oauth_state("not-a-state")
 
     def test_expired_state_rejected(self) -> None:
-        with patch("zulip_bot.services.registration_oauth_state.time.time", return_value=1_700_000_000):
+        with patch("core.services.oauth_state.time.time", return_value=1_700_000_000):
             state = issue_registration_oauth_state(
                 claims=RegistrationOAuthStateClaims(
                     registration_token="reg-token",
                     registration_nonce="nonce-123",
                 )
             )
-        with patch("zulip_bot.services.registration_oauth_state.time.time", return_value=1_700_000_000 + 900):
+        with patch("core.services.oauth_state.time.time", return_value=1_700_000_000 + 900):
             with self.assertRaises(RegistrationOAuthStateExpired):
                 validate_registration_oauth_state(state)
