@@ -845,12 +845,13 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
         "user",
         "maximum_capacity",
         "auto_assign",
+        "assignment_acceptance",
         "notifications_enabled",
         "away_until",
         "created_at",
         "updated_at",
     )
-    list_filter = ("auto_assign", "notifications_enabled", "repository")
+    list_filter = ("auto_assign", "assignment_acceptance", "notifications_enabled", "repository")
     search_fields = (
         "user__github_login",
         "repository__owner",
@@ -858,6 +859,17 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
     )
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("repository", "user")
+    actions = ("set_acceptance_confirm", "set_acceptance_auto")
+
+    @admin.action(description="Set assignment acceptance to 'confirm' (require acceptance)")
+    def set_acceptance_confirm(self, request, queryset):
+        updated = queryset.update(assignment_acceptance=ReviewerPreference.ACCEPTANCE_CONFIRM)
+        self.message_user(request, f"Set {updated} reviewer preference(s) to 'confirm'.")
+
+    @admin.action(description="Set assignment acceptance to 'auto' (direct assign)")
+    def set_acceptance_auto(self, request, queryset):
+        updated = queryset.update(assignment_acceptance=ReviewerPreference.ACCEPTANCE_AUTO)
+        self.message_user(request, f"Set {updated} reviewer preference(s) to 'auto'.")
 
     def get_urls(self):  # type: ignore[override]
         urls = super().get_urls()

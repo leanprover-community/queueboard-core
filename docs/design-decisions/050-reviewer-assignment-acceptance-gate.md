@@ -1,7 +1,7 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (not yet implemented). Drafted from a design
-> discussion; captures decisions, invariants, and a chunked build plan.
+> Status: Living implementation plan (in progress — Chunk 1 landed). Captures decisions,
+> invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
 
@@ -356,9 +356,9 @@ a later step.
 
 ## Implementation Plan (Chunks)
 
-1. **Config field:** `ReviewerPreference.assignment_acceptance` + data migration
-   (existing → `auto`), admin `list_display`/`list_filter`, importer create-only handling,
-   bulk admin action / management command to set mode. Unit tests for default behavior.
+1. ✅ **(landed)** **Config field:** `ReviewerPreference.assignment_acceptance` + data
+   migration (existing → `auto`), admin `list_display`/`list_filter`, importer create-only
+   handling, bulk admin action to set mode. Unit tests for default behavior.
 2. **Model:** `analyzer.AssignmentProposal` + migration (partial-unique index), admin
    (`ReadOnlyAdmin`), backup-policy coverage classifying it as **durable retained history**
    (`scripts/backup_policy.py`).
@@ -435,6 +435,17 @@ a later step.
 
 ## Progress Notes
 
+- 2026-07-08: **Chunk 1 landed.** Added `ReviewerPreference.assignment_acceptance`
+  (`CharField(max_length=16, choices auto/confirm, default confirm)`) with `ACCEPTANCE_*`
+  constants; migration `core/0007` adds the field (so future rows → `confirm`) plus a
+  `RunPython` backfill flipping all existing rows to `auto` (reverse = noop). Admin gains the
+  column in `list_display`/`list_filter` and two bulk actions
+  (`set_acceptance_confirm`/`set_acceptance_auto`) as the pool-flip lever; a standalone
+  management command was deemed unnecessary. The importer create-only invariant holds **by
+  construction** (it never references the field and does not use `update_or_create`); a
+  regression test pins it. No backup-policy change (column add on the already-covered
+  `core_reviewerpreference` table). Validation: 5 new tests + full `core` suite (55) green on
+  dockerized Postgres, `makemigrations --check` clean, ruff clean.
 - 2026-07-08: Initial plan drafted from design discussion. Decisions confirmed:
   pre-assignment gate; per-reviewer `assignment_acceptance` (`auto`/`confirm`) orthogonal to
   eligibility and notifications, with a full behavior matrix and `confirm`-unreachable
