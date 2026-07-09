@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from django.conf import settings
+from django.contrib.postgres.fields import ArrayField
+from django.db.models import JSONField, TextField
+from django.db.models.expressions import RawSQL
 
 from analyzer.models import AssignmentProposal, QueueSnapshot
 from analyzer.services.queue_rules import default_rule_set_for_repo
@@ -70,17 +73,32 @@ def queue_membership(repository: Repository, *, now: datetime) -> tuple[set[int]
     so a stale/missing snapshot never mass-invalidates — ``live_proposal_validity`` applies that
     rule. This is the one shared assembly of queue-membership facts for validity consumers (the
     expiry sweep and the console); do not reimplement it per call site.
+
+    Only the two needed payload fragments are extracted in SQL: the full payload carries complete
+    entries for every open PR (multi-MB on large repos) and this runs per repo on every expiry
+    sweep run and console accept/decline. Postgres-only (jsonb operators), like the rest of the
+    Django runtime.
     """
     rule_set = default_rule_set_for_repo(repository)
     cache_key = str(rule_set.id) if rule_set else "default"
-    snapshot = QueueSnapshot.objects.filter(repository=repository, cache_key=cache_key).order_by("-generated_at").first()
-    if snapshot is None or not snapshot.payload:
+    row = (
+        QueueSnapshot.objects.filter(repository=repository, cache_key=cache_key)
+        .order_by("-generated_at")
+        .annotate(
+            queue_pr_numbers=RawSQL("payload #> '{lists,dashboards,Queue}'", [], output_field=JSONField()),
+            known_pr_numbers=RawSQL(
+                "ARRAY(SELECT jsonb_object_keys(payload -> 'prs'))", [], output_field=ArrayField(TextField())
+            ),
+        )
+        .values_list("generated_at", "queue_pr_numbers", "known_pr_numbers")
+        .first()
+    )
+    if row is None:
         return set(), set(), False
-    generated_at = snapshot.generated_at
+    generated_at, queue_raw, known_raw = row
     fresh = generated_at is not None and (now - generated_at).total_seconds() <= SNAPSHOT_FRESH_SECONDS
-    payload = snapshot.payload
-    queue_prs = {int(n) for n in (payload.get("lists", {}).get("dashboards", {}).get("Queue", []) or [])}
-    known_prs = {int(n) for n in (payload.get("prs", {}) or {}).keys()}
+    queue_prs = {int(n) for n in (queue_raw or [])}
+    known_prs = {int(n) for n in (known_raw or [])}
     return queue_prs, known_prs, fresh
 
 
