@@ -21,13 +21,31 @@ class ReviewerPreference(TimestampedModel):
     - ``conflict_of_interest``: list of GitHub handles this reviewer should not be auto-assigned to.
     - ``notifications_enabled``: whether reviewer receives queue nudge notifications.
     - ``notification_settings``: extensible JSON settings for notification policy (for example X/Y thresholds).
+    - ``assignment_acceptance``: ``auto`` (direct-assign like today) or ``confirm`` (propose and require
+      the reviewer to accept before the assignment is executed). New rows default to ``confirm``;
+      existing rows are backfilled to ``auto`` (see design doc 050).
     """
+
+    ACCEPTANCE_AUTO = "auto"
+    ACCEPTANCE_CONFIRM = "confirm"
+    ACCEPTANCE_CHOICES = [
+        (ACCEPTANCE_AUTO, "auto"),
+        (ACCEPTANCE_CONFIRM, "confirm"),
+    ]
 
     repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="reviewer_preferences")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reviewer_preferences")
 
     maximum_capacity = models.PositiveIntegerField(default=10)
     auto_assign = models.BooleanField(default=True)
+    # Whether automatic assignment goes through the acceptance gate ("confirm") or assigns
+    # directly like the legacy behavior ("auto"). New reviewers default to "confirm"; existing
+    # reviewers are backfilled to "auto" by the accompanying data migration (design doc 050).
+    assignment_acceptance = models.CharField(
+        max_length=16,
+        choices=ACCEPTANCE_CHOICES,
+        default=ACCEPTANCE_CONFIRM,
+    )
     away_until = models.DateTimeField(null=True, blank=True)
 
     # Store as a JSON array of strings (label names). Examples: ["t-analysis", "tech debt"].
