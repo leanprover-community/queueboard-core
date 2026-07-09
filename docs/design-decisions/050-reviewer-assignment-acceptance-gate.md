@@ -1,7 +1,8 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunks 1–7 landed; Chunk 8 (docs) next).
-> Captures decisions, invariants, and a chunked build plan; Progress Notes track what has shipped.
+> Status: All build chunks (1–8) landed; **pending staged rollout** (feature flags default off) and
+> a staging end-to-end validation. Captures decisions, invariants, and the chunked build plan;
+> Progress Notes track what has shipped. Converge to a final record after production rollout.
 
 ## Context
 
@@ -427,9 +428,13 @@ not new *flags* but new *infrastructure config*:
    (state/decided_via/repository filters, date hierarchy, search) — no admin change needed. The
    optional "(N prior proposals)" hint on default views is deferred (kept out to avoid a per-PR
    history query in the hot snapshot build); the trail lives in admin.
-8. **Docs:** update `qb_site/analyzer/AGENTS.md` (task surface), `qb_site/zulip_bot/AGENTS.md`
-   and `qb_site/core/*` notes as needed, and the root pointer; converge this living plan
-   toward a final record once shipped.
+8. ✅ **(landed)** **Docs:** `qb_site/analyzer/AGENTS.md` task surface (propose/expire/deliver) +
+   `queueboard_snapshot`/`pr_info` proposal notes; `qb_site/zulip_bot/AGENTS.md` `pr-info` proposal
+   note; the root `AGENTS.md` AGENTS-locations pointer now lists `qb_site/console/`; `console/AGENTS.md`
+   added in Chunk 6. Core helpers (`site_urls`, `oauth_state`, `github_identity`) are documented via
+   `console/AGENTS.md` (no separate `core/AGENTS.md` exists). This plan is converged to
+   "all chunks landed; pending rollout" — finalize after production rollout + the staging
+   end-to-end check.
 
 ## Validation Plan
 
@@ -486,6 +491,25 @@ not new *flags* but new *infrastructure config*:
 
 ## Progress Notes
 
+- 2026-07-09: **Chunk 8 landed (Docs) — all build chunks complete.** Updated `analyzer/AGENTS.md`
+  (task surface already carried propose/expire/deliver; added the `queueboard_snapshot` `proposal`
+  field and `pr_info` `proposed_to` notes), `zulip_bot/AGENTS.md` (`pr-info` proposal line), and the
+  root `AGENTS.md` AGENTS-locations pointer (added `qb_site/console/`, created in Chunk 6). No
+  `core/AGENTS.md` exists; the new core helpers are documented via `console/AGENTS.md`. This plan is
+  now converged to "all chunks landed; pending rollout". **Operator rollout checklist** (staged, per
+  the 028 discipline — each flag independent, all default off):
+  1. Live-env prereqs: set `QUEUEBOARD_BASE_URL`; ensure the GitHub OAuth App callback permits
+     `/console/oauth/callback/` (see `docs/zulip_github_oauth_setup.md`).
+  2. Set reviewer modes: the `ReviewerPreference.assignment_acceptance` bulk admin action flips a
+     selection to `confirm` (all existing rows were backfilled to `auto`; new rows default `confirm`).
+  3. `ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN=1` first and inspect the propose/deliver task output.
+  4. Enable in sequence: `_ENABLED` (propose creates proposals + direct-assigns auto reviewers) →
+     `_DELIVERY_ENABLED` (digest DMs) → `_ASSIGN_ON_ACCEPT_ENABLED` (console accept performs the
+     GitHub assign). Disable the legacy `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED` — propose
+     supersedes apply; run one, not both. The expiry sweep runs regardless (essential maintenance).
+  5. Staging end-to-end: flip one reviewer to `confirm`, receive a digest DM, sign into the console,
+     accept, confirm the assignee lands on GitHub + a `ReviewerAssignmentApplication` records it, and
+     a second propose run is a no-op. (Still a manual step — no real GitHub/Zulip calls in tests.)
 - 2026-07-09: **Chunk 7 landed (Surfacing).** The {unassigned, proposed, assigned} assignment-axis
   state now appears on all three surfaces, always distinct from GitHub assignees:
   - **Board / API:** `QueueboardSnapshotBuilder` batches a single `state=proposed` query

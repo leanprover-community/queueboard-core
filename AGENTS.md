@@ -68,7 +68,7 @@ Notes
 ## Keeping AGENTS.md Files Updated
 - Every directory with significant logic has its own `AGENTS.md` (mirrored as `CLAUDE.md`).
   Current locations: root, `qb_site/`, `qb_site/syncer/`, `qb_site/analyzer/`,
-  `qb_site/zulip_bot/`, `src/queueboard/`.
+  `qb_site/zulip_bot/`, `qb_site/console/`, `src/queueboard/`.
 - When you add, rename, or remove management commands, Celery tasks, key services, or
   directory structure, update the relevant `AGENTS.md` in the same commit/PR.
 - When you add a new app or significant sub-directory, create a matching `AGENTS.md`
