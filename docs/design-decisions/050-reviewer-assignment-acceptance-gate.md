@@ -567,8 +567,8 @@ not new *flags* but new *infrastructure config*:
     carrying a CSRF `nonce` + `next`). Refactored `zulip_bot.registration_oauth_state` to delegate
     to it (public API unchanged; registration suite green). `GitHubOAuthClient` was *already* in
     `core` (design-doc path corrected). Zulip-agnostic
-    `core.services.github_identity.resolve_or_create_user_from_identity` maps the OAuth identity to
-    a `core.User` without touching Zulip fields.
+    `core.services.github_identity.resolve_user_from_identity` maps the OAuth identity to an
+    existing `core.User` without touching Zulip fields (resolve-only; it never creates users).
   - **Console app:** `login`/`oauth_callback`/`logout` (stable bookmarkable URL, `?next=`, nonce
     CSRF), a list view (pending proposals with matched topic labels + expiry, a per-repo load
     summary), and POST `accept`/`decline`. Both handlers re-validate via the single

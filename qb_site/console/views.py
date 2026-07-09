@@ -34,7 +34,7 @@ from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_reco
 from analyzer.services.reviewer_assignment_engine import _normalize_login
 from console import session as console_session
 from core.models import ReviewerPreference
-from core.services.github_identity import resolve_or_create_user_from_identity
+from core.services.github_identity import resolve_user_from_identity
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 from core.services.oauth_state import (
     ConsoleOAuthStateClaims,
@@ -103,10 +103,10 @@ def oauth_callback(request: HttpRequest) -> HttpResponse:
         log.warning("console.oauth_callback: GitHub OAuth exchange failed", exc_info=True)
         return render(request, "console/error.html", {"message": "GitHub sign-in failed. Try again."}, status=502)
 
-    # Resolve-only: the console is for people we already know (registered via the Zulip flow, or
-    # ingested by the syncer). A GitHub account we have never seen is not given a session, so the
-    # public sign-in URL cannot mint a core.User row for an arbitrary authenticated stranger.
-    user = resolve_or_create_user_from_identity(identity, create=False)
+    # Resolve-only by construction: the console is for people we already know (registered via the
+    # Zulip flow, or ingested by the syncer). A GitHub account we have never seen is not given a
+    # session, so the public sign-in URL cannot mint a core.User row for an arbitrary stranger.
+    user = resolve_user_from_identity(identity)
     if user is None:
         log.info("console.oauth_callback: unknown GitHub login %r denied", identity.github_login)
         return render(
