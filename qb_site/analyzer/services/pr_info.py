@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from analyzer.models import PRDependency, PRQueueWindow, QueueSnapshot
+from analyzer.models import AssignmentProposal, PRDependency, PRQueueWindow, QueueSnapshot
 from analyzer.services.ci_evaluation import ci_status_for_pr
 from analyzer.services.queue_rules import QueueRules, default_rule_set_for_repo, load_rules_for_repo
 from core.models import Repository
@@ -42,6 +42,11 @@ class PRQueueInfo:
 
     labels: list[str]
     assignee_logins: list[str]
+    # Acceptance-gate state (design doc 050): the reviewer a pending proposal is awaiting acceptance
+    # from, and its expiry. A proposal is NOT an assignee; these are rendered distinct from
+    # ``assignee_logins`` and are None when there is no active proposal.
+    proposed_to: str | None
+    proposal_expires_at: datetime | None
     ci_status: str
     ci_requires_success: bool
 
@@ -76,6 +81,11 @@ def get_pr_queue_info(owner: str, repo_name: str, pr_number: int) -> PRQueueInfo
     cache_key = str(rule_set.id) if rule_set else "default"
     snapshot = QueueSnapshot.objects.filter(repository=repository, cache_key=cache_key).order_by("-generated_at").first()
 
+    # Read the acceptance-gate "proposed to X" state live (single indexed point query) rather than
+    # from the snapshot payload: it is transactional (accept/decline happen in real time on the
+    # console) and cheap for one PR, so a point lookup is fresher than the cached board build.
+    active_proposal = _active_proposal(repository, pr_number)
+
     now = datetime.now(timezone.utc)
     snapshot_generated_at: datetime | None = None
     snapshot_is_stale = False
@@ -101,6 +111,7 @@ def get_pr_queue_info(owner: str, repo_name: str, pr_number: int) -> PRQueueInfo
                 snapshot_is_stale=snapshot_is_stale,
                 repository=repository,
                 has_ruleset=rule_set is not None,
+                active_proposal=active_proposal,
             )
 
     return _from_db(
@@ -111,7 +122,29 @@ def get_pr_queue_info(owner: str, repo_name: str, pr_number: int) -> PRQueueInfo
         snapshot_generated_at=snapshot_generated_at,
         snapshot_is_stale=snapshot_is_stale,
         has_ruleset=rule_set is not None,
+        active_proposal=active_proposal,
     )
+
+
+def _active_proposal(repository: Repository, pr_number: int) -> tuple[str, datetime | None] | None:
+    """Return ``(reviewer_login, expires_at)`` for the active proposal on this PR, or None.
+
+    At most one active (``proposed``) proposal exists per PR (DB partial-unique), so ``.first()`` is
+    the single live proposal. Served by the ``an_ap_pr_state_idx`` index on ``(repository, pr_number,
+    state)``.
+    """
+    row = (
+        AssignmentProposal.objects.filter(
+            repository=repository,
+            pr_number=pr_number,
+            state=AssignmentProposal.STATE_PROPOSED,
+        )
+        .values_list("reviewer_login", "expires_at")
+        .first()
+    )
+    if row is None:
+        return None
+    return row[0], _ensure_utc(row[1])
 
 
 def _from_snapshot(
@@ -125,6 +158,7 @@ def _from_snapshot(
     snapshot_is_stale: bool,
     repository: Repository,
     has_ruleset: bool,
+    active_proposal: tuple[str, datetime | None] | None,
 ) -> PRQueueInfo:
     dashboards: dict[str, list[int]] = (snapshot_payload.get("lists") or {}).get("dashboards", {})
     on_queue = pr_number in dashboards.get("Queue", [])
@@ -188,6 +222,8 @@ def _from_snapshot(
         merged_at=None,
         labels=labels,
         assignee_logins=assignees,
+        proposed_to=active_proposal[0] if active_proposal else None,
+        proposal_expires_at=active_proposal[1] if active_proposal else None,
         ci_status=ci_status,
         ci_requires_success=_ci_missing_is_failure(rules),
         on_queue=on_queue,
@@ -211,6 +247,7 @@ def _from_db(
     snapshot_generated_at: datetime | None,
     snapshot_is_stale: bool,
     has_ruleset: bool,
+    active_proposal: tuple[str, datetime | None] | None,
 ) -> PRQueueInfo | None:
     try:
         pr = PullRequest.objects.select_related("author").get(repository=repository, number=pr_number)
@@ -312,6 +349,8 @@ def _from_db(
         merged_at=_ensure_utc(pr.merged_at),
         labels=labels,
         assignee_logins=assignees,
+        proposed_to=active_proposal[0] if active_proposal else None,
+        proposal_expires_at=active_proposal[1] if active_proposal else None,
         ci_status=ci_status,
         ci_requires_success=_ci_missing_is_failure(rules),
         on_queue=on_queue,

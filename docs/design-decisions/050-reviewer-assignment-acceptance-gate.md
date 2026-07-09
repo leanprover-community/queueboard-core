@@ -1,6 +1,6 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunks 1–6 landed; Chunk 7 (surfacing) next).
+> Status: Living implementation plan (in progress — Chunks 1–7 landed; Chunk 8 (docs) next).
 > Captures decisions, invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
@@ -413,10 +413,20 @@ not new *flags* but new *infrastructure config*:
 6. ✅ **(landed)** **Console** *(built before Chunk 5)*: dedicated `console/` app — GitHub-OAuth
    reviewer session, list view, accept/decline handlers (accept reuses the 046 mutation path),
    templates, live re-validation, tests.
-7. **Surfacing:** the {unassigned, proposed, assigned} state in the queue snapshot and in
-   `pr_info`/`PRQueueInfo` (so the dashboard, API, and the Zulip `pr-info` command render it
-   identically, distinct from GitHub assignees); the `AssignmentProposal` admin changelist
-   for full (retained) history. No cleanup task in Phase 1.
+7. ✅ **(landed)** **Surfacing:** the {unassigned, proposed, assigned} state in the queue snapshot
+   and in `pr_info`/`PRQueueInfo` (so the dashboard, API, and the Zulip `pr-info` command render it
+   identically, distinct from GitHub assignees); the `AssignmentProposal` admin changelist for full
+   (retained) history. No cleanup task in Phase 1. **As built:** the snapshot builder embeds a
+   `proposal` field (`{reviewer, expires_at}` or `null`) on each PR entry (one batched
+   `state=proposed` query; the raw payload is served verbatim by the API, so the field flows to
+   board/API consumers for free). `PRQueueInfo` gains `proposed_to`/`proposal_expires_at`, read
+   **live** (single indexed point query via `an_ap_pr_state_idx`, fresher than the cached board for
+   this transactional state) in both the snapshot and DB paths. `pr-info` renders a distinct
+   "**Proposed to** X (awaiting acceptance, expires …)" line, never conflated with assignees. The
+   `AssignmentProposal` `ReadOnlyAdmin` (Chunk 2) already carries the full retained history
+   (state/decided_via/repository filters, date hierarchy, search) — no admin change needed. The
+   optional "(N prior proposals)" hint on default views is deferred (kept out to avoid a per-PR
+   history query in the hot snapshot build); the trail lives in admin.
 8. **Docs:** update `qb_site/analyzer/AGENTS.md` (task surface), `qb_site/zulip_bot/AGENTS.md`
    and `qb_site/core/*` notes as needed, and the root pointer; converge this living plan
    toward a final record once shipped.
@@ -476,6 +486,26 @@ not new *flags* but new *infrastructure config*:
 
 ## Progress Notes
 
+- 2026-07-09: **Chunk 7 landed (Surfacing).** The {unassigned, proposed, assigned} assignment-axis
+  state now appears on all three surfaces, always distinct from GitHub assignees:
+  - **Board / API:** `QueueboardSnapshotBuilder` batches a single `state=proposed` query
+    (`_active_proposals_for_repo`) and embeds a `proposal` field (`{reviewer, expires_at}` or `null`)
+    on each PR entry via `_build_pr_entry`. The snapshot API serves the raw payload verbatim, so the
+    field reaches board/API consumers with no serializer change.
+  - **Single PR (`pr_info`):** `PRQueueInfo` gains `proposed_to` + `proposal_expires_at`, populated
+    by a new `_active_proposal` helper that reads the live proposal (single point query on
+    `an_ap_pr_state_idx`) in both the snapshot and DB builder paths — fresher than the cached board
+    for this transactional accept/decline state.
+  - **Zulip `pr-info`:** renders a distinct "**Proposed to** X (awaiting acceptance, expires
+    <Zulip-time>)" line (the proposed login is resolved through the same silent-mention map), never
+    merged into the Assignees line.
+  - **History:** the `AssignmentProposal` `ReadOnlyAdmin` from Chunk 2 already provides the full
+    retained-history changelist (state/decided_via/repository filters, `created_at` date hierarchy,
+    search) — no change needed. The optional "(N prior proposals)" hint on default views is
+    deferred (avoids a per-PR history query in the hot snapshot build); the trail lives in admin.
+  Validation: new tests (3 snapshot-path + 1 DB-path `pr_info`, 1 snapshot-builder entry, 2 `pr-info`
+  command rendering) + full `analyzer` and `zulip_bot` suites (791) green on Postgres; `api` suite
+  green; `makemigrations --check` clean (no model changes); ruff clean.
 - 2026-07-09: **Chunk 5 landed (Notification).** Built the per-reviewer proposal digest DM. Pieces:
   - **Service** `analyzer/services/assignment_proposal_delivery.py::deliver_assignment_proposals`:
     queries `state=proposed, notified_at IS NULL` proposals across the given repos, groups by

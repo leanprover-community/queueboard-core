@@ -11,7 +11,7 @@ from dateutil import relativedelta
 from django.db.models import F, Q, QuerySet, Window
 from django.db.models.functions import RowNumber
 
-from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
+from analyzer.models import AssignmentProposal, PRDependency, PRQueueWindow, QueueRuleSet, QueueSnapshot, PRRevision
 from analyzer.services.queue_rules import QueueRules, default_rule_set_for_repo, rules_for_rule_set
 from core.models import Repository
 from syncer.models import PRLabel, PullRequest
@@ -364,6 +364,7 @@ class QueueboardSnapshotBuilder:
 
         label_map = self._labels_for_repo(repository)
         dependency_map = self._dependencies_for_repo(repository)
+        proposal_map = self._active_proposals_for_repo(repository)
         if need_ci_data:
             head_sha_map = self._head_shas_for_repo(repository)
             missing_head_pr_ids = {pr_id for pr_id, sha in head_sha_map.items() if not sha}
@@ -471,6 +472,7 @@ class QueueboardSnapshotBuilder:
                 pr_status=pr_status,
                 queue_fields=queue_fields,
                 queue_status=queue_status,
+                proposal=proposal_map.get(pr.number),
             )
             prs[pr.number] = entry
 
@@ -928,6 +930,21 @@ class QueueboardSnapshotBuilder:
         delta = relativedelta.relativedelta(generated_at, start_dt)
         return f"since {start_dt:%Y-%m-%d %H:%M} ({format_delta(delta)})"
 
+    def _active_proposals_for_repo(self, repository: Repository) -> dict[int, dict]:
+        """Return {pr_number: {"reviewer": login, "expires_at": iso}} for active (proposed) proposals.
+
+        Surfaces the acceptance-gate "proposed to X" state on the board/API (design doc 050): a
+        confirm-mode PR has no GitHub assignee during the pending window, so this is the only place
+        the state is visible. Rendered distinct from ``assignees``; never a GitHub PR-page write.
+        """
+        rows = AssignmentProposal.objects.filter(
+            repository=repository,
+            state=AssignmentProposal.STATE_PROPOSED,
+        ).values_list("pr_number", "reviewer_login", "expires_at")
+        return {
+            int(pr_number): {"reviewer": login, "expires_at": _isoformat(expires_at)} for pr_number, login, expires_at in rows
+        }
+
     def _build_pr_entry(
         self,
         pr: PullRequest,
@@ -939,6 +956,7 @@ class QueueboardSnapshotBuilder:
         pr_status: str,
         queue_fields: dict,
         queue_status: DataStatus,
+        proposal: dict | None = None,
     ) -> dict:
         comments_status = _data_status(bool(pr.comments_incomplete), pr.last_synced_at)
         assignees_status = _data_status(bool(pr.assignees_incomplete), pr.last_synced_at)
@@ -964,6 +982,9 @@ class QueueboardSnapshotBuilder:
             "number_modified_files": pr.changed_files_count,
             "approvals": pr.approvals or [],
             "assignees": pr.assignees or [],
+            # Acceptance-gate state (design doc 050): {"reviewer", "expires_at"} while a proposal is
+            # pending, else null. A proposal is NOT an assignee — surfaced separately, never merged.
+            "proposal": proposal,
             "users_commented": users_commented,
             "number_total_comments": pr.number_total_comments,
             "direct_dependencies": list(dependencies),
