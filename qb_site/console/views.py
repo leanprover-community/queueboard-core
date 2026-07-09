@@ -99,7 +99,23 @@ def oauth_callback(request: HttpRequest) -> HttpResponse:
         log.warning("console.oauth_callback: GitHub OAuth exchange failed", exc_info=True)
         return render(request, "console/error.html", {"message": "GitHub sign-in failed. Try again."}, status=502)
 
-    user = resolve_or_create_user_from_identity(identity)
+    # Resolve-only: the console is for people we already know (registered via the Zulip flow, or
+    # ingested by the syncer). A GitHub account we have never seen is not given a session, so the
+    # public sign-in URL cannot mint a core.User row for an arbitrary authenticated stranger.
+    user = resolve_or_create_user_from_identity(identity, create=False)
+    if user is None:
+        log.info("console.oauth_callback: unknown GitHub login %r denied", identity.github_login)
+        return render(
+            request,
+            "console/error.html",
+            {
+                "message": (
+                    "This console is only for registered reviewers. If you review for a tracked "
+                    "repository, register with the Zulip bot first, then sign in here."
+                )
+            },
+            status=403,
+        )
     console_session.set_reviewer(request, user)
     return redirect(_safe_next(request, claims.next))
 

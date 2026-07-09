@@ -15,7 +15,9 @@
   - CSRF: a random nonce is stored in the session and echoed in the Fernet-signed `state`
     (`core.services.oauth_state.issue_console_oauth_state`); the callback requires them to match.
   - Identity → user: `core.services.github_identity.resolve_or_create_user_from_identity`
-    (Zulip-agnostic; never touches `zulip_user_id`).
+    (Zulip-agnostic; never touches `zulip_user_id`). The console calls it with **`create=False`**
+    so an unknown GitHub account gets a 403 instead of minting a `core.User`; only people already
+    known (registered via the Zulip flow, or ingested by the syncer) can open a session.
 - Console access is keyed on the authenticated `github_login`, matched **case-insensitively**
   against `AssignmentProposal.reviewer_login`. A reviewer can only act on their own proposals.
 

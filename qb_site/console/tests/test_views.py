@@ -106,6 +106,31 @@ class ConsoleViewTests(TestCase):
         self.assertEqual(resp["Location"], "/console/")
         self.assertEqual(self.client.session.get(SESSION_USER_KEY), self.reviewer.id)
 
+    def test_oauth_callback_unknown_login_denied(self) -> None:
+        # A GitHub account we have never seen must not get a session or mint a core.User row
+        # (design doc 050 review): the console is for already-registered reviewers only.
+        session = self.client.session
+        session[SESSION_NONCE_KEY] = "nonce-123"
+        session.save()
+        state = issue_console_oauth_state(claims=ConsoleOAuthStateClaims(nonce="nonce-123", next="/console/"))
+
+        fake = MagicMock()
+        fake.exchange_code_for_access_token.return_value = "gho_token"
+        fake.fetch_user_identity.return_value = GitHubUserIdentity(
+            github_user_id=999,
+            github_node_id="node-stranger",
+            github_login="stranger",
+            github_name="Stranger",
+            github_avatar_url=None,
+        )
+        with patch("console.views.GitHubOAuthClient", return_value=fake):
+            resp = self.client.get(reverse("console:oauth-callback"), {"code": "c", "state": state})
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertContains(resp, "registered reviewers", status_code=403)
+        self.assertIsNone(self.client.session.get(SESSION_USER_KEY))
+        self.assertFalse(User.objects.filter(github_login__iexact="stranger").exists())
+
     def test_oauth_callback_nonce_mismatch_rejected(self) -> None:
         session = self.client.session
         session[SESSION_NONCE_KEY] = "session-nonce"
