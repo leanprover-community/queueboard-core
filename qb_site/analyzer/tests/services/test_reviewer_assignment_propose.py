@@ -276,6 +276,21 @@ class ProposeAssignmentsForRepoTests(TestCase):
         self.assertEqual(result["stats"]["proposed"], 0)
         client.assign.assert_not_called()
 
+    def test_any_assignee_blocks_proposal_even_a_non_reviewer(self) -> None:
+        # Mirror proposal_validity: ANY assignee supersedes, not just eligible reviewers. Creating
+        # a proposal here would have it superseded by the next expiry sweep and re-created (and
+        # re-DM'd) by the next propose run — the daily-churn loop from the design doc 050 review.
+        self._make_reviewer("bob", acceptance=ReviewerPreference.ACCEPTANCE_CONFIRM, reachable=True)
+        self._make_snapshot({101: "bob"})
+        self._make_pr(101, assignees=["some-bot"])  # assignee is not an eligible reviewer
+
+        result, client, _sync = self._propose()
+
+        self.assertEqual(result["stats"]["skipped_already_assigned"], 1)
+        self.assertEqual(result["stats"]["proposed"], 0)
+        self.assertFalse(AssignmentProposal.objects.exists())
+        client.assign.assert_not_called()
+
     def test_recently_applied_skips_direct_assign(self) -> None:
         self._make_reviewer("alice", acceptance=ReviewerPreference.ACCEPTANCE_AUTO, reachable=False)
         self._make_snapshot({101: "alice"})
