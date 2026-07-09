@@ -95,6 +95,31 @@ def _current_weight(login: str, assignments: Dict[str, tuple[list[int], float, i
     return float(data[1]) if data else 0.0
 
 
+def add_pending_proposal_load(
+    assignment_stats: Dict[str, tuple[list[int], float, int]],
+    pending_load_by_login: Dict[str, float],
+) -> Dict[str, tuple[list[int], float, int]]:
+    """Return a copy of ``assignment_stats`` with pending-proposal load folded into weights.
+
+    A reviewer's active (``proposed``) assignment proposals occupy capacity just like assigned
+    PRs (design doc 050): each contributes to their weighted load so the engine's capacity gate
+    (``maximum_capacity - current_weight``) accounts for work already in flight. The open-PR
+    list and total-assigned count are left untouched — a proposal is a load contribution, not an
+    assignee. Keys must match ``ReviewerProfile.github_login`` (the same keying the snapshot
+    uses for assignees), so a login absent from ``assignment_stats`` is created with an empty
+    open list.
+    """
+    merged: Dict[str, tuple[list[int], float, int]] = {
+        login: (list(open_list), float(weight), int(total)) for login, (open_list, weight, total) in assignment_stats.items()
+    }
+    for login, extra in pending_load_by_login.items():
+        if not extra:
+            continue
+        open_list, weight, total = merged.get(login, ([], 0.0, 0))
+        merged[login] = (open_list, weight + float(extra), total)
+    return merged
+
+
 def _reviewer_candidate_state(
     *,
     pr_entry: dict,

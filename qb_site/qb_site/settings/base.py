@@ -396,6 +396,13 @@ ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS = int(os.getenv("ANALYZER_REVIEWE
 # non-zero default bounds GitHub secondary-rate-limit exposure and drains any cutover
 # backlog gradually; capped-over proposals are left for the next run.
 ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO = int(os.getenv("ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 25))
+# Reviewer assignment acceptance gate (design doc 050) — builder/engine tuning.
+# A pending (proposed) proposal contributes this weighted load to the reviewer (a proposal
+# occupies a slot, like an AwaitingReview PR) and excludes the PR from re-proposal.
+ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT = float(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT", "1.0"))
+# Soft cooldown: skip a reviewer for a PR when a proposal for it expired (silent timeout)
+# within this many days. Not a permanent opt-out (that is an explicit decline). 0 disables it.
+ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS", "14"))
 ANALYZER_REVIEWER_ATTENTION_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ATTENTION_ENABLED"), False)
 ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED = env_bool(
     os.getenv("ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED"),

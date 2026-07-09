@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta, timezone
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from analyzer.services.reviewer_assignment import (
     AreaStatsBuilder,
@@ -11,6 +11,8 @@ from analyzer.services.reviewer_assignment import (
     ReviewerAssignmentBuilder,
     ReviewerProfile,
     _filter_assignment_forbidden_prs,
+    add_pending_proposal_load,
+    build_reviewer_assignment_trace,
     collect_assignment_statistics,
     compute_area_stats,
     rank_prs_for_assignment,
@@ -19,7 +21,7 @@ from analyzer.services.reviewer_assignment import (
 )
 from core.models import Repository, ReviewerPreference, User
 from core.services.topic_labels import make_topic_label_matcher
-from analyzer.models import QueueRuleSet, ReviewerOptOut
+from analyzer.models import AssignmentProposal, QueueRuleSet, ReviewerOptOut
 from syncer.models.ci_enums import CheckRunConclusion, CheckRunStatus
 from syncer.services.pr_sync_service import PRSyncService
 from syncer.models import CommitCheckRun, LabelDef, PRLabel, PullRequest
@@ -204,6 +206,50 @@ class ReviewerAssignmentServiceTests(SimpleTestCase):
         self.assertEqual(result.all_potential_reviewers, ["bob", "alice"])
         self.assertEqual(result.all_available_reviewers, [])
         self.assertIsNone(result.suggested)
+
+    def test_add_pending_proposal_load_merges_without_mutating_input(self):
+        stats = {"alice": ([1, 2], 2.0, 2)}
+        merged = add_pending_proposal_load(stats, {"alice": 1.0, "bob": 1.5})
+
+        # Existing reviewer gains weight; open list / total-assigned untouched.
+        self.assertEqual(merged["alice"], ([1, 2], 3.0, 2))
+        # Reviewer absent from stats is created with an empty open list.
+        self.assertEqual(merged["bob"], ([], 1.5, 0))
+        # A zero contribution is ignored, and the input is not mutated.
+        self.assertEqual(stats["alice"], ([1, 2], 2.0, 2))
+        self.assertEqual(add_pending_proposal_load({}, {"carol": 0.0}), {})
+
+    def test_pending_proposal_load_consumes_reviewer_capacity(self):
+        # A reviewer whose only load is a pending proposal is gated exactly like an assignee.
+        loaded = add_pending_proposal_load({}, {"bob": 1.0})
+        pr_entry = {
+            "labels": [{"name": "t-analysis", "color": "123456"}],
+            "author": "dave",
+            "total_queue_time": {"status": "valid", "value_td": 10},
+        }
+        reviewers = [
+            ReviewerProfile(
+                github_login="bob",
+                maximum_capacity=1,
+                auto_assign=True,
+                temporary_break=False,
+                preferred_labels=["t-analysis"],
+                preferred_labels_lower={"t-analysis"},
+                free_form="",
+                conflict_of_interest=[],
+                conflict_of_interest_lower=set(),
+            )
+        ]
+
+        result = suggest_reviewer_for_pr(
+            pr_number=1,
+            pr_entry=pr_entry,
+            reviewers=reviewers,
+            assignment_stats=loaded,
+            rng=random.Random(0),
+        )
+        self.assertIsNone(result.suggested)
+        self.assertEqual(result.reason, "no-capacity")
 
     def test_filter_assignment_forbidden_prs_drops_matching_labels(self):
         all_prs = {
@@ -937,6 +983,158 @@ class ReviewerAssignmentBuilderTests(TestCase):
         payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
 
         self.assertIn(18, payload["automatic_assignments"])
+
+    def _proposal(
+        self,
+        pr_number: int,
+        reviewer_login: str,
+        *,
+        state: str,
+        expires_at: datetime,
+        decided_at: datetime | None = None,
+    ) -> AssignmentProposal:
+        return AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=pr_number,
+            reviewer_login=reviewer_login,
+            state=state,
+            expires_at=expires_at,
+            decided_at=decided_at,
+        )
+
+    def test_build_excludes_pr_with_active_proposal(self):
+        # A PR mid-proposal must not be re-proposed or offered to a second reviewer.
+        self._make_pr(30, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        self._proposal(30, "bob", state=AssignmentProposal.STATE_PROPOSED, expires_at=self.now + timedelta(days=17))
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertNotIn(30, payload["automatic_assignments"])
+
+    def test_build_does_not_withhold_pr_with_only_terminal_proposal(self):
+        # Terminal proposals are history, not live state: they never withhold the PR.
+        self._make_pr(35, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        # A prior candidate declined; the row is retained history but must not block re-proposal.
+        self._proposal(35, "carol", state=AssignmentProposal.STATE_DECLINED, expires_at=past, decided_at=past)
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertEqual(payload["automatic_assignments"].get(35), "bob")
+
+    def test_build_pending_proposal_counts_toward_reviewer_load(self):
+        # bob's only load is a pending proposal for an unrelated PR; at capacity, so the queue
+        # PR routes to carol instead. Demonstrates a proposal occupies a capacity slot.
+        carol = User.objects.create(github_login="carol")
+        self._make_pr(31, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=1,
+            auto_assign=True,
+        )
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=carol,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=1,
+            auto_assign=True,
+        )
+        self._proposal(999, "bob", state=AssignmentProposal.STATE_PROPOSED, expires_at=self.now + timedelta(days=17))
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertEqual(payload["automatic_assignments"].get(31), "carol")
+
+    def test_build_expired_proposal_within_cooldown_excludes_reviewer(self):
+        self._make_pr(32, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        recent = datetime.now(timezone.utc) - timedelta(days=5)  # inside the 14-day default cooldown
+        self._proposal(32, "bob", state=AssignmentProposal.STATE_EXPIRED, expires_at=recent, decided_at=recent)
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        # bob is the only candidate and is on cooldown -> the PR advances to nobody this cycle.
+        self.assertNotIn(32, payload["automatic_assignments"])
+
+    def test_build_expired_proposal_after_cooldown_reallows_reviewer(self):
+        self._make_pr(34, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        old = datetime.now(timezone.utc) - timedelta(days=20)  # past the 14-day default cooldown
+        self._proposal(34, "bob", state=AssignmentProposal.STATE_EXPIRED, expires_at=old, decided_at=old)
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertEqual(payload["automatic_assignments"].get(34), "bob")
+
+    def test_trace_excludes_pr_with_active_proposal(self):
+        # The diagnostic trace routes through the same helper, so it agrees with the builder.
+        self._make_pr(40, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        self._proposal(40, "bob", state=AssignmentProposal.STATE_PROPOSED, expires_at=self.now + timedelta(days=17))
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        trace = build_reviewer_assignment_trace(self.repo, queue_snapshot=queue_snapshot, rng=random.Random(0))
+
+        self.assertIn(40, queue_snapshot.payload["lists"]["dashboards"]["Queue"])
+        self.assertEqual(trace["meta"]["assignment_candidate_prs"], 0)
+        self.assertNotIn("40", trace["per_pr"])
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS=0)
+    def test_build_cooldown_disabled_reallows_reviewer_immediately(self):
+        self._make_pr(36, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+        )
+        recent = datetime.now(timezone.utc) - timedelta(days=1)
+        self._proposal(36, "bob", state=AssignmentProposal.STATE_EXPIRED, expires_at=recent, decided_at=recent)
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertEqual(payload["automatic_assignments"].get(36), "bob")
 
     def test_unassignment_event_excludes_reviewer_from_auto_assignments(self):
         ReviewerPreference.objects.create(
