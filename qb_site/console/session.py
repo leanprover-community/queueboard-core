@@ -16,6 +16,9 @@ SESSION_NONCE_KEY = "console_oauth_nonce"
 
 
 def set_reviewer(request: HttpRequest, user: User) -> None:
+    # Rotate the session key on login promotion (like django.contrib.auth.login) so a
+    # pre-authentication session key planted in the browser cannot be replayed (session fixation).
+    request.session.cycle_key()
     request.session[SESSION_USER_KEY] = int(user.id)
 
 

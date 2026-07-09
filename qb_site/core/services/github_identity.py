@@ -15,6 +15,17 @@ from core.models import User
 from core.services.github_oauth import GitHubUserIdentity
 
 
+def _resolve_existing(identity: GitHubUserIdentity) -> User | None:
+    """Look up an existing user by node id, else by login (rejecting recycled logins)."""
+    user = User.objects.select_for_update().filter(github_node_id=identity.github_node_id).first()
+    if user is not None:
+        return user
+    user = User.objects.select_for_update().filter(github_login__iexact=identity.github_login).first()
+    if user is not None and user.github_node_id and user.github_node_id != identity.github_node_id:
+        return None
+    return user
+
+
 @transaction.atomic
 def resolve_or_create_user_from_identity(identity: GitHubUserIdentity, *, create: bool = True) -> User | None:
     """Return the ``core.User`` for ``identity`` (by node id, else login).
@@ -28,10 +39,13 @@ def resolve_or_create_user_from_identity(identity: GitHubUserIdentity, *, create
     Race-safe against the syncer ingesting the same GitHub user concurrently (savepoint + re-fetch,
     per the "Concurrent Writers and Unique Keys" rules). Refreshes mutable identity fields
     (login/name/avatar) when they drift; never clobbers a conflicting non-empty ``github_node_id``.
+
+    A login match whose stored ``github_node_id`` is non-empty and differs from the identity's is a
+    *recycled username* (the login now belongs to a different GitHub account) and is treated as no
+    match — resolving it would hand the new account holder the previous owner's user (and, via the
+    console, their session and proposals).
     """
-    user = User.objects.select_for_update().filter(github_node_id=identity.github_node_id).first()
-    if user is None:
-        user = User.objects.select_for_update().filter(github_login__iexact=identity.github_login).first()
+    user = _resolve_existing(identity)
 
     if user is None:
         if not create:
@@ -46,9 +60,7 @@ def resolve_or_create_user_from_identity(identity: GitHubUserIdentity, *, create
                     is_active=True,
                 )
         except IntegrityError:
-            user = User.objects.select_for_update().filter(github_node_id=identity.github_node_id).first()
-            if user is None:
-                user = User.objects.select_for_update().filter(github_login__iexact=identity.github_login).first()
+            user = _resolve_existing(identity)
             if user is None:
                 raise
 
