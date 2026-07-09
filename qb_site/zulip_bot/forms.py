@@ -30,6 +30,10 @@ REVIEWER_PREFERENCE_NON_FORM_FIELDS: tuple[str, ...] = (
     "created_at",
     "updated_at",
     "notification_settings",
+    # Acceptance-gate mode (design doc 050). Deliberately not self-serve in the Zulip prefs form
+    # yet: set via the ReviewerPreference admin bulk actions / community decision. Expose here only
+    # if reviewers ask to flip their own mode.
+    "assignment_acceptance",
 )
 
 

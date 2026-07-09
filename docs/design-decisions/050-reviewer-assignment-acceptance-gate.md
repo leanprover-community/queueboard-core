@@ -1,7 +1,7 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunks 1–4 landed). Captures decisions,
-> invariants, and a chunked build plan; Progress Notes track what has shipped.
+> Status: Living implementation plan (in progress — Chunks 1–4 and 6 landed; Chunk 5 next).
+> Captures decisions, invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
 
@@ -35,8 +35,10 @@
   `core.User` (`github_login` ↔ `zulip_user_id`).
 - Reusable infrastructure already present:
   - Proactive Zulip DMs (`zulip_bot.services.zulip_client.ZulipClient.send_direct_message`).
-  - GitHub OAuth for identity (`zulip_bot/services/github_oauth.py`,
-    `views.register_github_callback`, `services/registration_linking.py`).
+  - GitHub OAuth for identity (`core/services/github_oauth.py::GitHubOAuthClient`; the
+    registration flow's callback/state helpers live in `zulip_bot/` —
+    `views.register_github_callback`, `services/registration_linking.py`,
+    `services/registration_oauth_state.py`).
   - Per-PR opt-outs (`analyzer.ReviewerOptOut`, keyed `(repository, pr_number,
     reviewer_login)`), driven by timeline assign/unassign events
     (`syncer/services/pr_sync_service.py::_apply_assignment_opt_outs`).
@@ -216,9 +218,16 @@ is null) — *not* merely because `notifications_enabled` is off. This decouplin
 ### Reviewer console
 
 - **Auth:** GitHub OAuth → a persistent **reviewer session** (Django session framework;
-  store the resolved `core.User`). Reuses `github_oauth.GitHubOAuthClient` and the existing
-  callback plumbing. The DM contains a **plain, stable console URL** — no token, nothing to
-  expire, bookmarkable. Standard login-redirect (`?next=`) lets a DM deep-link to a PR row.
+  store the resolved `core.User`). Reuses `core.services.github_oauth.GitHubOAuthClient`. The
+  console gets its **own token-less OAuth-state helper** in `core` (Fernet-signed CSRF + `next`
+  path) rather than the registration flow's token-bound state helper. The DM contains a **plain,
+  stable console URL** — no token, nothing to expire, bookmarkable — built from the centralized
+  `QUEUEBOARD_BASE_URL` (legacy `ZULIP_PREFS_URL_BASE` falls back to it). Standard login-redirect
+  (`?next=`) lets a DM deep-link to a PR row.
+- **Location (resolved):** a dedicated `console/` Django app (own urls/views/templates/session),
+  not folded into `zulip_bot/`. Build order is **console before notification** (Chunk 6 → 5) so the
+  DM links to a live surface. Console access is keyed on the authenticated `github_login`, matched
+  case-insensitively against `AssignmentProposal.reviewer_login`.
 - Console access is keyed on the authenticated `github_login` (which is exactly what
   proposals are keyed on), so console access and notification reach are independent: a
   reviewer can self-manage on the console even without a Zulip link.
@@ -370,10 +379,12 @@ a later step.
    (per-reviewer branch: `auto` → 046 path; `confirm` reachable → proposal; `confirm`
    unreachable → fallback), `analyzer.propose_reviewer_assignments` task, expiry sweep task,
    settings/flags/beat. Dry-run + flags. Unit + task tests.
-5. **Notification:** per-reviewer digest DM (reuse `ZulipClient` + a dedupe record or
-   `notified_at`), de-duped vs the attention "newly assigned" ping.
-6. **Console:** GitHub-OAuth reviewer session, list view, accept/decline handlers
-   (accept reuses the 046 mutation path), templates, live re-validation, frontend tests.
+5. **Notification** *(built after Chunk 6 — the DM links to the console)*: per-reviewer digest DM
+   (reuse `ZulipClient` + a dedupe record or `notified_at`), de-duped vs the attention "newly
+   assigned" ping.
+6. ✅ **(landed)** **Console** *(built before Chunk 5)*: dedicated `console/` app — GitHub-OAuth
+   reviewer session, list view, accept/decline handlers (accept reuses the 046 mutation path),
+   templates, live re-validation, tests.
 7. **Surfacing:** the {unassigned, proposed, assigned} state in the queue snapshot and in
    `pr_info`/`PRQueueInfo` (so the dashboard, API, and the Zulip `pr-info` command render it
    identically, distinct from GitHub assignees); the `AssignmentProposal` admin changelist
@@ -437,6 +448,36 @@ a later step.
 
 ## Progress Notes
 
+- 2026-07-09: **Chunk 6 landed (built before Chunk 5).** New `console/` Django app at `/console/`
+  — a GitHub-OAuth, session-backed reviewer console. Decisions (via checkpoint): dedicated app
+  (not folded into `zulip_bot`); OAuth consolidated into `core`; console before notification so
+  the DM links to a live surface. Pieces:
+  - **Centralized site URL:** new canonical `QUEUEBOARD_BASE_URL`; legacy `ZULIP_PREFS_URL_BASE`
+    now falls back to it; `core.services.site_urls.{resolve_site_base_url,build_site_url}` is the
+    single resolver (existing prefs/registration links inherit the fallback for free).
+  - **Shared OAuth-state primitive in `core`:** `core.services.oauth_state` (Fernet encrypt +
+    integrity + TTL over a JSON dict) with a token-less console helper (`ConsoleOAuthStateClaims`
+    carrying a CSRF `nonce` + `next`). Refactored `zulip_bot.registration_oauth_state` to delegate
+    to it (public API unchanged; registration suite green). `GitHubOAuthClient` was *already* in
+    `core` (design-doc path corrected). Zulip-agnostic
+    `core.services.github_identity.resolve_or_create_user_from_identity` maps the OAuth identity to
+    a `core.User` without touching Zulip fields.
+  - **Console app:** `login`/`oauth_callback`/`logout` (stable bookmarkable URL, `?next=`, nonce
+    CSRF), a list view (pending proposals with matched topic labels + expiry, a per-repo load
+    summary), and POST `accept`/`decline`. Both handlers re-validate via the single
+    `proposal_validity` authority and render `unavailable.html` (retiring the stale row) when a
+    proposal is no longer actionable; a reviewer can only act on proposals matching their
+    `github_login` (case-insensitive). **Accept** (gated by
+    `ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED`) reuses the verbatim 046 mutation via
+    `assign_reviewer_and_record`, then marks the proposal `accepted`; when the flag is off it
+    leaves the proposal pending rather than record an unfulfillable acceptance. **Decline** marks
+    `declined` and upserts an active `ReviewerOptOut`.
+  - Fixed a **pre-existing** red test from Chunk 1: `zulip_bot` prefs-form field-coverage now
+    accounts for `assignment_acceptance` (deliberately admin-managed, not self-serve in the form).
+  - Added `console/AGENTS.md` (+ `CLAUDE.md`) and listed the app in `qb_site/AGENTS.md`.
+  Validation: 25 new tests (console views + OAuth/site-url/identity helpers) + `console`/`core`/
+  `zulip_bot` suites (387) green on Postgres; `makemigrations --check` clean (no models); ruff
+  clean. No GitHub writes exercised (mocked) — a staging end-to-end accept remains a manual step.
 - 2026-07-09: **Chunk 4 landed.** Split the batch/mutation halves of the 046 apply path and
   built the propose pipeline. Extracted the mutation core into
   `reviewer_assignment_apply.assign_reviewer_and_record` (+ `latest_default_snapshot` /

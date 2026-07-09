@@ -8,6 +8,7 @@
   - `analyzer`: derived queue/revision/dependency state and snapshots.
   - `api`: DRF views/serializers for queueboard surfaces.
   - `zulip_bot`: Zulip webhook/command integration and policies.
+  - `console`: GitHub-OAuth reviewer console for accepting/declining assignment proposals (design doc 050).
 - Keep new modules inside the owning app (`models/`, `services/`, `tasks/`, `management/commands/`, `tests/`).
 - App-specific guidance:
   - `qb_site/api/AGENTS.md` for public API endpoints, common patterns, and authentication notes.
