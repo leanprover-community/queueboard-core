@@ -29,6 +29,7 @@ from analyzer.services.assignment_proposal_validity import (
     queue_membership,
     resolve_on_queue_exit_policy,
 )
+from analyzer.services.reviewer_assignment import _opt_outs_for_prs
 from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_record
 from analyzer.services.reviewer_assignment_engine import _normalize_login
 from console import session as console_session
@@ -259,6 +260,7 @@ def _live_validity(proposal: AssignmentProposal, *, now) -> tuple[ProposalValidi
         now=now,
         live_pr=live_pr,
         membership=queue_membership(repo, now=now),
+        opt_outs=_opt_outs_for_prs(repo, [pr_number]),
         on_queue_exit=resolve_on_queue_exit_policy(),
     )
     return validity, live_pr
@@ -297,6 +299,7 @@ _UNAVAILABLE_REASON = {
     "pr_assigned": "This PR already has an assignee.",
     "pr_closed": "This PR is closed or merged.",
     "pr_off_queue": "This PR is no longer on the review queue.",
+    "opted_out": "You’ve opted out of this PR, so this proposal no longer applies.",
 }
 
 
@@ -310,29 +313,6 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
 
     if proposal.state != AssignmentProposal.STATE_PROPOSED:
         return render(request, "console/unavailable.html", {"message": _UNAVAILABLE_REASON["already_terminal"]})
-
-    # An active opt-out (explicit decline, or a GitHub self-unassign reconciled into one) blocks
-    # re-acceptance. Retire the dangling proposal to ``superseded`` rather than leaving it pending:
-    # a bare no-op verdict (terminal_state=None) would keep it showing as "proposed" on the console
-    # and board until it timed out, since proposal_validity does not consult opt-outs.
-    if ReviewerOptOut.objects.filter(
-        repository=proposal.repository, pr_number=proposal.pr_number, reviewer_login__iexact=reviewer.github_login, active=True
-    ).exists():
-        _retire(
-            proposal,
-            ProposalValidity(
-                is_live=False,
-                reason="opted_out",
-                terminal_state=AssignmentProposal.STATE_SUPERSEDED,
-                decided_via=AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED,
-            ),
-            now=now,
-        )
-        return render(
-            request,
-            "console/unavailable.html",
-            {"message": "You’ve opted out of this PR, so this proposal no longer applies."},
-        )
 
     validity, _live_pr = _live_validity(proposal, now=now)
     if not validity.is_live:

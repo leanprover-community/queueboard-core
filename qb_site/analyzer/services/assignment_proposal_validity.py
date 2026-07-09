@@ -38,6 +38,7 @@ REASON_EXPIRED = "expired"
 REASON_PR_ASSIGNED = "pr_assigned"
 REASON_PR_CLOSED = "pr_closed"
 REASON_PR_OFF_QUEUE = "pr_off_queue"
+REASON_OPTED_OUT = "opted_out"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,7 @@ def live_proposal_validity(
     now: datetime,
     live_pr: PullRequest | None,
     membership: tuple[set[int], set[int], bool],
+    opt_outs: dict[int, set[str]] | None = None,
     on_queue_exit: str | None = None,
 ) -> ProposalValidity:
     """Assemble the durable facts for one proposal and run ``proposal_validity`` on them.
@@ -96,12 +98,15 @@ def live_proposal_validity(
     ``membership`` is the repo-level ``queue_membership(...)`` result, computed once per repo so
     batch callers (the expiry sweep) don't refetch the snapshot per proposal. ``live_pr`` is the
     proposal's PR row (``.only("number", "state", "assignees")`` suffices), or ``None`` if unknown.
+    ``opt_outs`` is the ``{pr_number: {normalized_login, ...}}`` map of active opt-outs (as built
+    by ``reviewer_assignment._opt_outs_for_prs``), likewise computed once per repo.
     """
     queue_prs, known_prs, fresh = membership
     pr_number = int(proposal.pr_number)
     pr_state = None if live_pr is None else str(live_pr.state)
     current_assignees = set() if live_pr is None else {_normalize_login(str(a)) for a in (live_pr.assignees or []) if a}
     on_queue = (pr_number in queue_prs) if (fresh and pr_number in known_prs) else None
+    opted_out = _normalize_login(proposal.reviewer_login) in (opt_outs or {}).get(pr_number, set())
     return proposal_validity(
         proposal,
         now=now,
@@ -109,6 +114,7 @@ def live_proposal_validity(
         current_assignees=current_assignees,
         on_queue=on_queue,
         on_queue_exit=on_queue_exit,
+        opted_out=opted_out,
     )
 
 
@@ -120,6 +126,7 @@ def proposal_validity(
     current_assignees: set[str] | None = None,
     on_queue: bool | None = None,
     on_queue_exit: str | None = None,
+    opted_out: bool = False,
 ) -> ProposalValidity:
     """Decide whether ``proposal`` is still a live pending proposal.
 
@@ -131,16 +138,20 @@ def proposal_validity(
     - ``on_queue``: review-queue membership, or ``None`` when the caller could not determine it
       reliably (e.g. no fresh queue snapshot) — in that case the off-queue check is skipped rather
       than guessed, so a stale/missing snapshot never mass-invalidates.
+    - ``opted_out``: the proposal's reviewer holds an active ``ReviewerOptOut`` for this PR
+      (explicit decline, or a GitHub self-unassign reconciled into one after the proposal was
+      created).
 
     Precedence (structural invalidation before time before policy):
 
     1. Not ``proposed`` -> already terminal (nothing to do).
     2. A GitHub assignee has landed -> superseded (don't fight the human/self-assignee).
-    3. PR closed/merged -> superseded (a closed PR can't be usefully reviewed, regardless of policy).
-    4. Past ``expires_at`` -> expired (a timeout is an expiry even under ``retain``; ``retain`` is
+    3. Reviewer opted out of this PR -> superseded (they have said no; don't keep asking).
+    4. PR closed/merged -> superseded (a closed PR can't be usefully reviewed, regardless of policy).
+    5. Past ``expires_at`` -> expired (a timeout is an expiry even under ``retain``; ``retain`` is
        about queue-exit, not the acceptance clock). Expiry is what seeds the soft re-propose cooldown.
-    5. Open but off-queue, under the ``invalidate`` policy -> superseded.
-    6. Otherwise -> live.
+    6. Open but off-queue, under the ``invalidate`` policy -> superseded.
+    7. Otherwise -> live.
     """
     if proposal.state != AssignmentProposal.STATE_PROPOSED:
         return ProposalValidity(is_live=False, reason=REASON_ALREADY_TERMINAL)
@@ -152,6 +163,14 @@ def proposal_validity(
         return ProposalValidity(
             is_live=False,
             reason=REASON_PR_ASSIGNED,
+            terminal_state=AssignmentProposal.STATE_SUPERSEDED,
+            decided_via=AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED,
+        )
+
+    if opted_out:
+        return ProposalValidity(
+            is_live=False,
+            reason=REASON_OPTED_OUT,
             terminal_state=AssignmentProposal.STATE_SUPERSEDED,
             decided_via=AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED,
         )
@@ -198,4 +217,5 @@ __all__ = [
     "REASON_PR_ASSIGNED",
     "REASON_PR_CLOSED",
     "REASON_PR_OFF_QUEUE",
+    "REASON_OPTED_OUT",
 ]
