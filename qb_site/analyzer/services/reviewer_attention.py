@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from django.db.models import Q
 
-from analyzer.models import PRQueueWindow, QueueRuleSet
+from analyzer.models import AssignmentProposal, PRQueueWindow, QueueRuleSet
 from core.models import Repository, ReviewerPreference
 from core.services.reviewer_notification_settings import parse_notification_policy
 from syncer.models import PRTimelineEvent, PRTimelineEventType, PullRequest
@@ -150,6 +150,21 @@ def build_reviewer_attention_reports(
             if prev is None or occurred_at > prev:
                 last_assignment_by_pr_and_reviewer[key] = occurred_at
 
+    # De-dupe against the acceptance-gate proposal DM (design doc 050): when an assignee arrived
+    # because the reviewer just accepted a proposal on the console, they already got the proposal DM,
+    # so suppress the redundant "newly assigned" ping for that (pr, reviewer). Keyed to the same ping
+    # window as the ping itself. Data-driven: no accepted-via-console rows -> no effect.
+    recently_accepted_via_console: set[tuple[int, str]] = set()
+    if pr_by_number:
+        accepted_rows = AssignmentProposal.objects.filter(
+            repository=repository,
+            pr_number__in=list(pr_by_number.keys()),
+            state=AssignmentProposal.STATE_ACCEPTED,
+            decided_via=AssignmentProposal.DECIDED_VIA_CONSOLE,
+            decided_at__gte=new_assignment_ping_cutoff,
+        ).values_list("pr_number", "reviewer_login")
+        recently_accepted_via_console = {(int(n), _normalize_login(str(login))) for n, login in accepted_rows}
+
     reports: list[ReviewerAttentionReport] = []
     for pref in prefs:
         reviewer_login = _normalize_login(getattr(pref.user, "github_login", None))
@@ -198,7 +213,11 @@ def build_reviewer_attention_reports(
                     days_since_anchor = int(total_seconds // 86400)
                     needs_auto_unassign = days_since_anchor >= policy.auto_unassign_days
                     needs_nudge = (days_since_anchor >= policy.stale_nudge_days) and not needs_auto_unassign
-            if last_assigned_at is not None and last_assigned_at >= new_assignment_ping_cutoff:
+            if (
+                last_assigned_at is not None
+                and last_assigned_at >= new_assignment_ping_cutoff
+                and (pr_number, reviewer_login) not in recently_accepted_via_console
+            ):
                 needs_new_assignment_ping = True
 
             items.append(

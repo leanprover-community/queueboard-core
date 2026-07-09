@@ -31,6 +31,7 @@ from analyzer.tasks.reviewer_assignment import (
 from analyzer.tasks.reviewer_assignment_apply import apply_reviewer_assignments_task
 from analyzer.tasks.reviewer_assignment_propose import propose_reviewer_assignments_task
 from analyzer.tasks.assignment_proposal_expiry import expire_assignment_proposals_task
+from analyzer.tasks.assignment_proposal_delivery import deliver_assignment_proposals_task
 
 
 log = logging.getLogger(__name__)
@@ -164,4 +165,5 @@ __all__ = [
     "apply_reviewer_assignments_task",
     "propose_reviewer_assignments_task",
     "expire_assignment_proposals_task",
+    "deliver_assignment_proposals_task",
 ]
