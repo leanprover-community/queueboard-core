@@ -49,7 +49,12 @@ Notes
 - Copy `.env.example` to `.env` for local Django work; supply database credentials, GitHub tokens, and task runner settings as described in `docs/django_backend_plan.md`.
 - Run the stack through `docker compose` against PostgreSQL; we no longer support SQLite fallbacks for quick tests.
 - Keep secrets out of version control—store them in the `.env` file or your chosen secret manager.
-- **When adding a new Django setting backed by an env var**: always add it in both `qb_site/qb_site/settings/base.py` (as `FOO = os.getenv("FOO", ...)`) *and* `.env.example` (with a comment). Omitting either means the setting silently has no effect in production or is undiscoverable for new deployments.
+- **Every configurable setting MUST be wired through `base.py` AND documented in `.env.example` — no exceptions.** This is forgotten often; treat it as part of "done" for any setting change:
+  1. Define it in `qb_site/qb_site/settings/base.py` as `FOO = os.getenv("FOO", <default>)` (with a short comment).
+  2. Add `FOO=<default-or-blank>` to `.env.example` with a comment explaining it.
+  - **Antipattern that silently breaks this:** reading `getattr(settings, "FOO", default)` in code *without* a matching `os.getenv` line in `base.py`. That "phantom" setting can never be configured — it is always the hardcoded default — and is invisible to `.env.example`. If a value is meant to be tunable, wire it through `base.py`; if it is a true constant, make it a module-level constant, not a `getattr(settings, ...)`.
+  - Consequence of skipping either step: the setting has no effect in production (missing from `base.py`) or is undiscoverable for new deployments (missing from `.env.example`).
+  - When a setting also requires a live-deployment change (base URL, OAuth callback, secrets), surface it in the relevant runbook under `docs/` too (e.g. `docs/zulip_github_oauth_setup.md`).
 
 ## Containers & Volumes
 - Code is bind-mounted read-only into containers (`.:/app:ro`) to avoid writes into the repo from inside Docker.

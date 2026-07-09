@@ -1,14 +1,18 @@
-# Zulip Registration GitHub OAuth Setup
+# Queueboard GitHub OAuth Setup
 
-This guide covers how to configure GitHub OAuth for Queueboard's Zulip registration flow.
+This guide covers how to configure GitHub OAuth for Queueboard. Two flows share one OAuth App:
+the **Zulip registration** flow and the **reviewer console** (design doc 050).
 
 ## Scope
-- Flow entrypoint: `/api/zulip/register/<token>/`
-- OAuth start endpoint: `/api/zulip/register/<token>/github/`
-- OAuth callback endpoint: `/api/zulip/register/github/callback/`
+- Registration flow:
+  - entrypoint `/api/zulip/register/<token>/`, start `/api/zulip/register/<token>/github/`,
+    callback `/api/zulip/register/github/callback/`.
+- Reviewer console:
+  - entrypoint `/console/`, start `/console/login/`, callback `/console/oauth/callback/`.
+  - The console derives its callback from `QUEUEBOARD_BASE_URL` (not `GITHUB_OAUTH_REDIRECT_URI`).
 - Current behavior:
-  - OAuth verifies GitHub identity and returns a callback confirmation page.
-  - DB account linking/bootstrap is implemented separately.
+  - OAuth verifies GitHub identity; the console then opens a session and lists proposals.
+  - DB account linking/bootstrap (registration) is implemented separately.
 
 ## 1) Create the GitHub OAuth App
 
@@ -17,8 +21,7 @@ This guide covers how to configure GitHub OAuth for Queueboard's Zulip registrat
 2. Fill in:
    - `Application name`: `Queueboard OAuth` (or env-specific name)
    - `Homepage URL`: any URL (for example `https://github.com/leanprover-community/queueboard-core`)
-   - `Authorization callback URL`:
-     `https://<your-host>/api/zulip/register/github/callback/`
+   - `Authorization callback URL`: **the site root** `https://<your-host>/`
    - You can leave `Enable Device Flow` unchecked.
 3. Create the app.
 4. Copy:
@@ -26,7 +29,12 @@ This guide covers how to configure GitHub OAuth for Queueboard's Zulip registrat
    - Generate and copy `Client Secret`
 
 Notes:
-- GitHub OAuth Apps have a single callback URL setting. Use one app per environment if callback hosts differ (recommended).
+- GitHub OAuth Apps have a **single** callback URL, but GitHub accepts any `redirect_uri` whose path
+  is a **subdirectory** of it. Because two flows use different callback paths
+  (`/api/zulip/register/github/callback/` and `/console/oauth/callback/`), register the callback at
+  the **site root** `https://<your-host>/` so both are covered. Registering the deeper registration
+  path instead will break console sign-in with `redirect_uri_mismatch`.
+- Use one app per environment if callback hosts differ (recommended).
 - Keep client secret out of git and out of logs.
 
 ## 2) Configure Environment Variables
@@ -36,10 +44,16 @@ Set these in your Queueboard environment (`.env` or deployment secrets):
 - Required:
   - `GITHUB_OAUTH_CLIENT_ID`
   - `GITHUB_OAUTH_CLIENT_SECRET`
+  - `QUEUEBOARD_BASE_URL` — canonical site base (`https://<your-host>`, no trailing path). The
+    reviewer console builds its callback + the console link in reviewer DMs from this. New at design
+    doc 050; **must be set for the console/notification rollout.** (Legacy deployments that only set
+    `ZULIP_PREFS_URL_BASE` keep working via fallback, but set `QUEUEBOARD_BASE_URL` going forward.)
 - Recommended:
   - `GITHUB_OAUTH_REDIRECT_URI`
-    Use the same URL configured in GitHub app callback settings, e.g.
+    The registration-flow callback (the console derives its own from `QUEUEBOARD_BASE_URL`), e.g.
     `https://queueboard.example/api/zulip/register/github/callback/`
+- Optional:
+  - `CONSOLE_OAUTH_STATE_TTL_SECONDS` (default 600) — console OAuth state round-trip TTL.
 
 Optional overrides (defaults shown):
 - `GITHUB_OAUTH_AUTHORIZE_URL=https://github.com/login/oauth/authorize`
