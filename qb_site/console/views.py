@@ -273,12 +273,28 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
     if proposal.state != AssignmentProposal.STATE_PROPOSED:
         return render(request, "console/unavailable.html", {"message": _UNAVAILABLE_REASON["already_terminal"]})
 
-    # An explicit prior decline (opt-out) blocks re-acceptance.
+    # An active opt-out (explicit decline, or a GitHub self-unassign reconciled into one) blocks
+    # re-acceptance. Retire the dangling proposal to ``superseded`` rather than leaving it pending:
+    # a bare no-op verdict (terminal_state=None) would keep it showing as "proposed" on the console
+    # and board until it timed out, since proposal_validity does not consult opt-outs.
     if ReviewerOptOut.objects.filter(
         repository=proposal.repository, pr_number=proposal.pr_number, reviewer_login__iexact=reviewer.github_login, active=True
     ).exists():
-        _retire(proposal, ProposalValidity(is_live=False, reason="already_terminal"), now=now)
-        return render(request, "console/unavailable.html", {"message": "You have opted out of this PR."})
+        _retire(
+            proposal,
+            ProposalValidity(
+                is_live=False,
+                reason="opted_out",
+                terminal_state=AssignmentProposal.STATE_SUPERSEDED,
+                decided_via=AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED,
+            ),
+            now=now,
+        )
+        return render(
+            request,
+            "console/unavailable.html",
+            {"message": "You’ve opted out of this PR, so this proposal no longer applies."},
+        )
 
     validity, _live_pr = _live_validity(proposal, now=now)
     if not validity.is_live:

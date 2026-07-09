@@ -244,6 +244,28 @@ class ConsoleViewTests(TestCase):
         proposal.refresh_from_db()
         self.assertEqual(proposal.state, AssignmentProposal.STATE_PROPOSED)
 
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_accept_with_active_opt_out_supersedes_proposal(self) -> None:
+        # Regression (design doc 050 review): an active opt-out on the PR blocks acceptance, and the
+        # dangling proposal is retired to superseded rather than left pending (proposal_validity does
+        # not consult opt-outs, so a bare no-op would leave it showing "proposed" until it timed out).
+        self._make_pr(101)
+        proposal = self._proposal(101)
+        ReviewerOptOut.objects.create(
+            repository=self.repo, pr_number=101, reviewer_login="bob", active=True, opted_out_at=self.now
+        )
+        self._login_session()
+
+        with patch("console.views.assign_reviewer_and_record") as mock_assign:
+            resp = self.client.post(reverse("console:accept", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "opted out")
+        mock_assign.assert_not_called()
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.state, AssignmentProposal.STATE_SUPERSEDED)
+        self.assertEqual(proposal.decided_via, AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED)
+
     def test_accept_requires_post(self) -> None:
         self._make_pr(101)
         proposal = self._proposal(101)
