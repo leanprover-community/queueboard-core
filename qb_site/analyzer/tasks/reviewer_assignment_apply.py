@@ -51,6 +51,16 @@ def apply_reviewer_assignments_task(
     if not enabled and not dry_run:
         return {"skipped": True, "reason": "feature_disabled", "enabled": enabled, "dry_run": dry_run}
 
+    # The acceptance-gate propose task supersedes this one. If both pipelines are enabled, this
+    # proposal-unaware task would direct-assign confirm-mode reviewers at the same 00:45 slot,
+    # bypassing the gate — so yield to the gate rather than trusting the docs alone.
+    if enabled and bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED", False)):
+        log.error(
+            "analyzer.apply_reviewer_assignments: skipping — ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED is also set and "
+            "analyzer.propose_reviewer_assignments supersedes this task. Enable one pipeline or the other, not both."
+        )
+        return {"skipped": True, "reason": "superseded_by_proposals_pipeline", "enabled": enabled, "dry_run": dry_run}
+
     dedupe_days = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS", 7))
     max_age_hours = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_AGE_HOURS", 48))
     max_per_repo = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_MAX_PER_REPO", 25))
