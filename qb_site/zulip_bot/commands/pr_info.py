@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from analyzer.services.pr_info import DependencyInfo, PRQueueInfo, get_pr_queue_info
 from analyzer.services.reviewer_attention_format import format_compact_duration, format_since_timestamp
 from core.models import User
+from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -55,6 +56,8 @@ def pr_info_command(context: CommandContext, args: str) -> CommandResult:
             if info.author_login:
                 all_logins.add(info.author_login)
             all_logins.update(info.assignee_logins)
+            if info.proposed_to:
+                all_logins.add(info.proposed_to)
     mention_map = _build_mention_map(all_logins)
 
     # Send one message per PR.
@@ -206,6 +209,13 @@ def _format_pr_info(info: PRQueueInfo, mention_map: dict[str, str], now: datetim
     ci_display = _ci_emoji(info.ci_status, info.ci_requires_success)
     assignees_str = _mentions(info.assignee_logins, mention_map)
     lines.append(f"CI: {ci_display}  ·  Assignees: {assignees_str}")
+
+    # Acceptance-gate proposal (design doc 050): shown distinct from assignees — the reviewer has
+    # been *proposed* but has not accepted, so there is no GitHub assignee yet.
+    if info.proposed_to:
+        proposed_mention = _mention(info.proposed_to, mention_map)
+        expiry = f", expires {format_global_time(info.proposal_expires_at)}" if info.proposal_expires_at else ""
+        lines.append(f"**Proposed to** {proposed_mention} (awaiting acceptance{expiry})")
 
     # Labels.
     if info.labels:

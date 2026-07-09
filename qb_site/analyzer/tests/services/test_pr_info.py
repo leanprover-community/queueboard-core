@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.test import TestCase
 
-from analyzer.models import PRQueueWindow, QueueRuleSet
+from analyzer.models import AssignmentProposal, PRQueueWindow, QueueRuleSet
 from analyzer.models.queue_snapshot import QueueSnapshot
 from analyzer.services.pr_info import (
     get_pr_queue_info,
@@ -318,6 +318,52 @@ class GetPrQueueInfoSnapshotTests(TestCase):
 
         self.assertIsNotNone(info)
 
+    def test_surfaces_active_proposal_distinct_from_assignees(self) -> None:
+        # design doc 050 Chunk 7: a proposed-but-not-accepted reviewer has no GitHub assignee, so
+        # proposed_to is surfaced separately from assignee_logins.
+        entry = _pr_entry(123, assignees=[])
+        _mk_snapshot(self.repo, self.now, {"123": entry}, {"Queue": [123]}, cache_key=self.cache_key)
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=123,
+            reviewer_login="bob",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=self.now + timedelta(days=7),
+        )
+
+        info = get_pr_queue_info("leanprover-community", "mathlib4", 123)
+
+        assert info is not None
+        self.assertEqual(info.proposed_to, "bob")
+        self.assertEqual(info.proposal_expires_at, self.now + timedelta(days=7))
+        self.assertEqual(info.assignee_logins, [])
+
+    def test_no_active_proposal_is_none(self) -> None:
+        entry = _pr_entry(124)
+        _mk_snapshot(self.repo, self.now, {"124": entry}, {"Queue": [124]}, cache_key=self.cache_key)
+
+        info = get_pr_queue_info("leanprover-community", "mathlib4", 124)
+
+        assert info is not None
+        self.assertIsNone(info.proposed_to)
+        self.assertIsNone(info.proposal_expires_at)
+
+    def test_terminal_proposal_is_not_surfaced(self) -> None:
+        entry = _pr_entry(125)
+        _mk_snapshot(self.repo, self.now, {"125": entry}, {"Queue": [125]}, cache_key=self.cache_key)
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=125,
+            reviewer_login="bob",
+            state=AssignmentProposal.STATE_ACCEPTED,
+            expires_at=self.now - timedelta(days=1),
+        )
+
+        info = get_pr_queue_info("leanprover-community", "mathlib4", 125)
+
+        assert info is not None
+        self.assertIsNone(info.proposed_to)
+
 
 class GetPrQueueInfoDbTests(TestCase):
     def setUp(self) -> None:
@@ -356,6 +402,25 @@ class GetPrQueueInfoDbTests(TestCase):
         self.assertEqual(info.source, "db")
         self.assertFalse(info.on_queue)
         self.assertEqual(info.off_queue_reasons, [])  # closed PRs don't get reasons
+
+    def test_db_path_surfaces_active_proposal(self) -> None:
+        # No snapshot exists in this test class, so get_pr_queue_info takes the db path; the live
+        # proposal query still populates proposed_to.
+        _mk_pr(self.repo, 55, state="open")
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=55,
+            reviewer_login="carol",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=self.now + timedelta(days=5),
+        )
+
+        info = get_pr_queue_info("leanprover-community", "mathlib4", 55)
+
+        assert info is not None
+        self.assertEqual(info.source, "db")
+        self.assertEqual(info.proposed_to, "carol")
+        self.assertEqual(info.proposal_expires_at, self.now + timedelta(days=5))
 
     def test_pr_with_active_queue_window(self) -> None:
         pr = _mk_pr(self.repo, 55, assignees=["bob"])

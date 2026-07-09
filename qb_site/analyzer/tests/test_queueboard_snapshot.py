@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from analyzer.models import PRDependency, PRQueueWindow, QueueRuleSet, PRRevision
+from analyzer.models import AssignmentProposal, PRDependency, PRQueueWindow, QueueRuleSet, PRRevision
 from analyzer.models.queue_snapshot import QueueSnapshot
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from core.models import Repository, User
@@ -129,6 +129,34 @@ class QueueboardSnapshotBuilderTests(TestCase):
         self.assertEqual(set(snapshot["lists"]["draft_prs"]), {3})
         self.assertEqual(snapshot["lists"]["dashboards"]["Queue"], [1])
         self.assertEqual(snapshot["lists"]["dashboards"]["NeedsDecision"], [2])
+
+    def test_pr_entry_carries_active_proposal(self):
+        # design doc 050 Chunk 7: a pending proposal is surfaced on the board via the entry's
+        # `proposal` field, distinct from `assignees` (which stays empty until acceptance).
+        pr1 = self._make_pr(1)
+        self._make_pr(2)
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=pr1.number,
+            reviewer_login="bob",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=self.now + timedelta(days=7),
+        )
+        # A terminal proposal on PR 2 must not surface.
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=2,
+            reviewer_login="carol",
+            state=AssignmentProposal.STATE_DECLINED,
+            expires_at=self.now - timedelta(days=1),
+        )
+
+        snapshot = QueueboardSnapshotBuilder(chunk_size=1).build(self.repo)
+        prs = snapshot["prs"]
+
+        self.assertEqual(prs[1]["proposal"], {"reviewer": "bob", "expires_at": (self.now + timedelta(days=7)).isoformat()})
+        self.assertEqual(prs[1]["assignees"], [])
+        self.assertIsNone(prs[2]["proposal"])
 
     def test_queue_membership_respects_rule_set_ci_requirement(self):
         pr = self._make_pr(60)

@@ -56,6 +56,8 @@ def _make_pr_info(
     author_login: str | None = "alice",
     labels: list[str] | None = None,
     assignee_logins: list[str] | None = None,
+    proposed_to: str | None = None,
+    proposal_expires_at: datetime | None = None,
     ci_status: str = "pass",
     ci_requires_success: bool = False,
     off_queue_reasons: list[str] | None = None,
@@ -80,6 +82,8 @@ def _make_pr_info(
         merged_at=None,
         labels=labels or ["awaiting-review"],
         assignee_logins=assignee_logins or [],
+        proposed_to=proposed_to,
+        proposal_expires_at=proposal_expires_at,
         ci_status=ci_status,
         ci_requires_success=ci_requires_success,
         on_queue=on_queue,
@@ -259,6 +263,23 @@ class FormatPrInfoTests(TestCase):
         info = _make_pr_info(state="open", has_ruleset=True)
         text = _format_pr_info(info, {}, self._now())
         self.assertNotIn("No queue ruleset is configured", text)
+
+    def test_proposal_line_rendered_distinct_from_assignees(self) -> None:
+        info = _make_pr_info(
+            assignee_logins=[],
+            proposed_to="bob",
+            proposal_expires_at=_dt(2026, 3, 8, 12),
+        )
+        text = _format_pr_info(info, {"bob": "@_**Bob|7**"}, self._now())
+        self.assertIn("**Proposed to** @_**Bob|7** (awaiting acceptance", text)
+        self.assertIn("expires <time:2026-03-08T12:00:00+00:00>", text)
+        # A proposal is not an assignee: the assignees line stays empty.
+        self.assertIn("Assignees: —", text)
+
+    def test_no_proposal_line_when_absent(self) -> None:
+        info = _make_pr_info(proposed_to=None)
+        text = _format_pr_info(info, {}, self._now())
+        self.assertNotIn("Proposed to", text)
 
     def test_dependency_link_included(self) -> None:
         dep = DependencyInfo(
