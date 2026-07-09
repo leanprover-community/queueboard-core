@@ -436,10 +436,13 @@ def decline(request: HttpRequest, proposal_id: int) -> HttpResponse:
             updated_at=now,
         )
         # Decline == explicit "not this PR" -> permanent per-PR opt-out (reuses builder enforcement).
+        # Lowercase the login like every other ReviewerOptOut writer/clearer (syncer, backfill): the
+        # unique constraint is case-sensitive, so a mixed-case row would duplicate the lowercase one
+        # and the syncer's exact-match assign-clearing would never deactivate it.
         ReviewerOptOut.objects.update_or_create(
             repository=proposal.repository,
             pr_number=int(proposal.pr_number),
-            reviewer_login=proposal.reviewer_login,
+            reviewer_login=_normalize_login(proposal.reviewer_login),
             defaults={"active": True, "opted_out_at": now, "cleared_at": None},
         )
     return render(

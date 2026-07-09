@@ -416,6 +416,20 @@ class ConsoleViewTests(TestCase):
         opt_out = ReviewerOptOut.objects.get(repository=self.repo, pr_number=101, reviewer_login="bob")
         self.assertTrue(opt_out.active)
 
+    def test_decline_lowercases_opt_out_login(self) -> None:
+        # Proposals carry GitHub's canonical (mixed-case) login; the opt-out row must be written
+        # lowercase like every other writer so the syncer's exact-match clearing can find it.
+        mixed_case = User.objects.create(github_login="YaelDillies", github_node_id="node-yael", zulip_user_id=7002)
+        self._make_pr(102)
+        proposal = self._proposal(102, login="YaelDillies")
+        self._login_session(mixed_case)
+
+        resp = self.client.post(reverse("console:decline", args=[proposal.id]))
+        self.assertEqual(resp.status_code, 200)
+        opt_out = ReviewerOptOut.objects.get(repository=self.repo, pr_number=102)
+        self.assertEqual(opt_out.reviewer_login, "yaeldillies")
+        self.assertTrue(opt_out.active)
+
     def test_decline_already_terminal_renders_unavailable(self) -> None:
         self._make_pr(101)
         proposal = self._proposal(101, state=AssignmentProposal.STATE_ACCEPTED)
