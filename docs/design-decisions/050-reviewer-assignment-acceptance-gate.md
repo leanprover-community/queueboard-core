@@ -333,6 +333,17 @@ a later step.
   indefinitely (see "History"). Rollout follows the 028 discipline: *propose → deliver →
   assign-on-accept*, each independently toggleable, plus dry-run.
 
+**Deploy prerequisites (live-env, new for this feature).** Beyond the feature flags above, the
+console + notification rollout needs two live-deployment adjustments, easy to miss because they are
+not new *flags* but new *infrastructure config*:
+
+- Set **`QUEUEBOARD_BASE_URL`** (canonical site base). The console callback and the console link in
+  reviewer DMs are built from it; legacy deployments that only set `ZULIP_PREFS_URL_BASE` keep
+  working via fallback, but new deploys should set `QUEUEBOARD_BASE_URL`.
+- The GitHub OAuth App's **Authorization callback URL** must permit `/console/oauth/callback/`.
+  Because registration and the console use different callback *paths*, register the callback at the
+  **site root** so both are subdirectories of it (see `docs/zulip_github_oauth_setup.md`).
+
 ## Subtleties / Invariants
 
 - The snapshot is advisory; **re-validate every assignment at accept time** (mirrors 046).
@@ -379,9 +390,22 @@ a later step.
    (per-reviewer branch: `auto` → 046 path; `confirm` reachable → proposal; `confirm`
    unreachable → fallback), `analyzer.propose_reviewer_assignments` task, expiry sweep task,
    settings/flags/beat. Dry-run + flags. Unit + task tests.
-5. **Notification** *(built after Chunk 6 — the DM links to the console)*: per-reviewer digest DM
-   (reuse `ZulipClient` + a dedupe record or `notified_at`), de-duped vs the attention "newly
-   assigned" ping.
+5. **Notification** *(NEXT — ready to build; console from Chunk 6 provides the link)*: per-reviewer
+   digest DM. **Build plan (resolved):**
+   - New task `analyzer.deliver_assignment_proposals` (or fold into the propose task — prefer a
+     separate task so delivery stays independently schedulable/gated). Gated by the already-defined
+     `ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED` (+ reuse the master `_ENABLED`/dry-run).
+   - Dedup key = **`AssignmentProposal.notified_at`** (already on the model): a reviewer's digest
+     covers their `state=proposed, notified_at IS NULL` proposals; stamp `notified_at=now` after a
+     successful send; new proposals next cycle → next digest. No separate record model needed.
+   - Reuse `zulip_bot.services.zulip_client.ZulipClient.send_direct_message`; reachability =
+     `core.User.zulip_user_id` (unreachable reviewers never get proposals — they fell back to
+     auto in Chunk 4). Link via `core.services.site_urls.build_site_url(reverse("console:home"))`.
+   - De-dupe vs the attention "newly assigned" ping: the overlap is narrow — it only arises *after*
+     an accept assigns the reviewer. Suppress the attention newly-assigned ping for a PR whose
+     assignee arrived via a just-accepted proposal (detect via a recent `AssignmentProposal`
+     `state=accepted, decided_via=console` or the `ReviewerAssignmentApplication`), so the proposal
+     DM is the single touch for that lifecycle. (Confirm this suppression rule when implementing.)
 6. ✅ **(landed)** **Console** *(built before Chunk 5)*: dedicated `console/` app — GitHub-OAuth
    reviewer session, list view, accept/decline handlers (accept reuses the 046 mutation path),
    templates, live re-validation, tests.

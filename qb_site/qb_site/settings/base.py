@@ -194,6 +194,9 @@ GITHUB_OAUTH_AUTHORIZE_URL = os.getenv("GITHUB_OAUTH_AUTHORIZE_URL", "https://gi
 GITHUB_OAUTH_TOKEN_URL = os.getenv("GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token")
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
 GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "read:user")
+# Reviewer console (design doc 050): TTL for the signed OAuth `state` round-trip (sign-in click ->
+# GitHub -> callback). Ten minutes is plenty; the per-session CSRF nonce is the real guard.
+CONSOLE_OAUTH_STATE_TTL_SECONDS = int(os.getenv("CONSOLE_OAUTH_STATE_TTL_SECONDS", 600))
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_APP_TOKEN_CONFIG: dict[str, object] = {}
 _GITHUB_APP_TOKEN_CONFIG_ENV = os.getenv("GITHUB_APP_TOKEN_CONFIG", "").strip()

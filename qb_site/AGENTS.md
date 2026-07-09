@@ -118,6 +118,16 @@ Additional expectations:
 - Running `makemigrations` on host may emit a Postgres connection warning when DB is not running; file generation still works.
 - PostgreSQL is the only supported DB backend for Django runtime/testing in this repo.
 
+## Settings & .env Hygiene
+- **Any configurable setting must be wired through `qb_site/qb_site/settings/base.py`
+  (`FOO = os.getenv("FOO", <default>)`) AND added to `.env.example` with a comment — in the
+  same change.** This is the single most-forgotten step; treat it as part of "done."
+- Do not read `getattr(settings, "FOO", default)` for a value that has no `os.getenv("FOO", ...)`
+  line in `base.py`: that "phantom" setting is uneditable (always the default) and invisible to
+  `.env.example`. Wire tunables through `base.py`; make true constants module-level constants.
+- If a setting needs a live-deployment change (base URL, OAuth callback, secret), also surface it
+  in the relevant `docs/` runbook. See the root `AGENTS.md` "Configuration & Environment" rule.
+
 ## Keeping Django Admin in Sync With Models
 - Each app registers its models in `qb_site/<app>/admin.py` (currently `core`,
   `syncer`, `analyzer`). When you add, rename, or remove a model field, update
