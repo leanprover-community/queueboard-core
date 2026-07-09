@@ -22,17 +22,18 @@ from typing import Any
 
 from django.db import DatabaseError
 
-from analyzer.models import AssignmentProposal, QueueSnapshot
-from analyzer.services.assignment_proposal_validity import ProposalValidity, proposal_validity, resolve_on_queue_exit_policy
-from analyzer.services.queue_rules import default_rule_set_for_repo
-from analyzer.services.reviewer_assignment_engine import _normalize_login
+from analyzer.models import AssignmentProposal
+from analyzer.services.assignment_proposal_validity import (
+    SNAPSHOT_FRESH_SECONDS,
+    ProposalValidity,
+    live_proposal_validity,
+    queue_membership,
+    resolve_on_queue_exit_policy,
+)
 from core.models import Repository
 from syncer.models import PullRequest
 
 log = logging.getLogger(__name__)
-
-# A queue snapshot older than this is not trusted for off-queue determination (mirrors pr_info).
-SNAPSHOT_FRESH_SECONDS = 7200
 
 
 def _empty_stats() -> dict[str, Any]:
@@ -43,25 +44,6 @@ def _empty_stats() -> dict[str, Any]:
         "still_live": 0,
         "errored": 0,
     }
-
-
-def _queue_membership(repository: Repository, *, now: datetime) -> tuple[set[int], set[int], bool]:
-    """Return ``(queue_pr_numbers, known_pr_numbers, fresh)`` from the latest default snapshot.
-
-    ``known_pr_numbers`` are the PRs the snapshot actually described; only for those (and only when
-    ``fresh``) can we assert on-queue membership. Everything else yields ``on_queue=None`` upstream.
-    """
-    rule_set = default_rule_set_for_repo(repository)
-    cache_key = str(rule_set.id) if rule_set else "default"
-    snapshot = QueueSnapshot.objects.filter(repository=repository, cache_key=cache_key).order_by("-generated_at").first()
-    if snapshot is None or not snapshot.payload:
-        return set(), set(), False
-    generated_at = snapshot.generated_at
-    fresh = generated_at is not None and (now - generated_at).total_seconds() <= SNAPSHOT_FRESH_SECONDS
-    payload = snapshot.payload
-    queue_prs = {int(n) for n in (payload.get("lists", {}).get("dashboards", {}).get("Queue", []) or [])}
-    known_prs = {int(n) for n in (payload.get("prs", {}) or {}).keys()}
-    return queue_prs, known_prs, fresh
 
 
 def expire_and_reconcile_proposals_for_repo(repository: Repository, *, now: datetime) -> dict[str, Any]:
@@ -84,26 +66,17 @@ def expire_and_reconcile_proposals_for_repo(repository: Repository, *, now: date
         int(pr.number): pr
         for pr in PullRequest.objects.filter(repository=repository, number__in=pr_numbers).only("number", "state", "assignees")
     }
-    queue_prs, known_prs, snapshot_fresh = _queue_membership(repository, now=now)
+    membership = queue_membership(repository, now=now)
     policy = resolve_on_queue_exit_policy()
 
     for proposal in proposals:
         try:
             pr_number = int(proposal.pr_number)
-            live_pr = live_by_number.get(pr_number)
-            pr_state = None if live_pr is None else str(live_pr.state)
-            current_assignees = set() if live_pr is None else {_normalize_login(str(a)) for a in (live_pr.assignees or []) if a}
-            if snapshot_fresh and pr_number in known_prs:
-                on_queue: bool | None = pr_number in queue_prs
-            else:
-                on_queue = None
-
-            validity: ProposalValidity = proposal_validity(
+            validity: ProposalValidity = live_proposal_validity(
                 proposal,
                 now=now,
-                pr_state=pr_state,
-                current_assignees=current_assignees,
-                on_queue=on_queue,
+                live_pr=live_by_number.get(pr_number),
+                membership=membership,
                 on_queue_exit=policy,
             )
             if validity.is_live or validity.terminal_state is None:

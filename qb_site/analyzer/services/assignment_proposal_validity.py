@@ -19,10 +19,17 @@ from datetime import datetime
 
 from django.conf import settings
 
-from analyzer.models import AssignmentProposal
+from analyzer.models import AssignmentProposal, QueueSnapshot
+from analyzer.services.queue_rules import default_rule_set_for_repo
+from analyzer.services.reviewer_assignment_engine import _normalize_login
+from core.models import Repository
+from syncer.models import PullRequest
 
 ON_QUEUE_EXIT_INVALIDATE = "invalidate"
 ON_QUEUE_EXIT_RETAIN = "retain"
+
+# A queue snapshot older than this is not trusted for off-queue determination (mirrors pr_info).
+SNAPSHOT_FRESH_SECONDS = 7200
 
 # reason codes
 REASON_LIVE = "live"
@@ -52,6 +59,57 @@ def resolve_on_queue_exit_policy() -> str:
     """Return the configured on-queue-exit policy, defaulting to ``invalidate``."""
     value = str(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT", ON_QUEUE_EXIT_INVALIDATE)).strip().lower()
     return value if value in (ON_QUEUE_EXIT_INVALIDATE, ON_QUEUE_EXIT_RETAIN) else ON_QUEUE_EXIT_INVALIDATE
+
+
+def queue_membership(repository: Repository, *, now: datetime) -> tuple[set[int], set[int], bool]:
+    """Return ``(queue_pr_numbers, known_pr_numbers, fresh)`` from the latest default snapshot.
+
+    ``known_pr_numbers`` are the PRs the snapshot actually described; only for those (and only when
+    ``fresh``) can a caller assert on-queue membership. Everything else must yield ``on_queue=None``
+    so a stale/missing snapshot never mass-invalidates — ``live_proposal_validity`` applies that
+    rule. This is the one shared assembly of queue-membership facts for validity consumers (the
+    expiry sweep and the console); do not reimplement it per call site.
+    """
+    rule_set = default_rule_set_for_repo(repository)
+    cache_key = str(rule_set.id) if rule_set else "default"
+    snapshot = QueueSnapshot.objects.filter(repository=repository, cache_key=cache_key).order_by("-generated_at").first()
+    if snapshot is None or not snapshot.payload:
+        return set(), set(), False
+    generated_at = snapshot.generated_at
+    fresh = generated_at is not None and (now - generated_at).total_seconds() <= SNAPSHOT_FRESH_SECONDS
+    payload = snapshot.payload
+    queue_prs = {int(n) for n in (payload.get("lists", {}).get("dashboards", {}).get("Queue", []) or [])}
+    known_prs = {int(n) for n in (payload.get("prs", {}) or {}).keys()}
+    return queue_prs, known_prs, fresh
+
+
+def live_proposal_validity(
+    proposal: AssignmentProposal,
+    *,
+    now: datetime,
+    live_pr: PullRequest | None,
+    membership: tuple[set[int], set[int], bool],
+    on_queue_exit: str | None = None,
+) -> ProposalValidity:
+    """Assemble the durable facts for one proposal and run ``proposal_validity`` on them.
+
+    ``membership`` is the repo-level ``queue_membership(...)`` result, computed once per repo so
+    batch callers (the expiry sweep) don't refetch the snapshot per proposal. ``live_pr`` is the
+    proposal's PR row (``.only("number", "state", "assignees")`` suffices), or ``None`` if unknown.
+    """
+    queue_prs, known_prs, fresh = membership
+    pr_number = int(proposal.pr_number)
+    pr_state = None if live_pr is None else str(live_pr.state)
+    current_assignees = set() if live_pr is None else {_normalize_login(str(a)) for a in (live_pr.assignees or []) if a}
+    on_queue = (pr_number in queue_prs) if (fresh and pr_number in known_prs) else None
+    return proposal_validity(
+        proposal,
+        now=now,
+        pr_state=pr_state,
+        current_assignees=current_assignees,
+        on_queue=on_queue,
+        on_queue_exit=on_queue_exit,
+    )
 
 
 def proposal_validity(
@@ -128,8 +186,11 @@ def proposal_validity(
 __all__ = [
     "ON_QUEUE_EXIT_INVALIDATE",
     "ON_QUEUE_EXIT_RETAIN",
+    "SNAPSHOT_FRESH_SECONDS",
     "ProposalValidity",
+    "live_proposal_validity",
     "proposal_validity",
+    "queue_membership",
     "resolve_on_queue_exit_policy",
     "REASON_LIVE",
     "REASON_ALREADY_TERMINAL",
