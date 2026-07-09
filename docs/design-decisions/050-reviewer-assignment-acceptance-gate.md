@@ -1,6 +1,6 @@
 # Reviewer Assignment Acceptance Gate (Propose → Accept → Assign)
 
-> Status: Living implementation plan (in progress — Chunks 1–3 landed). Captures decisions,
+> Status: Living implementation plan (in progress — Chunks 1–4 landed). Captures decisions,
 > invariants, and a chunked build plan; Progress Notes track what has shipped.
 
 ## Context
@@ -366,10 +366,10 @@ a later step.
 3. ✅ **(landed)** **Builder/engine integration:** candidate exclusion, pending-load
    contribution, cooldown exclusion; pure-engine seams with unit tests (assignability,
    scarcity, cooldown).
-4. **Propose service + task + expiry sweep:** `propose_assignments_for_repo` (per-reviewer
-   branch: `auto` → 046 path; `confirm` reachable → proposal; `confirm` unreachable →
-   fallback), `analyzer.propose_reviewer_assignments` task, expiry sweep task, settings/
-   flags/beat. Dry-run + flags. Unit + task tests.
+4. ✅ **(landed)** **Propose service + task + expiry sweep:** `propose_assignments_for_repo`
+   (per-reviewer branch: `auto` → 046 path; `confirm` reachable → proposal; `confirm`
+   unreachable → fallback), `analyzer.propose_reviewer_assignments` task, expiry sweep task,
+   settings/flags/beat. Dry-run + flags. Unit + task tests.
 5. **Notification:** per-reviewer digest DM (reuse `ZulipClient` + a dedupe record or
    `notified_at`), de-duped vs the attention "newly assigned" ping.
 6. **Console:** GitHub-OAuth reviewer session, list view, accept/decline handlers
@@ -437,6 +437,31 @@ a later step.
 
 ## Progress Notes
 
+- 2026-07-09: **Chunk 4 landed.** Split the batch/mutation halves of the 046 apply path and
+  built the propose pipeline. Extracted the mutation core into
+  `reviewer_assignment_apply.assign_reviewer_and_record` (+ `latest_default_snapshot` /
+  `parse_snapshot_assignments`) and refactored `apply_assignments_for_repo` onto it (its 21 tests
+  still green), so the auto/fallback direct-assign path, the legacy apply sweep, and the future
+  console accept all share one GitHub mutation + `ReviewerAssignmentApplication` audit trail.
+  Added `reviewer_assignment_propose.propose_assignments_for_repo` (per-reviewer branch:
+  `auto`/`confirm`-unreachable → direct-assign; `confirm`+Zulip-linked → create
+  `AssignmentProposal`; re-validation, active-proposal/recently-applied dedupe, per-reviewer
+  acceptance window clamped ≥7, GitHub-mutation-only per-repo cap that defers assigns but never
+  starves DB-only proposals, fully side-effect-free dry-run) and the
+  `analyzer.propose_reviewer_assignments` task + `propose_reviewer_assignments` management command.
+  Centralized on-queue-exit / expiry logic in the single `assignment_proposal_validity.proposal_validity`
+  authority (assignee-landed & closed/merged → superseded; timeout → expired; open+off-queue →
+  superseded under `invalidate`, live under `retain`; `on_queue=None` never invalidates) and drove
+  the `analyzer.expire_assignment_proposals` sweep from it — ungated essential maintenance, no
+  GitHub writes, off-queue invalidation only from a *fresh* snapshot, idempotent conditional
+  `UPDATE ... WHERE state='proposed'`. Added rollout flags (`_ENABLED` master switch,
+  `_DELIVERY_ENABLED`, `_ASSIGN_ON_ACCEPT_ENABLED`, `_DRY_RUN`), `_WINDOW_DAYS`, `_ON_QUEUE_EXIT`,
+  and propose/expiry schedules to `settings/base.py` + `.env.example` + beat (propose supersedes
+  apply — run one, not both). Builder integration stays ungated so proposal rows created here are
+  respected immediately; DM delivery (`notified_at`) and console accept are Chunks 5–6. Updated
+  `analyzer/AGENTS.md` task surface. Validation: 42 new tests (10 `proposal_validity`, 16 propose
+  service, 6 propose task/command, 8 expiry service, 2 expiry task) + full `analyzer` suite (454)
+  green on Postgres; `makemigrations --check` clean (no model changes); ruff clean.
 - 2026-07-08: **Chunk 3 landed.** Made `ReviewerAssignmentBuilder` proposal-aware via three
   additions, all routed through a new shared `_prepare_assignment_inputs` helper so the builder
   and the diagnostic `build_reviewer_assignment_trace` cannot diverge: (1) **candidate

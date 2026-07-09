@@ -57,6 +57,111 @@ def _current_assignee_logins(live_pr: PullRequest | None) -> set[str]:
     return {_normalize_login(str(login)) for login in (live_pr.assignees or []) if login}
 
 
+def latest_default_snapshot(repository: Repository) -> tuple[ReviewerAssignmentSnapshot | None, str]:
+    """Return the newest authoritative default-rule-set assignment snapshot + its cache key.
+
+    Both the legacy apply sweep and the acceptance-gate propose step act on this same
+    ``{pr_number: reviewer_login}`` producer output, so they resolve it identically here.
+    """
+    rule_set = default_rule_set_for_repo(repository)
+    cache_key = str(rule_set.id) if rule_set else "default"
+    snapshot = (
+        ReviewerAssignmentSnapshot.objects.filter(repository=repository, cache_key=cache_key)
+        .order_by("-generated_at", "-id")
+        .first()
+    )
+    return snapshot, cache_key
+
+
+def parse_snapshot_assignments(snapshot: ReviewerAssignmentSnapshot) -> list[tuple[int, str]]:
+    """Parse ``payload["automatic_assignments"]`` into a sorted ``[(pr_number, login), ...]`` list."""
+    raw = snapshot.payload.get("automatic_assignments", {}) or {}
+    proposals: list[tuple[int, str]] = []
+    for key, value in raw.items():
+        try:
+            pr_number = int(key)
+        except (TypeError, ValueError):
+            continue
+        login = str(value).strip()
+        if not login:
+            continue
+        proposals.append((pr_number, login))
+    proposals.sort(key=lambda pair: pair[0])
+    return proposals
+
+
+def assign_reviewer_and_record(
+    *,
+    repository: Repository,
+    pr_number: int,
+    login: str,
+    snapshot: ReviewerAssignmentSnapshot | None,
+    run_date,
+    token: str,
+    assignment_client: GitHubAssignmentClient | None = None,
+    sync_enqueuer: SyncEnqueuer = _default_sync_enqueuer,
+) -> tuple[str, GitHubAssignmentClient | None, ReviewerAssignmentApplication | None]:
+    """Execute the 046 direct-assign mutation for one already-validated ``(pr, login)``.
+
+    Idempotently creates the PENDING ``ReviewerAssignmentApplication`` for
+    ``(run_date, repo, pr, reviewer)``; if a row already exists returns
+    ``("already_recorded", assignment_client, None)`` without mutating. Otherwise POSTs the
+    assignee via ``GitHubAssignmentClient`` (built from ``token`` when not supplied), confirms the
+    login actually landed (GitHub silently drops unassignable logins), marks the row
+    APPLIED/FAILED, and enqueues ``syncer.sync_pr`` on success. Returns ``(outcome, client,
+    record)`` with ``outcome`` in {"applied", "failed", "already_recorded"}.
+
+    Shared verbatim by the legacy apply sweep (doc 046), the acceptance-gate propose step's
+    auto/fallback direct-assign path, and the console accept handler (doc 050) so the GitHub
+    mutation and the ``ReviewerAssignmentApplication`` audit trail stay identical across all three.
+    """
+    owner = repository.owner
+    name = repository.name
+    record, created = ReviewerAssignmentApplication.objects.get_or_create(
+        run_date=run_date,
+        repository=repository,
+        pr_number=pr_number,
+        reviewer_login=login,
+        defaults={
+            "snapshot": snapshot,
+            "status": ReviewerAssignmentApplication.STATUS_PENDING,
+        },
+    )
+    if not created:
+        return ("already_recorded", assignment_client, None)
+
+    if assignment_client is None:
+        assignment_client = GitHubAssignmentClient(token=token)
+    login_norm = _normalize_login(login)
+    try:
+        resulting_assignees = assignment_client.assign(owner=owner, repo=name, number=pr_number, github_login=login)
+    except AssignmentMutationError as exc:
+        record.status = ReviewerAssignmentApplication.STATUS_FAILED
+        record.error = str(exc)[:2000]
+        record.save(update_fields=["status", "error", "updated_at"])
+        return ("failed", assignment_client, record)
+
+    # GitHub's "add assignees" endpoint silently ignores logins that are not assignable (e.g. no
+    # repo access): it returns 200 with the login absent rather than erroring. Confirm the login
+    # actually landed before recording success, so we never claim an assignment that did not take.
+    resulting_logins = {_normalize_login(assignee) for assignee in resulting_assignees if assignee}
+    if login_norm not in resulting_logins:
+        record.status = ReviewerAssignmentApplication.STATUS_FAILED
+        record.error = (
+            f"GitHub accepted the request but '{login}' was not in the resulting "
+            f"assignee set {sorted(resulting_logins)} (likely not an assignable user)."
+        )[:2000]
+        record.save(update_fields=["status", "error", "updated_at"])
+        return ("failed", assignment_client, record)
+
+    record.status = ReviewerAssignmentApplication.STATUS_APPLIED
+    record.applied_at = dj_timezone.now()
+    record.error = ""
+    record.save(update_fields=["status", "applied_at", "error", "updated_at"])
+    sync_enqueuer(owner, name, pr_number)
+    return ("applied", assignment_client, record)
+
+
 def _empty_stats() -> dict[str, Any]:
     return {
         "candidates": 0,
@@ -104,15 +209,8 @@ def apply_assignments_for_repo(
         "stats": _empty_stats(),
     }
 
-    rule_set = default_rule_set_for_repo(repository)
-    cache_key = str(rule_set.id) if rule_set else "default"
+    snapshot, cache_key = latest_default_snapshot(repository)
     result["cache_key"] = cache_key
-
-    snapshot = (
-        ReviewerAssignmentSnapshot.objects.filter(repository=repository, cache_key=cache_key)
-        .order_by("-generated_at", "-id")
-        .first()
-    )
     if snapshot is None:
         result["status"] = "skipped"
         result["reason"] = "no_snapshot"
@@ -127,18 +225,7 @@ def apply_assignments_for_repo(
         result["snapshot_age_hours"] = round(age_seconds / 3600, 2)
         return result
 
-    raw = snapshot.payload.get("automatic_assignments", {}) or {}
-    proposals: list[tuple[int, str]] = []
-    for key, value in raw.items():
-        try:
-            pr_number = int(key)
-        except (TypeError, ValueError):
-            continue
-        login = str(value).strip()
-        if not login:
-            continue
-        proposals.append((pr_number, login))
-    proposals.sort(key=lambda pair: pair[0])
+    proposals = parse_snapshot_assignments(snapshot)
 
     stats = result["stats"]
     stats["candidates"] = len(proposals)
@@ -258,43 +345,30 @@ def apply_assignments_for_repo(
             )
             break
 
-        record = _record(pr_number, login, ReviewerAssignmentApplication.STATUS_PENDING)
-        if record is None:
-            continue
-        if assignment_client is None:
-            assignment_client = GitHubAssignmentClient(token=token)
-        try:
-            resulting_assignees = assignment_client.assign(owner=owner, repo=name, number=pr_number, github_login=login)
-        except AssignmentMutationError as exc:
+        outcome, assignment_client, _ = assign_reviewer_and_record(
+            repository=repository,
+            pr_number=pr_number,
+            login=login,
+            snapshot=snapshot,
+            run_date=run_date,
+            token=token,
+            assignment_client=assignment_client,
+            sync_enqueuer=sync_enqueuer,
+        )
+        if outcome == "applied":
+            stats["applied"] += 1
+        elif outcome == "failed":
             stats["failed"] += 1
-            record.status = ReviewerAssignmentApplication.STATUS_FAILED
-            record.error = str(exc)[:2000]
-            record.save(update_fields=["status", "error", "updated_at"])
-            continue
-        # GitHub's "add assignees" endpoint silently ignores logins that are not
-        # assignable (e.g. no repo access): it returns 200 with the login absent from
-        # the resulting set rather than erroring. Confirm the login actually landed
-        # before recording success, so we never claim an assignment that did not take.
-        resulting_logins = {_normalize_login(assignee) for assignee in resulting_assignees if assignee}
-        if login_norm not in resulting_logins:
-            stats["failed"] += 1
-            record.status = ReviewerAssignmentApplication.STATUS_FAILED
-            record.error = (
-                f"GitHub accepted the request but '{login}' was not in the resulting "
-                f"assignee set {sorted(resulting_logins)} (likely not an assignable user)."
-            )[:2000]
-            record.save(update_fields=["status", "error", "updated_at"])
-            continue
-        applied_at = dj_timezone.now()
-        stats["applied"] += 1
-        record.status = ReviewerAssignmentApplication.STATUS_APPLIED
-        record.applied_at = applied_at
-        record.error = ""
-        record.save(update_fields=["status", "applied_at", "error", "updated_at"])
-        sync_enqueuer(owner, name, pr_number)
+        else:  # already_recorded: another writer created the row for this run first
+            stats["skipped_already_recorded"] += 1
 
     result["status"] = "ok"
     return result
 
 
-__all__ = ["apply_assignments_for_repo"]
+__all__ = [
+    "apply_assignments_for_repo",
+    "assign_reviewer_and_record",
+    "latest_default_snapshot",
+    "parse_snapshot_assignments",
+]

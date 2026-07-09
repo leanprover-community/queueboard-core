@@ -59,6 +59,19 @@ Celery task names (as registered via `@shared_task(name=…)`):
   recording outcomes in `ReviewerAssignmentApplication`. Gated by
   `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED` (+ dry-run). Replaces the legacy
   GitHub Actions auto-assign workflow; see design doc 046.
+- `analyzer.propose_reviewer_assignments` — acceptance-gate variant of the apply step
+  (design doc 050). Per snapshot `{pr: login}`, branches on the reviewer's
+  `ReviewerPreference.assignment_acceptance`: `auto` (and `confirm` reviewers with no
+  Zulip link) are direct-assigned via the shared 046 mutation path; `confirm` reviewers
+  with a Zulip link get an `AssignmentProposal` awaiting console acceptance. Gated by
+  `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` (+ dry-run). **Supersedes**
+  `analyzer.apply_reviewer_assignments` — enable one or the other, not both. Command:
+  `manage.py propose_reviewer_assignments [--repo o/n] [--dry-run] [--enable]`.
+- `analyzer.expire_assignment_proposals` — essential-maintenance sweep (design doc 050)
+  that expires timed-out proposals and supersedes those whose PR closed/merged, gained a
+  human assignee, or left the review queue (per the `proposal_validity` predicate and
+  `ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT`). Performs no GitHub writes and is
+  intentionally **not** gated by the master switch, so existing proposals keep draining.
 - `analyzer.build_area_stats` / `analyzer.refresh_area_stats`
 
 **Reviewer attention tasks**
