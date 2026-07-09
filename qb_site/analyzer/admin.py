@@ -24,6 +24,7 @@ from analyzer.models import (
     ReviewerAttentionDailyRun,
     ReviewerAttentionNotificationRecord,
     ReviewerAttentionAutoUnassignRecord,
+    AssignmentProposal,
 )
 from analyzer.tasks.queueboard_snapshot import build_queueboard_snapshot
 from analyzer.services.reviewer_opt_out_backfill import backfill_reviewer_opt_outs
@@ -429,6 +430,39 @@ class ReviewerAssignmentApplicationAdmin(ReadOnlyAdmin):
         "status",
         "applied_at",
         "error",
+        "created_at",
+        "updated_at",
+    )
+
+
+@admin.register(AssignmentProposal)
+class AssignmentProposalAdmin(ReadOnlyAdmin):
+    list_display = (
+        "id",
+        "repository",
+        "pr_number",
+        "reviewer_login",
+        "state",
+        "expires_at",
+        "decided_at",
+        "decided_via",
+        "notified_at",
+        "created_at",
+    )
+    list_filter = ("state", "decided_via", "repository")
+    date_hierarchy = "created_at"
+    search_fields = ("repository__owner", "repository__name", "reviewer_login", "pr_number")
+    raw_id_fields = ("repository", "snapshot")
+    readonly_fields = (
+        "repository",
+        "pr_number",
+        "reviewer_login",
+        "snapshot",
+        "state",
+        "expires_at",
+        "decided_at",
+        "notified_at",
+        "decided_via",
         "created_at",
         "updated_at",
     )
