@@ -100,3 +100,13 @@ class ResolveUserFromIdentityTests(TestCase):
         existing = User.objects.create(github_node_id="MDQ6VXNlcjE=", github_login="alice")
         user = resolve_or_create_user_from_identity(self._identity(login="alice"), create=False)
         self.assertEqual(user.id, existing.id)
+
+    def test_recycled_login_does_not_resolve_to_previous_owner(self) -> None:
+        # 'alice' renamed away; a different GitHub account (new node id) now holds the login. The
+        # login fallback must not hand the new holder the previous owner's user (console takeover).
+        previous_owner = User.objects.create(github_node_id="MDQ6VXNlcjE=", github_login="alice")
+        user = resolve_or_create_user_from_identity(self._identity(node="MDQ6VXNlcjI=", login="alice"), create=False)
+        self.assertIsNone(user)
+        previous_owner.refresh_from_db()
+        self.assertEqual(previous_owner.github_node_id, "MDQ6VXNlcjE=")
+        self.assertEqual(previous_owner.github_login, "alice")

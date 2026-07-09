@@ -106,6 +106,50 @@ class ConsoleViewTests(TestCase):
         self.assertEqual(resp["Location"], "/console/")
         self.assertEqual(self.client.session.get(SESSION_USER_KEY), self.reviewer.id)
 
+    def test_oauth_callback_rotates_session_key(self) -> None:
+        # Session fixation: the pre-login session key (which an attacker could have planted) must
+        # not remain valid once the session is promoted to an authenticated reviewer session.
+        session = self.client.session
+        session[SESSION_NONCE_KEY] = "nonce-123"
+        session.save()
+        pre_login_key = session.session_key
+        state = issue_console_oauth_state(claims=ConsoleOAuthStateClaims(nonce="nonce-123", next="/console/"))
+
+        fake = MagicMock()
+        fake.exchange_code_for_access_token.return_value = "gho_token"
+        fake.fetch_user_identity.return_value = GitHubUserIdentity(
+            github_user_id=1, github_node_id="node-bob", github_login="bob", github_name="Bob", github_avatar_url=None
+        )
+        with patch("console.views.GitHubOAuthClient", return_value=fake):
+            resp = self.client.get(reverse("console:oauth-callback"), {"code": "c", "state": state})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertNotEqual(self.client.session.session_key, pre_login_key)
+        self.assertEqual(self.client.session.get(SESSION_USER_KEY), self.reviewer.id)
+
+    def test_oauth_callback_recycled_login_denied(self) -> None:
+        # The reviewer's old login now belongs to a different GitHub account (different node id);
+        # that account must not inherit the reviewer's console session.
+        session = self.client.session
+        session[SESSION_NONCE_KEY] = "nonce-123"
+        session.save()
+        state = issue_console_oauth_state(claims=ConsoleOAuthStateClaims(nonce="nonce-123", next="/console/"))
+
+        fake = MagicMock()
+        fake.exchange_code_for_access_token.return_value = "gho_token"
+        fake.fetch_user_identity.return_value = GitHubUserIdentity(
+            github_user_id=999,
+            github_node_id="node-imposter",
+            github_login=self.reviewer.github_login,
+            github_name="Imposter",
+            github_avatar_url=None,
+        )
+        with patch("console.views.GitHubOAuthClient", return_value=fake):
+            resp = self.client.get(reverse("console:oauth-callback"), {"code": "c", "state": state})
+
+        self.assertEqual(resp.status_code, 403)
+        self.assertIsNone(self.client.session.get(SESSION_USER_KEY))
+
     def test_oauth_callback_unknown_login_denied(self) -> None:
         # A GitHub account we have never seen must not get a session or mint a core.User row
         # (design doc 050 review): the console is for already-registered reviewers only.
