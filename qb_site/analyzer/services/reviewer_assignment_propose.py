@@ -68,17 +68,22 @@ def _empty_stats() -> dict[str, Any]:
 
 
 def _resolve_window_days(pref: ReviewerPreference, default: int) -> int:
-    """Per-reviewer acceptance window, clamped to >= 7 days (design doc 050, "≥7").
+    """Per-reviewer acceptance window; overrides are clamped to >= 7 days (design doc 050, "≥7").
 
     A reviewer may set ``notification_settings["assignment_proposal_window_days"]``; anything
-    smaller than a week (or non-numeric) is coerced up to the weekly floor.
+    smaller than a week (or non-numeric) is coerced up to the weekly floor. The weekly floor
+    applies only to per-reviewer overrides — the operator-configured global default
+    (``ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS``) is honored as-is (floored at 1 day), matching
+    how base.py/.env.example document the clamp.
     """
     raw = (pref.notification_settings or {}).get("assignment_proposal_window_days")
     try:
-        value = int(raw) if raw is not None else int(default)
+        override = int(raw) if raw is not None else None
     except (TypeError, ValueError):
-        value = int(default)
-    return max(MIN_WINDOW_DAYS, value)
+        override = None
+    if override is None:
+        return max(1, int(default))
+    return max(MIN_WINDOW_DAYS, override)
 
 
 def _mode_and_reachability(repository: Repository) -> dict[str, tuple[str, bool, ReviewerPreference]]:

@@ -174,6 +174,19 @@ class ProposeAssignmentsForRepoTests(TestCase):
         proposal = AssignmentProposal.objects.get(repository=self.repo, pr_number=104)
         self.assertEqual(proposal.expires_at, self.now + timedelta(days=7))
 
+    def test_global_window_below_seven_is_honored(self) -> None:
+        # The >=7 clamp applies only to per-reviewer overrides; the operator-configured global
+        # ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS is honored as-is (base.py/.env.example document
+        # the clamp as per-reviewer-only).
+        self._make_reviewer("bob", acceptance=ReviewerPreference.ACCEPTANCE_CONFIRM, reachable=True)
+        self._make_snapshot({106: "bob"})
+        self._make_pr(106)
+
+        self._propose(window_days=3)
+
+        proposal = AssignmentProposal.objects.get(repository=self.repo, pr_number=106)
+        self.assertEqual(proposal.expires_at, self.now + timedelta(days=3))
+
     def test_per_reviewer_window_override_larger_is_honored(self) -> None:
         user = self._make_reviewer("bob", acceptance=ReviewerPreference.ACCEPTANCE_CONFIRM, reachable=True)
         pref = ReviewerPreference.objects.get(repository=self.repo, user=user)
