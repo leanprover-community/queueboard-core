@@ -259,7 +259,12 @@ def propose_assignments_for_repo(
             continue
         not_open = live_pr is not None and str(live_pr.state).strip().lower() != "open"
         current_assignees = _current_assignee_logins(live_pr)
-        if not_open or (current_assignees & eligible_logins) or (login_norm in current_assignees):
+        # ANY assignee blocks, mirroring proposal_validity's REASON_PR_ASSIGNED rule ("don't fight
+        # the human/self-assignee") — not just assignees who are eligible reviewers. A proposal
+        # created for a PR with a non-reviewer assignee would be superseded by the next expiry
+        # sweep and re-created (and re-DM'd) by the next propose run, since superseded rows feed
+        # neither the cooldown nor the active-proposal exclusion.
+        if not_open or current_assignees:
             stats["skipped_already_assigned"] += 1
             continue
         if pr_number in prs_with_active_proposal:
