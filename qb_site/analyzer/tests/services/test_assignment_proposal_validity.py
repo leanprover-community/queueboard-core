@@ -11,6 +11,7 @@ from analyzer.services.assignment_proposal_validity import (
     REASON_ALREADY_TERMINAL,
     REASON_EXPIRED,
     REASON_LIVE,
+    REASON_OPTED_OUT,
     REASON_PR_ASSIGNED,
     REASON_PR_CLOSED,
     REASON_PR_OFF_QUEUE,
@@ -86,6 +87,34 @@ class ProposalValidityTests(SimpleTestCase):
         self.assertFalse(v.is_live)
         self.assertEqual(v.reason, REASON_PR_ASSIGNED)
         self.assertEqual(v.terminal_state, AssignmentProposal.STATE_SUPERSEDED)
+
+    def test_superseded_when_reviewer_opted_out(self) -> None:
+        # An active opt-out (decline elsewhere, or a self-unassign reconciled into one after the
+        # proposal was created) retires the pending proposal instead of leaving it dangling.
+        v = proposal_validity(
+            self._proposal(),
+            now=self.now,
+            pr_state="open",
+            current_assignees=set(),
+            on_queue=True,
+            on_queue_exit=ON_QUEUE_EXIT_INVALIDATE,
+            opted_out=True,
+        )
+        self.assertFalse(v.is_live)
+        self.assertEqual(v.reason, REASON_OPTED_OUT)
+        self.assertEqual(v.terminal_state, AssignmentProposal.STATE_SUPERSEDED)
+        self.assertEqual(v.decided_via, AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED)
+
+    def test_assignee_takes_precedence_over_opt_out(self) -> None:
+        v = proposal_validity(
+            self._proposal(),
+            now=self.now,
+            pr_state="open",
+            current_assignees={"human"},
+            on_queue=True,
+            opted_out=True,
+        )
+        self.assertEqual(v.reason, REASON_PR_ASSIGNED)
 
     def test_assignee_takes_precedence_over_expiry(self) -> None:
         v = proposal_validity(

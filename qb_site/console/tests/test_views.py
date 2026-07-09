@@ -367,8 +367,8 @@ class ConsoleViewTests(TestCase):
     @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
     def test_accept_with_active_opt_out_supersedes_proposal(self) -> None:
         # Regression (design doc 050 review): an active opt-out on the PR blocks acceptance, and the
-        # dangling proposal is retired to superseded rather than left pending (proposal_validity does
-        # not consult opt-outs, so a bare no-op would leave it showing "proposed" until it timed out).
+        # dangling proposal is retired to superseded rather than left pending. Opt-outs feed the
+        # shared proposal_validity predicate, so the expiry sweep retires these the same way.
         self._make_pr(101)
         proposal = self._proposal(101)
         ReviewerOptOut.objects.create(

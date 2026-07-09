@@ -5,7 +5,7 @@ from datetime import timedelta
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from analyzer.models import AssignmentProposal, QueueRuleSet, QueueSnapshot
+from analyzer.models import AssignmentProposal, QueueRuleSet, QueueSnapshot, ReviewerOptOut
 from analyzer.services.assignment_proposal_expiry import expire_and_reconcile_proposals_for_repo
 from analyzer.tasks.assignment_proposal_expiry import expire_assignment_proposals_task
 from core.models import Repository
@@ -96,6 +96,24 @@ class ExpireAndReconcileProposalsTests(TestCase):
 
         proposal.refresh_from_db()
         self.assertEqual(proposal.state, AssignmentProposal.STATE_SUPERSEDED)
+        self.assertEqual(result["stats"]["superseded"], 1)
+
+    def test_reviewer_opt_out_supersedes_proposal(self) -> None:
+        # An opt-out landing after the proposal was created (e.g. a GitHub self-unassign reconciled
+        # into one) retires the pending proposal on the next sweep instead of leaving it dangling
+        # on the console/board until its multi-day window times out.
+        proposal = self._proposal(105, login="Bob")  # mixed case: opt-outs are stored lowercase
+        self._make_pr(105)
+        self._make_queue_snapshot(queue=[105], known=[105])
+        ReviewerOptOut.objects.create(
+            repository=self.repo, pr_number=105, reviewer_login="bob", active=True, opted_out_at=self.now
+        )
+
+        result = self._run()
+
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.state, AssignmentProposal.STATE_SUPERSEDED)
+        self.assertEqual(proposal.decided_via, AssignmentProposal.DECIDED_VIA_SYNC_SUPERSEDED)
         self.assertEqual(result["stats"]["superseded"], 1)
 
     def test_live_proposal_untouched(self) -> None:

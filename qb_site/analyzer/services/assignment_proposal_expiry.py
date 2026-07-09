@@ -6,8 +6,8 @@ the single ``proposal_validity`` authority whether the proposal is still live, a
 otherwise:
 
 - past its acceptance window        -> ``expired`` (seeds the soft re-propose cooldown),
-- PR closed/merged or a human/self-assignee landed, or (``invalidate`` policy) the PR left the
-  review queue -> ``superseded``.
+- PR closed/merged, a human/self-assignee landed, the reviewer opted out of the PR, or
+  (``invalidate`` policy) the PR left the review queue -> ``superseded``.
 
 The sweep performs no GitHub writes — it only transitions DB state, so it is cheap and safe to run
 frequently. Off-queue invalidation is applied only when a *fresh* queue snapshot knows about the PR,
@@ -30,6 +30,7 @@ from analyzer.services.assignment_proposal_validity import (
     queue_membership,
     resolve_on_queue_exit_policy,
 )
+from analyzer.services.reviewer_assignment import _opt_outs_for_prs
 from core.models import Repository
 from syncer.models import PullRequest
 
@@ -67,6 +68,7 @@ def expire_and_reconcile_proposals_for_repo(repository: Repository, *, now: date
         for pr in PullRequest.objects.filter(repository=repository, number__in=pr_numbers).only("number", "state", "assignees")
     }
     membership = queue_membership(repository, now=now)
+    opt_outs = _opt_outs_for_prs(repository, sorted(pr_numbers))
     policy = resolve_on_queue_exit_policy()
 
     for proposal in proposals:
@@ -77,6 +79,7 @@ def expire_and_reconcile_proposals_for_repo(repository: Repository, *, now: date
                 now=now,
                 live_pr=live_by_number.get(pr_number),
                 membership=membership,
+                opt_outs=opt_outs,
                 on_queue_exit=policy,
             )
             if validity.is_live or validity.terminal_state is None:
