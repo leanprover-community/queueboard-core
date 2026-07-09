@@ -89,3 +89,14 @@ class ResolveUserFromIdentityTests(TestCase):
         self.assertEqual(user.id, existing.id)
         # node id backfilled on the previously node-less row
         self.assertEqual(user.github_node_id, "MDQ6VXNlcjE=")
+
+    def test_resolve_only_returns_none_when_absent(self) -> None:
+        # create=False must not mint a row for an unknown identity (console gating, doc 050 review).
+        user = resolve_or_create_user_from_identity(self._identity(login="stranger"), create=False)
+        self.assertIsNone(user)
+        self.assertFalse(User.objects.filter(github_login__iexact="stranger").exists())
+
+    def test_resolve_only_returns_existing(self) -> None:
+        existing = User.objects.create(github_node_id="MDQ6VXNlcjE=", github_login="alice")
+        user = resolve_or_create_user_from_identity(self._identity(login="alice"), create=False)
+        self.assertEqual(user.id, existing.id)

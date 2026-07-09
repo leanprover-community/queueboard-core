@@ -3,6 +3,8 @@
 Used by the reviewer console (design doc 050): a reviewer authenticates with GitHub and we need
 the matching ``core.User`` to key their proposals on. Unlike the registration linker this touches
 no Zulip fields — it only resolves/creates the person and refreshes their GitHub identity fields.
+The console calls it with ``create=False`` so it gates on already-known people rather than minting
+a row for any GitHub account that signs in.
 """
 
 from __future__ import annotations
@@ -14,8 +16,14 @@ from core.services.github_oauth import GitHubUserIdentity
 
 
 @transaction.atomic
-def resolve_or_create_user_from_identity(identity: GitHubUserIdentity) -> User:
-    """Return the ``core.User`` for ``identity`` (by node id, else login), creating one if needed.
+def resolve_or_create_user_from_identity(identity: GitHubUserIdentity, *, create: bool = True) -> User | None:
+    """Return the ``core.User`` for ``identity`` (by node id, else login).
+
+    With ``create=True`` (the default) a matching user is created when none exists. With
+    ``create=False`` the lookup is resolve-only: it returns ``None`` for an identity we have never
+    seen, so a caller like the reviewer console can gate access to already-known people (registered
+    via the Zulip flow, or ingested by the syncer) instead of minting a row for any GitHub account
+    that completes OAuth.
 
     Race-safe against the syncer ingesting the same GitHub user concurrently (savepoint + re-fetch,
     per the "Concurrent Writers and Unique Keys" rules). Refreshes mutable identity fields
@@ -26,6 +34,8 @@ def resolve_or_create_user_from_identity(identity: GitHubUserIdentity) -> User:
         user = User.objects.select_for_update().filter(github_login__iexact=identity.github_login).first()
 
     if user is None:
+        if not create:
+            return None
         try:
             with transaction.atomic():
                 return User.objects.create(
