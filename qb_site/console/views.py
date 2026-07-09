@@ -22,9 +22,13 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
 
-from analyzer.models import AssignmentProposal, QueueSnapshot, ReviewerAssignmentApplication, ReviewerOptOut
-from analyzer.services.assignment_proposal_validity import ProposalValidity, proposal_validity, resolve_on_queue_exit_policy
-from analyzer.services.queue_rules import default_rule_set_for_repo
+from analyzer.models import AssignmentProposal, ReviewerAssignmentApplication, ReviewerOptOut
+from analyzer.services.assignment_proposal_validity import (
+    ProposalValidity,
+    live_proposal_validity,
+    queue_membership,
+    resolve_on_queue_exit_policy,
+)
 from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_record
 from analyzer.services.reviewer_assignment_engine import _normalize_login
 from console import session as console_session
@@ -41,8 +45,6 @@ from core.services.site_urls import build_site_url
 from syncer.models import PRLabel, PullRequest
 
 log = logging.getLogger(__name__)
-
-SNAPSHOT_FRESH_SECONDS = 7200
 
 
 # --- auth --------------------------------------------------------------------
@@ -247,33 +249,16 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
 # --- accept / decline --------------------------------------------------------
 
 
-def _queue_membership(repo, *, now) -> tuple[set[int], set[int], bool]:
-    rule_set = default_rule_set_for_repo(repo)
-    cache_key = str(rule_set.id) if rule_set else "default"
-    snapshot = QueueSnapshot.objects.filter(repository=repo, cache_key=cache_key).order_by("-generated_at").first()
-    if snapshot is None or not snapshot.payload:
-        return set(), set(), False
-    fresh = snapshot.generated_at is not None and (now - snapshot.generated_at).total_seconds() <= SNAPSHOT_FRESH_SECONDS
-    payload = snapshot.payload
-    queue_prs = {int(n) for n in (payload.get("lists", {}).get("dashboards", {}).get("Queue", []) or [])}
-    known_prs = {int(n) for n in (payload.get("prs", {}) or {}).keys()}
-    return queue_prs, known_prs, fresh
-
-
 def _live_validity(proposal: AssignmentProposal, *, now) -> tuple[ProposalValidity, PullRequest | None]:
+    """Run the shared validity authority against live facts for one proposal."""
     repo = proposal.repository
     pr_number = int(proposal.pr_number)
     live_pr = PullRequest.objects.filter(repository=repo, number=pr_number).only("id", "number", "state", "assignees").first()
-    pr_state = None if live_pr is None else str(live_pr.state)
-    current_assignees = set() if live_pr is None else {_normalize_login(str(a)) for a in (live_pr.assignees or []) if a}
-    queue_prs, known_prs, fresh = _queue_membership(repo, now=now)
-    on_queue = (pr_number in queue_prs) if (fresh and pr_number in known_prs) else None
-    validity = proposal_validity(
+    validity = live_proposal_validity(
         proposal,
         now=now,
-        pr_state=pr_state,
-        current_assignees=current_assignees,
-        on_queue=on_queue,
+        live_pr=live_pr,
+        membership=queue_membership(repo, now=now),
         on_queue_exit=resolve_on_queue_exit_policy(),
     )
     return validity, live_pr
