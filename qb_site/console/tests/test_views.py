@@ -149,9 +149,60 @@ class ConsoleViewTests(TestCase):
 
         resp = self.client.get(reverse("console:home"))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "mathlib4 #101")
+        self.assertContains(resp, "leanprover-community/mathlib4")  # per-repo heading
+        self.assertContains(resp, "#101")
+        self.assertContains(resp, "0 assigned + 1 pending / capacity 5")  # per-repo load line
         self.assertContains(resp, "Accept")
         self.assertContains(resp, "Decline")
+
+    def test_home_groups_proposals_by_repo(self) -> None:
+        # Proposals across repos render under separate per-repo headings, each with its own load
+        # line, ordered by (owner, name) — so "batteries" sorts before "mathlib4" (doc 050 review).
+        repo2 = Repository.objects.create(owner="leanprover-community", name="batteries", default_branch="main")
+        ReviewerPreference.objects.create(
+            repository=repo2,
+            user=self.reviewer,
+            preferred_labels=[],
+            maximum_capacity=3,
+            assignment_acceptance=ReviewerPreference.ACCEPTANCE_CONFIRM,
+        )
+        self._make_pr(101)
+        self._proposal(101)
+        PullRequest.objects.create(
+            repository=repo2,
+            number=5,
+            state=PullRequestState.OPEN,
+            is_draft=False,
+            gh_created_at=self.now,
+            gh_updated_at=self.now,
+            base_ref_name="main",
+            head_ref_name="branch-5",
+            head_repo_owner_login="leanprover-community",
+            head_repo_name="batteries",
+            title="Array lemmas",
+            body="b",
+            additions=1,
+            deletions=0,
+            changed_files_count=1,
+            assignees=[],
+        )
+        AssignmentProposal.objects.create(
+            repository=repo2,
+            pr_number=5,
+            reviewer_login="bob",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=self.now + timedelta(days=7),
+        )
+        self._login_session()
+
+        resp = self.client.get(reverse("console:home"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "leanprover-community/mathlib4")
+        self.assertContains(resp, "leanprover-community/batteries")
+        self.assertContains(resp, "capacity 5")
+        self.assertContains(resp, "capacity 3")
+        content = resp.content.decode()
+        self.assertLess(content.index("batteries"), content.index("mathlib4"))
 
     # ---- accept --------------------------------------------------------
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from typing import Iterable
 
 from django.conf import settings
 from django.db import transaction
@@ -154,57 +155,93 @@ def _build_home_context(reviewer) -> dict:
         .order_by("repository__owner", "repository__name", "expires_at", "pr_number")
     )
 
-    # Preferred labels per repo, to render "why you" (matched topic labels).
+    # Preferred labels + capacity per repo, to render "why you" and the per-repo load line.
     preferred_by_repo: dict[int, set[str]] = {}
     capacity_by_repo: dict[int, int] = {}
     for pref in ReviewerPreference.objects.filter(user=reviewer).only("repository_id", "preferred_labels", "maximum_capacity"):
         preferred_by_repo[pref.repository_id] = {str(lbl).lower() for lbl in (pref.preferred_labels or [])}
         capacity_by_repo[pref.repository_id] = int(pref.maximum_capacity)
 
-    # Batch PR metadata + labels for the proposed PRs, grouped by repo.
-    proposal_rows: list[dict] = []
+    # Batch PR metadata + labels once (was a query per proposal).
+    prs_by_repo_number = _batch_prs(proposals)
+    labels_by_pr_id = _batch_labels(prs_by_repo_number.values())
+
+    # Group proposals by repo, preserving the (owner, name, expires_at, pr_number) ordering above.
+    groups: dict[int, dict] = {}
     for proposal in proposals:
         repo = proposal.repository
-        pr = PullRequest.objects.filter(repository=repo, number=proposal.pr_number).only("id", "number", "title", "state").first()
-        labels = (
-            list(PRLabel.objects.filter(pull_request=pr).select_related("label_def").values_list("label_def__name", flat=True))
-            if pr is not None
-            else []
-        )
-        preferred = preferred_by_repo.get(repo.id, set())
-        matched = sorted({lbl for lbl in labels if lbl and lbl.lower() in preferred})
-        proposal_rows.append(
-            {
-                "proposal": proposal,
+        group = groups.get(repo.id)
+        if group is None:
+            group = {
+                "repo_id": repo.id,
                 "owner": repo.owner,
                 "repo": repo.name,
+                "repo_label": f"{repo.owner}/{repo.name}",
+                "proposals": [],
+            }
+            groups[repo.id] = group
+        pr = prs_by_repo_number.get((repo.id, int(proposal.pr_number)))
+        labels = labels_by_pr_id.get(pr.id, []) if pr is not None else []
+        preferred = preferred_by_repo.get(repo.id, set())
+        matched = sorted({lbl for lbl in labels if lbl and lbl.lower() in preferred})
+        group["proposals"].append(
+            {
+                "proposal": proposal,
                 "pr_number": proposal.pr_number,
                 "title": (pr.title if pr is not None else None) or f"PR #{proposal.pr_number}",
                 "url": f"https://github.com/{repo.owner}/{repo.name}/pull/{proposal.pr_number}",
                 "matched_labels": matched,
                 "expires_at": proposal.expires_at,
+                # ISO-8601 (UTC) for client-side rendering in the viewer's own timezone; the template
+                # keeps a UTC text fallback for no-JS.
+                "expires_at_iso": proposal.expires_at.isoformat() if proposal.expires_at else "",
             }
         )
 
-    # Load summary per repo: pending proposals + open PRs assigned + capacity.
-    pending_by_repo: dict[int, int] = {}
-    for proposal in proposals:
-        pending_by_repo[proposal.repository_id] = pending_by_repo.get(proposal.repository_id, 0) + 1
-    load_rows: list[dict] = []
-    for repo_id, capacity in sorted(capacity_by_repo.items()):
+    # Attach a per-repo load line (assigned-open + pending / capacity) to each group.
+    repo_groups: list[dict] = []
+    for repo_id in sorted(groups, key=lambda rid: (groups[rid]["owner"], groups[rid]["repo"])):
+        group = groups[repo_id]
         assigned_open = PullRequest.objects.filter(
             repository_id=repo_id, state="open", assignees__contains=[reviewer.github_login]
         ).count()
-        load_rows.append(
-            {
-                "repo_id": repo_id,
-                "assigned_open": assigned_open,
-                "pending": pending_by_repo.get(repo_id, 0),
-                "capacity": capacity,
-            }
-        )
+        group["load"] = {
+            "assigned_open": assigned_open,
+            "pending": len(group["proposals"]),
+            "capacity": capacity_by_repo.get(repo_id),
+        }
+        repo_groups.append(group)
 
-    return {"proposal_rows": proposal_rows, "load_rows": load_rows, "logout_url": reverse("console:logout")}
+    return {"repo_groups": repo_groups, "logout_url": reverse("console:logout")}
+
+
+def _batch_prs(proposals: list[AssignmentProposal]) -> dict[tuple[int, int], PullRequest]:
+    """Fetch the proposed PRs keyed by ``(repository_id, number)`` in one query per repo."""
+    numbers_by_repo: dict[int, set[int]] = {}
+    for proposal in proposals:
+        numbers_by_repo.setdefault(int(proposal.repository_id), set()).add(int(proposal.pr_number))
+    out: dict[tuple[int, int], PullRequest] = {}
+    for repo_id, numbers in numbers_by_repo.items():
+        for pr in PullRequest.objects.filter(repository_id=repo_id, number__in=numbers).only("id", "number", "title", "state"):
+            out[(repo_id, int(pr.number))] = pr
+    return out
+
+
+def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
+    """Map ``pull_request_id -> [label name, ...]`` for the given PRs in a single query."""
+    pr_ids = [pr.id for pr in prs]
+    if not pr_ids:
+        return {}
+    out: dict[int, list[str]] = {}
+    rows = (
+        PRLabel.objects.filter(pull_request_id__in=pr_ids)
+        .select_related("label_def")
+        .values_list("pull_request_id", "label_def__name")
+    )
+    for pr_id, name in rows:
+        if name:
+            out.setdefault(int(pr_id), []).append(name)
+    return out
 
 
 # --- accept / decline --------------------------------------------------------
