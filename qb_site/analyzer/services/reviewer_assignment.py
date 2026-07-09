@@ -693,11 +693,19 @@ class AreaStatsBuilder:
 
         reviewers = build_reviewer_catalog(repository, now=current_time)
         assignment_stats = collect_assignment_statistics(payload)
+        # Pending proposals occupy capacity (design doc 050), for area stats exactly as for the
+        # assignment builder/trace — otherwise at_max_capacity here disagrees with what the next
+        # assignment run will actually do.
+        proposal_weight = float(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT", 1.0))
+        existing_assignments = add_pending_proposal_load(
+            assignment_stats.assignments,
+            _pending_proposal_load(_active_proposal_rows(repository), weight=proposal_weight),
+        )
         dashboards = payload.get("lists", {}).get("dashboards", {})
         queue_prs = dashboards.get("Queue", [])
 
         area_stats = compute_area_stats(
-            existing_assignments=assignment_stats.assignments,
+            existing_assignments=existing_assignments,
             reviewers=reviewers,
             queue_pr_numbers=queue_prs,
             all_prs=payload.get("prs", {}),

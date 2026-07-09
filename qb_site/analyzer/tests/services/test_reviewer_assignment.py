@@ -1455,3 +1455,30 @@ class AreaStatsBuilderTests(TestCase):
         self.assertIsNotNone(obj.queue_snapshot)
         self.assertGreaterEqual(obj.area_count, 1)
         self.assertIn("t-analysis", obj.payload["area_stats"])
+
+    def test_pending_proposal_load_counts_toward_area_capacity(self):
+        # A reviewer whose capacity is fully occupied by a pending proposal must read as
+        # at_max_capacity in area stats, exactly as the assignment builder/trace see it
+        # (design doc 050: a pending proposal counts toward load).
+        self._make_pr(60, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=1,
+            auto_assign=True,
+        )
+        builder = AreaStatsBuilder(rng=random.Random(0))
+
+        before = builder.build_and_store(self.repo)
+        self.assertFalse(before.payload["area_stats"]["t-analysis"]["at_max_capacity"])
+
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=61,
+            reviewer_login="alice",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=self.now + timedelta(days=7),
+        )
+        after = builder.build_and_store(self.repo)
+        self.assertTrue(after.payload["area_stats"]["t-analysis"]["at_max_capacity"])
