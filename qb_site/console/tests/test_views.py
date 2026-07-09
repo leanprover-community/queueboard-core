@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from analyzer.models import AssignmentProposal, ReviewerOptOut
+from analyzer.models import AssignmentProposal, ReviewerAssignmentApplication, ReviewerOptOut
 from console.session import SESSION_NONCE_KEY, SESSION_USER_KEY
 from core.models import Repository, ReviewerPreference, User
 from core.services.github_oauth import GitHubOAuthError, GitHubUserIdentity
@@ -161,6 +161,62 @@ class ConsoleViewTests(TestCase):
         self.assertEqual(proposal.state, AssignmentProposal.STATE_ACCEPTED)
         self.assertEqual(proposal.decided_via, AssignmentProposal.DECIDED_VIA_CONSOLE)
         self.assertIsNotNone(proposal.decided_at)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_accept_failed_outcome_leaves_proposal_pending(self) -> None:
+        self._make_pr(101)
+        proposal = self._proposal(101)
+        self._login_session()
+
+        with (
+            patch("core.services.github_operation_tokens.resolve_github_app_operation_token", return_value="tok"),
+            patch("console.views.assign_reviewer_and_record", return_value=("failed", None, None)) as mock_assign,
+        ):
+            resp = self.client.post(reverse("console:accept", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 502)
+        mock_assign.assert_called_once()
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.state, AssignmentProposal.STATE_PROPOSED)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_accept_already_recorded_failed_row_is_not_marked_accepted(self) -> None:
+        # Regression (design doc 050 review): a prior same-day FAILED application returns
+        # already_recorded, but the assignment never landed — the reviewer must NOT be told they are
+        # assigned, and the proposal must stay pending for a later retry.
+        self._make_pr(101)
+        proposal = self._proposal(101)
+        self._login_session()
+        failed_record = ReviewerAssignmentApplication(status=ReviewerAssignmentApplication.STATUS_FAILED)
+
+        with (
+            patch("core.services.github_operation_tokens.resolve_github_app_operation_token", return_value="tok"),
+            patch("console.views.assign_reviewer_and_record", return_value=("already_recorded", None, failed_record)),
+        ):
+            resp = self.client.post(reverse("console:accept", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 502)
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.state, AssignmentProposal.STATE_PROPOSED)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_accept_already_recorded_applied_row_marks_accepted(self) -> None:
+        # Benign double-accept: the row already exists and is APPLIED, so acceptance is idempotent.
+        self._make_pr(101)
+        proposal = self._proposal(101)
+        self._login_session()
+        applied_record = ReviewerAssignmentApplication(status=ReviewerAssignmentApplication.STATUS_APPLIED)
+
+        with (
+            patch("core.services.github_operation_tokens.resolve_github_app_operation_token", return_value="tok"),
+            patch("console.views.assign_reviewer_and_record", return_value=("already_recorded", None, applied_record)),
+        ):
+            resp = self.client.post(reverse("console:accept", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Assignment accepted")
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.state, AssignmentProposal.STATE_ACCEPTED)
 
     @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
     def test_accept_stale_closed_pr_renders_unavailable_and_retires(self) -> None:

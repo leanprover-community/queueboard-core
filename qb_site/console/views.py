@@ -21,7 +21,7 @@ from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
 
-from analyzer.models import AssignmentProposal, QueueSnapshot, ReviewerOptOut
+from analyzer.models import AssignmentProposal, QueueSnapshot, ReviewerAssignmentApplication, ReviewerOptOut
 from analyzer.services.assignment_proposal_validity import ProposalValidity, proposal_validity, resolve_on_queue_exit_policy
 from analyzer.services.queue_rules import default_rule_set_for_repo
 from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_record
@@ -302,7 +302,7 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
     if not token:
         return render(request, "console/unavailable.html", {"message": "Assignment is temporarily unavailable. Try again later."})
 
-    outcome, _client, _record = assign_reviewer_and_record(
+    outcome, _client, record = assign_reviewer_and_record(
         repository=proposal.repository,
         pr_number=int(proposal.pr_number),
         login=proposal.reviewer_login,
@@ -310,12 +310,26 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
         run_date=now.date(),
         token=token,
     )
-    if outcome == "failed":
+    # Only mark accepted when the assignment actually landed on GitHub. ``already_recorded`` means a
+    # row for (today, repo, pr, reviewer) already existed — a success ONLY when that row is APPLIED.
+    # A prior FAILED/PENDING attempt (e.g. an earlier click GitHub rejected) must never be reported
+    # to the reviewer as an assignment that took; leave the proposal pending so a later daily run
+    # (fresh run_date) can retry. See design doc 050 review.
+    landed = outcome == "applied" or (
+        outcome == "already_recorded" and record is not None and record.status == ReviewerAssignmentApplication.STATUS_APPLIED
+    )
+    if not landed:
         return render(
-            request, "console/unavailable.html", {"message": "GitHub rejected the assignment. Try again shortly."}, status=502
+            request,
+            "console/unavailable.html",
+            {
+                "heading": "Couldn’t assign you just now",
+                "message": "GitHub didn’t confirm the assignment. Please try again in a little while.",
+            },
+            status=502,
         )
 
-    # Assignment landed (applied) or was already recorded — mark accepted.
+    # Assignment landed — mark accepted.
     AssignmentProposal.objects.filter(id=proposal.id, state=AssignmentProposal.STATE_PROPOSED).update(
         state=AssignmentProposal.STATE_ACCEPTED,
         decided_at=now,

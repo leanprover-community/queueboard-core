@@ -105,11 +105,13 @@ def assign_reviewer_and_record(
 
     Idempotently creates the PENDING ``ReviewerAssignmentApplication`` for
     ``(run_date, repo, pr, reviewer)``; if a row already exists returns
-    ``("already_recorded", assignment_client, None)`` without mutating. Otherwise POSTs the
-    assignee via ``GitHubAssignmentClient`` (built from ``token`` when not supplied), confirms the
-    login actually landed (GitHub silently drops unassignable logins), marks the row
-    APPLIED/FAILED, and enqueues ``syncer.sync_pr`` on success. Returns ``(outcome, client,
-    record)`` with ``outcome`` in {"applied", "failed", "already_recorded"}.
+    ``("already_recorded", assignment_client, <existing record>)`` without mutating. The caller can
+    inspect ``record.status`` to tell an already-APPLIED row from a prior FAILED/PENDING one —
+    ``already_recorded`` does *not* imply the assignment ever landed. Otherwise POSTs the assignee
+    via ``GitHubAssignmentClient`` (built from ``token`` when not supplied), confirms the login
+    actually landed (GitHub silently drops unassignable logins), marks the row APPLIED/FAILED, and
+    enqueues ``syncer.sync_pr`` on success. Returns ``(outcome, client, record)`` with ``outcome``
+    in {"applied", "failed", "already_recorded"}.
 
     Shared verbatim by the legacy apply sweep (doc 046), the acceptance-gate propose step's
     auto/fallback direct-assign path, and the console accept handler (doc 050) so the GitHub
@@ -128,7 +130,7 @@ def assign_reviewer_and_record(
         },
     )
     if not created:
-        return ("already_recorded", assignment_client, None)
+        return ("already_recorded", assignment_client, record)
 
     if assignment_client is None:
         assignment_client = GitHubAssignmentClient(token=token)
