@@ -403,6 +403,45 @@ ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT = float(os.getenv("ANALYZER_ASS
 # Soft cooldown: skip a reviewer for a PR when a proposal for it expired (silent timeout)
 # within this many days. Not a permanent opt-out (that is an explicit decline). 0 disables it.
 ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS", "14"))
+# Acceptance-gate rollout flags (design doc 050), each independently toggleable like doc 028's
+# propose -> deliver -> assign-on-accept discipline. All default off so the gate is inert until
+# an operator opts in.
+#   ENABLED            master kill switch: the propose task creates proposals / direct-assigns.
+#   DELIVERY_ENABLED   send the per-reviewer proposal digest DM (consumed in Chunk 5).
+#   ASSIGN_ON_ACCEPT_ENABLED  the console accept handler performs the GitHub assign (Chunk 6).
+#   DRY_RUN            propose computes + records would-do outcomes without any side effect.
+# Enable EITHER this gate OR the legacy ANALYZER_REVIEWER_ASSIGNMENT_APPLY_* task, not both:
+# propose supersedes apply (it direct-assigns auto-mode reviewers itself and proposes to the rest).
+ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED"), False)
+ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED"), False)
+ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED = env_bool(
+    os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED"), False
+)
+ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN = env_bool(os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN"), False)
+# Acceptance window: a proposal expires this many days after creation unless accepted. The
+# per-reviewer override in ReviewerPreference.notification_settings is clamped to >= 7.
+ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", "7"))
+# On-queue-exit policy read inside the proposal_validity predicate: "invalidate" (default) marks a
+# pending proposal superseded when its PR leaves the review queue; "retain" lets it ride.
+ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT = os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT", "invalidate").strip().lower()
+# Propose task schedule (daily, shortly after the compute refresh at 00:30 and in place of the
+# legacy apply at 00:45). PERIOD_SECONDS <= 0 disables scheduling; the task is also gated by
+# ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED (+ dry-run), so scheduling it while off is a cheap no-op.
+ANALYZER_ASSIGNMENT_PROPOSE_PERIOD_SECONDS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSE_PERIOD_SECONDS", 86400))
+ANALYZER_ASSIGNMENT_PROPOSE_UTC_HOUR = env_optional_bounded_int(
+    "ANALYZER_ASSIGNMENT_PROPOSE_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+ANALYZER_ASSIGNMENT_PROPOSE_UTC_MINUTE = env_optional_bounded_int(
+    "ANALYZER_ASSIGNMENT_PROPOSE_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
+# Expiry/reconcile sweep schedule. This is essential maintenance (expire timed-out proposals,
+# supersede those whose PR left the queue) and is intentionally NOT gated by the master switch,
+# so flipping the gate off lets existing proposals drain. PERIOD_SECONDS <= 0 disables it.
+ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS", 3600))
 ANALYZER_REVIEWER_ATTENTION_ENABLED = env_bool(os.getenv("ANALYZER_REVIEWER_ATTENTION_ENABLED"), False)
 ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED = env_bool(
     os.getenv("ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED"),
@@ -649,6 +688,25 @@ if ANALYZER_REVIEWER_ASSIGNMENT_APPLY_PERIOD_SECONDS > 0:
                 ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE if ANALYZER_REVIEWER_ASSIGNMENT_APPLY_UTC_MINUTE is not None else 45
             ),
         ),
+    }
+# Propose reviewer assignments through the acceptance gate (design doc 050), daily at a fixed UTC
+# clock time (default 00:45, just after the compute refresh — same slot as the legacy apply, which
+# it supersedes). Beat fires unconditionally; ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED (+ dry-run)
+# gates activity inside the task, so scheduling it while off is a cheap no-op (feature_disabled).
+if ANALYZER_ASSIGNMENT_PROPOSE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["propose_reviewer_assignments"] = {
+        "task": "analyzer.propose_reviewer_assignments",
+        "schedule": crontab(
+            hour=ANALYZER_ASSIGNMENT_PROPOSE_UTC_HOUR if ANALYZER_ASSIGNMENT_PROPOSE_UTC_HOUR is not None else 0,
+            minute=ANALYZER_ASSIGNMENT_PROPOSE_UTC_MINUTE if ANALYZER_ASSIGNMENT_PROPOSE_UTC_MINUTE is not None else 45,
+        ),
+    }
+# Expiry/reconcile sweep: expire timed-out proposals and supersede those whose PR left the queue.
+# Essential maintenance, so it runs on a simple period regardless of the master switch.
+if ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["expire_assignment_proposals"] = {
+        "task": "analyzer.expire_assignment_proposals",
+        "schedule": ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS,
     }
 reviewer_attention_schedule = None
 if (ANALYZER_REVIEWER_ATTENTION_UTC_HOUR is not None) or (ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE is not None):

@@ -29,6 +29,8 @@ from analyzer.tasks.reviewer_assignment import (
     refresh_area_stats_task,
 )
 from analyzer.tasks.reviewer_assignment_apply import apply_reviewer_assignments_task
+from analyzer.tasks.reviewer_assignment_propose import propose_reviewer_assignments_task
+from analyzer.tasks.assignment_proposal_expiry import expire_assignment_proposals_task
 
 
 log = logging.getLogger(__name__)
@@ -160,4 +162,6 @@ __all__ = [
     "build_area_stats",
     "refresh_area_stats_task",
     "apply_reviewer_assignments_task",
+    "propose_reviewer_assignments_task",
+    "expire_assignment_proposals_task",
 ]
