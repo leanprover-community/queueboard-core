@@ -52,6 +52,14 @@ def propose_reviewer_assignments_task(
     if not enabled and not dry_run:
         return {"skipped": True, "reason": "feature_disabled", "enabled": enabled, "dry_run": dry_run}
 
+    if enabled and bool(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED", False)):
+        # Misconfiguration guard: both pipelines are switched on. The legacy apply task yields to
+        # this one (it skips itself), so proceed — but tell the operator to turn one flag off.
+        log.warning(
+            "analyzer.propose_reviewer_assignments: ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED is also set; the legacy "
+            "apply task is skipping itself in favor of this acceptance-gate pipeline. Disable one of the two flags."
+        )
+
     window_days = int(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", 7))
     # Reuse the apply task's mutation-safety knobs for the direct-assign (auto/fallback) path so the
     # two rollout modes bound GitHub exposure identically.

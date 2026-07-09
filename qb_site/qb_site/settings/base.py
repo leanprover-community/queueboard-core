@@ -425,6 +425,8 @@ ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRE_COOLDOWN_DAYS = int(os.getenv("ANALYZER_ASSI
 #   DRY_RUN            propose computes + records would-do outcomes without any side effect.
 # Enable EITHER this gate OR the legacy ANALYZER_REVIEWER_ASSIGNMENT_APPLY_* task, not both:
 # propose supersedes apply (it direct-assigns auto-mode reviewers itself and proposes to the rest).
+# Enforced in code: when both are enabled, the apply task skips itself (logging an error) so the
+# proposal-unaware path cannot bypass the gate.
 ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED"), False)
 ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED"), False)
 ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED = env_bool(

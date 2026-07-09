@@ -78,6 +78,22 @@ class ApplyReviewerAssignmentsTaskTests(TestCase):
         record = ReviewerAssignmentApplication.objects.get(repository=self.repo, pr_number=101)
         self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_SKIPPED_DRY_RUN)
 
+    @override_settings(
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED=True,
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=False,
+        ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True,
+    )
+    def test_skips_when_proposals_pipeline_also_enabled(self) -> None:
+        # Both pipelines on is a misconfiguration: the proposal-unaware apply task must yield to
+        # the acceptance gate instead of direct-assigning confirm-mode reviewers past it.
+        self._seed_repo_with_proposal()
+
+        res = apply_reviewer_assignments_task.apply().get()
+
+        self.assertTrue(res["skipped"])
+        self.assertEqual(res["reason"], "superseded_by_proposals_pipeline")
+        self.assertFalse(ReviewerAssignmentApplication.objects.exists())
+
     @override_settings(ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=True)
     def test_repo_filter_miss_returns_not_found(self) -> None:
         res = apply_reviewer_assignments_task.apply(kwargs={"repository_id": 999999}).get()
