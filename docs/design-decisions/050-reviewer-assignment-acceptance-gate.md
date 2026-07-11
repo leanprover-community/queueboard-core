@@ -166,7 +166,10 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
 
 - Dedicated Django app at `/console/`; plain server-rendered views; no models of its own. The DM
   carries a plain, stable, bookmarkable URL (no token), built from `QUEUEBOARD_BASE_URL` via
-  `core.services.site_urls.build_site_url` (legacy `ZULIP_PREFS_URL_BASE` falls back).
+  `core.services.site_urls.build_site_url` (legacy `ZULIP_PREFS_URL_BASE` falls back). The same URL
+  is available on demand via the `console` Zulip command (an in-place reply, not a private DM: the
+  link is non-secret and identical for every reviewer since the page self-authenticates); like all
+  commands it is reachable only where `ZULIP_COMMAND_POLICY` permits it.
 - **Auth:** GitHub OAuth → Django session holding the resolved `core.User` id. CSRF nonce in the
   session echoed through the Fernet-signed OAuth `state` (`core.services.oauth_state`, shared with
   the registration flow, which delegates to it). Hardened:
@@ -256,6 +259,15 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
   "assignment activity" view joining proposals with the assignment timeline.
 - Hybrid "propose, then assign anyway if all candidates time out" — revisit only if PRs sitting
   unproposed becomes a real problem.
+- **Stable `/prefs` URL sharing the console session.** Today the Zulip prefs form authenticates via
+  an expiring Fernet token embedding a `preference_ids` snapshot; the console authenticates via
+  GitHub OAuth → Django session (`core.User` id). A follow-up could give prefs a token-less, stable
+  URL that reads the same session and loads the user's live preferences. Feasible and clean (the
+  console already resolves identity by `github_login`, so the eligible population is essentially the
+  same), but it is an auth-model change, not a URL tweak — it makes GitHub OAuth the entry point for
+  a flow that today needs none, changes scoping from a token snapshot to all-current prefs, and
+  wants its own CSRF/session plumbing, tests, and security-surface review. Deliberately kept off this
+  branch so the gate's rollout stays focused.
 
 ## Alternatives (discarded)
 
