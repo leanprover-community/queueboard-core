@@ -37,7 +37,7 @@ class TestClosePRLinks(SimpleTestCase):
         self.assertIsNotNone(claims.iat)
         self.assertIsNotNone(claims.exp)
 
-    @override_settings(ZULIP_PREFS_URL_BASE="https://queueboard.example")
+    @override_settings(QUEUEBOARD_BASE_URL="https://queueboard.example")
     def test_build_link_uses_url_base(self) -> None:
         link = build_close_pr_link(claims=self._claims())
         self.assertTrue(link.startswith("https://queueboard.example/api/zulip/close-pr/"))

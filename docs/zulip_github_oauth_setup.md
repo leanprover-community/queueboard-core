@@ -9,7 +9,9 @@ the **Zulip registration** flow and the **reviewer console** (design doc 050).
     callback `/api/zulip/register/github/callback/`.
 - Reviewer console:
   - entrypoint `/console/`, start `/console/login/`, callback `/console/oauth/callback/`.
-  - The console derives its callback from `QUEUEBOARD_BASE_URL` (not `GITHUB_OAUTH_REDIRECT_URI`).
+- Both flows derive their callback from `QUEUEBOARD_BASE_URL` (there is no separate redirect-URI
+  setting): registration → `<QUEUEBOARD_BASE_URL>/api/zulip/register/github/callback/`,
+  console → `<QUEUEBOARD_BASE_URL>/console/oauth/callback/`.
 - Current behavior:
   - OAuth verifies GitHub identity; the console then opens a session and lists proposals.
   - DB account linking/bootstrap (registration) is implemented separately.
@@ -44,14 +46,10 @@ Set these in your Queueboard environment (`.env` or deployment secrets):
 - Required:
   - `GITHUB_OAUTH_CLIENT_ID`
   - `GITHUB_OAUTH_CLIENT_SECRET`
-  - `QUEUEBOARD_BASE_URL` — canonical site base (`https://<your-host>`, no trailing path). The
-    reviewer console builds its callback + the console link in reviewer DMs from this. New at design
-    doc 050; **must be set for the console/notification rollout.** (Legacy deployments that only set
-    `ZULIP_PREFS_URL_BASE` keep working via fallback, but set `QUEUEBOARD_BASE_URL` going forward.)
-- Recommended:
-  - `GITHUB_OAUTH_REDIRECT_URI`
-    The registration-flow callback (the console derives its own from `QUEUEBOARD_BASE_URL`), e.g.
-    `https://queueboard.example/api/zulip/register/github/callback/`
+  - `QUEUEBOARD_BASE_URL` — canonical site base (`https://<your-host>`, no trailing path). Every
+    deep-link is built from this: both OAuth callbacks (registration and console), the console link
+    in reviewer DMs, and the Zulip prefs/registration links. **Must be set for the
+    console/notification rollout** and for OAuth to produce an absolute `redirect_uri`.
 - Optional:
   - `CONSOLE_OAUTH_STATE_TTL_SECONDS` (default 600) — console OAuth state round-trip TTL.
 
@@ -62,7 +60,6 @@ Optional overrides (defaults shown):
 - `GITHUB_OAUTH_SCOPE=read:user`
 
 Related registration token settings:
-- `ZULIP_PREFS_URL_BASE` (used for registration links too)
 - `ZULIP_PREFS_TOKEN_SECRET` (shared secret material)
 - `ZULIP_REGISTRATION_TOKEN_SALT` (registration token namespace)
 - `ZULIP_REGISTRATION_TOKEN_TTL_SECONDS`
@@ -73,13 +70,12 @@ Related registration token settings:
 
 For local Django at `http://localhost:8000`:
 
-- GitHub OAuth app callback URL:
-  - `http://localhost:8000/api/zulip/register/github/callback/`
+- GitHub OAuth app callback URL (register at the site root so both flows are covered):
+  - `http://localhost:8000/`
 - Local env:
   - `GITHUB_OAUTH_CLIENT_ID=<client-id>`
   - `GITHUB_OAUTH_CLIENT_SECRET=<client-secret>`
-  - `GITHUB_OAUTH_REDIRECT_URI=http://localhost:8000/api/zulip/register/github/callback/`
-  - `ZULIP_PREFS_URL_BASE=http://localhost:8000`
+  - `QUEUEBOARD_BASE_URL=http://localhost:8000`
 
 If your team shares a deployed app, prefer separate local vs production OAuth apps.
 
@@ -117,7 +113,9 @@ Example policy snippet:
 - "GitHub OAuth is not configured yet"
   - Missing `GITHUB_OAUTH_CLIENT_ID` or `GITHUB_OAUTH_CLIENT_SECRET`.
 - OAuth callback invalid/failed
-  - `GITHUB_OAUTH_REDIRECT_URI` mismatch with GitHub app callback URL.
+  - `redirect_uri_mismatch`: the derived callback (`<QUEUEBOARD_BASE_URL>/…`) is not a subdirectory
+    of the GitHub app's registered callback URL. Register that callback at the site root.
+  - `QUEUEBOARD_BASE_URL` unset, so the `redirect_uri` is a relative path (OAuth needs an absolute URL).
   - Expired or tampered OAuth `state` token.
   - Registration token expired before callback completed.
 - Link expired

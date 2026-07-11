@@ -58,7 +58,7 @@ class TestRegistrationStart(TestCase):
     @override_settings(
         GITHUB_OAUTH_CLIENT_ID="client-id",
         GITHUB_OAUTH_CLIENT_SECRET="client-secret",
-        GITHUB_OAUTH_REDIRECT_URI="https://queueboard.example/api/zulip/register/github/callback/",
+        QUEUEBOARD_BASE_URL="https://queueboard.example",
     )
     def test_register_github_start_redirects_to_github_authorize(self) -> None:
         token = self._token()
@@ -88,7 +88,7 @@ class TestRegistrationStart(TestCase):
     @override_settings(
         GITHUB_OAUTH_CLIENT_ID="client-id",
         GITHUB_OAUTH_CLIENT_SECRET="client-secret",
-        GITHUB_OAUTH_REDIRECT_URI="https://queueboard.example/api/zulip/register/github/callback/",
+        QUEUEBOARD_BASE_URL="https://queueboard.example",
     )
     def test_register_github_callback_with_missing_params_returns_forbidden(self) -> None:
         response = self.client.get(reverse("zulip-register-github-callback"))
@@ -99,7 +99,7 @@ class TestRegistrationStart(TestCase):
     @override_settings(
         GITHUB_OAUTH_CLIENT_ID="client-id",
         GITHUB_OAUTH_CLIENT_SECRET="client-secret",
-        GITHUB_OAUTH_REDIRECT_URI="https://queueboard.example/api/zulip/register/github/callback/",
+        QUEUEBOARD_BASE_URL="https://queueboard.example",
     )
     def test_register_github_callback_with_valid_state_renders_verified_page(self) -> None:
         token = self._token()
@@ -134,7 +134,7 @@ class TestRegistrationStart(TestCase):
     @override_settings(
         GITHUB_OAUTH_CLIENT_ID="client-id",
         GITHUB_OAUTH_CLIENT_SECRET="client-secret",
-        GITHUB_OAUTH_REDIRECT_URI="https://queueboard.example/api/zulip/register/github/callback/",
+        QUEUEBOARD_BASE_URL="https://queueboard.example",
     )
     def test_register_github_callback_with_invalid_state_returns_forbidden(self) -> None:
         response = self.client.get(

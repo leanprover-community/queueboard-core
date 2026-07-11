@@ -11,6 +11,8 @@ from urllib.parse import quote
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 
+from core.services.site_urls import build_site_url
+
 
 @dataclass(frozen=True)
 class ClosePRLinkClaims:
@@ -37,11 +39,7 @@ class ClosePRTokenInvalid(ClosePRTokenError):
 
 def build_close_pr_link(*, claims: ClosePRLinkClaims) -> str:
     token = issue_close_pr_token(claims=claims)
-    url_base = getattr(settings, "ZULIP_PREFS_URL_BASE", "").strip().rstrip("/")
-    path = f"/api/zulip/close-pr/{quote(token, safe='')}/"
-    if url_base:
-        return f"{url_base}{path}"
-    return path
+    return build_site_url(f"/api/zulip/close-pr/{quote(token, safe='')}/")
 
 
 def issue_close_pr_token(*, claims: ClosePRLinkClaims) -> str:

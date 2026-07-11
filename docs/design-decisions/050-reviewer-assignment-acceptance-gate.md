@@ -166,7 +166,7 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
 
 - Dedicated Django app at `/console/`; plain server-rendered views; no models of its own. The DM
   carries a plain, stable, bookmarkable URL (no token), built from `QUEUEBOARD_BASE_URL` via
-  `core.services.site_urls.build_site_url` (legacy `ZULIP_PREFS_URL_BASE` falls back). The same URL
+  `core.services.site_urls.build_site_url`. The same URL
   is available on demand via the `console` Zulip command (an in-place reply, not a private DM: the
   link is non-secret and identical for every reviewer since the page self-authenticates); like all
   commands it is reachable only where `ZULIP_COMMAND_POLICY` permits it.

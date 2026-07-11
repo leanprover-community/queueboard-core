@@ -47,16 +47,12 @@ class SignedStateTests(SimpleTestCase):
 
 
 class SiteUrlsTests(SimpleTestCase):
-    @override_settings(QUEUEBOARD_BASE_URL="https://qb.example.com", ZULIP_PREFS_URL_BASE="https://legacy.example.com")
-    def test_prefers_canonical(self) -> None:
+    @override_settings(QUEUEBOARD_BASE_URL="https://qb.example.com")
+    def test_resolves_canonical_base(self) -> None:
         self.assertEqual(resolve_site_base_url(), "https://qb.example.com")
         self.assertEqual(build_site_url("/console/"), "https://qb.example.com/console/")
 
-    @override_settings(QUEUEBOARD_BASE_URL="", ZULIP_PREFS_URL_BASE="https://legacy.example.com")
-    def test_falls_back_to_legacy(self) -> None:
-        self.assertEqual(resolve_site_base_url(), "https://legacy.example.com")
-
-    @override_settings(QUEUEBOARD_BASE_URL="", ZULIP_PREFS_URL_BASE="")
+    @override_settings(QUEUEBOARD_BASE_URL="")
     def test_empty_returns_relative_path(self) -> None:
         self.assertEqual(resolve_site_base_url(), "")
         self.assertEqual(build_site_url("/console/"), "/console/")

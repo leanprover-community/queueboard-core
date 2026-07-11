@@ -10,7 +10,6 @@ from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 @override_settings(
     GITHUB_OAUTH_CLIENT_ID="client-id",
     GITHUB_OAUTH_CLIENT_SECRET="client-secret",
-    GITHUB_OAUTH_REDIRECT_URI="https://queueboard.example/api/zulip/register/github/callback/",
 )
 class TestGitHubOAuthClient(SimpleTestCase):
     def _response(self, payload: dict) -> Mock:

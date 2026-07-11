@@ -11,6 +11,8 @@ from urllib.parse import quote
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 
+from core.services.site_urls import build_site_url
+
 
 @dataclass(frozen=True)
 class LabelPRLinkClaims:
@@ -37,11 +39,7 @@ class LabelPRTokenInvalid(LabelPRTokenError):
 
 def build_label_pr_link(*, claims: LabelPRLinkClaims) -> str:
     token = issue_label_pr_token(claims=claims)
-    url_base = getattr(settings, "ZULIP_PREFS_URL_BASE", "").strip().rstrip("/")
-    path = f"/api/zulip/label-pr/{quote(token, safe='')}/"
-    if url_base:
-        return f"{url_base}{path}"
-    return path
+    return build_site_url(f"/api/zulip/label-pr/{quote(token, safe='')}/")
 
 
 def issue_label_pr_token(*, claims: LabelPRLinkClaims) -> str:

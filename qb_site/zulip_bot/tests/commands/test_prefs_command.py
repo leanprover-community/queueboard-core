@@ -10,7 +10,7 @@ from zulip_bot.commands import CommandContext
 from zulip_bot.commands.prefs import prefs_command
 
 
-@override_settings(ZULIP_PREFS_URL_BASE="https://queueboard.example")
+@override_settings(QUEUEBOARD_BASE_URL="https://queueboard.example")
 class TestPrefsCommand(TestCase):
     def _context(self, *, sender_id: int) -> CommandContext:
         return CommandContext(

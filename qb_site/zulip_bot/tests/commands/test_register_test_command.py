@@ -9,7 +9,7 @@ from zulip_bot.commands import CommandContext
 from zulip_bot.commands.register_test import register_test_command
 
 
-@override_settings(ZULIP_PREFS_URL_BASE="https://queueboard.example")
+@override_settings(QUEUEBOARD_BASE_URL="https://queueboard.example")
 class TestRegisterTestCommand(SimpleTestCase):
     def _context(self, *, sender_id: int | None) -> CommandContext:
         return CommandContext(
