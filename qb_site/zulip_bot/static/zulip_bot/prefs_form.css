@@ -117,6 +117,24 @@ input[type="checkbox"] {
   background: #fff;
 }
 
+.acceptance-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acceptance-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 42px;
+  background: #fff;
+  font-weight: 500;
+}
+
 .warning {
   color: #92400e;
 }
@@ -215,7 +233,8 @@ button:disabled {
     gap: 6px;
   }
 
-  .topic-label-option {
+  .topic-label-option,
+  .acceptance-option {
     min-height: 44px;
   }
 

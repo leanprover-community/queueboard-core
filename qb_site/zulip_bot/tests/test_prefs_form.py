@@ -83,6 +83,7 @@ class TestPrefsForm(TestCase):
             data[f"form-{idx}-id"] = str(pref.id)
             data[f"form-{idx}-maximum_capacity"] = str(pref.maximum_capacity)
             data[f"form-{idx}-auto_assign"] = "on" if pref.auto_assign else ""
+            data[f"form-{idx}-assignment_acceptance"] = pref.assignment_acceptance
             data[f"form-{idx}-notifications_enabled"] = "on" if pref.notifications_enabled else ""
             settings = pref.notification_settings or {}
             data[f"form-{idx}-stale_nudge_days"] = str(settings.get("stale_nudge_days", DEFAULT_STALE_NUDGE_DAYS))
@@ -147,6 +148,65 @@ class TestPrefsForm(TestCase):
         self.assertEqual(self.pref1.preferred_labels, ["t-algebra", "t-number-theory"])
         self.assertEqual(self.pref2.free_form, "updated note")
         self.assertTrue(self.pref2.auto_assign)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True)
+    def test_get_shows_assignment_acceptance_when_proposals_enabled(self) -> None:
+        token = self._token()
+        response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": token}))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('name="form-0-assignment_acceptance"', response.content.decode("utf-8"))
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=False)
+    def test_get_hides_assignment_acceptance_when_proposals_disabled(self) -> None:
+        token = self._token()
+        response = self.client.get(reverse("zulip-prefs-form", kwargs={"token": token}))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("assignment_acceptance", response.content.decode("utf-8"))
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True)
+    def test_post_updates_assignment_acceptance(self) -> None:
+        # Rows created in setUp default to "confirm"; flip pref1 to "auto" and pin pref2 to "confirm".
+        self.assertEqual(self.pref1.assignment_acceptance, ReviewerPreference.ACCEPTANCE_CONFIRM)
+        token = self._token()
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-assignment_acceptance"] = ReviewerPreference.ACCEPTANCE_AUTO
+        data[f"form-{index_by_id[self.pref2.id]}-assignment_acceptance"] = ReviewerPreference.ACCEPTANCE_CONFIRM
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Preferences saved")
+        self.pref1.refresh_from_db()
+        self.pref2.refresh_from_db()
+        self.assertEqual(self.pref1.assignment_acceptance, ReviewerPreference.ACCEPTANCE_AUTO)
+        self.assertEqual(self.pref2.assignment_acceptance, ReviewerPreference.ACCEPTANCE_CONFIRM)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True)
+    def test_post_rejects_unknown_assignment_acceptance(self) -> None:
+        token = self._token()
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-assignment_acceptance"] = "sometimes"
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Select a valid choice")
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.assignment_acceptance, ReviewerPreference.ACCEPTANCE_CONFIRM)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=False)
+    def test_post_ignores_assignment_acceptance_when_proposals_disabled(self) -> None:
+        # With the feature off the field is not part of the form, so a crafted POST value must not
+        # change the stored mode.
+        token = self._token()
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-assignment_acceptance"] = ReviewerPreference.ACCEPTANCE_AUTO
+
+        response = self.client.post(reverse("zulip-prefs-form", kwargs={"token": token}), data=data)
+
+        self.assertEqual(response.status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.assignment_acceptance, ReviewerPreference.ACCEPTANCE_CONFIRM)
 
     def test_post_can_be_submitted_multiple_times_before_expiry(self) -> None:
         token = self._token()

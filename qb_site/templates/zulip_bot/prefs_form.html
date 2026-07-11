@@ -99,6 +99,22 @@
                 {% if form.maximum_capacity.help_text %}<span class="help">{{ form.maximum_capacity.help_text }}</span>{% endif %}
                 {% if form.maximum_capacity.errors %}<ul class="errors">{% for error in form.maximum_capacity.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
               </div>
+
+              {% if "assignment_acceptance" in form.fields %}
+              <div class="field field-wide">
+                <label>{{ form.assignment_acceptance.label }}</label>
+                <div class="acceptance-selector">
+                  {% for option in form.assignment_acceptance %}
+                    <label class="acceptance-option" for="{{ option.id_for_label }}">
+                      {{ option.tag }}
+                      <span>{{ option.choice_label }}</span>
+                    </label>
+                  {% endfor %}
+                </div>
+                {% if form.assignment_acceptance.help_text %}<span class="help">{{ form.assignment_acceptance.help_text }}</span>{% endif %}
+                {% if form.assignment_acceptance.errors %}<ul class="errors">{% for error in form.assignment_acceptance.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+              </div>
+              {% endif %}
             </div>
           </div>
 
