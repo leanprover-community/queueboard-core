@@ -34,6 +34,7 @@ from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
+from core.services.site_urls import resolve_site_base_url
 from zulip_bot.services.close_pr_execution import (
     add_pr_labels,
     ClosePRError,
@@ -921,10 +922,12 @@ def _github_oauth_is_configured() -> bool:
 
 
 def _github_oauth_redirect_uri(request: HttpRequest) -> str:
-    configured = getattr(settings, "GITHUB_OAUTH_REDIRECT_URI", "").strip()
-    if configured:
-        return configured
-    return request.build_absolute_uri(reverse("zulip-register-github-callback"))
+    # Derive the registration callback from the canonical site base (QUEUEBOARD_BASE_URL), mirroring
+    # the reviewer console's callback so one setting configures both OAuth flows (design doc 050).
+    # Fall back to the live request host in local dev where no base URL is configured.
+    path = reverse("zulip-register-github-callback")
+    base = resolve_site_base_url()
+    return f"{base}{path}" if base else request.build_absolute_uri(path)
 
 
 def _load_authorized_preferences(user_id: int, zulip_user_id: int, preference_ids: tuple[int, ...]) -> list[ReviewerPreference]:

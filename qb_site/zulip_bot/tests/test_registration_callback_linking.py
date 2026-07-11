@@ -15,7 +15,7 @@ from zulip_bot.services.zulip_client import ZulipApiError
 @override_settings(
     GITHUB_OAUTH_CLIENT_ID="client-id",
     GITHUB_OAUTH_CLIENT_SECRET="client-secret",
-    GITHUB_OAUTH_REDIRECT_URI="https://queueboard.example/api/zulip/register/github/callback/",
+    QUEUEBOARD_BASE_URL="https://queueboard.example",
 )
 class TestRegistrationCallbackLinking(TestCase):
     def _token_and_state(self, *, zulip_user_id: int = 101, nonce: str = "nonce-123") -> tuple[str, str]:

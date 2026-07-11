@@ -154,10 +154,10 @@ LOGGING = {
 }
 
 # Canonical public base URL of the queueboard Django site (scheme://host, no trailing path).
-# Feature link-builders (reviewer console, Zulip prefs/registration deep-links) fall back to this,
-# so a deployment can set one variable instead of several. NOTE: this is the web app, NOT the Zulip
-# chat server (ZULIP_BASE_URL). Leave empty only in local dev. Resolve via
-# core.services.site_urls.resolve_site_base_url() rather than reading either setting directly.
+# The single base for every feature deep-link (reviewer console, both OAuth callbacks, Zulip
+# prefs/registration links), so a deployment sets one variable. NOTE: this is the web app, NOT the
+# Zulip chat server (ZULIP_BASE_URL). Leave empty only in local dev. Resolve via
+# core.services.site_urls.resolve_site_base_url() rather than reading this setting directly.
 QUEUEBOARD_BASE_URL = os.getenv("QUEUEBOARD_BASE_URL", "").strip().rstrip("/")
 
 ZULIP_WEBHOOK_TOKEN = os.getenv("ZULIP_WEBHOOK_TOKEN")
@@ -166,9 +166,6 @@ ZULIP_BOT_EMAIL = os.getenv("ZULIP_BOT_EMAIL", "")
 ZULIP_BOT_API_KEY = os.getenv("ZULIP_BOT_API_KEY", "")
 ZULIP_USER_EMAIL = os.getenv("ZULIP_USER_EMAIL", "")
 ZULIP_USER_API_KEY = os.getenv("ZULIP_USER_API_KEY", "")
-# Back-compat: existing deployments set this directly. When unset it falls back to the canonical
-# QUEUEBOARD_BASE_URL so a single variable configures every deep-link base.
-ZULIP_PREFS_URL_BASE = os.getenv("ZULIP_PREFS_URL_BASE", "").strip().rstrip("/") or QUEUEBOARD_BASE_URL
 ZULIP_PREFS_TOKEN_SECRET = os.getenv("ZULIP_PREFS_TOKEN_SECRET", "")
 ZULIP_PREFS_TOKEN_SALT = os.getenv("ZULIP_PREFS_TOKEN_SALT", "zulip_bot.prefs")
 ZULIP_PREFS_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
@@ -182,14 +179,12 @@ ZULIP_CLOSE_PR_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_CLOSE_PR_TOKEN_TTL_SECON
 ZULIP_LABEL_PR_TOKEN_SECRET = os.getenv("ZULIP_LABEL_PR_TOKEN_SECRET", "")
 ZULIP_LABEL_PR_TOKEN_SALT = os.getenv("ZULIP_LABEL_PR_TOKEN_SALT", "zulip_bot.label_pr")
 ZULIP_LABEL_PR_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_LABEL_PR_TOKEN_TTL_SECONDS", 1800))
-ZULIP_ASSIGNMENT_SUCCESS_EMOJI = os.getenv("ZULIP_ASSIGNMENT_SUCCESS_EMOJI", "thumbs_up")
 # Feature flags: keep in sync with .env.example — a missing entry here silently disables the feature.
 ZULIP_ASSIGNMENT_MUTATIONS_ENABLED = os.getenv("ZULIP_ASSIGNMENT_MUTATIONS_ENABLED", "")
 ZULIP_CLOSE_PR_MUTATIONS_ENABLED = os.getenv("ZULIP_CLOSE_PR_MUTATIONS_ENABLED", "")
 ZULIP_LABEL_PR_MUTATIONS_ENABLED = os.getenv("ZULIP_LABEL_PR_MUTATIONS_ENABLED", "")
 GITHUB_OAUTH_CLIENT_ID = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
 GITHUB_OAUTH_CLIENT_SECRET = os.getenv("GITHUB_OAUTH_CLIENT_SECRET", "")
-GITHUB_OAUTH_REDIRECT_URI = os.getenv("GITHUB_OAUTH_REDIRECT_URI", "")
 GITHUB_OAUTH_AUTHORIZE_URL = os.getenv("GITHUB_OAUTH_AUTHORIZE_URL", "https://github.com/login/oauth/authorize")
 GITHUB_OAUTH_TOKEN_URL = os.getenv("GITHUB_OAUTH_TOKEN_URL", "https://github.com/login/oauth/access_token")
 GITHUB_API_URL = os.getenv("GITHUB_API_URL", "https://api.github.com")
@@ -549,11 +544,11 @@ if SYNCER_ACTIVE_REPOS_PERIOD_SECONDS > 0:
         "task": "syncer.sync_active_repos",
         "schedule": SYNCER_ACTIVE_REPOS_PERIOD_SECONDS,
     }
-if 900 > 0:
-    CELERY_BEAT_SCHEDULE["collect_syncer_metrics"] = {
-        "task": "syncer.collect_metrics",
-        "schedule": 900,  # 15 minutes
-    }
+# Collect syncer metrics every 15 minutes.
+CELERY_BEAT_SCHEDULE["collect_syncer_metrics"] = {
+    "task": "syncer.collect_metrics",
+    "schedule": 900,  # 15 minutes
+}
 if SYNCER_HISTORY_BACKFILL_PERIOD_SECONDS > 0:
     CELERY_BEAT_SCHEDULE["backfill_repo_history"] = {
         "task": "syncer.backfill_repo_history_active",

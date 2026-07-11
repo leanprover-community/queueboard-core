@@ -15,7 +15,7 @@ from zulip_bot.services.registration_links import (
 
 
 class TestRegistrationLinks(SimpleTestCase):
-    @override_settings(ZULIP_PREFS_URL_BASE="https://queueboard.example")
+    @override_settings(QUEUEBOARD_BASE_URL="https://queueboard.example")
     def test_build_registration_link_uses_prefs_base(self) -> None:
         link = build_registration_link(
             claims=RegistrationLinkClaims(

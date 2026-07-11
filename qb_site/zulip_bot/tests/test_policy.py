@@ -128,7 +128,7 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
         ZULIP_COMMAND_POLICY={
             "prefs": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
         },
-        ZULIP_PREFS_URL_BASE="https://queueboard.example",
+        QUEUEBOARD_BASE_URL="https://queueboard.example",
     )
     @patch("zulip_bot.commands.prefs.ZulipClient")
     def test_prefs_command_via_webhook(self, MockZulipClient: MagicMock) -> None:

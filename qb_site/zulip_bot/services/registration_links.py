@@ -12,6 +12,8 @@ from urllib.parse import quote
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
 
+from core.services.site_urls import build_site_url
+
 
 @dataclass(frozen=True)
 class RegistrationLinkClaims:
@@ -37,11 +39,7 @@ class RegistrationTokenInvalid(RegistrationTokenError):
 
 def build_registration_link(*, claims: RegistrationLinkClaims) -> str:
     token = issue_registration_token(claims=claims)
-    url_base = getattr(settings, "ZULIP_PREFS_URL_BASE", "").strip().rstrip("/")
-    path = f"/api/zulip/register/{quote(token, safe='')}/"
-    if url_base:
-        return f"{url_base}{path}"
-    return path
+    return build_site_url(f"/api/zulip/register/{quote(token, safe='')}/")
 
 
 def issue_registration_token(*, claims: RegistrationLinkClaims) -> str:

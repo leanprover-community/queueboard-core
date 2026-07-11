@@ -36,8 +36,8 @@
 
 ## Base URL
 - Absolute links (the DM console URL, the OAuth `redirect_uri`) come from
-  `core.services.site_urls.build_site_url`, which resolves `QUEUEBOARD_BASE_URL` and falls back to
-  the legacy `ZULIP_PREFS_URL_BASE`. Do not read either setting directly.
+  `core.services.site_urls.build_site_url`, which resolves `QUEUEBOARD_BASE_URL`. Do not read the
+  setting directly.
 
 ## Testing
 - `docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test console`
