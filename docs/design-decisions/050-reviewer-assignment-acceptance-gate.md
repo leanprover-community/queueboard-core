@@ -84,7 +84,10 @@ One intermediate value on the existing assignment axis — for an open, on-queue
 
 `ReviewerPreference.assignment_acceptance` ∈ {`auto`, `confirm`}; migration backfilled existing
 rows to `auto` (grandfathered), new rows default `confirm`. The importer never touches the field
-on update (regression-pinned). Bulk admin actions flip a selection.
+on update (regression-pinned). Bulk admin actions flip a selection, and reviewers can flip their
+own mode from the Zulip prefs form (a two-option radio in the Auto-Assignment section) — the
+control is shown only while `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` is on, so reviewers never see
+an option that has no effect.
 
 Confirmation prompts are **transactional** and NOT gated by `notifications_enabled` (which governs
 only optional attention nudges — matching doc 028's precedent that essential actions ignore the

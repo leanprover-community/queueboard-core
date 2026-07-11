@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from datetime import tzinfo
 
 from django import forms
+from django.conf import settings
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
@@ -16,6 +17,7 @@ from core.services.topic_labels import make_topic_label_matcher
 REVIEWER_PREFERENCE_EDITABLE_FIELDS: tuple[str, ...] = (
     "maximum_capacity",
     "auto_assign",
+    "assignment_acceptance",
     "notifications_enabled",
     "away_until",
     "preferred_labels",
@@ -30,10 +32,6 @@ REVIEWER_PREFERENCE_NON_FORM_FIELDS: tuple[str, ...] = (
     "created_at",
     "updated_at",
     "notification_settings",
-    # Acceptance-gate mode (design doc 050). Deliberately not self-serve in the Zulip prefs form
-    # yet: set via the ReviewerPreference admin bulk actions / community decision. Expose here only
-    # if reviewers ask to flip their own mode.
-    "assignment_acceptance",
 )
 
 
@@ -72,6 +70,17 @@ class DelimitedListField(forms.CharField):
 
 
 class ReviewerPreferenceForm(forms.ModelForm):
+    # Acceptance-gate mode (design doc 050). Exposed as a two-option radio; the values are the
+    # model's own choices ("auto"/"confirm") so the ModelForm persists it without any conversion.
+    assignment_acceptance = forms.ChoiceField(
+        required=True,
+        choices=(
+            (ReviewerPreference.ACCEPTANCE_AUTO, "Assign PRs to me directly"),
+            (ReviewerPreference.ACCEPTANCE_CONFIRM, "Propose PRs and let me accept them first"),
+        ),
+        widget=forms.RadioSelect,
+        label="New assignment handling",
+    )
     away_until = forms.DateTimeField(
         required=False,
         input_formats=["%Y-%m-%dT%H:%M"],
@@ -121,6 +130,11 @@ class ReviewerPreferenceForm(forms.ModelForm):
         **kwargs: object,
     ) -> None:
         super().__init__(*args, **kwargs)
+        # The acceptance-gate mode only does anything when the proposals pipeline is enabled
+        # (design doc 050). Hide the control entirely when the feature is off rather than explaining
+        # the caveat in help text; the stored value is left untouched and cannot be changed via POST.
+        if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED", False)):
+            self.fields.pop("assignment_acceptance", None)
         self._user_timezone = user_timezone or timezone.get_current_timezone()
         self.legacy_preferred_labels: tuple[str, ...] = ()
 
