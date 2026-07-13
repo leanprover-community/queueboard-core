@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
-from analyzer.models import PRQueueWindow, QueueRuleSet
+from analyzer.models import PRQueueWindow, QueueRuleSet, QueueSnapshot
 from analyzer.services.reviewer_attention_format import format_compact_duration
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import LabelDef, PRLabel, PullRequest, PRTimelineEvent, PRTimelineEventType
@@ -277,6 +277,63 @@ class TestAssignedPrsCommand(TestCase):
             "This PR has been on the queue for >= 21 consecutive days and you will be automatically unassigned soon.",
             kwargs["content"],
         )
+
+    def _seed_snapshot(self, repo: Repository, rules: QueueRuleSet, prs: dict) -> None:
+        QueueSnapshot.objects.create(
+            repository=repo,
+            cache_key=str(rules.id),
+            generated_at=datetime.now(dt_timezone.utc),
+            payload={"prs": prs},
+            etag="etag",
+            pr_count=len(prs),
+            queue_count=0,
+        )
+
+    def test_shows_load_line_from_snapshot(self) -> None:
+        user = User.objects.create(github_login="alice", zulip_user_id=101)
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        ReviewerPreference.objects.create(user=user, repository=repo, maximum_capacity=10)
+        rules = QueueRuleSet.objects.create(
+            repository=repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+            is_active=True,
+        )
+        self._seed_snapshot(repo, rules, {"1": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"}})
+
+        with patch("zulip_bot.commands.assigned_prs.ZulipClient.send_direct_message") as mock_send:
+            assigned_prs_command(self._context(), "")
+
+        content = mock_send.call_args.kwargs["content"]
+        self.assertIn("Load: 1 / 10 (9 free)", content)
+        self.assertNotIn("At capacity in", content)
+
+    def test_shows_at_capacity_summary(self) -> None:
+        user = User.objects.create(github_login="alice", zulip_user_id=101)
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        ReviewerPreference.objects.create(user=user, repository=repo, maximum_capacity=1)
+        rules = QueueRuleSet.objects.create(
+            repository=repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+            is_active=True,
+        )
+        self._seed_snapshot(repo, rules, {"1": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"}})
+
+        with patch("zulip_bot.commands.assigned_prs.ZulipClient.send_direct_message") as mock_send:
+            assigned_prs_command(self._context(), "")
+
+        content = mock_send.call_args.kwargs["content"]
+        self.assertIn("Load: 1 / 1 ⚠ at capacity", content)
+        self.assertIn("⚠ At capacity in 1 of 1 repos.", content)
 
 
 class TestSplitMessageChunks(TestCase):
