@@ -27,6 +27,14 @@
            border-radius: 8px; text-decoration: none; }
     .empty { color: #6b7280; }
     .loadline { font-size: .9rem; color: #374151; margin: .1rem 0 .5rem; }
+    .loadline.at-capacity { color: #b91c1c; font-weight: 600; }
+    .section-title { font-size: .92rem; font-weight: 600; color: #374151; margin: 1rem 0 .35rem; }
+    ul.assigned { list-style: none; padding: 0; margin: .25rem 0; }
+    .assigned-row { font-size: .9rem; padding: .3rem 0; border-bottom: 1px solid #eef0f3; }
+    .assigned-row.off-queue { opacity: .72; }
+    .assigned-row .status { color: #6b7280; font-size: .82rem; margin-left: .4rem; }
+    .flag { display: inline-block; font-size: .72rem; background: #fef3c7; color: #92400e;
+            border-radius: 999px; padding: .05rem .5rem; margin-left: .4rem; }
     form.inline { display: inline; }
     @media (prefers-color-scheme: dark) {
       body { background: #0b0f19; color: #e5e7eb; }
@@ -35,6 +43,10 @@
       .label { background: #1e1b4b; color: #c7d2fe; }
       .btn { background: #e5e7eb; color: #0b0f19; }
       .loadline { color: #d1d5db; }
+      .loadline.at-capacity { color: #f87171; }
+      .section-title { color: #d1d5db; }
+      .assigned-row { border-bottom-color: #1f2937; }
+      .flag { background: #422006; color: #fcd34d; }
     }
   </style>
 </head>

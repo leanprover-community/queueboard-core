@@ -4,7 +4,7 @@ from datetime import datetime, timezone as dt_timezone
 
 from django.test import TestCase
 
-from analyzer.models import QueueRuleSet, QueueSnapshot
+from analyzer.models import AssignmentProposal, QueueRuleSet, QueueSnapshot
 from analyzer.services.reviewer_assignment_engine import ReviewerProfile
 from analyzer.services.reviewer_load import (
     ReviewerLoad,
@@ -201,3 +201,18 @@ class TestBuildReviewerLoads(TestCase):
         self.assertIsNotNone(load)
         self.assertEqual(load.current_load, 1.0)
         self.assertIsNone(reviewer_load_for(self.repo, "nobody"))
+
+    def test_pending_proposals_count_toward_load_not_assigned_open(self) -> None:
+        # 1 assigned PR (weight 1.0) + 1 pending proposal (weight 1.0) = 2.0 load; a proposal is
+        # load, not an assignee, so assigned_open stays 1 (design doc 050).
+        self._seed_snapshot({"1": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"}})
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=42,
+            reviewer_login="alice",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=datetime(2026, 8, 1, tzinfo=dt_timezone.utc),
+        )
+        loads = build_reviewer_loads(self.repo)
+        self.assertEqual(loads["alice"].assigned_open, 1)
+        self.assertEqual(loads["alice"].current_load, 2.0)

@@ -11,35 +11,52 @@
     {% for group in repo_groups %}
       <section class="repo">
         <h2 class="repo-title">{{ group.repo_label }}</h2>
-        <p class="loadline">
-          {{ group.load.assigned_open }} assigned + {{ group.load.pending }} pending / capacity {{ group.load.capacity|default_if_none:"—" }}
-        </p>
-        {% for row in group.proposals %}
-          <div class="card">
-            <h3><a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}</h3>
-            {% if row.matched_labels %}
-              <div class="labels">
-                <span class="meta">Matches your areas:</span>
-                {% for label in row.matched_labels %}<span class="label">{{ label }}</span>{% endfor %}
+        {% if group.load_line %}
+          <p class="loadline{% if group.load.at_capacity %} at-capacity{% endif %}">{{ group.load_line }}</p>
+        {% endif %}
+
+        {% if group.proposals %}
+          <h3 class="section-title">Proposals awaiting your decision</h3>
+          {% for row in group.proposals %}
+            <div class="card">
+              <h3><a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}</h3>
+              {% if row.matched_labels %}
+                <div class="labels">
+                  <span class="meta">Matches your areas:</span>
+                  {% for label in row.matched_labels %}<span class="label">{{ label }}</span>{% endfor %}
+                </div>
+              {% endif %}
+              <div class="expiry">
+                Expires
+                <time datetime="{{ row.expires_at_iso }}">{{ row.expires_at|date:"Y-m-d H:i" }} UTC</time>
               </div>
-            {% endif %}
-            <div class="expiry">
-              Expires
-              <time datetime="{{ row.expires_at_iso }}">{{ row.expires_at|date:"Y-m-d H:i" }} UTC</time>
+              <div class="actions">
+                <form class="inline" method="post" action="{% url 'console:accept' row.proposal.id %}">
+                  {% csrf_token %}<button class="accept" type="submit">Accept</button>
+                </form>
+                <form class="inline" method="post" action="{% url 'console:decline' row.proposal.id %}">
+                  {% csrf_token %}<button class="decline" type="submit">Decline</button>
+                </form>
+              </div>
             </div>
-            <div class="actions">
-              <form class="inline" method="post" action="{% url 'console:accept' row.proposal.id %}">
-                {% csrf_token %}<button class="accept" type="submit">Accept</button>
-              </form>
-              <form class="inline" method="post" action="{% url 'console:decline' row.proposal.id %}">
-                {% csrf_token %}<button class="decline" type="submit">Decline</button>
-              </form>
-            </div>
-          </div>
-        {% endfor %}
+          {% endfor %}
+        {% endif %}
+
+        {% if group.assigned_prs %}
+          <h3 class="section-title">Assigned to you ({{ group.assigned_prs|length }})</h3>
+          <ul class="assigned">
+            {% for row in group.assigned_prs %}
+              <li class="assigned-row{% if not row.is_on_queue %} off-queue{% endif %}">
+                <a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}
+                <span class="status">{{ row.status }}</span>
+                {% if row.flag %}<span class="flag">{{ row.flag }}</span>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
       </section>
     {% endfor %}
   {% else %}
-    <p class="empty">You have no proposals awaiting acceptance right now.</p>
+    <p class="empty">You have no proposals awaiting acceptance, and no PRs currently assigned to you.</p>
   {% endif %}
 {% endblock %}

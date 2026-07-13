@@ -7,6 +7,17 @@
   `analyzer.AssignmentProposal` / `analyzer.ReviewerOptOut`; identity is `core.User`.
 - Mounted at `/console/` (`qb_site/qb_site/urls.py`). Templates in `qb_site/templates/console/`.
 
+## Home dashboard (`views.home` / `_build_home_context`)
+- Beyond pending proposals, the home page is a small per-repo dashboard. A repo earns a section only
+  when the reviewer has **a proposal or ≥1 assigned open PR** there; each section shows:
+  - a **load line** from `analyzer.services.reviewer_load` (`reviewer_load_for` + `format_load_line`):
+    the weighted, engine-matching load incl. pending proposals, so the number agrees with the
+    `assigned-prs` command and the daily digest. Absent a queue snapshot, no load line is rendered.
+  - **assigned open PRs with status**, sourced from `analyzer.services.reviewer_attention`
+    (`build_reviewer_attention_reports`) — the same authority the `assigned-prs` command uses.
+  - the **proposals** to accept/decline.
+- Do not re-derive load or assigned-PR facts here; reuse `reviewer_load` / `reviewer_attention`.
+
 ## Auth model
 - **Not** Django admin auth. A reviewer needs no Django account — only a GitHub identity.
 - Login flow (`views.login` → `views.oauth_callback`): token-less, bookmarkable URL → GitHub OAuth

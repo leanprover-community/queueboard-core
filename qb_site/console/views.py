@@ -32,6 +32,13 @@ from analyzer.services.assignment_proposal_validity import (
 from analyzer.services.reviewer_assignment import _opt_outs_for_prs
 from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_record
 from analyzer.services.reviewer_assignment_engine import _normalize_login
+from analyzer.services.reviewer_attention import build_reviewer_attention_reports
+from analyzer.services.reviewer_attention_format import (
+    format_compact_duration,
+    sort_by_assignment_recency,
+    sort_by_queue_age,
+)
+from analyzer.services.reviewer_load import format_load_line, reviewer_load_for
 from console import session as console_session
 from core.models import ReviewerPreference
 from core.services.github_identity import resolve_user_from_identity
@@ -158,36 +165,33 @@ def _build_home_context(reviewer) -> dict:
         .order_by("repository__owner", "repository__name", "expires_at", "pr_number")
     )
 
-    # Preferred labels + capacity per repo, to render "why you" and the per-repo load line.
+    # Repos in scope: everywhere the reviewer has a preference (source of assigned-PR status +
+    # capacity), plus any repo that has a proposal for them (defensive — normally a subset).
     preferred_by_repo: dict[int, set[str]] = {}
-    capacity_by_repo: dict[int, int] = {}
-    for pref in ReviewerPreference.objects.filter(user=reviewer).only("repository_id", "preferred_labels", "maximum_capacity"):
-        preferred_by_repo[pref.repository_id] = {str(lbl).lower() for lbl in (pref.preferred_labels or [])}
-        capacity_by_repo[pref.repository_id] = int(pref.maximum_capacity)
+    repos_by_id: dict[int, object] = {}
+    for pref in (
+        ReviewerPreference.objects.filter(user=reviewer)
+        .select_related("repository")
+        .only("repository_id", "preferred_labels", "repository__owner", "repository__name")
+    ):
+        preferred_by_repo[int(pref.repository_id)] = {str(lbl).lower() for lbl in (pref.preferred_labels or [])}
+        repos_by_id[int(pref.repository_id)] = pref.repository
+    for proposal in proposals:
+        repos_by_id.setdefault(int(proposal.repository_id), proposal.repository)
 
-    # Batch PR metadata + labels once (was a query per proposal).
+    # Batch proposal PR metadata + labels once (was a query per proposal).
     prs_by_repo_number = _batch_prs(proposals)
     labels_by_pr_id = _batch_labels(prs_by_repo_number.values())
 
-    # Group proposals by repo, preserving the (owner, name, expires_at, pr_number) ordering above.
-    groups: dict[int, dict] = {}
+    # Proposals grouped by repo, preserving the (owner, name, expires_at, pr_number) ordering above.
+    proposals_by_repo: dict[int, list[dict]] = {}
     for proposal in proposals:
         repo = proposal.repository
-        group = groups.get(repo.id)
-        if group is None:
-            group = {
-                "repo_id": repo.id,
-                "owner": repo.owner,
-                "repo": repo.name,
-                "repo_label": f"{repo.owner}/{repo.name}",
-                "proposals": [],
-            }
-            groups[repo.id] = group
         pr = prs_by_repo_number.get((repo.id, int(proposal.pr_number)))
         labels = labels_by_pr_id.get(pr.id, []) if pr is not None else []
-        preferred = preferred_by_repo.get(repo.id, set())
+        preferred = preferred_by_repo.get(int(repo.id), set())
         matched = sorted({lbl for lbl in labels if lbl and lbl.lower() in preferred})
-        group["proposals"].append(
+        proposals_by_repo.setdefault(int(repo.id), []).append(
             {
                 "proposal": proposal,
                 "pr_number": proposal.pr_number,
@@ -201,21 +205,63 @@ def _build_home_context(reviewer) -> dict:
             }
         )
 
-    # Attach a per-repo load line (assigned-open + pending / capacity) to each group.
+    # Assigned open PRs with status, from the shared reviewer-attention reports (design doc 050:
+    # the console is a dashboard, not just a proposal inbox).
+    assigned_by_repo: dict[int, list[dict]] = {}
+    for repo_id, repo in repos_by_id.items():
+        reports = build_reviewer_attention_reports(repository=repo)
+        report = next((entry for entry in reports if entry.reviewer_user_id == reviewer.id), None)
+        if report is None or not report.items:
+            continue
+        ordered = list(sort_by_queue_age([i for i in report.items if i.is_on_queue])) + list(
+            sort_by_assignment_recency([i for i in report.items if not i.is_on_queue])
+        )
+        assigned_by_repo[repo_id] = [_assigned_pr_row(repo, item) for item in ordered]
+
+    # A repo earns a section only when there is something to show: a proposal or an assigned PR.
+    active_repo_ids = set(proposals_by_repo) | set(assigned_by_repo)
     repo_groups: list[dict] = []
-    for repo_id in sorted(groups, key=lambda rid: (groups[rid]["owner"], groups[rid]["repo"])):
-        group = groups[repo_id]
-        assigned_open = PullRequest.objects.filter(
-            repository_id=repo_id, state="open", assignees__contains=[reviewer.github_login]
-        ).count()
-        group["load"] = {
-            "assigned_open": assigned_open,
-            "pending": len(group["proposals"]),
-            "capacity": capacity_by_repo.get(repo_id),
-        }
-        repo_groups.append(group)
+    for repo_id in sorted(active_repo_ids, key=lambda rid: (repos_by_id[rid].owner, repos_by_id[rid].name)):
+        repo = repos_by_id[repo_id]
+        load = reviewer_load_for(repo, reviewer.github_login)
+        repo_groups.append(
+            {
+                "repo_id": repo_id,
+                "repo_label": f"{repo.owner}/{repo.name}",
+                "proposals": proposals_by_repo.get(repo_id, []),
+                "assigned_prs": assigned_by_repo.get(repo_id, []),
+                "load": load,
+                "load_line": format_load_line(load) if load is not None else None,
+            }
+        )
 
     return {"repo_groups": repo_groups, "logout_url": reverse("console:logout")}
+
+
+def _assigned_pr_row(repo, item) -> dict:
+    """Flatten a ``ReviewerAttentionItem`` into template-ready assigned-PR display fields."""
+    status_bits: list[str] = ["On queue" if item.is_on_queue else "Not on queue"]
+    if item.is_on_queue and item.days_on_queue_since_assignment is not None:
+        consecutive = format_compact_duration(int(item.days_on_queue_since_assignment) * 86400)
+        status_bits.append(f"{consecutive} since assignment")
+    if item.total_queue_seconds is not None:
+        status_bits.append(f"total {format_compact_duration(int(item.total_queue_seconds))}")
+
+    if item.needs_auto_unassign:
+        flag = "auto-unassign soon"
+    elif item.needs_nudge:
+        flag = "stale"
+    else:
+        flag = ""
+
+    return {
+        "pr_number": item.pr_number,
+        "title": item.pr_title or f"PR #{item.pr_number}",
+        "url": f"https://github.com/{repo.owner}/{repo.name}/pull/{item.pr_number}",
+        "is_on_queue": item.is_on_queue,
+        "status": " · ".join(status_bits),
+        "flag": flag,
+    }
 
 
 def _batch_prs(proposals: list[AssignmentProposal]) -> dict[tuple[int, int], PullRequest]:
