@@ -10,6 +10,10 @@
 - Key read-only services:
   - `queueboard_snapshot.py` — builds and caches the full per-repo queue snapshot payload.
   - `reviewer_attention.py` / `reviewer_attention_format.py` — per-reviewer queue attention reports and formatting helpers.
+  - `reviewer_load.py` — `build_reviewer_loads(repository)` / `reviewer_load_for(repository, login)`: per-reviewer
+    review-load (weighted, matching the assignment engine's capacity gate) as of the latest cached queue snapshot,
+    plus `format_load_line`. Single authority shared by the `assigned-prs` command and the daily reviewer-attention
+    digest; read-only (never builds a snapshot), returns `{}`/`None` when no snapshot exists.
   - `pr_info.py` — `get_pr_queue_info(owner, repo, pr_number)`: returns `PRQueueInfo` for a single PR; prefers the default `QueueSnapshot`, falls back to direct DB queries for merged/closed PRs.
   - `ci_evaluation.py` — single-PR CI status evaluation against a ruleset's `required_ci_contexts`; use `ci_status_for_pr(pr, rules, repository)` instead of re-implementing context-matching logic.
 

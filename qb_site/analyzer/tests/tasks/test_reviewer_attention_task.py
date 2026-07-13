@@ -7,10 +7,15 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from analyzer.models import ReviewerAttentionAutoUnassignRecord, ReviewerAttentionNotificationRecord
+from analyzer.models import (
+    QueueRuleSet,
+    QueueSnapshot,
+    ReviewerAttentionAutoUnassignRecord,
+    ReviewerAttentionNotificationRecord,
+)
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
 from analyzer.tasks.reviewer_attention import reviewer_attention_daily_task
-from core.models import Repository, User
+from core.models import Repository, ReviewerPreference, User
 from core.services.github_assignment import AssignmentMutationError
 from zulip_bot.services.zulip_client import ZulipApiError
 
@@ -198,6 +203,69 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertIn("`unassign #<number>`", kwargs["content"])
         self.assertIn("`assigned-prs`", kwargs["content"])
         self.assertIn("`prefs`", kwargs["content"])
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_message_includes_load_line_from_snapshot(self, mock_client_cls, mock_build_reports) -> None:
+        rules = QueueRuleSet.objects.create(
+            repository=self.repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+            is_active=True,
+        )
+        ReviewerPreference.objects.create(user=self.user, repository=self.repo, maximum_capacity=10)
+        QueueSnapshot.objects.create(
+            repository=self.repo,
+            cache_key=str(rules.id),
+            generated_at=datetime.now(dt_timezone.utc),
+            payload={"prs": {"77": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"}}},
+            etag="etag",
+            pr_count=1,
+            queue_count=0,
+        )
+        assigned_at = datetime.now(dt_timezone.utc) - timedelta(hours=6)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=assigned_at,
+                        queue_anchor_at=None,
+                        days_on_queue_since_assignment=16,
+                        total_queue_seconds=16 * 24 * 60 * 60,
+                        total_queue_days=16,
+                        needs_new_assignment_ping=True,
+                        needs_nudge=False,
+                        needs_auto_unassign=False,
+                        missing_assignment_timestamp=False,
+                    ),
+                ),
+                warnings=(),
+            )
+        ]
+        mock_client = mock_client_cls.return_value
+
+        reviewer_attention_daily_task.apply().get()
+
+        content = mock_client.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("Load: 1 / 10 (9 free) · 1 assigned", content)
 
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=True,

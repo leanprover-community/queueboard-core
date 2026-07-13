@@ -16,6 +16,7 @@ from analyzer.models import (
 )
 from analyzer.services import build_reviewer_attention_reports
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
+from analyzer.services.reviewer_load import ReviewerLoad, build_reviewer_loads, format_load_line, normalize_login
 from analyzer.services.reviewer_attention_format import (
     format_since_timestamp,
     render_consecutive_queue_time_since_assignment_line,
@@ -292,7 +293,10 @@ def _render_reviewer_message(
     repo_reports: list[tuple[str, ReviewerAttentionReport]],
     enforcement_enabled: bool,
     unassign_outcomes: dict[tuple[int, int, int], str],
+    loads_by_repo_id: dict[int, dict[str, ReviewerLoad]] | None = None,
 ) -> str:
+    loads_by_repo_id = loads_by_repo_id or {}
+    reviewer_login_norm = normalize_login(reviewer_login)
     lines: list[str] = [
         "### Assigned queue PRs that may need your attention",
         "",
@@ -313,6 +317,10 @@ def _render_reviewer_message(
             f"{report.stale_nudge_days} consecutive days on queue since assignment; "
             f"auto-unassign at {report.auto_unassign_days} days."
         )
+        # Load context (this digest never lists the full roster, so include the raw assigned count).
+        load = loads_by_repo_id.get(int(report.repository_id), {}).get(reviewer_login_norm)
+        if load is not None:
+            lines.append(format_load_line(load, include_assigned_count=True))
         lines.append("")
         if new_items:
             lines.append(f"#### Newly assigned ({len(new_items)})")
@@ -648,6 +656,13 @@ def reviewer_attention_daily_task(
             client_init_error = str(exc)
             log.warning("analyzer.reviewer_attention_daily: unable to initialize Zulip client: %s", client_init_error)
 
+    # Per-repo reviewer load (weighted, as of the latest queue snapshot), only when we will actually
+    # render/send messages. Computed once per repo and shared across reviewers.
+    loads_by_repo_id: dict[int, dict[str, ReviewerLoad]] = {}
+    if delivery_enabled and client is not None:
+        for repo in repos:
+            loads_by_repo_id[int(repo.id)] = build_reviewer_loads(repo)
+
     for reviewer_user_id, payload in sorted(reports_by_reviewer.items()):
         reviewer_login = str(payload["reviewer_login"])
         user = users_by_id.get(reviewer_user_id)
@@ -730,6 +745,7 @@ def reviewer_attention_daily_task(
             repo_reports=filtered_repo_reports,
             enforcement_enabled=enforcement_enabled,
             unassign_outcomes=unassign_outcomes,
+            loads_by_repo_id=loads_by_repo_id,
         )
         chunks = _split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS)
         delivery_stats["attempted"] += 1

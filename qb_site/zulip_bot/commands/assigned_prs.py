@@ -14,6 +14,7 @@ from analyzer.services.reviewer_attention_format import (
     sort_by_queue_age,
 )
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, build_reviewer_attention_reports
+from analyzer.services.reviewer_load import ReviewerLoad, build_reviewer_loads, format_load_line, normalize_login
 from core.models import Repository, ReviewerPreference, User
 from core.utils.zulip_time import format_global_time
 from syncer.models import PRLabel, PullRequest
@@ -49,14 +50,20 @@ def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
     if not prefs:
         return CommandResult(content="You do not currently have any reviewer preferences configured.")
 
+    reviewer_login_norm = normalize_login(user.github_login)
     reports_by_repo_id: dict[int, ReviewerAttentionReport] = {}
     repo_labels_by_repo_id: dict[int, str] = {}
+    load_by_repo_id: dict[int, ReviewerLoad] = {}
     for pref in prefs:
         repo_labels_by_repo_id[int(pref.repository_id)] = f"{pref.repository.owner}/{pref.repository.name}"
         reports = build_reviewer_attention_reports(repository=pref.repository)
         report = next((entry for entry in reports if entry.reviewer_user_id == user.id), None)
         if report is not None:
             reports_by_repo_id[int(pref.repository_id)] = report
+        # Reviewer load as of the latest queue snapshot; absent snapshot -> no load line.
+        load = build_reviewer_loads(pref.repository).get(reviewer_login_norm)
+        if load is not None:
+            load_by_repo_id[int(pref.repository_id)] = load
 
     # Batch-fetch display extras (author, CI, labels, timestamps) per repo.
     extras_by_repo_and_pr: dict[tuple[int, int], _PrExtras] = {}
@@ -91,6 +98,7 @@ def assigned_prs_command(context: CommandContext, args: str) -> CommandResult:
             if int(pref.repository_id) in reports_by_repo_id
         ],
         mention_map=mention_map,
+        load_by_repo_id=load_by_repo_id,
     )
     chunks = _split_message_chunks(content=content, max_chars=MAX_MESSAGE_CHARS)
 
@@ -171,7 +179,9 @@ def _render_assigned_prs_report(
     reviewer_login: str,
     reports: list[tuple[str, ReviewerAttentionReport, dict[int, _PrExtras]]],
     mention_map: dict[str, str],
+    load_by_repo_id: dict[int, ReviewerLoad] | None = None,
 ) -> str:
+    load_by_repo_id = load_by_repo_id or {}
     lines: list[str] = []
     lines.append(f"### Assigned PRs report for `{reviewer_login}`")
     lines.append("")
@@ -182,6 +192,13 @@ def _render_assigned_prs_report(
 
     lines.append(f"Generated at {format_global_time(_now_utc_unix())}.")
 
+    # Cross-repo heads-up, surfaced only when it's actionable (at capacity somewhere). Counted over
+    # the repos actually shown below (those with a load figure available).
+    shown_loads = [load_by_repo_id[report.repository_id] for _, report, _ in reports if report.repository_id in load_by_repo_id]
+    at_capacity_loads = [load for load in shown_loads if load.at_capacity]
+    if at_capacity_loads:
+        lines.append(f"⚠ At capacity in {len(at_capacity_loads)} of {len(shown_loads)} repos.")
+
     any_assigned = False
     for repo_label, report, extras_by_pr in reports:
         lines.append("")
@@ -189,6 +206,11 @@ def _render_assigned_prs_report(
         lines.append(
             f"Thresholds: stale nudge `{report.stale_nudge_days}` days, auto-unassign `{report.auto_unassign_days}` days."
         )
+        load = load_by_repo_id.get(report.repository_id)
+        if load is not None:
+            # Weighted load vs capacity; the raw PR count is omitted here since the group headers
+            # (On Queue / Maintainer Merged / Not On Queue) already sum to it.
+            lines.append(format_load_line(load))
 
         if report.warnings:
             lines.append("Warnings:")
