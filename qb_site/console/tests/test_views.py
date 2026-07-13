@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from analyzer.models import AssignmentProposal, ReviewerAssignmentApplication, ReviewerOptOut
+from analyzer.models import AssignmentProposal, QueueSnapshot, ReviewerAssignmentApplication, ReviewerOptOut
 from console.session import SESSION_NONCE_KEY, SESSION_USER_KEY
 from core.models import Repository, ReviewerPreference, User
 from core.services.github_oauth import GitHubOAuthError, GitHubUserIdentity
@@ -63,6 +63,20 @@ class ConsoleViewTests(TestCase):
             reviewer_login=login,
             state=state,
             expires_at=self.now + timedelta(days=7),
+        )
+
+    def _seed_snapshot(self, repo=None, prs=None) -> None:
+        """Seed the cached queue snapshot the load helper reads (cache_key 'default' with no ruleset)."""
+        repo = repo or self.repo
+        payload_prs = prs or {}
+        QueueSnapshot.objects.create(
+            repository=repo,
+            cache_key="default",
+            generated_at=self.now,
+            payload={"prs": payload_prs},
+            etag="etag",
+            pr_count=len(payload_prs),
+            queue_count=0,
         )
 
     # ---- auth / session ------------------------------------------------
@@ -189,15 +203,39 @@ class ConsoleViewTests(TestCase):
     def test_home_lists_pending_proposals(self) -> None:
         self._make_pr(101)
         self._proposal(101)
+        self._seed_snapshot()  # no assigned PRs; the pending proposal alone is 1.0 of load
         self._login_session()
 
         resp = self.client.get(reverse("console:home"))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "leanprover-community/mathlib4")  # per-repo heading
         self.assertContains(resp, "#101")
-        self.assertContains(resp, "0 assigned + 1 pending / capacity 5")  # per-repo load line
+        # Weighted load, incl. the pending proposal (1.0), against capacity 5.
+        self.assertContains(resp, "Load: 1 / 5 (4 free)")
         self.assertContains(resp, "Accept")
         self.assertContains(resp, "Decline")
+
+    def test_home_shows_load_and_assigned_prs_without_proposals(self) -> None:
+        # A reviewer with an assigned PR but no proposals still gets a repo section: load + roster.
+        self._make_pr(200, assignees=["bob"])
+        self._seed_snapshot(prs={"200": {"assignees": ["bob"], "author": "alice", "pr_status": "AwaitingReview"}})
+        self._login_session()
+
+        resp = self.client.get(reverse("console:home"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "leanprover-community/mathlib4")
+        self.assertContains(resp, "Load: 1 / 5 (4 free)")
+        self.assertContains(resp, "Assigned to you (1)")
+        self.assertContains(resp, "#200")
+        self.assertNotContains(resp, "Accept")  # no proposals
+
+    def test_home_empty_state_when_nothing(self) -> None:
+        self._seed_snapshot()
+        self._login_session()
+
+        resp = self.client.get(reverse("console:home"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "no proposals awaiting acceptance, and no PRs currently assigned")
 
     def test_home_groups_proposals_by_repo(self) -> None:
         # Proposals across repos render under separate per-repo headings, each with its own load
@@ -237,14 +275,16 @@ class ConsoleViewTests(TestCase):
             state=AssignmentProposal.STATE_PROPOSED,
             expires_at=self.now + timedelta(days=7),
         )
+        self._seed_snapshot()
+        self._seed_snapshot(repo=repo2)
         self._login_session()
 
         resp = self.client.get(reverse("console:home"))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "leanprover-community/mathlib4")
         self.assertContains(resp, "leanprover-community/batteries")
-        self.assertContains(resp, "capacity 5")
-        self.assertContains(resp, "capacity 3")
+        self.assertContains(resp, "Load: 1 / 5 (4 free)")  # mathlib4: one pending proposal
+        self.assertContains(resp, "Load: 1 / 3 (2 free)")  # batteries: one pending proposal
         content = resp.content.decode()
         self.assertLess(content.index("batteries"), content.index("mathlib4"))
 

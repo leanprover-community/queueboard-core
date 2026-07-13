@@ -13,9 +13,10 @@
     "proposed to X" state (design doc 050), surfaced distinct from `assignees`.
   - `reviewer_attention.py` / `reviewer_attention_format.py` — per-reviewer queue attention reports and formatting helpers.
   - `reviewer_load.py` — `build_reviewer_loads(repository)` / `reviewer_load_for(repository, login)`: per-reviewer
-    review-load (weighted, matching the assignment engine's capacity gate) as of the latest cached queue snapshot,
-    plus `format_load_line`. Single authority shared by the `assigned-prs` command and the daily reviewer-attention
-    digest; read-only (never builds a snapshot), returns `{}`/`None` when no snapshot exists.
+    review-load (weighted, matching the assignment engine's capacity gate, **incl. pending assignment proposals**
+    per design doc 050) as of the latest cached queue snapshot, plus `format_load_line`. Single authority shared by
+    the `assigned-prs` command, the daily reviewer-attention digest, and the reviewer console; read-only (never
+    builds a snapshot), returns `{}`/`None` when no snapshot exists.
   - `pr_info.py` — `get_pr_queue_info(owner, repo, pr_number)`: returns `PRQueueInfo` for a single PR; prefers the default `QueueSnapshot`, falls back to direct DB queries for merged/closed PRs. Also exposes the acceptance-gate `proposed_to`/`proposal_expires_at` (design doc 050), read live from the single active `AssignmentProposal`, distinct from `assignee_logins`.
   - `ci_evaluation.py` — single-PR CI status evaluation against a ruleset's `required_ci_contexts`; use `ci_status_for_pr(pr, rules, repository)` instead of re-implementing context-matching logic.
 

@@ -84,6 +84,17 @@ def _pending_proposal_load(rows: Sequence[tuple[int, str]], *, weight: float) ->
     return load
 
 
+def pending_proposal_load_for_repo(repository: Repository, *, weight: float) -> dict[str, float]:
+    """Weighted pending-proposal load per reviewer login for a repo (public wrapper).
+
+    Combines the active-proposal rows with per-login weighting so callers outside this module
+    (e.g. ``analyzer.services.reviewer_load``) can fold pending-proposal load into capacity
+    accounting without reaching into the private helpers. Data-driven: no active proposals -> ``{}``.
+    Login casing matches ``ReviewerProfile.github_login`` / the snapshot keying.
+    """
+    return _pending_proposal_load(_active_proposal_rows(repository), weight=weight)
+
+
 def _filter_prs_without_active_proposal(pr_numbers: Sequence[int], *, prs_with_active_proposal: Set[int]) -> list[int]:
     """Drop PRs that already have an active proposal.
 
@@ -780,6 +791,7 @@ __all__ = [
     "build_reviewer_catalog",
     "collect_assignment_statistics",
     "compute_area_stats",
+    "pending_proposal_load_for_repo",
     "rank_prs_for_assignment",
     "suggest_reviewer_for_pr",
     "suggest_reviewers_many",

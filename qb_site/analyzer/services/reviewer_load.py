@@ -7,9 +7,12 @@ figure mirrors the capacity accounting the assignment *engine* already computes
 reviewer sees is the same one that gates whether they get auto-assigned:
 
 - ``current_load`` is the engine's **weighted** load (status-weighted, self-authored PRs excluded),
-  not a raw PR count. ``maximum_capacity - current_load`` is the reviewer's remaining capacity.
-- ``assigned_open`` is the raw count of open PRs they are assigned to, kept alongside for human
-  context (the gap between it and ``current_load`` is what silently reflects zero-weight PRs).
+  and also folds in the reviewer's pending assignment proposals (design doc 050), which occupy
+  capacity exactly as the engine / area stats count them. ``maximum_capacity - current_load`` is the
+  reviewer's remaining capacity.
+- ``assigned_open`` is the raw count of open PRs they are assigned to (proposals are load, not
+  assignees, so they are *not* counted here), kept alongside for human context (the gap between it
+  and ``current_load`` reflects zero-weight PRs and pending proposals).
 
 This module deliberately does **not** re-derive load math: it reads the cached queue snapshot (the
 same one ``pr_info`` uses) and folds ``collect_assignment_statistics`` output against reviewer
@@ -23,9 +26,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Mapping
 
+from django.conf import settings
+
 from analyzer.models import QueueSnapshot
 from analyzer.services.queue_rules import default_rule_set_for_repo
-from analyzer.services.reviewer_assignment import build_reviewer_catalog, collect_assignment_statistics
+from analyzer.services.reviewer_assignment import (
+    add_pending_proposal_load,
+    build_reviewer_catalog,
+    collect_assignment_statistics,
+    pending_proposal_load_for_repo,
+)
 from analyzer.services.reviewer_assignment_engine import ReviewerProfile
 from core.models import Repository
 
@@ -101,9 +111,10 @@ def build_reviewer_loads(
 ) -> dict[str, ReviewerLoad]:
     """Per-reviewer load for a repo, keyed by normalized login.
 
-    Reads the latest cached queue snapshot (same resolution as ``pr_info``). Returns ``{}`` when no
-    snapshot or no reviewers are available — callers should render no load line in that case rather
-    than fabricate a count. Read-only: never builds a snapshot.
+    Reads the latest cached queue snapshot (same resolution as ``pr_info``) and folds in pending
+    assignment-proposal load (design doc 050) so the figure matches the engine's capacity gate.
+    Returns ``{}`` when no snapshot or no reviewers are available — callers should render no load line
+    in that case rather than fabricate a count. Read-only: never builds a snapshot.
     """
     payload = snapshot_payload if snapshot_payload is not None else _latest_snapshot_payload(repository)
     if not payload:
@@ -112,9 +123,17 @@ def build_reviewer_loads(
     if not reviewers:
         return {}
     stats = collect_assignment_statistics(payload)
+    # Pending proposals occupy capacity exactly as the assignment engine / area stats count them
+    # (design doc 050): fold their weighted load in so ``current_load`` matches the gate that governs
+    # auto-assignment. Data-driven — no active proposals -> no change.
+    proposal_weight = float(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT", 1.0))
+    assignments = add_pending_proposal_load(
+        stats.assignments,
+        pending_proposal_load_for_repo(repository, weight=proposal_weight),
+    )
     return compute_reviewer_loads(
         repository_id=int(repository.id),
-        assignments=stats.assignments,
+        assignments=assignments,
         reviewers=reviewers,
     )
 

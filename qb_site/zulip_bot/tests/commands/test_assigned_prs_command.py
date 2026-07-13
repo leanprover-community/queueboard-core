@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
-from analyzer.models import PRQueueWindow, QueueRuleSet, QueueSnapshot
+from analyzer.models import AssignmentProposal, PRQueueWindow, QueueRuleSet, QueueSnapshot
 from analyzer.services.reviewer_attention_format import format_compact_duration
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import LabelDef, PRLabel, PullRequest, PRTimelineEvent, PRTimelineEventType
@@ -335,6 +335,38 @@ class TestAssignedPrsCommand(TestCase):
         content = mock_send.call_args.kwargs["content"]
         self.assertIn("Load: 1 / 1 ⚠ at capacity", content)
         self.assertIn("⚠ At capacity in 1 of 1 repos.", content)
+
+    def test_load_counts_pending_proposals(self) -> None:
+        # Uniform semantics (design doc 050): a pending proposal occupies capacity here just as it
+        # does in the console and the assignment engine.
+        user = User.objects.create(github_login="alice", zulip_user_id=101)
+        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
+        ReviewerPreference.objects.create(user=user, repository=repo, maximum_capacity=10)
+        rules = QueueRuleSet.objects.create(
+            repository=repo,
+            version=1,
+            require_open=True,
+            require_not_draft=True,
+            require_ci_success=False,
+            required_label_names=[],
+            forbidden_label_names=[],
+            is_active=True,
+        )
+        self._seed_snapshot(repo, rules, {"1": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"}})
+        AssignmentProposal.objects.create(
+            repository=repo,
+            pr_number=42,
+            reviewer_login="alice",
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=datetime.now(dt_timezone.utc) + timedelta(days=7),
+        )
+
+        with patch("zulip_bot.commands.assigned_prs.ZulipClient.send_direct_message") as mock_send:
+            assigned_prs_command(self._context(), "")
+
+        content = mock_send.call_args.kwargs["content"]
+        # 1 assigned (weight 1.0) + 1 pending proposal (weight 1.0) = 2.0 of 10.
+        self.assertIn("Load: 2 / 10 (8 free)", content)
 
 
 class TestSplitMessageChunks(TestCase):
