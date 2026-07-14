@@ -2,12 +2,23 @@
 {% block title %}{{ action|title }} — Reviewer console{% endblock %}
 {% block body %}
   {% if action == "accepted" %}
-    <h1>Assignment accepted</h1>
-    <p>You are now assigned to
-      <a href="https://github.com/{{ owner }}/{{ repo }}/pull/{{ pr_number }}">{{ owner }}/{{ repo }} #{{ pr_number }}</a>.</p>
+    <section class="hero">
+      <h1>Assignment accepted</h1>
+    </section>
+    <section class="card">
+      <div class="status status-ok" role="status">
+        You are now assigned to
+        <a href="https://github.com/{{ owner }}/{{ repo }}/pull/{{ pr_number }}">{{ owner }}/{{ repo }} #{{ pr_number }}</a>.
+      </div>
+      <p><a class="cta" href="{% url 'console:home' %}">Back to the console</a></p>
+    </section>
   {% else %}
-    <h1>Proposal declined</h1>
-    <p>You have declined {{ owner }}/{{ repo }} #{{ pr_number }}. You won't be proposed for this PR again.</p>
+    <section class="hero">
+      <h1>Proposal declined</h1>
+    </section>
+    <section class="card">
+      <p>You have declined {{ owner }}/{{ repo }} #{{ pr_number }}. You won't be proposed for this PR again.</p>
+      <p><a class="cta" href="{% url 'console:home' %}">Back to the console</a></p>
+    </section>
   {% endif %}
-  <p><a class="btn" href="{% url 'console:home' %}">Back to the console</a></p>
 {% endblock %}

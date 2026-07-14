@@ -1,7 +1,21 @@
 {% extends "console/base.html" %}
 {% block title %}No longer available — Reviewer console{% endblock %}
 {% block body %}
-  <h1>{{ heading|default:"No longer available" }}</h1>
-  <p>{{ message }}</p>
-  <p><a class="btn" href="{% url 'console:home' %}">Back to the console</a></p>
+  <section class="hero">
+    <h1>{{ heading|default:"No longer available" }}</h1>
+  </section>
+  <section class="card">
+    <div class="status status-warn" role="status">{{ message }}</div>
+    {% if can_assign_anyway %}
+      <p class="help">You can still take this PR if you want it.{% if assign_anyway_note %} {{ assign_anyway_note }}{% endif %}</p>
+      <div class="actions">
+        <form class="inline" method="post" action="{{ assign_anyway_url }}">
+          {% csrf_token %}<button class="btn-accept" type="submit">Assign myself anyway</button>
+        </form>
+        <a class="cta cta-quiet" href="{% url 'console:home' %}">Back to the console</a>
+      </div>
+    {% else %}
+      <p><a class="cta" href="{% url 'console:home' %}">Back to the console</a></p>
+    {% endif %}
+  </section>
 {% endblock %}

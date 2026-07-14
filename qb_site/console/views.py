@@ -19,6 +19,7 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
 
@@ -38,9 +39,14 @@ from analyzer.services.reviewer_attention_format import (
     sort_by_assignment_recency,
     sort_by_queue_age,
 )
-from analyzer.services.reviewer_load import format_load_line, reviewer_load_for
+from analyzer.services.reviewer_load import (
+    format_load_contribution,
+    format_load_line,
+    reviewer_load_with_breakdown,
+)
 from console import session as console_session
-from core.models import ReviewerPreference
+from core.models import Repository, ReviewerPreference
+from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_identity import resolve_user_from_identity
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 from core.services.oauth_state import (
@@ -183,6 +189,10 @@ def _build_home_context(reviewer) -> dict:
     prs_by_repo_number = _batch_prs(proposals)
     labels_by_pr_id = _batch_labels(prs_by_repo_number.values())
 
+    # Each pending proposal occupies capacity at the same weight the engine / load service count it
+    # (design doc 050), so surface that contribution next to the proposal.
+    proposal_weight = float(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT", 1.0))
+
     # Proposals grouped by repo, preserving the (owner, name, expires_at, pr_number) ordering above.
     proposals_by_repo: dict[int, list[dict]] = {}
     for proposal in proposals:
@@ -202,6 +212,7 @@ def _build_home_context(reviewer) -> dict:
                 # ISO-8601 (UTC) for client-side rendering in the viewer's own timezone; the template
                 # keeps a UTC text fallback for no-JS.
                 "expires_at_iso": proposal.expires_at.isoformat() if proposal.expires_at else "",
+                "load_weight": format_load_contribution(proposal_weight),
             }
         )
 
@@ -223,19 +234,29 @@ def _build_home_context(reviewer) -> dict:
     repo_groups: list[dict] = []
     for repo_id in sorted(active_repo_ids, key=lambda rid: (repos_by_id[rid].owner, repos_by_id[rid].name)):
         repo = repos_by_id[repo_id]
-        load = reviewer_load_for(repo, reviewer.github_login)
+        # Load + per-PR breakdown come from one snapshot read, so the per-row contributions sum to the
+        # assigned share of the aggregate load line (design doc 050).
+        load, breakdown = reviewer_load_with_breakdown(repo, reviewer.github_login)
+        assigned_rows = assigned_by_repo.get(repo_id, [])
+        for row in assigned_rows:
+            weight = breakdown.get(int(row["pr_number"]))
+            row["load_weight"] = format_load_contribution(weight) if weight is not None else None
         repo_groups.append(
             {
                 "repo_id": repo_id,
                 "repo_label": f"{repo.owner}/{repo.name}",
                 "proposals": proposals_by_repo.get(repo_id, []),
-                "assigned_prs": assigned_by_repo.get(repo_id, []),
+                "assigned_prs": assigned_rows,
                 "load": load,
                 "load_line": format_load_line(load) if load is not None else None,
             }
         )
 
-    return {"repo_groups": repo_groups, "logout_url": reverse("console:logout")}
+    return {
+        "repo_groups": repo_groups,
+        "logout_url": reverse("console:logout"),
+        "unassign_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)),
+    }
 
 
 def _assigned_pr_row(repo, item) -> dict:
@@ -296,11 +317,25 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
 # --- accept / decline --------------------------------------------------------
 
 
+def _pr_url(repository, number: int) -> str:
+    """GitHub PR page URL for ``repository`` #``number``."""
+    return f"https://github.com/{repository.owner}/{repository.name}/pull/{int(number)}"
+
+
+def _live_pr_for(proposal: AssignmentProposal) -> PullRequest | None:
+    """Fetch the proposal's PR with just the fields the console needs to reason about it."""
+    return (
+        PullRequest.objects.filter(repository=proposal.repository, number=int(proposal.pr_number))
+        .only("id", "number", "state", "assignees")
+        .first()
+    )
+
+
 def _live_validity(proposal: AssignmentProposal, *, now) -> tuple[ProposalValidity, PullRequest | None]:
     """Run the shared validity authority against live facts for one proposal."""
     repo = proposal.repository
     pr_number = int(proposal.pr_number)
-    live_pr = PullRequest.objects.filter(repository=repo, number=pr_number).only("id", "number", "state", "assignees").first()
+    live_pr = _live_pr_for(proposal)
     validity = live_proposal_validity(
         proposal,
         now=now,
@@ -310,6 +345,75 @@ def _live_validity(proposal: AssignmentProposal, *, now) -> tuple[ProposalValidi
         on_queue_exit=resolve_on_queue_exit_policy(),
     )
     return validity, live_pr
+
+
+def _can_self_assign(live_pr: PullRequest | None, reviewer) -> bool:
+    """Whether the reviewer may still assign *themselves* to this PR.
+
+    True exactly when the PR is open and the reviewer is not already an assignee. This is the single
+    precondition behind "assign myself anyway": it naturally covers every recoverable proposal state
+    (expired, off-queue, assigned-to-someone-else, opted-out) and excludes the cases where the action
+    is meaningless — closed/merged PRs and PRs the reviewer already holds (an accepted proposal).
+    """
+    if live_pr is None:
+        return False
+    if str(live_pr.state).strip().lower() != "open":
+        return False
+    assignees = {_normalize_login(str(login)) for login in (live_pr.assignees or []) if login}
+    return _normalize_login(reviewer.github_login) not in assignees
+
+
+def _render_proposal_unavailable(
+    request: HttpRequest,
+    *,
+    proposal: AssignmentProposal,
+    live_pr: PullRequest | None,
+    reviewer,
+    reason: str | None,
+    heading: str | None = None,
+    status: int = 200,
+) -> HttpResponse:
+    """Render ``unavailable.html`` for a proposal-reason page.
+
+    The message names the PR inline as a link (no separate "PR: …" line), and "assign myself anyway"
+    is offered when the PR is still self-assignable.
+    """
+    repo = proposal.repository
+    pr_link = format_html(
+        '<a href="{}">{}</a>', _pr_url(repo, proposal.pr_number), f"{repo.owner}/{repo.name} #{proposal.pr_number}"
+    )
+    template = _UNAVAILABLE_REASON_TEMPLATE.get(reason, _UNAVAILABLE_DEFAULT_TEMPLATE)
+
+    can_assign_anyway = _can_self_assign(live_pr, reviewer)
+    note = ""
+    if can_assign_anyway:
+        others_assigned = bool([login for login in (live_pr.assignees or []) if login])
+        if reason == "opted_out":
+            note = "This will also clear your opt-out for this PR."
+        elif others_assigned:
+            note = "You’ll be added as an additional assignee."
+    return render(
+        request,
+        "console/unavailable.html",
+        {
+            "message": format_html(template, pr=pr_link),
+            "heading": heading,
+            "can_assign_anyway": can_assign_anyway,
+            "assign_anyway_url": (reverse("console:assign-anyway", args=[proposal.id]) if can_assign_anyway else ""),
+            "assign_anyway_note": note,
+        },
+        status=status,
+    )
+
+
+def _enqueue_pr_sync(repository: Repository, number: int) -> None:
+    """Enqueue a per-PR sync so a console-driven assignee change converges into our state."""
+    try:
+        from syncer.tasks.sync_tasks import sync_pr_task
+
+        sync_pr_task.delay(int(repository.id), int(number))
+    except Exception:  # pragma: no cover - defensive enqueue guard
+        log.warning("console: post-mutation sync enqueue failed", extra={"repo_id": repository.id, "number": number})
 
 
 def _retire(proposal: AssignmentProposal, validity: ProposalValidity, *, now) -> None:
@@ -339,14 +443,63 @@ def _load_actionable_proposal(request: HttpRequest, proposal_id: int):
     return reviewer, proposal
 
 
-_UNAVAILABLE_REASON = {
-    "already_terminal": "This proposal has already been decided.",
-    "expired": "This proposal has expired.",
-    "pr_assigned": "This PR already has an assignee.",
-    "pr_closed": "This PR is closed or merged.",
-    "pr_off_queue": "This PR is no longer on the review queue.",
-    "opted_out": "You’ve opted out of this PR, so this proposal no longer applies.",
+# Reason -> message, with a ``{pr}`` slot the PR link is woven into so the sentence names the PR
+# inline (like the unassigned page) rather than saying a bare "This PR" beside a separate link.
+_UNAVAILABLE_REASON_TEMPLATE = {
+    "already_terminal": "The proposal for {pr} has already been decided.",
+    "expired": "The proposal for {pr} has expired.",
+    "pr_assigned": "{pr} already has an assignee.",
+    "pr_closed": "{pr} is closed or merged.",
+    "pr_off_queue": "{pr} is no longer on the review queue.",
+    "opted_out": "You’ve opted out of {pr}, so this proposal no longer applies.",
 }
+_UNAVAILABLE_DEFAULT_TEMPLATE = "The proposal for {pr} is no longer available."
+
+
+def _github_assign_self(request: HttpRequest, proposal: AssignmentProposal, *, now) -> tuple[bool, HttpResponse | None]:
+    """Perform the shared 046 GitHub assign for ``proposal`` and confirm it landed.
+
+    Returns ``(True, None)`` when the reviewer is now assigned on GitHub, else ``(False, response)``
+    with the appropriate ``unavailable`` page. Callers must have already gated on
+    ``ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED``. Shared by ``accept`` and
+    ``assign_anyway`` so the (subtle) "did it actually land?" semantics never drift between them.
+    """
+    from core.services.github_operation_tokens import resolve_github_app_operation_token
+
+    token = resolve_github_app_operation_token(
+        operation="assign_pr", owner=proposal.repository.owner, repo=proposal.repository.name
+    )
+    if not token:
+        return False, render(
+            request, "console/unavailable.html", {"message": "Assignment is temporarily unavailable. Try again later."}
+        )
+
+    outcome, _client, record = assign_reviewer_and_record(
+        repository=proposal.repository,
+        pr_number=int(proposal.pr_number),
+        login=proposal.reviewer_login,
+        snapshot=proposal.snapshot,
+        run_date=now.date(),
+        token=token,
+    )
+    # Only treat it as landed when the assignment actually took on GitHub. ``already_recorded`` means a
+    # row for (today, repo, pr, reviewer) already existed — a success ONLY when that row is APPLIED.
+    # A prior FAILED/PENDING attempt (an earlier click GitHub rejected) must never be reported to the
+    # reviewer as an assignment that took. See design doc 050 review.
+    landed = outcome == "applied" or (
+        outcome == "already_recorded" and record is not None and record.status == ReviewerAssignmentApplication.STATUS_APPLIED
+    )
+    if not landed:
+        return False, render(
+            request,
+            "console/unavailable.html",
+            {
+                "heading": "Couldn’t assign you just now",
+                "message": "GitHub didn’t confirm the assignment. Please try again in a little while.",
+            },
+            status=502,
+        )
+    return True, None
 
 
 @require_POST
@@ -358,15 +511,23 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
     now = timezone.now()
 
     if proposal.state != AssignmentProposal.STATE_PROPOSED:
-        return render(request, "console/unavailable.html", {"message": _UNAVAILABLE_REASON["already_terminal"]})
+        return _render_proposal_unavailable(
+            request,
+            proposal=proposal,
+            live_pr=_live_pr_for(proposal),
+            reviewer=reviewer,
+            reason="already_terminal",
+        )
 
-    validity, _live_pr = _live_validity(proposal, now=now)
+    validity, live_pr = _live_validity(proposal, now=now)
     if not validity.is_live:
         _retire(proposal, validity, now=now)
-        return render(
+        return _render_proposal_unavailable(
             request,
-            "console/unavailable.html",
-            {"message": _UNAVAILABLE_REASON.get(validity.reason, "This proposal is no longer available.")},
+            proposal=proposal,
+            live_pr=live_pr,
+            reviewer=reviewer,
+            reason=validity.reason,
         )
 
     if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED", False)):
@@ -374,40 +535,9 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
         # pending and tell the reviewer, rather than record an acceptance we cannot fulfil.
         return render(request, "console/unavailable.html", {"message": "Accepting isn't enabled yet — please try again later."})
 
-    from core.services.github_operation_tokens import resolve_github_app_operation_token
-
-    token = resolve_github_app_operation_token(
-        operation="assign_pr", owner=proposal.repository.owner, repo=proposal.repository.name
-    )
-    if not token:
-        return render(request, "console/unavailable.html", {"message": "Assignment is temporarily unavailable. Try again later."})
-
-    outcome, _client, record = assign_reviewer_and_record(
-        repository=proposal.repository,
-        pr_number=int(proposal.pr_number),
-        login=proposal.reviewer_login,
-        snapshot=proposal.snapshot,
-        run_date=now.date(),
-        token=token,
-    )
-    # Only mark accepted when the assignment actually landed on GitHub. ``already_recorded`` means a
-    # row for (today, repo, pr, reviewer) already existed — a success ONLY when that row is APPLIED.
-    # A prior FAILED/PENDING attempt (e.g. an earlier click GitHub rejected) must never be reported
-    # to the reviewer as an assignment that took; leave the proposal pending so a later daily run
-    # (fresh run_date) can retry. See design doc 050 review.
-    landed = outcome == "applied" or (
-        outcome == "already_recorded" and record is not None and record.status == ReviewerAssignmentApplication.STATUS_APPLIED
-    )
+    landed, failure = _github_assign_self(request, proposal, now=now)
     if not landed:
-        return render(
-            request,
-            "console/unavailable.html",
-            {
-                "heading": "Couldn’t assign you just now",
-                "message": "GitHub didn’t confirm the assignment. Please try again in a little while.",
-            },
-            status=502,
-        )
+        return failure  # leave the proposal pending so a later daily run (fresh run_date) can retry
 
     # Assignment landed — mark accepted.
     AssignmentProposal.objects.filter(id=proposal.id, state=AssignmentProposal.STATE_PROPOSED).update(
@@ -429,6 +559,66 @@ def accept(request: HttpRequest, proposal_id: int) -> HttpResponse:
 
 
 @require_POST
+def assign_anyway(request: HttpRequest, proposal_id: int) -> HttpResponse:
+    """Self-assign to a proposal's PR even though the proposal itself is no longer acceptable.
+
+    Reached from the "no longer available" page. Deliberately bypasses the proposal validity gate —
+    that is the whole point — but keeps the one honest precondition (``_can_self_assign``: the PR is
+    open and the reviewer isn't already on it) and the same per-reviewer ownership check, GitHub
+    mutation, and audit trail as ``accept``. On success it also clears any active per-PR opt-out so
+    the next builder/expiry pass doesn't undo the assignment the reviewer just asked for.
+    """
+    loaded = _load_actionable_proposal(request, proposal_id)
+    if isinstance(loaded, HttpResponse):
+        return loaded
+    reviewer, proposal = loaded
+    now = timezone.now()
+
+    live_pr = _live_pr_for(proposal)
+    if not _can_self_assign(live_pr, reviewer):
+        return render(
+            request,
+            "console/unavailable.html",
+            {"message": "This PR is closed or merged, or you’re already assigned to it."},
+        )
+
+    if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED", False)):
+        return render(request, "console/unavailable.html", {"message": "Assigning isn’t enabled yet — please try again later."})
+
+    landed, failure = _github_assign_self(request, proposal, now=now)
+    if not landed:
+        return failure
+
+    with transaction.atomic():
+        # The reviewer explicitly wants this PR now, so retract any active per-PR opt-out (lowercased
+        # like every other ReviewerOptOut writer) — otherwise the builder would keep excluding them.
+        ReviewerOptOut.objects.filter(
+            repository=proposal.repository,
+            pr_number=int(proposal.pr_number),
+            reviewer_login=_normalize_login(proposal.reviewer_login),
+            active=True,
+        ).update(active=False, cleared_at=now)
+        # If the proposal is somehow still pending, retire it as accepted for consistency; a no-op
+        # (0 rows) in the normal case where it is already terminal.
+        AssignmentProposal.objects.filter(id=proposal.id, state=AssignmentProposal.STATE_PROPOSED).update(
+            state=AssignmentProposal.STATE_ACCEPTED,
+            decided_at=now,
+            decided_via=AssignmentProposal.DECIDED_VIA_CONSOLE,
+            updated_at=now,
+        )
+    return render(
+        request,
+        "console/decided.html",
+        {
+            "action": "accepted",
+            "owner": proposal.repository.owner,
+            "repo": proposal.repository.name,
+            "pr_number": proposal.pr_number,
+        },
+    )
+
+
+@require_POST
 def decline(request: HttpRequest, proposal_id: int) -> HttpResponse:
     loaded = _load_actionable_proposal(request, proposal_id)
     if isinstance(loaded, HttpResponse):
@@ -437,7 +627,13 @@ def decline(request: HttpRequest, proposal_id: int) -> HttpResponse:
     now = timezone.now()
 
     if proposal.state != AssignmentProposal.STATE_PROPOSED:
-        return render(request, "console/unavailable.html", {"message": _UNAVAILABLE_REASON["already_terminal"]})
+        return _render_proposal_unavailable(
+            request,
+            proposal=proposal,
+            live_pr=_live_pr_for(proposal),
+            reviewer=reviewer,
+            reason="already_terminal",
+        )
 
     with transaction.atomic():
         AssignmentProposal.objects.filter(id=proposal.id, state=AssignmentProposal.STATE_PROPOSED).update(
@@ -464,5 +660,76 @@ def decline(request: HttpRequest, proposal_id: int) -> HttpResponse:
             "owner": proposal.repository.owner,
             "repo": proposal.repository.name,
             "pr_number": proposal.pr_number,
+        },
+    )
+
+
+# --- unassign ----------------------------------------------------------------
+
+
+@require_POST
+def unassign(request: HttpRequest) -> HttpResponse:
+    """Remove the signed-in reviewer from one or more PRs they are assigned to (self-service only).
+
+    Posts a ``repo_id`` and one or more ``pr_numbers`` from the home dashboard's assigned-PR form.
+    Gated by ``ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED``. The login removed is always
+    the *authenticated reviewer's own* — never taken from the request — so this surface can only ever
+    unassign the person operating it. Each success enqueues a per-PR sync so state converges.
+    """
+    reviewer = console_session.get_reviewer(request)
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:home")))
+
+    if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)):
+        return render(request, "console/unavailable.html", {"message": "Unassigning isn’t enabled yet — please try again later."})
+
+    repo = Repository.objects.filter(id=request.POST.get("repo_id") or 0).only("id", "owner", "name").first()
+    if repo is None:
+        return render(request, "console/unavailable.html", {"message": "That repository was not found."}, status=404)
+
+    numbers: set[int] = set()
+    for raw in request.POST.getlist("pr_numbers"):
+        try:
+            numbers.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not numbers:
+        # Nothing selected — just return to the dashboard rather than render an error.
+        return redirect(reverse("console:home"))
+
+    from core.services.github_operation_tokens import resolve_github_app_operation_token
+
+    token = resolve_github_app_operation_token(operation="unassign_pr", owner=repo.owner, repo=repo.name)
+    if not token:
+        return render(
+            request, "console/unavailable.html", {"message": "Unassignment is temporarily unavailable. Try again later."}
+        )
+
+    client = GitHubAssignmentClient(token=token)
+    login = reviewer.github_login
+    login_norm = _normalize_login(login)
+    unassigned: list[int] = []
+    failed: list[int] = []
+    for number in sorted(numbers):
+        try:
+            resulting = client.unassign(owner=repo.owner, repo=repo.name, number=number, github_login=login)
+        except AssignmentMutationError:
+            failed.append(number)
+            continue
+        # Confirm we actually left the assignee set (DELETE is idempotent, so a login that was never
+        # there also succeeds — that's fine, the reviewer is not assigned either way).
+        if login_norm in {_normalize_login(str(assignee)) for assignee in resulting if assignee}:
+            failed.append(number)
+            continue
+        unassigned.append(number)
+        _enqueue_pr_sync(repo, number)
+
+    return render(
+        request,
+        "console/unassigned.html",
+        {
+            "repo_label": f"{repo.owner}/{repo.name}",
+            "unassigned": [{"number": n, "url": _pr_url(repo, n)} for n in unassigned],
+            "failed": [{"number": n, "url": _pr_url(repo, n)} for n in failed],
         },
     )

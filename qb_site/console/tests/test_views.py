@@ -10,6 +10,7 @@ from django.utils import timezone
 from analyzer.models import AssignmentProposal, QueueSnapshot, ReviewerAssignmentApplication, ReviewerOptOut
 from console.session import SESSION_NONCE_KEY, SESSION_USER_KEY
 from core.models import Repository, ReviewerPreference, User
+from core.services.github_assignment import AssignmentMutationError
 from core.services.github_oauth import GitHubOAuthError, GitHubUserIdentity
 from core.services.oauth_state import ConsoleOAuthStateClaims, issue_console_oauth_state
 from syncer.models import PullRequest
@@ -479,3 +480,177 @@ class ConsoleViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "already been decided")
         self.assertFalse(ReviewerOptOut.objects.filter(repository=self.repo, pr_number=101).exists())
+
+    # ---- assign anyway -------------------------------------------------
+
+    def test_expired_proposal_accept_offers_assign_anyway(self) -> None:
+        # A reviewer clicks Accept after the proposal lapsed: the unavailable page invites them to
+        # self-assign, since the PR is still open and unassigned.
+        self._make_pr(101)
+        proposal = self._proposal(101)
+        AssignmentProposal.objects.filter(id=proposal.id).update(expires_at=self.now - timedelta(days=1))
+        self._login_session()
+
+        resp = self.client.post(reverse("console:accept", args=[proposal.id]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Assign myself anyway")
+        # The "no longer available" page links out to the GitHub PR.
+        self.assertContains(resp, "https://github.com/leanprover-community/mathlib4/pull/101")
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_assign_anyway_assigns_and_clears_opt_out(self) -> None:
+        # A declined proposal the reviewer changed their mind on: self-assign lands and the opt-out
+        # the decline created is retracted so the builder won't undo it.
+        self._make_pr(101)  # open, unassigned
+        proposal = self._proposal(101, state=AssignmentProposal.STATE_DECLINED)
+        ReviewerOptOut.objects.create(
+            repository=self.repo, pr_number=101, reviewer_login="bob", active=True, opted_out_at=self.now
+        )
+        self._login_session()
+
+        with (
+            patch("core.services.github_operation_tokens.resolve_github_app_operation_token", return_value="tok"),
+            patch("console.views.assign_reviewer_and_record", return_value=("applied", None, None)) as mock_assign,
+        ):
+            resp = self.client.post(reverse("console:assign-anyway", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Assignment accepted")
+        mock_assign.assert_called_once()
+        opt_out = ReviewerOptOut.objects.get(repository=self.repo, pr_number=101, reviewer_login="bob")
+        self.assertFalse(opt_out.active)
+        self.assertIsNotNone(opt_out.cleared_at)
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=False)
+    def test_assign_anyway_disabled_does_not_assign(self) -> None:
+        self._make_pr(101)
+        proposal = self._proposal(101, state=AssignmentProposal.STATE_EXPIRED)
+        self._login_session()
+
+        with patch("console.views.assign_reviewer_and_record") as mock_assign:
+            resp = self.client.post(reverse("console:assign-anyway", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "enabled yet")
+        mock_assign.assert_not_called()
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_assign_anyway_closed_pr_rejected(self) -> None:
+        self._make_pr(101, state=PullRequestState.CLOSED)
+        proposal = self._proposal(101, state=AssignmentProposal.STATE_SUPERSEDED)
+        self._login_session()
+
+        with patch("console.views.assign_reviewer_and_record") as mock_assign:
+            resp = self.client.post(reverse("console:assign-anyway", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "closed or merged")
+        mock_assign.assert_not_called()
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_assign_anyway_already_assigned_rejected(self) -> None:
+        self._make_pr(101, assignees=["bob"])
+        proposal = self._proposal(101, state=AssignmentProposal.STATE_ACCEPTED)
+        self._login_session()
+
+        with patch("console.views.assign_reviewer_and_record") as mock_assign:
+            resp = self.client.post(reverse("console:assign-anyway", args=[proposal.id]))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "already assigned")
+        mock_assign.assert_not_called()
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED=True)
+    def test_assign_anyway_other_reviewer_forbidden(self) -> None:
+        self._make_pr(101)
+        proposal = self._proposal(101, login="carol", state=AssignmentProposal.STATE_EXPIRED)
+        self._login_session()  # signed in as bob
+
+        resp = self.client.post(reverse("console:assign-anyway", args=[proposal.id]))
+        self.assertEqual(resp.status_code, 403)
+
+    # ---- unassign ------------------------------------------------------
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED=True)
+    def test_unassign_removes_selected_self_only(self) -> None:
+        self._make_pr(200, assignees=["bob"])
+        self._make_pr(201, assignees=["bob"])
+        self._login_session()
+        fake_client = MagicMock()
+        fake_client.unassign.return_value = ()  # bob is no longer in the resulting assignee set
+
+        with (
+            patch("core.services.github_operation_tokens.resolve_github_app_operation_token", return_value="tok"),
+            patch("console.views.GitHubAssignmentClient", return_value=fake_client),
+            patch("console.views._enqueue_pr_sync") as mock_sync,
+        ):
+            resp = self.client.post(reverse("console:unassign"), {"repo_id": self.repo.id, "pr_numbers": ["200", "201"]})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Removed you from")
+        self.assertContains(resp, "#200")
+        self.assertContains(resp, "#201")
+        # Each removed PR links out to its GitHub page.
+        self.assertContains(resp, "https://github.com/leanprover-community/mathlib4/pull/200")
+        self.assertEqual(mock_sync.call_count, 2)
+        # Self-service only: the login unassigned is always the signed-in reviewer's, never the request's.
+        for call in fake_client.unassign.call_args_list:
+            self.assertEqual(call.kwargs["github_login"], "bob")
+
+    def test_unassign_disabled_by_default(self) -> None:
+        self._make_pr(200, assignees=["bob"])
+        self._login_session()
+        resp = self.client.post(reverse("console:unassign"), {"repo_id": self.repo.id, "pr_numbers": ["200"]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "enabled yet")
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED=True)
+    def test_unassign_reports_partial_failure(self) -> None:
+        self._make_pr(200, assignees=["bob"])
+        self._make_pr(201, assignees=["bob"])
+        self._login_session()
+        fake_client = MagicMock()
+
+        def _unassign(*, owner, repo, number, github_login):
+            if number == 201:
+                raise AssignmentMutationError("github_error", "boom")
+            return ()
+
+        fake_client.unassign.side_effect = _unassign
+
+        with (
+            patch("core.services.github_operation_tokens.resolve_github_app_operation_token", return_value="tok"),
+            patch("console.views.GitHubAssignmentClient", return_value=fake_client),
+            patch("console.views._enqueue_pr_sync"),
+        ):
+            resp = self.client.post(reverse("console:unassign"), {"repo_id": self.repo.id, "pr_numbers": ["200", "201"]})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Removed you from")
+        self.assertContains(resp, "Could not unassign")
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED=True)
+    def test_unassign_no_selection_redirects_home(self) -> None:
+        self._login_session()
+        resp = self.client.post(reverse("console:unassign"), {"repo_id": self.repo.id})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(reverse("console:home"), resp["Location"])
+
+    def test_unassign_without_session_redirects_login(self) -> None:
+        resp = self.client.post(reverse("console:unassign"), {"repo_id": self.repo.id, "pr_numbers": ["200"]})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn(reverse("console:login"), resp["Location"])
+
+    @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED=True)
+    def test_home_shows_per_pr_load_contribution(self) -> None:
+        # An AwaitingReview assigned PR contributes weight 1.0; the console surfaces "+1" per row and
+        # the roster becomes an unassign form when the flag is on.
+        self._make_pr(200, assignees=["bob"])
+        self._seed_snapshot(prs={"200": {"assignees": ["bob"], "author": "alice", "pr_status": "AwaitingReview"}})
+        self._login_session()
+
+        resp = self.client.get(reverse("console:home"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Assigned to you (1)")
+        self.assertContains(resp, "+1")
+        self.assertContains(resp, "Unassign selected")

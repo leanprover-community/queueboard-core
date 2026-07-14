@@ -1,8 +1,12 @@
 {% extends "console/base.html" %}
 {% block title %}Sign in — Reviewer console{% endblock %}
 {% block body %}
-  <h1>Reviewer console</h1>
-  <p class="meta">Review and act on the PR assignments proposed to you.</p>
-  <p>Sign in with GitHub to see the assignments awaiting your acceptance.</p>
-  <p><a class="btn" href="{{ login_url }}">Sign in with GitHub</a></p>
+  <section class="hero">
+    <h1>Reviewer console</h1>
+    <p class="meta">Review and act on the PR assignments proposed to you.</p>
+  </section>
+  <section class="card">
+    <p>Sign in with GitHub to see the assignments awaiting your acceptance.</p>
+    <p><a class="cta" href="{{ login_url }}">Sign in with GitHub</a></p>
+  </section>
 {% endblock %}
