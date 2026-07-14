@@ -1,41 +1,47 @@
 {% extends "console/base.html" %}
 {% block title %}Reviewer console{% endblock %}
 {% block body %}
-  <h1>Reviewer console</h1>
-  <p class="meta">
-    Signed in as {{ reviewer.github_login }}.
-    <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
-  </p>
+  <section class="hero">
+    <h1>Reviewer console</h1>
+    <div class="meta signin-row">
+      <span>Signed in as {{ reviewer.github_login }}.</span>
+      <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
+    </div>
+  </section>
 
   {% if repo_groups %}
     {% for group in repo_groups %}
-      <section class="repo">
-        <h2 class="repo-title">{{ group.repo_label }}</h2>
+      <section class="card repo-card">
+        <h2 class="repo-name">{{ group.repo_label }}</h2>
         {% if group.load_line %}
-          <p class="loadline{% if group.load.at_capacity %} at-capacity{% endif %}">{{ group.load_line }}</p>
+          <details class="load-toggle">
+            <summary class="load-summary{% if group.load.at_capacity %} at-capacity{% endif %}">{{ group.load_line }}</summary>
+            {% include "console/_load_legend.html" %}
+          </details>
         {% endif %}
 
         {% if group.proposals %}
           <h3 class="section-title">Proposals awaiting your decision</h3>
           {% for row in group.proposals %}
-            <div class="card">
-              <h3><a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}</h3>
+            <div class="proposal">
+              <p class="pr-title"><a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}</p>
               {% if row.matched_labels %}
-                <div class="labels">
-                  <span class="meta">Matches your areas:</span>
-                  {% for label in row.matched_labels %}<span class="label">{{ label }}</span>{% endfor %}
+                <div class="pr-labels">
+                  <span class="matches-label">Matches your areas:</span>
+                  {% for label in row.matched_labels %}<span class="pr-label">{{ label }}</span>{% endfor %}
                 </div>
               {% endif %}
-              <div class="expiry">
+              <p class="expiry">
                 Expires
                 <time datetime="{{ row.expires_at_iso }}">{{ row.expires_at|date:"Y-m-d H:i" }} UTC</time>
-              </div>
+                {% if group.load_line %}<span class="load-contrib" title="Load while pending">{{ row.load_weight }} load</span>{% endif %}
+              </p>
               <div class="actions">
                 <form class="inline" method="post" action="{% url 'console:accept' row.proposal.id %}">
-                  {% csrf_token %}<button class="accept" type="submit">Accept</button>
+                  {% csrf_token %}<button class="btn-accept" type="submit">Accept</button>
                 </form>
                 <form class="inline" method="post" action="{% url 'console:decline' row.proposal.id %}">
-                  {% csrf_token %}<button class="decline" type="submit">Decline</button>
+                  {% csrf_token %}<button class="btn-decline" type="submit">Decline</button>
                 </form>
               </div>
             </div>
@@ -44,19 +50,33 @@
 
         {% if group.assigned_prs %}
           <h3 class="section-title">Assigned to you ({{ group.assigned_prs|length }})</h3>
+          {% if unassign_enabled %}
+            <form class="assigned-form" method="post" action="{% url 'console:unassign' %}"
+                  onsubmit="return confirm('Remove yourself from the selected PR(s)?');">
+              {% csrf_token %}
+              <input type="hidden" name="repo_id" value="{{ group.repo_id }}">
+          {% endif %}
           <ul class="assigned">
             {% for row in group.assigned_prs %}
               <li class="assigned-row{% if not row.is_on_queue %} off-queue{% endif %}">
+                {% if unassign_enabled %}<input class="assigned-check" type="checkbox" name="pr_numbers" value="{{ row.pr_number }}" aria-label="Select #{{ row.pr_number }}">{% endif %}
                 <a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}
                 <span class="status">{{ row.status }}</span>
+                {% if group.load_line and row.load_weight %}<span class="load-contrib" title="Load contribution">{{ row.load_weight }}</span>{% endif %}
                 {% if row.flag %}<span class="flag">{{ row.flag }}</span>{% endif %}
               </li>
             {% endfor %}
           </ul>
+          {% if unassign_enabled %}
+              <div class="actions"><button class="btn-unassign" type="submit">Unassign selected</button></div>
+            </form>
+          {% endif %}
         {% endif %}
       </section>
     {% endfor %}
   {% else %}
-    <p class="empty">You have no proposals awaiting acceptance, and no PRs currently assigned to you.</p>
+    <section class="card">
+      <p class="empty">You have no proposals awaiting acceptance, and no PRs currently assigned to you.</p>
+    </section>
   {% endif %}
 {% endblock %}

@@ -31,6 +31,7 @@ from django.conf import settings
 from analyzer.models import QueueSnapshot
 from analyzer.services.queue_rules import default_rule_set_for_repo
 from analyzer.services.reviewer_assignment import (
+    _compute_weight,
     add_pending_proposal_load,
     build_reviewer_catalog,
     collect_assignment_statistics,
@@ -150,6 +151,52 @@ def reviewer_load_for(
     return loads.get(normalize_login(reviewer_login))
 
 
+def pr_load_breakdown(payload: dict, reviewer_login: str) -> dict[int, float]:
+    """Per-PR weighted load contribution for one reviewer, from a queue-snapshot payload.
+
+    Mirrors the per-PR fold inside ``collect_assignment_statistics`` (status-weighted via the shared
+    ``_compute_weight``, self-authored PRs contributing 0) but scoped to a single reviewer, so the
+    values sum to that reviewer's assigned-PR share of ``current_load``. Pending proposals are load
+    too, but they are not snapshot assignees, so they are not included here — callers add the
+    proposal weight (``ANALYZER_ASSIGNMENT_PROPOSAL_PENDING_LOAD_WEIGHT``) separately. Keyed by PR
+    number.
+    """
+    norm = normalize_login(reviewer_login)
+    if not norm:
+        return {}
+    breakdown: dict[int, float] = {}
+    for pr_number_raw, entry in (payload.get("prs", {}) or {}).items():
+        assignees = entry.get("assignees") or []
+        if norm not in {normalize_login(login) for login in assignees if login}:
+            continue
+        try:
+            pr_number = int(pr_number_raw)
+        except (TypeError, ValueError):
+            continue
+        author_norm = normalize_login(entry.get("author") or "")
+        breakdown[pr_number] = 0.0 if norm == author_norm else _compute_weight(pr_number, entry)
+    return breakdown
+
+
+def reviewer_load_with_breakdown(
+    repository: Repository,
+    reviewer_login: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[ReviewerLoad | None, dict[int, float]]:
+    """One reviewer's load plus its per-PR weight breakdown, from a single snapshot read.
+
+    Both halves derive from the same cached queue snapshot, so the per-PR contributions sum to the
+    assigned-PR portion of the aggregate ``current_load`` (pending-proposal load is the remainder).
+    Returns ``(None, {})`` when no snapshot is available.
+    """
+    payload = _latest_snapshot_payload(repository)
+    if not payload:
+        return None, {}
+    load = reviewer_load_for(repository, reviewer_login, snapshot_payload=payload, now=now)
+    return load, pr_load_breakdown(payload, reviewer_login)
+
+
 def _latest_snapshot_payload(repository: Repository) -> dict | None:
     rule_set = default_rule_set_for_repo(repository)
     cache_key = str(rule_set.id) if rule_set else "default"
@@ -170,6 +217,15 @@ def _fmt_load_number(value: float) -> str:
     if abs(rounded - round(rounded)) < _CAPACITY_EPSILON:
         return str(int(round(rounded)))
     return f"{rounded:.1f}"
+
+
+def format_load_contribution(weight: float) -> str:
+    """Render one PR's load contribution as a signed figure (``+1`` / ``+0.1`` / ``+0``).
+
+    Uses the same number formatting as the aggregate load line, so a per-PR ``+1`` reads consistently
+    with the ``Load: 3 / 5`` it rolls up into.
+    """
+    return f"+{_fmt_load_number(weight)}"
 
 
 def format_load_line(load: ReviewerLoad, *, include_assigned_count: bool = False) -> str:

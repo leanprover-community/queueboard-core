@@ -428,6 +428,12 @@ ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED = env_bool(
     os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_ASSIGN_ON_ACCEPT_ENABLED"), False
 )
 ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN = env_bool(os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN"), False)
+# Console self-service unassign: the assigned-PR roster becomes a form letting a signed-in reviewer
+# remove *themselves* (never anyone else) from one or more PRs. Off by default like ASSIGN_ON_ACCEPT
+# so the console performs no GitHub writes until an operator opts in.
+ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED = env_bool(
+    os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED"), False
+)
 # Acceptance window: a proposal expires this many days after creation unless accepted. The
 # per-reviewer override in ReviewerPreference.notification_settings is clamped to >= 7.
 ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", "7"))

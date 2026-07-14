@@ -1,0 +1,16 @@
+{% comment %}Load legend body, revealed by clicking a repo's load line on the home dashboard.{% endcomment %}
+<div class="legend-body">
+  <p><strong>Load: used / capacity (free)</strong> — your weighted review load against the capacity you set
+    in <code>/prefs</code>. Open PRs count by review status, not by headcount, so the number can be lower
+    than how many PRs you hold.</p>
+  <ul>
+    <li><strong>+1</strong> — awaiting your review (or a merge conflict worth flagging).</li>
+    <li><strong>+0.1</strong> — waiting on the author; barely counts toward your load.</li>
+    <li><strong>+0</strong> — blocked, delegated, or otherwise not on you right now.</li>
+    <li>A <strong>pending proposal</strong> counts <strong>+1</strong> until you accept it or it expires.</li>
+  </ul>
+  <p>The per-PR contributions add up to your load line.</p>
+  <p><strong>Markers:</strong> <span class="flag">stale</span> — on your queue past your stale-nudge threshold
+    (default 14 days); <span class="flag">auto-unassign soon</span> — past the auto-unassign backstop
+    (default 21 days), so it may be reassigned. Both count only time the PR has sat awaiting <em>you</em>.</p>
+</div>

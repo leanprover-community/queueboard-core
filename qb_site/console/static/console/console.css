@@ -1,0 +1,300 @@
+/* Reviewer-console styles, layered on the shared design system (shared/shared_pages.css).
+   Only console-specific components live here; palette tokens, .page/.hero/.card/.cta/.status
+   all come from the shared stylesheet so the console matches the other reviewer pages. */
+
+/* Signed-in line + sign-out control inside the hero. */
+.signin-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+
+button.linklike {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #d8f3f2;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+button.linklike:hover {
+  color: #f8fafc;
+}
+
+/* One card per repository. */
+.repo-card {
+  margin-bottom: 16px;
+}
+
+.repo-name {
+  margin: 0 0 4px;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* The load line doubles as the trigger for the load legend: click it to reveal the explanation
+   right where the number is, instead of a standing block at the top of the page. */
+.load-toggle {
+  margin: 0 0 6px;
+}
+
+.load-summary {
+  list-style: none;
+  width: fit-content;
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.load-summary::-webkit-details-marker {
+  display: none;
+}
+
+.load-summary::after {
+  content: "ⓘ";
+  margin-left: 6px;
+  font-size: 0.82em;
+  opacity: 0.65;
+}
+
+.load-summary:hover {
+  color: var(--ink);
+}
+
+.load-summary:hover::after {
+  opacity: 1;
+}
+
+.load-summary.at-capacity {
+  color: var(--error-fg);
+  font-weight: 600;
+}
+
+.load-toggle[open] > .load-summary {
+  margin-bottom: 8px;
+}
+
+.section-title {
+  margin: 16px 0 8px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* A single proposal awaiting a decision, nested inside its repo card. */
+.proposal {
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.proposal:last-child {
+  margin-bottom: 0;
+}
+
+.proposal .pr-title {
+  margin: 0 0 6px;
+}
+
+.proposal .pr-title a {
+  color: var(--accent);
+}
+
+.matches-label {
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.expiry {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+form.inline {
+  display: inline;
+  margin: 0;
+}
+
+button.btn-accept,
+button.btn-decline {
+  font: inherit;
+  min-height: 40px;
+  padding: 8px 18px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.btn-accept {
+  background: var(--accent);
+  color: #f8fafc;
+}
+
+button.btn-accept:hover {
+  background: var(--accent-strong);
+}
+
+button.btn-decline {
+  background: var(--card);
+  color: var(--error-fg);
+  border-color: var(--error-border);
+}
+
+button.btn-decline:hover {
+  background: var(--error-bg);
+}
+
+/* Assigned-PR roster. */
+ul.assigned {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+}
+
+.assigned-row {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.92rem;
+}
+
+.assigned-row:last-child {
+  border-bottom: none;
+}
+
+.assigned-row a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.assigned-row a:hover {
+  text-decoration: underline;
+}
+
+.assigned-row.off-queue {
+  opacity: 0.72;
+}
+
+.assigned-row .status {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.flag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border: 1px solid var(--warn-border);
+}
+
+.empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Per-PR / per-proposal load contribution (design doc 050): a small muted figure that sums to the
+   repo's load line. */
+.load-contrib {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Self-service unassign form on the assigned roster. */
+.assigned-check {
+  margin-right: 8px;
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
+button.btn-unassign {
+  font: inherit;
+  min-height: 36px;
+  padding: 7px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--error-border);
+  background: var(--card);
+  color: var(--error-fg);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.btn-unassign:hover {
+  background: var(--error-bg);
+}
+
+/* Body of the load legend, revealed by clicking the load line (see .load-toggle). */
+.legend-body {
+  margin-top: 8px;
+  padding: 12px 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+}
+
+.legend-body p {
+  margin: 0 0 8px;
+}
+
+.legend-body p:last-child {
+  margin-bottom: 0;
+}
+
+.legend-body ul {
+  margin: 0 0 8px;
+  padding-left: 18px;
+}
+
+.legend-body strong {
+  color: var(--ink);
+}
+
+/* A secondary call-to-action shown next to a primary one (e.g. "Back" beside "Assign anyway"). */
+.cta-quiet {
+  background: var(--card);
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+
+.cta-quiet:hover {
+  background: var(--bg);
+}
+
+@media (max-width: 760px) {
+  .actions {
+    flex-direction: column;
+  }
+
+  button.btn-accept,
+  button.btn-decline,
+  button.btn-unassign,
+  .cta-quiet {
+    width: 100%;
+    text-align: center;
+  }
+}

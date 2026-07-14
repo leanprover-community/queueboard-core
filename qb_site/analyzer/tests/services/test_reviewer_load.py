@@ -10,8 +10,11 @@ from analyzer.services.reviewer_load import (
     ReviewerLoad,
     build_reviewer_loads,
     compute_reviewer_loads,
+    format_load_contribution,
     format_load_line,
+    pr_load_breakdown,
     reviewer_load_for,
+    reviewer_load_with_breakdown,
 )
 from core.models import Repository, ReviewerPreference, User
 
@@ -216,3 +219,41 @@ class TestBuildReviewerLoads(TestCase):
         loads = build_reviewer_loads(self.repo)
         self.assertEqual(loads["alice"].assigned_open, 1)
         self.assertEqual(loads["alice"].current_load, 2.0)
+
+    def test_pr_load_breakdown_from_payload(self) -> None:
+        # Per-PR contribution mirrors the aggregate fold: status-weighted, self-authored = 0, and
+        # scoped to the one reviewer (erin's PR is excluded). Login matching is case-insensitive.
+        self._seed_snapshot(
+            {
+                "1": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"},
+                "2": {"assignees": ["alice"], "author": "alice", "pr_status": "AwaitingReview"},
+                "3": {"assignees": ["erin"], "author": "frank", "pr_status": "AwaitingReview"},
+            }
+        )
+        payload = QueueSnapshot.objects.get(repository=self.repo).payload
+        self.assertEqual(pr_load_breakdown(payload, "AliCe"), {1: 1.0, 2: 0.0})
+
+    def test_reviewer_load_with_breakdown_parts_sum_to_assigned_load(self) -> None:
+        # With no pending proposals, the per-PR contributions sum exactly to current_load.
+        self._seed_snapshot(
+            {
+                "1": {"assignees": ["alice"], "author": "bob", "pr_status": "AwaitingReview"},
+                "2": {"assignees": ["alice"], "author": "alice", "pr_status": "AwaitingReview"},
+            }
+        )
+        load, breakdown = reviewer_load_with_breakdown(self.repo, "alice")
+        self.assertIsNotNone(load)
+        self.assertEqual(breakdown, {1: 1.0, 2: 0.0})
+        self.assertEqual(sum(breakdown.values()), load.current_load)
+
+    def test_reviewer_load_with_breakdown_none_without_snapshot(self) -> None:
+        load, breakdown = reviewer_load_with_breakdown(self.repo, "alice")
+        self.assertIsNone(load)
+        self.assertEqual(breakdown, {})
+
+
+class TestFormatLoadContribution(TestCase):
+    def test_signed_and_consistent_with_load_line(self) -> None:
+        self.assertEqual(format_load_contribution(1.0), "+1")
+        self.assertEqual(format_load_contribution(0.1), "+0.1")
+        self.assertEqual(format_load_contribution(0.0), "+0")

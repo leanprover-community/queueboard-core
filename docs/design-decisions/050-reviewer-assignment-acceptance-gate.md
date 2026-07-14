@@ -195,6 +195,22 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
   stale row is retired) instead of erroring.
 - All proposal state transitions are idempotent conditional updates
   (`UPDATE ... WHERE state='proposed'`), safe against concurrent sweeps/clicks.
+- **Assign-anyway / self-unassign (post-050 console additions).** Two self-service actions extend the
+  console beyond accept/decline:
+  - **Assign-anyway** is offered on the "no longer available" page and **deliberately bypasses the
+    validity gate** — it exists precisely to let a reviewer take a PR whose proposal lapsed, was
+    superseded, or was declined. Its single precondition is behavioral, not reason-enumerated: the PR
+    is open and the reviewer is not already an assignee (`_can_self_assign`). That set is exactly the
+    "recoverable" states (expired / off-queue / assigned-to-others / opted-out) and excludes
+    closed-merged and already-held PRs. It reuses the same `ASSIGN_ON_ACCEPT` gate and 046 mutation as
+    accept, additionally clearing any active per-PR opt-out so the builder won't undo it.
+  - **Self-unassign** turns the assigned-PR roster into a checkbox form (gated by
+    `ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED`) that removes the reviewer from selected
+    PRs via `unassign_pr`. The login removed is always the authenticated reviewer's own — never taken
+    from the request — so the surface can only unassign its operator.
+  Both keep the console's write flags off by default, consistent with the staged rollout.
+- The console load line now also shows a **per-PR contribution** (`reviewer_load.pr_load_breakdown`),
+  folded over the same snapshot as the aggregate so the parts sum to the whole.
 
 ### Surfacing (never the GitHub PR page)
 

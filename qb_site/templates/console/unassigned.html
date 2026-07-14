@@ -1,0 +1,26 @@
+{% extends "console/base.html" %}
+{% block title %}Unassigned — Reviewer console{% endblock %}
+{% block body %}
+  <section class="hero">
+    <h1>Unassigned</h1>
+  </section>
+  <section class="card">
+    {% if unassigned %}
+      <div class="status status-ok" role="status">
+        Removed you from {{ repo_label }}
+        {% for pr in unassigned %}<a href="{{ pr.url }}">#{{ pr.number }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}.
+      </div>
+    {% endif %}
+    {% if failed %}
+      <div class="status status-warn" role="alert">
+        Could not unassign
+        {% for pr in failed %}<a href="{{ pr.url }}">#{{ pr.number }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}
+        — they may have changed already. You can try again from the console.
+      </div>
+    {% endif %}
+    {% if not unassigned and not failed %}
+      <p>Nothing was unassigned.</p>
+    {% endif %}
+    <p><a class="cta" href="{% url 'console:home' %}">Back to the console</a></p>
+  </section>
+{% endblock %}
