@@ -328,3 +328,85 @@ class ReviewerAttentionServiceTests(TestCase):
 
         self.assertTrue(items[112].needs_new_assignment_ping)
         self.assertTrue(items[113].needs_new_assignment_ping)
+
+    def _make_pending_proposal(
+        self,
+        *,
+        pr_number: int,
+        reviewer_login: str,
+        notified_at: datetime | None = None,
+    ) -> AssignmentProposal:
+        return AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=pr_number,
+            reviewer_login=reviewer_login,
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=self.now + timedelta(days=5),
+            notified_at=notified_at,
+        )
+
+    def test_pending_proposal_surfaces_as_proposal_item_not_assigned_item(self) -> None:
+        self._mk_pr(120, assignees=[])
+        proposal = self._make_pending_proposal(pr_number=120, reviewer_login="Alice")  # case-insensitive match
+
+        reports = build_reviewer_attention_reports(repository=self.repo, as_of=self.now)
+        report = reports[0]
+
+        self.assertEqual(len(report.items), 0)  # a proposal is never an assignee (invariant 4)
+        self.assertEqual(len(report.proposal_items), 1)
+        item = report.proposal_items[0]
+        self.assertEqual(item.proposal_id, proposal.id)
+        self.assertEqual(item.pr_number, 120)
+        self.assertEqual(item.pr_title, "PR 120")
+        self.assertEqual(item.expires_at, proposal.expires_at)
+        self.assertFalse(item.notified)
+        self.assertTrue(report.has_pending_proposals)
+        self.assertTrue(report.has_unnotified_proposals)
+        self.assertFalse(report.has_events_of_interest)
+        self.assertTrue(report.has_notifications_to_send)
+
+    def test_unnotified_proposal_is_transactional_despite_muted_notifications(self) -> None:
+        self.pref.notifications_enabled = False
+        self.pref.save(update_fields=["notifications_enabled"])
+        self._make_pending_proposal(pr_number=121, reviewer_login="alice")
+
+        reports = build_reviewer_attention_reports(repository=self.repo, as_of=self.now)
+        report = reports[0]
+
+        self.assertTrue(report.has_unnotified_proposals)
+        self.assertTrue(report.has_notifications_to_send)
+
+    def test_already_notified_proposal_alone_does_not_trigger_a_send(self) -> None:
+        self._mk_pr(122, assignees=[])
+        self._make_pending_proposal(pr_number=122, reviewer_login="alice", notified_at=self.now - timedelta(days=1))
+
+        reports = build_reviewer_attention_reports(repository=self.repo, as_of=self.now)
+        report = reports[0]
+
+        self.assertTrue(report.has_pending_proposals)
+        self.assertFalse(report.has_unnotified_proposals)
+        self.assertFalse(report.has_notifications_to_send)
+
+    def test_proposal_title_falls_back_when_pr_row_is_missing(self) -> None:
+        self._make_pending_proposal(pr_number=123, reviewer_login="alice")
+
+        reports = build_reviewer_attention_reports(repository=self.repo, as_of=self.now)
+        item = reports[0].proposal_items[0]
+
+        self.assertEqual(item.pr_title, "PR #123")
+
+    def test_terminal_proposals_do_not_surface(self) -> None:
+        self._mk_pr(124, assignees=[])
+        AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=124,
+            reviewer_login="alice",
+            state=AssignmentProposal.STATE_EXPIRED,
+            expires_at=self.now - timedelta(days=1),
+            decided_at=self.now - timedelta(days=1),
+            decided_via=AssignmentProposal.DECIDED_VIA_AUTO_EXPIRE,
+        )
+
+        reports = build_reviewer_attention_reports(repository=self.repo, as_of=self.now)
+
+        self.assertEqual(len(reports[0].proposal_items), 0)

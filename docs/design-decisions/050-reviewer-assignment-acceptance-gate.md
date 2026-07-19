@@ -37,11 +37,14 @@ Per `{pr, login}` from the authoritative default-rule-set snapshot, it branches 
 - `confirm` + Zulip-linked → create `AssignmentProposal(state=proposed, expires_at=now+window)`.
 - `confirm` but unreachable (no `core.User.zulip_user_id`) → fall back to direct-assign.
 
-Downstream: `analyzer.deliver_assignment_proposals` (daily, default 01:00 UTC) sends one digest DM
-per reviewer across all repos, linking to the console; the reviewer **accepts** (re-validate live →
-GitHub assign → `accepted`) or **declines** (`declined` + active `ReviewerOptOut`) on the console;
-`analyzer.expire_assignment_proposals` (hourly) retires proposals that timed out or became invalid.
-Next day's recompute excludes retired reviewers and proposes to the next candidate.
+Downstream: the daily reviewer-attention DM (`analyzer.reviewer_attention_daily`, design doc 028)
+carries a distinct **"Proposed to you, awaiting your response"** section listing the reviewer's
+pending proposals with expiry and a console link — there is no separate proposal digest task (one
+existed initially and was folded into the attention report so reviewers get a single daily DM).
+The reviewer **accepts** (re-validate live → GitHub assign → `accepted`) or **declines**
+(`declined` + active `ReviewerOptOut`) on the console; `analyzer.expire_assignment_proposals`
+(hourly) retires proposals that timed out or became invalid. Next day's recompute excludes retired
+reviewers and proposes to the next candidate.
 
 The legacy `analyzer.apply_reviewer_assignments` is retained for `auto`-only operation but is
 **superseded** by propose. Mutual exclusion is enforced in code, not just documented: when
@@ -91,15 +94,17 @@ an option that has no effect.
 
 Confirmation prompts are **transactional** and NOT gated by `notifications_enabled` (which governs
 only optional attention nudges — matching doc 028's precedent that essential actions ignore the
-notification opt-in). Fallback to `auto` happens only when a reviewer is genuinely unreachable
-(no Zulip link), never merely because nudges are muted.
+notification opt-in). Even though the prompt rides the attention DM, an un-notified pending
+proposal triggers a send for a muted reviewer; the resulting DM then contains only the proposal
+section, never the muted nudge categories. Fallback to `auto` happens only when a reviewer is
+genuinely unreachable (no Zulip link), never merely because nudges are muted.
 
 | `assignment_acceptance` | nudges (`notifications_enabled`) | behavior |
 | --- | --- | --- |
 | `auto` | on | Direct-assign + optional "you were assigned" DM (= pre-gate behavior). |
 | `auto` | off | Direct-assign, silently. |
-| `confirm` | on | Propose → digest DM → console accept → assign, plus optional nudges. |
-| `confirm` | off | Propose → digest DM → accept → assign; no optional nudges. |
+| `confirm` | on | Propose → proposal section in the daily DM → console accept → assign, plus optional nudges. |
+| `confirm` | off | Propose → proposal-only daily DM → accept → assign; no optional nudges. |
 
 `auto_assign=false` → never auto-assigned; the gate is irrelevant.
 
@@ -154,9 +159,19 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
 
 ### Delivery and attention integration
 
-- Digest dedupe key = `AssignmentProposal.notified_at`, stamped by a race-safe conditional
-  `UPDATE ... WHERE state='proposed' AND notified_at IS NULL` after a successful send. One DM per
-  reviewer across all repos; no separate record model.
+- Proposal prompts ride the **daily reviewer-attention DM** (doc 028's
+  `analyzer.reviewer_attention_daily`), not a separate digest: `build_reviewer_attention_reports`
+  attaches the reviewer's pending proposals as `proposal_items`, rendered as a "Proposed to you,
+  awaiting your response" section (expiry + console link) distinct from every assigned-PR section
+  (invariant 4). One DM per reviewer across all repos.
+- Send triggers: a claimed nudge category (notifications on) or an **un-notified** pending
+  proposal (transactional, bypasses the mute). Already-notified pending proposals never re-trigger
+  a DM by themselves; they ride along as context whenever another trigger fires.
+- Proposal dedupe key = `AssignmentProposal.notified_at`, stamped by a race-safe conditional
+  `UPDATE ... WHERE state='proposed' AND notified_at IS NULL` after a successful send; no separate
+  record model, and a failed send leaves the rows un-stamped for the next run's retry. Nudge
+  categories keep their own `ReviewerAttentionNotificationRecord` dedupe — the two mechanisms are
+  independent by design (a proposal is notified once per proposal, not once per queue window).
 - Message chunking uses the single shared `zulip_bot.services.zulip_client.split_message_chunks`
   (+ `MAX_MESSAGE_CHARS`), which hard-splits any oversized line so no chunk can exceed Zulip's
   ceiling and fail a send. (Previously three drifting copies; do not re-implement per call site.)
@@ -228,6 +243,10 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
   window, default 7 days); the board/pr-info "proposed" state is the only visibility, which is why
   surfacing shipped in the same phase. Placement latency for unresponsive reviewers is bounded by
   window + cooldown recompute rather than instant.
+- Proposal notification is coupled to the attention pipeline: with
+  `ANALYZER_REVIEWER_ATTENTION_ENABLED` or `_DELIVERY_ENABLED` off, proposals are created but
+  never DM'd (the console still shows them). The upside is one daily DM per reviewer and one
+  delivery/dedupe/chunking path instead of two.
 - Two assignment pipelines coexist (legacy apply, gate propose). The code-level yield rule removes
   the bypass risk, at the cost of the apply task being a silent no-op in a both-enabled
   misconfiguration (it logs an error explaining why).
@@ -244,25 +263,27 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
 ## Operational Notes
 
 - **Settings** (all in `settings/base.py` + `.env.example`): flags
-  `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` / `_DELIVERY_ENABLED` / `_ASSIGN_ON_ACCEPT_ENABLED` /
-  `_DRY_RUN`; tuning `ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS` (default 7 — the **global value is
+  `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` / `_ASSIGN_ON_ACCEPT_ENABLED` / `_DRY_RUN`; tuning
+  `ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS` (default 7 — the **global value is
   honored as-is**; only the per-reviewer `notification_settings` override is clamped ≥7),
   `_EXPIRE_COOLDOWN_DAYS` (14), `_PENDING_LOAD_WEIGHT` (1.0), `_ON_QUEUE_EXIT`
   (`invalidate`/`retain`); schedules `ANALYZER_ASSIGNMENT_PROPOSE_*` (daily 00:45 UTC),
-  `ANALYZER_ASSIGNMENT_DELIVER_*` (daily 01:00 UTC),
   `ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS` (3600). The expiry sweep is essential
   maintenance: not gated by the master switch (flipping the gate off lets proposals drain) and
-  performs no GitHub writes.
+  performs no GitHub writes. Proposal DMs ride the reviewer-attention pipeline, so notifying
+  reviewers requires doc 028's `ANALYZER_REVIEWER_ATTENTION_ENABLED` +
+  `ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED` (there is no proposal-specific delivery flag).
 - **Deploy prerequisites:** set `QUEUEBOARD_BASE_URL` (console links + OAuth `redirect_uri`);
   register the GitHub OAuth App callback at the **site root** so both the registration and
   console callback paths are covered (`docs/zulip_github_oauth_setup.md`).
 - **Rollout** (staged, per the 028 discipline; pending): flip selected reviewers to `confirm` via
-  the bulk admin action → `_DRY_RUN=1` and inspect propose/deliver output → enable `_ENABLED` →
-  `_DELIVERY_ENABLED` → `_ASSIGN_ON_ACCEPT_ENABLED`; disable the legacy
-  `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED`. Staging end-to-end (digest DM → console sign-in →
-  accept → assignee lands + `ReviewerAssignmentApplication` recorded → second propose run no-op)
-  remains a manual step — tests mock GitHub/Zulip.
-- **Management commands:** `propose_reviewer_assignments` / `deliver_assignment_proposals`
+  the bulk admin action → `_DRY_RUN=1` and inspect propose output → enable `_ENABLED` → ensure the
+  attention pipeline delivers (`ANALYZER_REVIEWER_ATTENTION_ENABLED` + `_DELIVERY_ENABLED`) →
+  `_ASSIGN_ON_ACCEPT_ENABLED`; disable the legacy
+  `ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED`. Staging end-to-end (attention DM with the proposal
+  section → console sign-in → accept → assignee lands + `ReviewerAssignmentApplication` recorded →
+  second propose run no-op) remains a manual step — tests mock GitHub/Zulip.
+- **Management commands:** `propose_reviewer_assignments`
   (`--repo o/n`, `--dry-run`, `--enable`); `backfill_reviewer_opt_outs`.
 - Keep the 21-day auto-unassign backstop for accepted-but-then-stale PRs; for `confirm` reviewers
   the clock starts at acceptance.
@@ -272,8 +293,9 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
 - Re-confirm ~10 days after `awaiting-author` is removed (maps onto the attention sweep's
   queue-re-entry reset).
 - Throughput cap ("reviewed X PRs in 30 days → pause auto-assign") — a separate capacity input.
-- Email channel (Zulip-first today); unifying the proposal digest with the attention DM;
-  console-only `confirm` (`confirmation_prompts_enabled`) — YAGNI until a reviewer asks.
+- Email channel (Zulip-first today); console-only `confirm` (`confirmation_prompts_enabled`) —
+  YAGNI until a reviewer asks. (The once-deferred "unify the proposal digest with the attention
+  DM" has since shipped: the digest task was removed and proposals ride the daily attention DM.)
 - "(N prior proposals)" hint on default views (kept out of the hot snapshot build); a unified
   "assignment activity" view joining proposals with the assignment timeline.
 - Hybrid "propose, then assign anyway if all candidates time out" — revisit only if PRs sitting

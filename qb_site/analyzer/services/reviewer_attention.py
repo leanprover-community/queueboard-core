@@ -38,6 +38,22 @@ class ReviewerAttentionItem:
 
 
 @dataclass(frozen=True)
+class ReviewerProposalItem:
+    """A pending (state=proposed) assignment proposal awaiting this reviewer's decision.
+
+    ``notified`` mirrors ``AssignmentProposal.notified_at``: an un-notified proposal is what
+    triggers a transactional send; already-notified pending proposals ride along as context in
+    any report that goes out.
+    """
+
+    proposal_id: int
+    pr_number: int
+    pr_title: str
+    expires_at: datetime
+    notified: bool
+
+
+@dataclass(frozen=True)
 class ReviewerAttentionReport:
     reviewer_login: str
     reviewer_user_id: int
@@ -47,14 +63,25 @@ class ReviewerAttentionReport:
     auto_unassign_days: int
     items: tuple[ReviewerAttentionItem, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    proposal_items: tuple[ReviewerProposalItem, ...] = field(default_factory=tuple)
 
     @property
     def has_events_of_interest(self) -> bool:
         return any(item.needs_new_assignment_ping or item.needs_nudge or item.needs_auto_unassign for item in self.items)
 
     @property
+    def has_pending_proposals(self) -> bool:
+        return bool(self.proposal_items)
+
+    @property
+    def has_unnotified_proposals(self) -> bool:
+        return any(not proposal.notified for proposal in self.proposal_items)
+
+    @property
     def has_notifications_to_send(self) -> bool:
-        return self.notifications_enabled and self.has_events_of_interest
+        # Optional attention nudges honor the notifications opt-in; proposal prompts are
+        # transactional (design doc 050) and must reach the reviewer even when nudges are muted.
+        return (self.notifications_enabled and self.has_events_of_interest) or self.has_unnotified_proposals
 
 
 def build_reviewer_attention_reports(
@@ -180,6 +207,27 @@ def build_reviewer_attention_reports(
             if prev is None or decided_at > prev:
                 console_accept_decided_at[key] = decided_at
 
+    # Pending acceptance-gate proposals (design doc 050) surface in the same report. PR titles come
+    # from the open-PR set already loaded; a proposal's PR is open by construction (the expiry sweep
+    # supersedes proposals on closed/merged PRs), so the fallback label is a transient-race guard.
+    proposals_by_reviewer: dict[str, list[ReviewerProposalItem]] = {}
+    proposal_rows = AssignmentProposal.objects.filter(
+        repository=repository,
+        state=AssignmentProposal.STATE_PROPOSED,
+    ).order_by("expires_at", "pr_number", "id")
+    for proposal in proposal_rows:
+        pr_number = int(proposal.pr_number)
+        pr = pr_by_number.get(pr_number)
+        proposals_by_reviewer.setdefault(_normalize_login(proposal.reviewer_login), []).append(
+            ReviewerProposalItem(
+                proposal_id=int(proposal.id),
+                pr_number=pr_number,
+                pr_title=pr.title if pr is not None else f"PR #{pr_number}",
+                expires_at=proposal.expires_at,
+                notified=proposal.notified_at is not None,
+            )
+        )
+
     reports: list[ReviewerAttentionReport] = []
     for pref in prefs:
         reviewer_login = _normalize_login(getattr(pref.user, "github_login", None))
@@ -263,6 +311,7 @@ def build_reviewer_attention_reports(
                 auto_unassign_days=policy.auto_unassign_days,
                 items=tuple(items),
                 warnings=tuple(warnings),
+                proposal_items=tuple(proposals_by_reviewer.get(reviewer_login, ())),
             )
         )
 

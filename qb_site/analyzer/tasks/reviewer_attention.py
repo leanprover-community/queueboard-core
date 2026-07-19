@@ -7,9 +7,11 @@ from typing import Any
 
 from celery import shared_task
 from django.conf import settings
+from django.urls import reverse
 from django.utils import timezone as dj_timezone
 
 from analyzer.models import (
+    AssignmentProposal,
     ReviewerAttentionAutoUnassignRecord,
     ReviewerAttentionDailyRun,
     ReviewerAttentionNotificationRecord,
@@ -18,6 +20,7 @@ from analyzer.services import build_reviewer_attention_reports
 from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
 from analyzer.services.reviewer_load import ReviewerLoad, build_reviewer_loads, format_load_line, normalize_login
 from analyzer.services.reviewer_attention_format import (
+    format_proposal_expiry,
     format_since_timestamp,
     render_consecutive_queue_time_since_assignment_line,
     render_total_queue_time_line,
@@ -26,6 +29,7 @@ from analyzer.services.reviewer_attention_format import (
 )
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_operation_tokens import resolve_github_app_operation_token
+from core.services.site_urls import build_site_url
 from core.models import Repository, User
 from core.utils.zulip_time import format_global_time
 from zulip_bot.services.zulip_client import MAX_MESSAGE_CHARS, ZulipApiError, ZulipClient, split_message_chunks
@@ -263,21 +267,24 @@ def _render_reviewer_message(
     enforcement_enabled: bool,
     unassign_outcomes: dict[tuple[int, int, int], str],
     loads_by_repo_id: dict[int, dict[str, ReviewerLoad]] | None = None,
+    console_url: str | None = None,
 ) -> str:
     loads_by_repo_id = loads_by_repo_id or {}
     reviewer_login_norm = normalize_login(reviewer_login)
     lines: list[str] = [
-        "### Assigned queue PRs that may need your attention",
+        "### Queue PRs that may need your attention",
         "",
         f"Generated at {format_global_time(_now_utc_unix())}.",
         "",
     ]
 
+    any_proposals = False
     for repo_label, report in repo_reports:
+        proposal_items = list(report.proposal_items)
         new_items = sort_by_assignment_recency([item for item in report.items if item.needs_new_assignment_ping])
         nudge_items = sort_by_queue_age([item for item in report.items if item.needs_nudge])
         unassign_items = sort_by_queue_age([item for item in report.items if item.needs_auto_unassign])
-        if not (new_items or nudge_items or unassign_items):
+        if not (proposal_items or new_items or nudge_items or unassign_items):
             continue
 
         lines.append(f"## {repo_label}")
@@ -291,6 +298,16 @@ def _render_reviewer_message(
         if load is not None:
             lines.append(format_load_line(load, include_assigned_count=True))
         lines.append("")
+        if proposal_items:
+            # Acceptance-gate proposals (design doc 050): proposed, never assigned — a distinct
+            # section so "proposed to you" is never conflated with an assignment.
+            any_proposals = True
+            lines.append(f"#### Proposed to you, awaiting your response ({len(proposal_items)})")
+            if console_url:
+                lines.append(f"Accept or decline them here: {console_url}")
+            for proposal in proposal_items:
+                lines.append(f"- PR #{proposal.pr_number}: {proposal.pr_title}")
+                lines.append(f"  - {format_proposal_expiry(proposal.expires_at)}")
         if new_items:
             lines.append(f"#### Newly assigned ({len(new_items)})")
             lines.append("Assigned recently and worth an initial pass.")
@@ -341,6 +358,12 @@ def _render_reviewer_message(
                     lines.append(f"  - assigned {format_since_timestamp(item.last_assigned_at)}")
         lines.append("")
 
+    if any_proposals:
+        lines.append(
+            "Declining a proposal opts you out of that PR. Letting it expire simply passes it to "
+            "another reviewer, and you may be proposed again later."
+        )
+        lines.append("")
     lines.append("Tips:")
     lines.append("- Unassign yourself: `unassign #<number>`")
     lines.append("- See all your assigned PRs: `assigned-prs`")
@@ -439,6 +462,8 @@ def reviewer_attention_daily_task(
         "would_new_assignment_ping": 0,
         "missing_assignment_timestamps": 0,
         "warnings": 0,
+        "pending_proposals": 0,
+        "unnotified_proposals": 0,
     }
     auto_unassign_candidates: list[dict[str, Any]] = []
     seen_auto_unassign_candidates: set[tuple[int, int, int]] = set()
@@ -460,6 +485,8 @@ def reviewer_attention_daily_task(
         would_new_assignment_ping = sum(1 for report in reports for item in report.items if item.needs_new_assignment_ping)
         missing_assignment_timestamps = sum(1 for report in reports for item in report.items if item.missing_assignment_timestamp)
         warnings = sum(len(report.warnings) for report in reports)
+        pending_proposals = sum(len(report.proposal_items) for report in reports)
+        unnotified_proposals = sum(1 for report in reports for proposal in report.proposal_items if not proposal.notified)
 
         repo_payload = {
             "repo": f"{repo.owner}/{repo.name}",
@@ -474,6 +501,8 @@ def reviewer_attention_daily_task(
             "would_new_assignment_ping": would_new_assignment_ping,
             "missing_assignment_timestamps": missing_assignment_timestamps,
             "warnings": warnings,
+            "pending_proposals": pending_proposals,
+            "unnotified_proposals": unnotified_proposals,
         }
         repos_summary.append(repo_payload)
 
@@ -494,7 +523,10 @@ def reviewer_attention_daily_task(
                             "pr_number": int(item.pr_number),
                         }
                     )
-            if not report.has_notifications_to_send:
+            # A report enters the delivery bucket when it can trigger a send (nudge events with
+            # notifications on, or un-notified proposals) OR when it carries pending proposals
+            # that should ride along as context in a DM triggered by another repo.
+            if not (report.has_notifications_to_send or report.has_pending_proposals):
                 continue
             bucket = reports_by_reviewer.setdefault(
                 int(report.reviewer_user_id),
@@ -515,6 +547,8 @@ def reviewer_attention_daily_task(
         totals["would_new_assignment_ping"] += would_new_assignment_ping
         totals["missing_assignment_timestamps"] += missing_assignment_timestamps
         totals["warnings"] += warnings
+        totals["pending_proposals"] += pending_proposals
+        totals["unnotified_proposals"] += unnotified_proposals
 
     enforcement_stats = {
         "candidates": len(auto_unassign_candidates),
@@ -614,6 +648,7 @@ def reviewer_attention_daily_task(
         "skipped_delivery_disabled": 0,
         "skipped_by_reviewer_filter": skipped_by_reviewer_filter,
         "skipped_already_sent": 0,
+        "proposals_notified": 0,
     }
 
     client: ZulipClient | None = None
@@ -631,6 +666,8 @@ def reviewer_attention_daily_task(
     if delivery_enabled and client is not None:
         for repo in repos:
             loads_by_repo_id[int(repo.id)] = build_reviewer_loads(repo)
+
+    console_url = build_site_url(reverse("console:home"))
 
     for reviewer_user_id, payload in sorted(reports_by_reviewer.items()):
         reviewer_login = str(payload["reviewer_login"])
@@ -678,27 +715,34 @@ def reviewer_attention_daily_task(
             continue
 
         reviewer_claimed_notification_keys: set[tuple[int, int, int, str, datetime]] = set()
+        unnotified_proposal_ids: list[int] = []
         filtered_repo_reports: list[tuple[str, ReviewerAttentionReport]] = []
         for repo_label, report in list(payload["repo_reports"]):
-            claimed = _claim_notification_categories(
-                run=daily_run,
-                run_date=run_date,
-                reviewer_id=reviewer_user_id,
-                report=report,
-                now_ts=now_ts,
-            )
-            if not claimed:
-                continue
+            unnotified_proposal_ids.extend(proposal.proposal_id for proposal in report.proposal_items if not proposal.notified)
+            claimed: set[tuple[int, int, int, str, datetime]] = set()
+            # Optional nudge categories honor the notifications opt-in; proposal prompts are
+            # transactional and bypass it (their dedupe is AssignmentProposal.notified_at).
+            if report.notifications_enabled:
+                claimed = _claim_notification_categories(
+                    run=daily_run,
+                    run_date=run_date,
+                    reviewer_id=reviewer_user_id,
+                    report=report,
+                    now_ts=now_ts,
+                )
             reviewer_claimed_notification_keys.update(claimed)
             filtered_report = _filter_report_for_claimed_categories(
                 report=report,
                 reviewer_id=reviewer_user_id,
                 claimed_keys=reviewer_claimed_notification_keys,
             )
-            if filtered_report.has_notifications_to_send:
+            if filtered_report.items or filtered_report.proposal_items:
                 filtered_repo_reports.append((repo_label, filtered_report))
 
-        if not filtered_repo_reports or not reviewer_claimed_notification_keys:
+        # Send only when something new triggers it: a claimed nudge category or an un-notified
+        # proposal. Already-notified pending proposals alone never re-trigger a DM; they ride
+        # along as context when another trigger fires.
+        if not filtered_repo_reports or not (reviewer_claimed_notification_keys or unnotified_proposal_ids):
             delivery_stats["skipped_already_sent"] += 1
             deliveries.append(
                 {
@@ -715,24 +759,37 @@ def reviewer_attention_daily_task(
             enforcement_enabled=enforcement_enabled,
             unassign_outcomes=unassign_outcomes,
             loads_by_repo_id=loads_by_repo_id,
+            console_url=console_url,
         )
         chunks = split_message_chunks(content=message, max_chars=MAX_MESSAGE_CHARS)
         delivery_stats["attempted"] += 1
         try:
             for chunk in chunks:
                 client.send_direct_message(to=[int(user.zulip_user_id)], content=chunk)
+            sent_ts = dj_timezone.now()
             _mark_notification_records_sent(
                 run=daily_run,
                 claimed_keys=reviewer_claimed_notification_keys,
-                now_ts=dj_timezone.now(),
+                now_ts=sent_ts,
             )
+            proposals_notified = 0
+            if unnotified_proposal_ids:
+                # Stamp only rows still proposed + un-notified so a concurrent accept/expire is
+                # never clobbered (same conditional-update discipline as every proposal writer).
+                proposals_notified = AssignmentProposal.objects.filter(
+                    id__in=unnotified_proposal_ids,
+                    state=AssignmentProposal.STATE_PROPOSED,
+                    notified_at__isnull=True,
+                ).update(notified_at=sent_ts, updated_at=sent_ts)
             delivery_stats["sent"] += 1
+            delivery_stats["proposals_notified"] += int(proposals_notified)
             deliveries.append(
                 {
                     "reviewer_user_id": reviewer_user_id,
                     "reviewer_login": reviewer_login,
                     "status": "sent",
                     "chunks": len(chunks),
+                    "proposals_notified": int(proposals_notified),
                 }
             )
         except ZulipApiError as exc:
