@@ -8,12 +8,13 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from analyzer.models import (
+    AssignmentProposal,
     QueueRuleSet,
     QueueSnapshot,
     ReviewerAttentionAutoUnassignRecord,
     ReviewerAttentionNotificationRecord,
 )
-from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport
+from analyzer.services.reviewer_attention import ReviewerAttentionItem, ReviewerAttentionReport, ReviewerProposalItem
 from analyzer.tasks.reviewer_attention import reviewer_attention_daily_task
 from core.models import Repository, ReviewerPreference, User
 from core.services.github_assignment import AssignmentMutationError
@@ -193,7 +194,7 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(mock_client.send_direct_message.call_count, 1)
         kwargs = mock_client.send_direct_message.call_args.kwargs
         self.assertEqual(kwargs["to"], [101])
-        self.assertIn("Assigned queue PRs that may need your attention", kwargs["content"])
+        self.assertIn("Queue PRs that may need your attention", kwargs["content"])
         self.assertIn("Settings:", kwargs["content"])
         self.assertIn("#### Newly assigned (1)", kwargs["content"])
         self.assertIn("#### Queue attention (1)", kwargs["content"])
@@ -954,6 +955,178 @@ class ReviewerAttentionDailyTaskTests(TestCase):
 
         self.assertEqual(res["delivery"]["stats"]["sent"], 1)
         self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
+
+    def _make_pending_proposal(self, *, pr_number: int, reviewer_login: str = "alice") -> AssignmentProposal:
+        return AssignmentProposal.objects.create(
+            repository=self.repo,
+            pr_number=pr_number,
+            reviewer_login=reviewer_login,
+            state=AssignmentProposal.STATE_PROPOSED,
+            expires_at=timezone.now() + timedelta(days=5),
+        )
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+        QUEUEBOARD_BASE_URL="https://queueboard.example.org",
+    )
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_delivery_sends_proposal_section_stamps_notified_and_dedupes(self, mock_client_cls) -> None:
+        # End-to-end through the real report builder: a muted reviewer with a pending proposal
+        # still gets the transactional proposal DM (no nudge machinery involved), the proposal is
+        # stamped notified, and the next run has nothing new to send.
+        ReviewerPreference.objects.create(user=self.user, repository=self.repo, notifications_enabled=False)
+        proposal = self._make_pending_proposal(pr_number=555, reviewer_login="Alice")
+
+        first = reviewer_attention_daily_task.apply().get()
+        second = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(first["totals"]["pending_proposals"], 1)
+        self.assertEqual(first["totals"]["unnotified_proposals"], 1)
+        self.assertEqual(first["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(first["delivery"]["stats"]["proposals_notified"], 1)
+        self.assertEqual(mock_client_cls.return_value.send_direct_message.call_count, 1)
+        content = mock_client_cls.return_value.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("#### Proposed to you, awaiting your response (1)", content)
+        self.assertIn("https://queueboard.example.org/console/", content)
+        self.assertIn("PR #555", content)
+        self.assertIn("expires <time:", content)
+        self.assertIn("Declining a proposal opts you out", content)
+        proposal.refresh_from_db()
+        self.assertIsNotNone(proposal.notified_at)
+        # No optional nudge categories were claimed for the muted reviewer.
+        self.assertEqual(ReviewerAttentionNotificationRecord.objects.count(), 0)
+        self.assertEqual(second["delivery"]["stats"]["sent"], 0)
+        self.assertEqual(second["delivery"]["stats"]["skipped_already_sent"], 1)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_failed_send_leaves_proposal_unstamped_for_retry(self, mock_client_cls) -> None:
+        ReviewerPreference.objects.create(user=self.user, repository=self.repo, notifications_enabled=True)
+        proposal = self._make_pending_proposal(pr_number=556)
+        mock_client = mock_client_cls.return_value
+        mock_client.send_direct_message.side_effect = [ZulipApiError("temporary"), {"result": "success"}]
+
+        first = reviewer_attention_daily_task.apply().get()
+        proposal.refresh_from_db()
+        self.assertEqual(first["delivery"]["stats"]["failed"], 1)
+        self.assertIsNone(proposal.notified_at)
+
+        second = reviewer_attention_daily_task.apply().get()
+        proposal.refresh_from_db()
+        self.assertEqual(second["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(second["delivery"]["stats"]["proposals_notified"], 1)
+        self.assertIsNotNone(proposal.notified_at)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_muted_reviewer_dm_carries_proposals_but_no_nudge_sections(self, mock_client_cls, mock_build_reports) -> None:
+        proposal = self._make_pending_proposal(pr_number=557)
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=False,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=datetime.now(dt_timezone.utc) - timedelta(days=16),
+                        queue_anchor_at=datetime.now(dt_timezone.utc) - timedelta(days=16),
+                        days_on_queue_since_assignment=16,
+                        total_queue_seconds=16 * 24 * 60 * 60,
+                        total_queue_days=16,
+                        needs_nudge=True,
+                    ),
+                ),
+                warnings=(),
+                proposal_items=(
+                    ReviewerProposalItem(
+                        proposal_id=proposal.id,
+                        pr_number=557,
+                        pr_title="PR 557",
+                        expires_at=proposal.expires_at,
+                        notified=False,
+                    ),
+                ),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 1)
+        content = mock_client_cls.return_value.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("#### Proposed to you, awaiting your response (1)", content)
+        self.assertNotIn("#### Queue attention", content)
+        self.assertNotIn("PR #101", content)
+        # Muted -> the optional nudge was neither claimed nor recorded.
+        self.assertEqual(ReviewerAttentionNotificationRecord.objects.count(), 0)
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED=True,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    @patch("analyzer.tasks.reviewer_attention.ZulipClient")
+    def test_already_notified_proposal_rides_along_with_triggered_nudge(self, mock_client_cls, mock_build_reports) -> None:
+        proposal = self._make_pending_proposal(pr_number=558)
+        AssignmentProposal.objects.filter(id=proposal.id).update(notified_at=timezone.now() - timedelta(days=1))
+        mock_build_reports.return_value = [
+            ReviewerAttentionReport(
+                reviewer_login="alice",
+                reviewer_user_id=self.user.id,
+                repository_id=self.repo.id,
+                notifications_enabled=True,
+                stale_nudge_days=14,
+                auto_unassign_days=21,
+                items=(
+                    ReviewerAttentionItem(
+                        pr_number=101,
+                        pr_title="PR 101",
+                        is_on_queue=True,
+                        last_assigned_at=datetime.now(dt_timezone.utc) - timedelta(days=16),
+                        queue_anchor_at=datetime.now(dt_timezone.utc) - timedelta(days=16),
+                        days_on_queue_since_assignment=16,
+                        total_queue_seconds=16 * 24 * 60 * 60,
+                        total_queue_days=16,
+                        needs_nudge=True,
+                    ),
+                ),
+                warnings=(),
+                proposal_items=(
+                    ReviewerProposalItem(
+                        proposal_id=proposal.id,
+                        pr_number=558,
+                        pr_title="PR 558",
+                        expires_at=proposal.expires_at,
+                        notified=True,
+                    ),
+                ),
+            )
+        ]
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["delivery"]["stats"]["sent"], 1)
+        self.assertEqual(res["delivery"]["stats"]["proposals_notified"], 0)
+        content = mock_client_cls.return_value.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("#### Queue attention (1)", content)
+        self.assertIn("#### Proposed to you, awaiting your response (1)", content)
 
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=True,

@@ -15,7 +15,7 @@ def split_message_chunks(*, content: str, max_chars: int = MAX_MESSAGE_CHARS) ->
     """Split a long message on line boundaries so each chunk fits Zulip's size ceiling.
 
     The shared chunker for every multi-message Zulip send (assigned-prs command, reviewer
-    attention DMs, assignment-proposal digests) — do not re-implement per call site. A single
+    attention DMs) — do not re-implement per call site. A single
     line longer than ``max_chars`` is hard-split mid-line so no chunk can ever exceed the
     ceiling and fail the whole send.
     """

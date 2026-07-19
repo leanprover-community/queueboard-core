@@ -11,7 +11,9 @@
   - `queueboard_snapshot.py` — builds and caches the full per-repo queue snapshot payload. Each PR
     entry carries a `proposal` field (`{reviewer, expires_at}` or `null`) for the acceptance-gate
     "proposed to X" state (design doc 050), surfaced distinct from `assignees`.
-  - `reviewer_attention.py` / `reviewer_attention_format.py` — per-reviewer queue attention reports and formatting helpers.
+  - `reviewer_attention.py` / `reviewer_attention_format.py` — per-reviewer queue attention reports and formatting
+    helpers. Reports also carry the reviewer's pending acceptance-gate proposals (`proposal_items`, design doc 050),
+    rendered as a distinct "Proposed to you" section of the daily DM.
   - `reviewer_load.py` — `build_reviewer_loads(repository)` / `reviewer_load_for(repository, login)`: per-reviewer
     review-load (weighted, matching the assignment engine's capacity gate, **incl. pending assignment proposals**
     per design doc 050) as of the latest cached queue snapshot, plus `format_load_line`. Single authority shared by
@@ -77,18 +79,16 @@ Celery task names (as registered via `@shared_task(name=…)`):
   the `proposal_validity` predicate and `ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT`).
   Performs no GitHub writes and is intentionally **not** gated by the master switch, so
   existing proposals keep draining.
-- `analyzer.deliver_assignment_proposals` — sends one per-reviewer Zulip DM digest
-  (design doc 050) of their pending, not-yet-notified proposals across all repos, linking
-  to the console. Dedupe is carried by `AssignmentProposal.notified_at` (stamped after a
-  successful send; no separate record model). Requires BOTH
-  `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` and `ANALYZER_ASSIGNMENT_PROPOSALS_DELIVERY_ENABLED`
-  to actually send (+ `_DRY_RUN` computes the would-send set). Reachability is
-  `core.User.zulip_user_id`. Command:
-  `manage.py deliver_assignment_proposals [--repo o/n] [--dry-run] [--enable]`.
 - `analyzer.build_area_stats` / `analyzer.refresh_area_stats`
 
 **Reviewer attention tasks**
-- `analyzer.reviewer_attention_daily` — daily sweep that computes reviewer-attention signals.
+- `analyzer.reviewer_attention_daily` — daily sweep that computes reviewer-attention signals
+  and delivers the per-reviewer DM. The DM also carries the acceptance-gate "Proposed to you"
+  section (design doc 050): pending `AssignmentProposal` rows render distinct from assigned
+  PRs, and an un-notified proposal triggers a send even for reviewers with
+  `notifications_enabled` off (proposal prompts are transactional; dedupe is
+  `AssignmentProposal.notified_at`, stamped after a successful send). There is no separate
+  proposal digest task.
 - `analyzer.reviewer_attention_cleanup` — prunes stale reviewer-attention records.
 
 Keep tasks idempotent and resumable; prefer explicit summary payloads to aid admin/task-result debugging.

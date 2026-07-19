@@ -41,6 +41,24 @@ def format_since_timestamp(ts: datetime | None, *, now: datetime | None = None) 
     return f"{format_global_time(ts)} ({format_compact_duration(total_seconds)} ago)"
 
 
+def format_proposal_expiry(expires_at: datetime, *, now: datetime | None = None) -> str:
+    """Absolute (Zulip-localized) proposal deadline plus a coarse relative hint."""
+    now_ts = now or datetime.now(timezone.utc)
+    if now_ts.tzinfo is None:
+        now_ts = now_ts.replace(tzinfo=timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    tag = format_global_time(expires_at)
+    remaining = (expires_at - now_ts).total_seconds()
+    if remaining <= 0:
+        return f"expires {tag} (expiring now)"
+    days = int(remaining // 86400)
+    if days >= 1:
+        return f"expires {tag} (in {days}d)"
+    hours = max(1, int(remaining // 3600))
+    return f"expires {tag} (in {hours}h)"
+
+
 def sort_by_assignment_recency(items: list[ReviewerAttentionItem]) -> list[ReviewerAttentionItem]:
     return sorted(
         items,
