@@ -24,10 +24,26 @@ def _reset_salt_cache() -> None:
     _cache_expires = 0.0
 
 
+class SaltUnavailable(RuntimeError):
+    """Raised when no visitor-hash salt is configured.
+
+    Callers must drop the event rather than hash without one: sha256(ip | ua) with
+    no secret is brute-forceable across the whole IPv4 space, so an unsalted hash
+    is a recoverable identifier rather than a pseudonymous one.  Collecting nothing
+    is the correct failure mode for a privacy-preserving pipeline.
+    """
+
+
 def _get_current_salt() -> str:
+    """Return the active hash salt, or "" when none is configured.
+
+    The result is cached for 60s *including* the empty one: a deployment with no
+    salt would otherwise re-query on every request, and 60s is short enough to pick
+    up the first ``rotate_salt`` write.
+    """
     global _cached_salt, _cache_expires
     now = time.monotonic()
-    if now < _cache_expires and _cached_salt:
+    if now < _cache_expires:
         return _cached_salt
     try:
         _cached_salt = SiteAnalyticsSalt.objects.latest("created_at").salt
@@ -72,8 +88,15 @@ def compute_visitor_hash(ip: str, user_agent: str) -> str:
     is replaced at the start of each month and the old value discarded, so
     hashes from different months are unlinkable even with knowledge of the
     current salt.
+
+    Raises ``SaltUnavailable`` when no salt is configured; callers must drop the
+    event rather than store an unsalted hash.
     """
     salt = _get_current_salt()
+    if not salt:
+        raise SaltUnavailable(
+            "no SiteAnalyticsSalt row exists and SITE_ANALYTICS_HASH_SALT is empty; refusing to compute an unsalted visitor hash"
+        )
     normalized_ua = user_agent.strip().lower()
     payload = f"{ip}|{normalized_ua}|{salt}"
     return hashlib.sha256(payload.encode()).hexdigest()

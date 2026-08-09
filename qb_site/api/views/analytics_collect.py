@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
@@ -11,7 +13,9 @@ from rest_framework.views import APIView
 
 from site_analytics.models import AnalyticsPageView
 from site_analytics.services.bot_filter import is_bot
-from site_analytics.services.hashing import compute_visitor_hash, get_client_ip
+from site_analytics.services.hashing import SaltUnavailable, compute_visitor_hash, get_client_ip
+
+logger = logging.getLogger(__name__)
 
 # Hard caps to guard against oversized payloads hitting DB column limits.
 _PATH_MAX = 2000
@@ -76,7 +80,18 @@ class AnalyticsCollectView(APIView):
             return _cors(Response(status=status.HTTP_204_NO_CONTENT))
 
         now = timezone.now()
-        visitor_month_hash = compute_visitor_hash(get_client_ip(request), user_agent)
+        try:
+            visitor_month_hash = compute_visitor_hash(get_client_ip(request), user_agent)
+        except SaltUnavailable:
+            # Fail closed: dropping the event is strictly better than persisting an
+            # unsalted (reversible) visitor hash. Logged at error level because this
+            # means analytics is silently collecting nothing until a salt exists.
+            logger.error(
+                "site_analytics: dropping pageview for site %r — no hash salt configured. "
+                "Set SITE_ANALYTICS_HASH_SALT or run the site_analytics.rotate_salt task.",
+                site,
+            )
+            return _cors(Response(status=status.HTTP_204_NO_CONTENT))
 
         AnalyticsPageView.objects.create(
             site=site,

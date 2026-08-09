@@ -174,3 +174,41 @@ class AnalyticsCollectViewTests(TestCase):
         self.assertEqual(resp["Access-Control-Allow-Origin"], "*")
         self.assertIn("POST", resp["Access-Control-Allow-Methods"])
         self.assertIn("Content-Type", resp["Access-Control-Allow-Headers"])
+
+
+@override_settings(SITE_ANALYTICS_ALLOWED_SITES=["test-site"], SITE_ANALYTICS_HASH_SALT="")
+class AnalyticsCollectMissingSaltTests(TestCase):
+    """With no salt configured the endpoint must drop events, not store weak hashes."""
+
+    def setUp(self) -> None:
+        self.client = APIClient()
+        _reset_salt_cache()
+
+    def tearDown(self) -> None:
+        _reset_salt_cache()
+
+    def test_event_is_dropped_when_no_salt_configured(self):
+        with self.assertLogs("api.views.analytics_collect", level="ERROR"):
+            resp = self.client.post(
+                URL,
+                {"site": "test-site", "path": "/"},
+                format="json",
+                HTTP_USER_AGENT="Mozilla/5.0",
+            )
+        # 204 keeps the browser beacon quiet; the row must not exist.
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.count(), 0)
+
+    def test_no_unsalted_hash_is_ever_persisted(self):
+        import hashlib
+
+        with self.assertLogs("api.views.analytics_collect", level="ERROR"):
+            self.client.post(
+                URL,
+                {"site": "test-site", "path": "/"},
+                format="json",
+                HTTP_USER_AGENT="Mozilla/5.0",
+                REMOTE_ADDR="203.0.113.7",
+            )
+        unsalted = hashlib.sha256(b"203.0.113.7|mozilla/5.0|").hexdigest()
+        self.assertFalse(AnalyticsPageView.objects.filter(visitor_month_hash=unsalted).exists())

@@ -11,6 +11,7 @@
 - `models/monthly_metric.py` — `AnalyticsMonthlyMetric` (added in A4).
 - `models/salt.py` — `SiteAnalyticsSalt` single-row table holding the current month's hash salt.
 - `services/` — hashing, bot filtering, aggregation logic.
+- `checks.py` — Django system checks (registered in `apps.py:ready()`).
 - `tasks/` — periodic Celery tasks for aggregation, pruning, and salt rotation.
 - `tests/` — unit and integration tests.
 - API ingestion view: `qb_site/api/views/analytics_collect.py` (added in A2).
@@ -34,6 +35,8 @@ Celery task names (as registered via `@shared_task(name=…)`):
 
 ## Privacy Invariants
 - Raw IP addresses are never stored.
+- **Ingestion fails closed without a salt.** `compute_visitor_hash` raises `SaltUnavailable` when neither a `SiteAnalyticsSalt` row nor `SITE_ANALYTICS_HASH_SALT` is set, and the collect view drops the event (204 + error log) rather than persist an unsalted hash — `sha256(ip | ua)` with no secret is brute-forceable over the IPv4 space, so it would be a recoverable identifier, not a pseudonymous one. Collecting nothing is the correct failure mode.
+- A deploy-time system check (`site_analytics.E001`, in `checks.py`) fails `manage.py check`/`migrate` when `SITE_ANALYTICS_ALLOWED_SITES` is non-empty but no salt is set. It is gated on allowed-sites because analytics is opt-in, and reads settings only — never the DB, since `migrate` runs checks before `SiteAnalyticsSalt` exists. Gunicorn does not run system checks on boot, so the runtime guarantee is `SaltUnavailable`, not this check.
 - `visitor_month_hash = sha256(ip | normalized_user_agent | salt)` where `salt` is the current month's randomly generated value from `SiteAnalyticsSalt`.
 - The salt is replaced at month start and the old value deleted, so hashes from different months are unlinkable even with knowledge of the current salt (forward secrecy).
 - IP is extracted from `X-Forwarded-For` taking `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` entries from the **right** (proxies append; the leftmost entries are client-supplied and spoofable), falling back to `REMOTE_ADDR`. Set the count to 0 when the app is exposed directly.
