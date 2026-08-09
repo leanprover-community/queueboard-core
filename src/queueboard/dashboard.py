@@ -467,6 +467,18 @@ def _make_html_header(analytics_host: str = "") -> str:
 <body>"""
 
 
+def _js_string(value: str) -> str:
+    """Return |value| as a JavaScript string literal, safe to embed in an inline <script>.
+
+    json.dumps handles quote/backslash escaping and (via ensure_ascii) the U+2028/U+2029
+    line terminators that are legal in JSON but not in JS string literals. The angle
+    brackets and ampersand are escaped on top of that so a value containing "</script>"
+    cannot terminate the surrounding tag early.
+    """
+    literal = json.dumps(value)
+    return literal.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
 def _make_analytics_snippet(host: str, site: str) -> str:
     """Return the privacy notice paragraph and pageview tracking <script> block for injection before </body>."""
     endpoint = f"{host.rstrip('/')}/api/v1/analytics/collect"
@@ -474,9 +486,9 @@ def _make_analytics_snippet(host: str, site: str) -> str:
     script = (
         "<script>\n"
         "(function () {\n"
-        f"  var endpoint = '{endpoint}';\n"
+        f"  var endpoint = {_js_string(endpoint)};\n"
         "  var payload = JSON.stringify({\n"
-        f"    site: '{site}',\n"
+        f"    site: {_js_string(site)},\n"
         "    path: window.location.pathname,\n"
         "    referrer: document.referrer || ''\n"
         "  });\n"
