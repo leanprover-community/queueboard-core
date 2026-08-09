@@ -10,6 +10,8 @@
 - New Django app `site_analytics` with four models, a REST ingestion endpoint, and four Celery periodic tasks.
 - Site allowlist (`SITE_ANALYTICS_ALLOWED_SITES`) gates ingestion; no per-site auth tokens in v1.
 - Reporting reads from aggregate tables only; raw rows are bounded-retention scratch space.
+- No rate limiting in v1 — first rollout is to internally-used sites. See [Deferred: rate limiting](#deferred-rate-limiting-on-the-collection-endpoint) for the rationale, the trigger to revisit, and the intended shape.
+- Ingestion fails closed rather than degrading: with no salt available, events are dropped, not stored under a weak hash.
 
 ## Architecture
 
@@ -36,9 +38,11 @@
 - Raw IP not stored. `visitor_month_hash = sha256(ip | normalized_ua | salt)`.
 - Fields joined with `|` to prevent cross-field hash collisions.
 - UA is lowercased before hashing so casing variation in the same browser does not inflate unique-visitor counts.
-- IP extracted from `X-Forwarded-For` (leftmost address; set by Heroku routing and most reverse proxies), falling back to `REMOTE_ADDR` for direct connections.
+- IP extracted from `X-Forwarded-For` taking `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` entries from the **right** (default 1), falling back to `REMOTE_ADDR` for direct connections. Proxies *append* the address they received the connection from, so with one hop (Heroku's router) the rightmost entry is the only trustworthy one; everything to its left is a client-supplied claim. Reading the leftmost entry — as v1 originally did — let any visitor send an arbitrary `X-Forwarded-For` and mint a fresh `visitor_month_hash` per request, inflating unique-visitor counts at zero cost. Set the count to `0` when the app is exposed directly, which ignores the header entirely.
 - Cross-month correlation is prevented by monthly salt rotation: the salt is replaced at the start of each month and the old value discarded, so hashes from different months are unlinkable even with knowledge of the current salt (forward secrecy against salt leakage).
 - Salt is stored in `SiteAnalyticsSalt` (DB, one live row). `SITE_ANALYTICS_HASH_SALT` env var is the fallback until the first rotation task runs. **Changing the separator invalidates all historical hashes.**
+- **Ingestion fails closed with no salt.** `compute_visitor_hash` raises `SaltUnavailable` when neither source yields a salt, and the view drops the event (`204` + error log) rather than persist the hash. An unsalted `sha256(ip | ua)` is brute-forceable across the IPv4 space, so it is a recoverable identifier, not a pseudonymous one — collecting nothing is the correct failure mode for this pipeline. This is the runtime guarantee, and it also covers the salt row disappearing after boot.
+- A deploy-time system check (`site_analytics.E001`, `site_analytics/checks.py`) fails `manage.py check` and `migrate` when `SITE_ANALYTICS_ALLOWED_SITES` is non-empty but no salt is configured, so a misconfigured deploy stops in the release phase. It is gated on allowed-sites because analytics is opt-in (CI and dev are unaffected), and reads settings only — never the DB, since `migrate` runs checks before `SiteAnalyticsSalt` exists. Gunicorn does not run system checks when loading the WSGI app, which is why the check alone is not sufficient.
 
 ### Bot filtering
 - Substring denylist in `site_analytics/services/bot_filter.py` matched against lowercased UA.
@@ -60,6 +64,8 @@
 ## Invariants
 - Reporting reads must come from aggregate tables, not raw pageview scans.
 - Hashing semantics (field separator `|`, UA normalization, salt source) are part of the privacy contract; any change requires an explicit migration note and bumps all historical hashes.
+- A visitor hash is never persisted without a salt. Any future caller of `compute_visitor_hash` must let `SaltUnavailable` propagate or drop the event — never fall back to an unsalted digest.
+- Client-supplied headers are never trusted for visitor identity. `X-Forwarded-For` is attacker-controlled to the left of the hops we actually run behind; anything deriving identity (hashing today, rate-limit keys later) must go through `get_client_ip` rather than reading the header directly.
 - Aggregation tasks must remain idempotent and safe under retries and overlapping runs.
 - All date/time boundaries use UTC. `occurred_at__date=d` with `USE_TZ=True` and `TIME_ZONE=UTC` evaluates at UTC midnight in PostgreSQL.
 - `site` slugs must remain stable; renames require an explicit backfill of both raw rows and aggregate tables.
@@ -69,9 +75,10 @@
 ### Key settings (all env-overridable)
 | Setting | Default | Notes |
 |---|---|---|
-| `SITE_ANALYTICS_HASH_SALT` | `""` | Required in production; empty disables hash safety in dev |
-| `SITE_ANALYTICS_ALLOWED_SITES` | `""` | Comma-separated slugs; empty list rejects all traffic |
+| `SITE_ANALYTICS_HASH_SALT` | `""` | Bootstrap salt until `rotate_salt` first runs. Empty **drops all events** (fail closed), and fails `check`/`migrate` when allowed-sites is set |
+| `SITE_ANALYTICS_ALLOWED_SITES` | `""` | Comma-separated slugs; empty list rejects all traffic (and disables the salt check) |
 | `SITE_ANALYTICS_RETENTION_DAYS` | `540` | ~18 months of raw row retention |
+| `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` | `1` | Proxy hops in front of the app; trusts that many `X-Forwarded-For` entries from the right. `0` ignores the header |
 | `SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS` | `3600` | Set to `0` to disable |
 | `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` | `86400` | Set to `0` to disable |
 | `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` | `86400` | Set to `0` to disable |
@@ -148,8 +155,50 @@ This system is designed to minimise regulatory obligations, but the picture is n
 - Per-site auth tokens.
 - Per-path monthly aggregates (`top_paths_json` field on `AnalyticsMonthlyMetric`).
 - Top-referrer aggregates (`top_referrers_json`).
-- DRF throttle policy on the collection endpoint.
 - Partitioning `AnalyticsPageView` by month at higher volumes.
+
+### Deferred: rate limiting on the collection endpoint
+
+**Decision.** Ship v1 without a throttle. First rollout targets sites used mainly
+internally, where the incentive to inflate counts and the cost exposure from an
+anonymous write endpoint are both close to nil.
+
+**Trigger to revisit — going public / funder-facing, not a date.** That is when both
+risks actually appear. Two properties make the deferral safe until then:
+
+- *It is additive.* Throttling is entirely server-side: same endpoint, same payload,
+  same tracking snippet. Since the snippet is baked into generated Pages HTML by a
+  workflow in the `queueboard` repo, anything requiring a client change (tokens,
+  batching, backoff) would be the expensive kind of retrofit. This is not that.
+- *Adding a cache later has no blast radius.* Nothing in the project currently uses
+  `django.core.cache` (the in-process dicts in `core`/`zulip_bot` are plain
+  dictionaries), and sessions are DB-backed with no `SESSION_ENGINE` override, so
+  introducing a `default` cache will not silently change existing behavior.
+
+**Shape when we do it.** DRF `SimpleRateThrottle` subclass scoped to this view, plus a
+Redis-backed `CACHES` entry on a *different* DB index from the Celery broker. Two
+things must not be missed:
+
+- Throttling is backed entirely by `django.core.cache`. On the current implicit
+  per-process `LocMemCache` the effective limit becomes N × rate across N gunicorn
+  workers and resets on restart — a throttle without a shared cache is decorative.
+- Override `get_cache_key` to use `get_client_ip` rather than DRF's default
+  `get_ident`, which (with `NUM_PROXIES` unset) keys on the whole `X-Forwarded-For`
+  chain. That is client-controlled, so a caller could mint a fresh throttle bucket per
+  request — the same defect this doc records for visitor hashing above. Setting
+  `NUM_PROXIES = 1` also works, but reusing `get_client_ip` keeps one definition of
+  caller identity.
+
+**Scope limits, so this is not oversold.** A per-IP throttle caps a single-source
+flood. It does not stop distributed inflation, nor a patient drip staying under the
+limit; the endpoint is unauthenticated and CORS-open by design. Set the limit
+generously — shared NAT (campus, corporate egress, mobile CGNAT) presents as one IP.
+
+**What does not rewind.** Raw pageviews prune at `SITE_ANALYTICS_RETENTION_DAYS`, but
+daily/monthly aggregate rows persist indefinitely. Repairing polluted counts means
+recomputing aggregates from raw rows, which only works while those rows are still
+inside the retention window. This is the concrete reason to have a throttle in place
+*before* the numbers are reported to anyone, rather than after.
 
 ## References
 - `qb_site/site_analytics/` — app source
