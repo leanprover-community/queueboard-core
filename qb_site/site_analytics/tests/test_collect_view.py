@@ -96,7 +96,7 @@ class AnalyticsCollectViewTests(TestCase):
     # --- XFF extraction ---
 
     def test_xff_used_for_hash_differs_from_remote_addr(self):
-        """Two requests with different XFF but same REMOTE_ADDR → different hashes."""
+        """Two visitors behind the proxy (distinct appended XFF) → different hashes."""
         self._post(
             {"site": "test-site", "path": "/"},
             REMOTE_ADDR="10.0.0.1",
@@ -110,6 +110,23 @@ class AnalyticsCollectViewTests(TestCase):
         hashes = list(AnalyticsPageView.objects.values_list("visitor_month_hash", flat=True))
         self.assertEqual(len(hashes), 2)
         self.assertNotEqual(hashes[0], hashes[1])
+
+    def test_client_cannot_inflate_unique_visitors_by_spoofing_xff(self):
+        """A client prepending its own XFF entries must still hash to one visitor.
+
+        The proxy appends the real address, so only the rightmost entry is trusted;
+        otherwise a single visitor could mint a fresh hash on every request.
+        """
+        for spoofed in ("1.1.1.1", "2.2.2.2", "3.3.3.3"):
+            self._post(
+                {"site": "test-site", "path": "/"},
+                REMOTE_ADDR="10.0.0.1",
+                HTTP_X_FORWARDED_FOR=f"{spoofed}, 203.0.113.9",
+                HTTP_USER_AGENT="Mozilla/5.0",
+            )
+        hashes = set(AnalyticsPageView.objects.values_list("visitor_month_hash", flat=True))
+        self.assertEqual(AnalyticsPageView.objects.count(), 3)
+        self.assertEqual(len(hashes), 1, "spoofed X-Forwarded-For entries changed the visitor hash")
 
     # --- field truncation ---
 

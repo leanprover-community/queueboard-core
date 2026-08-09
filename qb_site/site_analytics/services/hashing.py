@@ -39,15 +39,28 @@ def _get_current_salt() -> str:
 
 
 def get_client_ip(request: HttpRequest) -> str:
-    """Return the client IP address.
+    """Return the client IP address, trusting only the proxy hops we run behind.
 
-    Prefers the leftmost address in X-Forwarded-For (set by Heroku's routing
-    layer and most reverse proxies).  Falls back to REMOTE_ADDR for direct
-    connections (local dev, tests).
+    X-Forwarded-For is client-controlled: a caller may send any value it likes, and
+    each proxy *appends* the address it received the connection from.  Heroku's router
+    appends the connecting IP, so with one proxy hop the rightmost entry is the only
+    one we can trust; the leftmost is whatever the client chose to claim.  Reading the
+    leftmost entry would let a visitor mint a fresh ``visitor_month_hash`` per request
+    and inflate unique-visitor counts at will.
+
+    ``SITE_ANALYTICS_TRUSTED_PROXY_COUNT`` is the number of proxies in front of this
+    app; we take that many entries from the right.  Set it to 0 when the app is exposed
+    directly (no proxy), in which case X-Forwarded-For is ignored entirely and only
+    REMOTE_ADDR is used.
     """
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "").strip()
-    if xff:
-        return xff.split(",")[0].strip()
+    num_proxies = settings.SITE_ANALYTICS_TRUSTED_PROXY_COUNT
+    if num_proxies > 0:
+        xff = request.META.get("HTTP_X_FORWARDED_FOR", "").strip()
+        addrs = [part.strip() for part in xff.split(",") if part.strip()]
+        if addrs:
+            # Clamp to the chain length so a shorter-than-expected chain still yields
+            # the leftmost real entry rather than raising IndexError.
+            return addrs[-min(num_proxies, len(addrs))]
     return request.META.get("REMOTE_ADDR", "")
 
 

@@ -19,6 +19,7 @@
 - `SITE_ANALYTICS_HASH_SALT` — fallback salt used until the first `rotate_salt` task runs and writes a DB salt. Required on first deploy; thereafter the `SiteAnalyticsSalt` DB row takes precedence.
 - `SITE_ANALYTICS_ALLOWED_SITES` — comma-separated site slugs; unknown slugs rejected with `400`.
 - `SITE_ANALYTICS_RETENTION_DAYS` — raw pageview retention window (default 540 days / ~18 months).
+- `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` — reverse-proxy hops in front of the app (default 1, matching Heroku's router). Controls how many `X-Forwarded-For` entries from the right are trusted; 0 ignores the header entirely.
 - `SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS` — beat period for daily aggregation task (default 3600).
 - `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` — beat period for monthly aggregation task (default 86400).
 - `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` — beat period for retention pruning task (default 86400).
@@ -35,7 +36,7 @@ Celery task names (as registered via `@shared_task(name=…)`):
 - Raw IP addresses are never stored.
 - `visitor_month_hash = sha256(ip | normalized_user_agent | salt)` where `salt` is the current month's randomly generated value from `SiteAnalyticsSalt`.
 - The salt is replaced at month start and the old value deleted, so hashes from different months are unlinkable even with knowledge of the current salt (forward secrecy).
-- IP is extracted from `X-Forwarded-For` (Heroku / reverse-proxy header) falling back to `REMOTE_ADDR`.
+- IP is extracted from `X-Forwarded-For` taking `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` entries from the **right** (proxies append; the leftmost entries are client-supplied and spoofable), falling back to `REMOTE_ADDR`. Set the count to 0 when the app is exposed directly.
 - Changing hashing semantics requires an explicit migration/versioning note in the design doc.
 
 ## Backup Policy

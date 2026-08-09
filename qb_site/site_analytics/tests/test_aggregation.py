@@ -123,9 +123,7 @@ class AggregateDailyMetricsTaskTests(TestCase):
     def test_task_returns_summary_dict(self, mock_now):
         # Pin the clock so the task's default date=timezone.now().date() matches
         # the pageview date, avoiding midnight-boundary flakiness.
-        mock_now.return_value = datetime.datetime(
-            TODAY.year, TODAY.month, TODAY.day, 12, 0, 0, tzinfo=datetime.timezone.utc
-        )
+        mock_now.return_value = datetime.datetime(TODAY.year, TODAY.month, TODAY.day, 12, 0, 0, tzinfo=datetime.timezone.utc)
         _pv("s1", "/", TODAY, "h1")
         result = aggregate_daily_metrics_task(days_back=1)
         self.assertIn("upserted", result)

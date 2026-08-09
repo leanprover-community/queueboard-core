@@ -26,17 +26,27 @@ class GetClientIpTests(TestCase):
         req = self._make_request(remote_addr="1.2.3.4")
         self.assertEqual(get_client_ip(req), "1.2.3.4")
 
-    def test_xff_takes_precedence_over_remote_addr(self):
-        req = self._make_request(remote_addr="10.0.0.1", xff="5.6.7.8, 10.0.0.1")
-        self.assertEqual(get_client_ip(req), "5.6.7.8")
+    def test_rightmost_xff_entry_is_trusted(self):
+        # The proxy appends the address it saw, so the rightmost entry is the only
+        # trustworthy one; "5.6.7.8" here is a client-supplied claim.
+        req = self._make_request(remote_addr="10.0.0.1", xff="5.6.7.8, 203.0.113.9")
+        self.assertEqual(get_client_ip(req), "203.0.113.9")
+
+    def test_spoofed_leftmost_entries_are_ignored(self):
+        # A client prepending junk must not be able to change the derived IP: both
+        # requests below must resolve to the same address the proxy appended.
+        req1 = self._make_request(remote_addr="10.0.0.1", xff="1.1.1.1, 203.0.113.9")
+        req2 = self._make_request(remote_addr="10.0.0.1", xff="2.2.2.2, 203.0.113.9")
+        self.assertEqual(get_client_ip(req1), get_client_ip(req2))
+        self.assertEqual(get_client_ip(req1), "203.0.113.9")
 
     def test_xff_single_address(self):
         req = self._make_request(remote_addr="10.0.0.1", xff="9.9.9.9")
         self.assertEqual(get_client_ip(req), "9.9.9.9")
 
     def test_xff_strips_whitespace(self):
-        req = self._make_request(xff="  203.0.113.5 , 10.0.0.1")
-        self.assertEqual(get_client_ip(req), "203.0.113.5")
+        req = self._make_request(xff="  203.0.113.5 , 10.0.0.2  ")
+        self.assertEqual(get_client_ip(req), "10.0.0.2")
 
     def test_empty_xff_falls_back_to_remote_addr(self):
         req = self._make_request(remote_addr="1.2.3.4", xff="")
@@ -45,6 +55,21 @@ class GetClientIpTests(TestCase):
     def test_missing_both_returns_empty_string(self):
         req = self._make_request()
         self.assertEqual(get_client_ip(req), "")
+
+    @override_settings(SITE_ANALYTICS_TRUSTED_PROXY_COUNT=0)
+    def test_xff_ignored_entirely_when_no_trusted_proxies(self):
+        req = self._make_request(remote_addr="10.0.0.1", xff="5.6.7.8, 203.0.113.9")
+        self.assertEqual(get_client_ip(req), "10.0.0.1")
+
+    @override_settings(SITE_ANALYTICS_TRUSTED_PROXY_COUNT=2)
+    def test_two_trusted_proxies_take_second_from_right(self):
+        req = self._make_request(remote_addr="10.0.0.1", xff="1.1.1.1, 203.0.113.9, 10.0.0.5")
+        self.assertEqual(get_client_ip(req), "203.0.113.9")
+
+    @override_settings(SITE_ANALYTICS_TRUSTED_PROXY_COUNT=3)
+    def test_short_chain_clamps_to_leftmost_entry(self):
+        req = self._make_request(remote_addr="10.0.0.1", xff="203.0.113.9, 10.0.0.5")
+        self.assertEqual(get_client_ip(req), "203.0.113.9")
 
 
 @override_settings(SITE_ANALYTICS_HASH_SALT="test-salt")
