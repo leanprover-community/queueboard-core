@@ -17,7 +17,9 @@ class AnalyticsPageView(models.Model):
     referrer = models.CharField(max_length=2000, blank=True, default="")
     user_agent = models.CharField(max_length=1000, blank=True, default="")
     occurred_at = models.DateTimeField(default=timezone.now)
-    # sha256(ip + normalized_user_agent + YYYY-MM + salt) — no raw IP stored
+    # sha256(ip | normalized_user_agent | salt) — no raw IP stored. The month is not
+    # part of the payload: unlinkability across months comes from rotating the salt
+    # itself (see SiteAnalyticsSalt and the site_analytics.rotate_salt task).
     visitor_month_hash = models.CharField(max_length=64)
 
     class Meta:
