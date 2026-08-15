@@ -58,7 +58,7 @@ def _login_or_empty(actor: Any) -> str:
     return str(login) if login else ""
 
 
-def _actor_type_or_none(actor: Any) -> Optional[str]:
+def actor_type_or_none(actor: Any) -> Optional[str]:
     """Return ``actor.__typename`` when it is a known account kind, else ``None``.
 
     The allowed set is derived from ``PRActorType.values`` so the helper cannot
@@ -72,7 +72,7 @@ def _actor_type_or_none(actor: Any) -> Optional[str]:
     return tn if tn in PRActorType.values else None
 
 
-def _actor_node_id_or_none(actor: Any) -> Optional[str]:
+def actor_node_id_or_none(actor: Any) -> Optional[str]:
     """Return the actor's GraphQL node id, or ``None`` when absent."""
     if not isinstance(actor, dict):
         return None
@@ -88,8 +88,8 @@ def _actor_identity(actor: Any) -> Dict[str, Optional[str]]:
     this is a normal outcome, not an error path.
     """
     return {
-        "actor_type": _actor_type_or_none(actor),
-        "actor_node_id": _actor_node_id_or_none(actor),
+        "actor_type": actor_type_or_none(actor),
+        "actor_node_id": actor_node_id_or_none(actor),
     }
 
 
@@ -196,8 +196,8 @@ def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             # Denormalized so _synthesize_dismissed_review_parent can type the
             # row it materializes; there is no other source for it, since the
             # synthesized row is built entirely from this extra blob.
-            extra["dismissed_review_author_type"] = _actor_type_or_none(review.get("author"))
-            extra["dismissed_review_author_node_id"] = _actor_node_id_or_none(review.get("author"))
+            extra["dismissed_review_author_type"] = actor_type_or_none(review.get("author"))
+            extra["dismissed_review_author_node_id"] = actor_node_id_or_none(review.get("author"))
         fields["extra"] = extra
     elif typename in ("ReviewRequestedEvent", "ReviewRequestRemovedEvent"):
         fields["actor_login"] = _login_or_empty(ev.get("actor"))
