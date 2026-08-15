@@ -241,8 +241,15 @@ class Command(BaseCommand):
         return qs
 
     def _target_repositories(self, repo: Optional[Repository]) -> List[Repository]:
+        """Repositories with at least one backfillable row.
+
+        Filtering on actual work matters even for an explicit ``--repo``:
+        constructing a client requires a token, so a no-op run would otherwise
+        fail with "GitHub token not found" instead of reporting nothing to do.
+        """
         if repo is not None:
-            return [repo]
+            has_work = self._base_queryset(repo).filter(github_node_id__isnull=False).exists()
+            return [repo] if has_work else []
         repo_ids = (
             self._base_queryset(None)
             .filter(github_node_id__isnull=False)
