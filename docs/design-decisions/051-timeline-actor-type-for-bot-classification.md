@@ -1,9 +1,9 @@
 # Timeline Actor Type for Bot Classification
 
-> Status: **Proposed** — not started. Living implementation plan; drafted from a
-> downstream (`qb-notebook`) data-quality investigation, 2026-08-12. Reviewed
-> and revised against the tree 2026-08-13 (see Progress Notes for what changed
-> and why).
+> Status: **In progress** — Chunk 1 landed. Living implementation plan; drafted
+> from a downstream (`qb-notebook`) data-quality investigation, 2026-08-12.
+> Reviewed and revised against the tree 2026-08-13 (see Progress Notes for what
+> changed and why).
 
 ## Context
 
@@ -179,6 +179,14 @@ Non-Goals:
   Adding fields to an existing selection does not change GraphQL point cost
   (cost is driven by connection `first`/`last`), so this is free on the rate
   budget.
+
+  Scope of "actor/author unions": the 12 timeline `actor` selections, the
+  `IssueComment` / `PullRequestReview` `author` selections, and the
+  `ReviewDismissedEvent`'s `review { author }` (needed for the synthesized-row
+  denormalization below). **Not** the inline-comment `author` under
+  `PullRequestReview.comments.nodes` — typing that author is an explicit
+  Non-Goal, so selecting an id we would never store is noise. The `assignee`
+  and `requestedReviewer` unions are likewise untouched.
 
 - **Extraction.** Add siblings to `_login_or_empty`:
 
@@ -530,6 +538,14 @@ denormalization rather than new signal, and what would justify revisiting it.
     GraphQL-validator registration step, and the AGENTS.md settings-hygiene
     note. Corrected the `node_kind`, `extra`-is-`{}`, `[bot]`-suffix, and
     `actor_login = ""` claims.
+- 2026-08-15: **Chunk 1 landed.** `PRActorType` + `actor_type` /
+  `actor_node_id` on `PRTimelineEvent`, migration `0054`, `id` added to the
+  actor/author unions in the three live queries, and `PRTimelineEventAdmin`
+  updated (`actor_type` in `list_display` + `list_filter`, `actor_node_id` in
+  `search_fields`, both in `readonly_fields`). One deviation from the drafted
+  wire change: the inline-comment `author` union under
+  `PullRequestReview.comments.nodes` keeps `login`-only, since typing that
+  author is a Non-Goal — recorded under Proposed Design.
 - 2026-08-13 (follow-up): archive-row `actor_login` healing **promoted from
   follow-up into scope** — the backfill resolves those nodes anyway, and it is
   the only possible fix since `pr_info.graphql` is no longer a live fetch path

@@ -3,7 +3,7 @@
 from .pull_request import PullRequest, PullRequestState  # noqa: F401
 from .label_def import LabelDef  # noqa: F401
 from .pr_label import PRLabel  # noqa: F401
-from .pr_timeline_event import PRTimelineEvent, PRTimelineEventType  # noqa: F401
+from .pr_timeline_event import PRActorType, PRTimelineEvent, PRTimelineEventType  # noqa: F401
 from .pr_review_inline_comment import PRReviewInlineComment, PRReviewInlineCommentBackfill  # noqa: F401
 from .commit_check_run import CommitCheckRun  # noqa: F401
 from .commit_status_context import CommitStatusContext  # noqa: F401

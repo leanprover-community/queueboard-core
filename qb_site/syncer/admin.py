@@ -904,6 +904,7 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "type",
         "occurred_at",
         "actor_login",
+        "actor_type",
         "label_name",
         "assignee_login",
         "requested_reviewer_login",
@@ -911,13 +912,14 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "short_before_sha",
         "short_after_sha",
     )
-    list_filter = ("pull_request__repository", "type")
+    list_filter = ("pull_request__repository", "type", "actor_type")
     search_fields = (
         "label_name",
         "pull_request__number",
         "before_sha",
         "after_sha",
         "actor_login",
+        "actor_node_id",
         "assignee_login",
         "requested_reviewer_login",
         "requested_team_slug",
@@ -933,6 +935,8 @@ class PRTimelineEventAdmin(ReadOnlyAdmin):
         "label_name",
         "assignee_login",
         "actor_login",
+        "actor_type",
+        "actor_node_id",
         "before_sha",
         "after_sha",
         "extra",
