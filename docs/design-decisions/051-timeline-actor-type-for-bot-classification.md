@@ -1,6 +1,6 @@
 # Timeline Actor Type for Bot Classification
 
-> Status: **In progress** — Chunk 1 landed. Living implementation plan; drafted
+> Status: **In progress** — Chunks 1–2 landed. Living implementation plan; drafted
 > from a downstream (`qb-notebook`) data-quality investigation, 2026-08-12.
 > Reviewed and revised against the tree 2026-08-13 (see Progress Notes for what
 > changed and why).
@@ -209,6 +209,17 @@ Non-Goals:
 
   Deriving the allowed set from `PRActorType.values` rather than a literal
   tuple keeps the helper from drifting if the choices change.
+
+  As implemented there is a third, trivial helper — `_actor_identity(actor)`
+  returning `{"actor_type": …, "actor_node_id": …}` — so each branch takes one
+  added `fields.update(...)` line instead of two, matching the `fields.update`
+  idiom already in the function. The two primitives stay separate because the
+  synthesized-parent path and the backfill command need them individually.
+
+  Note an asymmetry worth knowing: an *unmodelled* typename (a hypothetical
+  `Organization` actor) yields `actor_type = NULL` but still stores
+  `actor_node_id`. The node id is exact regardless of whether we model the
+  kind, so there is no reason to discard it.
 
   Set `fields["actor_type"]` / `fields["actor_node_id"]` at every branch of
   `_extract_event_fields` that currently sets `actor_login`. **There are two
@@ -538,6 +549,21 @@ denormalization rather than new signal, and what would justify revisiting it.
     GraphQL-validator registration step, and the AGENTS.md settings-hygiene
     note. Corrected the `node_kind`, `extra`-is-`{}`, `[bot]`-suffix, and
     `actor_login = ""` claims.
+- 2026-08-15: **Chunk 2 landed.** `_actor_type_or_none` /
+  `_actor_node_id_or_none` / `_actor_identity`, wired into all 12 branches of
+  `_extract_event_fields` that set `actor_login`, plus
+  `dismissed_review_author_type` / `_node_id` in the `REVIEW_DISMISSED` `extra`
+  and read back by `_synthesize_dismissed_review_parent`. `actor_type` and
+  `actor_node_id` added to the fill-empty allowlist. 22 new tests in
+  `syncer/tests/services/test_timeline_actor_type.py`; full `syncer` suite (501
+  tests) green on host-against-dockerized-Postgres.
+
+  One behavior worth recording: synthesis uses `get_or_create`, so a
+  synthesized parent row that already exists from a pre-051 ingest is **not**
+  retyped by a later dismiss-event re-ingest. Those rows are healed by the
+  ordinary update path if the `PullRequestReview` node itself is walked, and
+  by the Chunk 3 backfill otherwise. Left as-is rather than special-cased:
+  the backfill covers it and the fill-only convention stays uniform.
 - 2026-08-15: **Chunk 1 landed.** `PRActorType` + `actor_type` /
   `actor_node_id` on `PRTimelineEvent`, migration `0054`, `id` added to the
   actor/author unions in the three live queries, and `PRTimelineEventAdmin`
