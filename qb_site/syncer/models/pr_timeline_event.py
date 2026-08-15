@@ -26,6 +26,19 @@ class PRTimelineEventType(models.TextChoices):
     REVIEW_REQUEST_REMOVED = "REVIEW_REQUEST_REMOVED", "review_request_removed"
 
 
+class PRActorType(models.TextChoices):
+    """GraphQL ``__typename`` of a timeline actor account.
+
+    Values are GitHub's exact wire casing so they compare directly against
+    ``__typename`` (the ``requested_*`` routing in ``timeline_sync`` already
+    compares raw typenames).
+    """
+
+    USER = "User", "user"
+    BOT = "Bot", "bot"
+    MANNEQUIN = "Mannequin", "mannequin"
+
+
 class PRTimelineEvent(TimestampedModel):
     """Key timeline events for a PR used in status evolution analytics.
 
@@ -52,6 +65,19 @@ class PRTimelineEvent(TimestampedModel):
     assignee_login = models.CharField(max_length=255, null=True, blank=True)
     # Present for ASSIGNED/UNASSIGNED events when available.
     actor_login = models.CharField(max_length=255, null=True, blank=True)
+    # GraphQL __typename of the acting account, as returned by the timeline
+    # queries. NULL means *unknown*, never "User": rows ingested before this
+    # column existed, archive-imported rows whose legacy fragment omits the
+    # actor entirely, and events where GitHub itself returns a null actor
+    # (workflow-driven label events routinely do) all land here.
+    # Note "Bot" identifies a GitHub App; machine accounts that are ordinary
+    # user accounts report "User", so this is necessary but not sufficient for
+    # "was this automation?".
+    actor_type = models.CharField(max_length=16, choices=PRActorType.choices, null=True, blank=True)
+    # GraphQL node id of the acting account. Stable across login renames, so
+    # downstream automation lists should key on this rather than actor_login.
+    # NULL under the same conditions as actor_type.
+    actor_node_id = models.CharField(max_length=255, null=True, blank=True)
     # Present only for HEAD_FORCE_PUSHED events; Git commit SHAs (40 chars)
     before_sha = models.CharField(max_length=40, null=True, blank=True)
     after_sha = models.CharField(max_length=40, null=True, blank=True)

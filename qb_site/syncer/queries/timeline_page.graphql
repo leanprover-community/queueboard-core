@@ -36,64 +36,64 @@ query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int
           ... on LabeledEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             label { name }
           }
           ... on UnlabeledEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             label { name }
           }
           ... on AssignedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             assignee { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
           }
           ... on UnassignedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             assignee { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
           }
           ... on ReadyForReviewEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
           }
           ... on ConvertToDraftEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
           }
           ... on ReopenedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
           }
           ... on ClosedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
           }
           ... on HeadRefForcePushedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             beforeCommit { oid }
             afterCommit { oid }
           }
           ... on IssueComment {
             id
             createdAt
-            author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            author { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
           }
           ... on PullRequestReview {
             id
             submittedAt
             state
-            author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            author { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             comments(first: $inlineCommentsPerReview) {
               totalCount
               pageInfo { hasNextPage }
@@ -112,13 +112,13 @@ query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int
             id
             createdAt
             previousReviewState
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
-            review { id submittedAt author { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
+            review { id submittedAt author { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } } }
           }
           ... on ReviewRequestedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             requestedReviewer {
               __typename
               ... on User { login }
@@ -130,7 +130,7 @@ query PRTimelinePage($owner: String!, $name: String!, $number: Int!, $first: Int
           ... on ReviewRequestRemovedEvent {
             id
             createdAt
-            actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }
+            actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }
             requestedReviewer {
               __typename
               ... on User { login }
