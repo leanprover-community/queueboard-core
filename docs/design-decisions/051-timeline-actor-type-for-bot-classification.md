@@ -1,6 +1,8 @@
 # Timeline Actor Type for Bot Classification
 
-> Status: **In progress** — Chunks 1–2 landed. Living implementation plan; drafted
+> Status: **In progress** — Chunks 1–3 landed (backfill built and validated
+> against the live API; the drain itself has not been run). Living
+> implementation plan; drafted
 > from a downstream (`qb-notebook`) data-quality investigation, 2026-08-12.
 > Reviewed and revised against the tree 2026-08-13 (see Progress Notes for what
 > changed and why).
@@ -22,7 +24,7 @@
   then keeps only `login` and discards `__typename`.
 - Concrete downstream failure that motivated this. `qb-notebook`'s
   `DEFAULT_BOT_ACTORS` (`qb_notebook/review_states.py`) is used to find each
-  PR's first *human* review touch. The mathlib bots were renamed on
+  PR's first *human* review touch. The mathlib bots changed identity on
   **2026-02-03** and the list silently went stale:
 
   | filtered (old login) | last event | unfiltered (new login) | first event |
@@ -35,16 +37,46 @@
   (snapshot 2026-08-10): **15.7 % of first-touches were bot events**, and the
   median moved 0.261 d → 0.467 d once filtered — i.e. a reported ~41 %
   latency improvement was mostly an artifact. Six months of a wrong number
-  from a rename nobody downstream could have known about.
+  from a change nobody downstream could have known about.
+
+  **Correction, measured live 2026-08-15 (Chunk 3):** this was *not* a rename.
+  The old logins still resolve to their original accounts, and the new ones are
+  different accounts of a different kind:
+
+  | login | kind | node id |
+  | --- | --- | --- |
+  | `mathlib4-merge-conflict-bot` | `User` | `U_kgDODVl3LA` |
+  | `mathlib-merge-conflicts` | **`Bot`** | `BOT_kgDOD2_IkQ` |
+  | `mathlib4-dependent-issues-bot` | `User` | `U_kgDOCsITAQ` |
+  | `mathlib-dependent-issues` | **`Bot`** | `BOT_kgDOD2_cBQ` |
+
+  The machine-user bots were **replaced by GitHub Apps**. This matters in three
+  ways, and all three are good news for this design:
+  1. The replacements are true `Bot`s, so `actor_type` alone catches them —
+     and would catch any future App the mathlib maintainers add, with no list
+     to update.
+  2. No key, node id included, would have survived this particular
+     substitution — a new account is a new account. So `actor_node_id` is not
+     retroactively vindicated by *this* incident; it is justified by the
+     ordinary renames it does survive, and by giving the residual machine-user
+     list a stable key.
+  3. The residual machine-user list is the *old* accounts (`U_kgDODVl3LA`,
+     `U_kgDOCsITAQ`, plus `leanprover-community-bot-assistant` =
+     `U_kgDOBcsTTQ`). Those are historical and frozen, which makes keying them
+     on node id both easy and permanent.
+
+  The same probe surfaced two automation accounts not in the doc's original
+  sweep: `mathlib-triage` (`Bot`, `BOT_kgDOD2_uYQ`) and `leanprover-radar`
+  (`User`, `U_kgDOCG88RQ`).
 - Other unlisted bots found in the same sweep, all with zero API support for
   identifying them as bots: `mathlib-auto-merge`, `mathlib-splicebot`,
   `leanprover-bot`, `mergify`, `downstream-reports-automation`,
   `botbaki-review`, `copilot-pull-request-reviewer`, `copilot-swe-agent`.
-- **Login is the wrong key, and that is the root cause.** The rename broke a
-  login-keyed list. Typing the actor fixes it only for GitHub Apps; the
-  machine-user half of the list stays login-keyed and stays rename-fragile
-  (see Subtleties). Storing the actor's node id alongside the type is what
-  actually closes the motivating bug, which is why it is in scope here.
+- **Login is the wrong key, and that is the root cause.** A login-keyed list
+  breaks on any identity change. Typing the actor fixes the GitHub App half
+  outright; the machine-user half still needs a list, and keying that list on
+  node id is what keeps it from going stale again (see Subtleties). Both
+  halves are in scope here for that reason.
 - No usable substitute exists in the current export:
   - `core_user.github_node_id` (`qb_site/core/models/user.py:29`) does encode
     the account kind in its prefix (`BOT_…` / legacy `04:Bot…`), but
@@ -290,20 +322,18 @@ Non-Goals:
 ## Subtleties / Invariants
 
 - **`__typename == "Bot"` identifies GitHub *Apps*, not all automation.**
-  Machine accounts that are ordinary GitHub user accounts report `User`. Two
-  current entries in the downstream list are exactly this case —
-  `leanprover-community-mathlib4-bot` and `leanprover-community-bot-assistant`
-  both decode to `User` from their `core_user.github_node_id` prefix. So
-  `actor_type` alone is *necessary but not sufficient*, and on its own it
-  **does not close the bug that motivated this doc**: the residual
-  machine-user list would stay login-keyed and break at the next rename in
-  exactly the same way.
+  Machine accounts that are ordinary GitHub user accounts report `User`.
+  Confirmed live 2026-08-15: `leanprover-community-bot-assistant`,
+  `leanprover-radar`, and both retired mathlib bots all report `User`. So
+  `actor_type` alone is *necessary but not sufficient* — the residual
+  machine-user list shrinks but does not disappear.
 
-  `actor_node_id` is what closes it. Downstream should key its machine-user
-  list on node id; a rename then changes nothing. Say this explicitly in the
-  downstream docs, along with the fact that the list shrinks but does not
-  disappear. Bonus: the set of `(actor_login, actor_node_id)` pairs in the
-  table is a free rename history.
+  Downstream should key that residual list on `actor_node_id`, so a rename
+  changes nothing. Say this explicitly in the downstream docs, along with the
+  fact that the list survives in reduced form. Bonus: the set of
+  `(actor_login, actor_node_id)` pairs in the table is a free rename history —
+  and, read the other way, a *change* of node id under a similar-looking login
+  is the signature of an account replacement like the 2026-02-03 one.
 - **GitHub returns a null actor for a real share of events, permanently.**
   Sampled two mathlib4 PRs' last-100 timelines on 2026-08-13: of 5
   `LabeledEvent`s, **3 had `actor: null`** (`delegated`, `ready-to-merge` —
@@ -436,6 +466,26 @@ Non-Goals:
      plus `--limit` / `--batch-size`;
    - counts and reports rows skipped for NULL `github_node_id` and nodes
      GitHub returned as null/unresolvable.
+
+   As built, three things the draft did not anticipate:
+   - **Batch splitting on GraphQL errors.** One malformed or unresolvable id
+     makes GitHub reject the entire call, which would poison a 100-id batch.
+     `_resolve_ids` halves the batch on `RuntimeError` and recurses, isolating
+     the bad id in ≤ log2(n) extra calls and keeping every good id.
+   - **A named `ActorIdentity` fragment.** The query needs 13 inline fragments
+     (12 event types plus `... on Comment` for `IssueComment` /
+     `PullRequestReview`); spelling the union out 13 times would be
+     unreadable. `... on Comment` is what covers the synthesized
+     dismissed-review parents, whose stored node id is the review's.
+   - **Per-repository clients and an outer repo loop.** A single cross-repo
+     client would bypass GitHub App operation-token resolution, which every
+     other syncer entry point goes through. Scoping the drain per repo also
+     makes the per-repo canary below directly comparable to progress output.
+
+   Rate handling: the drain stops at the floor by default and is resumable
+   (the target set is `actor_type IS NULL`); `--wait-for-rate` sleeps until
+   `resetAt` for an unattended drain. Since ~6 k points exceeds the 5 000/hr
+   primary budget, expect at least one wait.
 4. **Export verification.** After one export run, confirm
    `syncer_prtimelineevent.parquet` carries `actor_type` and `actor_node_id`
    **with string dtype** (not all-NaN float64), and that the known bot logins
@@ -469,20 +519,29 @@ denormalization rather than new signal, and what would justify revisiting it.
     **not** overwritten even when GitHub now reports a different (renamed)
     login for the same account.
 - manual checks:
-  - Re-measure `rateLimit.cost` for a full 100-id `nodes(ids:)` call before
-    starting the drain, and confirm the ~6 k-point estimate.
+  - ~~Re-measure `rateLimit.cost` for a full 100-id `nodes(ids:)` call~~
+    **Done 2026-08-15: cost = 1 at the full 100-id cap** (two calls, 100 and 54
+    ids, both cost 1). The ~6 k-point estimate for ~598 k rows holds.
   - Post-backfill, `SELECT actor_login, actor_type, count(*) … GROUP BY 1,2`
-    should show `Bot` for `github-actions`, `mathlib-bors`, `bors`,
-    `mathlib-dependent-issues`, `mathlib-merge-conflicts`, `mathlib-auto-merge`,
-    `mergify`, and `User` for the machine accounts noted above.
-  - Cross-check a handful of rows against the live GraphQL response.
+    should show `Bot` for `github-actions`, `mathlib-bors`,
+    `mathlib-dependent-issues`, `mathlib-merge-conflicts`, `mathlib-triage`,
+    and `User` for the machine accounts noted above — including the two
+    *retired* mathlib bots, which are machine users, not Apps. Do **not**
+    expect the old `mathlib4-*-bot` logins to come back as `Bot`.
+  - ~~Cross-check a handful of rows against the live GraphQL response.~~
+    **Done 2026-08-15:** 154 real mathlib4 timeline node ids resolved through
+    `actor_types_by_node_ids.graphql`; every actor typed as expected, 12 of the
+    first 100 had `actor: null`, 0 unresolvable.
   - Post-deploy canary (per the syncer AGENTS.md ingestion checklist): track
     `SELECT count(*) FROM syncer_prtimelineevent WHERE actor_type IS NULL`
     per repo. It should fall steeply during the drain and then plateau at the
     genuinely-null-actor population — a plateau at the *starting* value means
     the fill-empty allowlist was missed.
-  - Confirm the `(actor_login, actor_node_id)` pairs reproduce the known
-    2026-02-03 renames (same node id, two logins).
+  - Confirm the `(actor_login, actor_node_id)` pairs reproduce the 2026-02-03
+    changeover as an account **replacement**: the retired `mathlib4-*-bot`
+    logins keep their `U_…` ids and stop appearing after 2026-02-02, and the
+    `mathlib-*` logins appear from 2026-02-03 with fresh `BOT_…` ids. (The
+    original "same node id, two logins" phrasing was wrong — see Context.)
   - Archive rows: `SELECT count(*) FROM syncer_prtimelineevent WHERE
     archive_imported_at IS NOT NULL AND coalesce(actor_login, '') = ''`
     should fall substantially during the drain, bottoming out at the
@@ -498,6 +557,8 @@ denormalization rather than new signal, and what would justify revisiting it.
   deleted accounts, organizations, and mannequins, the opposite of the
   exactness this doc wants. REST (`/users/<slug>[bot]` → `type: "Bot"`) can do
   it, but `github_client.py:66` is GraphQL-only, so that is new plumbing.
+  (Confirmed live 2026-08-15: `repositoryOwner(login: "mathlib-merge-conflicts")`
+  returns `null` precisely because that account is a `Bot`.)
   Second, and fatally, a map resolved *today* is blind to the retired logins
   (`mathlib4-merge-conflict-bot`, `leanprover-community-mathlib4-bot`) that
   motivated the whole exercise.
@@ -549,6 +610,25 @@ denormalization rather than new signal, and what would justify revisiting it.
     GraphQL-validator registration step, and the AGENTS.md settings-hygiene
     note. Corrected the `node_kind`, `extra`-is-`{}`, `[bot]`-suffix, and
     `actor_login = ""` claims.
+- 2026-08-15: **Chunk 3 landed.** `actor_types_by_node_ids.graphql` (+
+  `GitHubClient.get_timeline_actors_by_node_ids`, + validator registration),
+  and the `backfill_timeline_actor_types` command with `--repo` / `--limit` /
+  `--batch-size` / `--dry-run` / `--min-rate-remaining` / `--wait-for-rate`.
+  18 command tests. The two helpers were renamed public
+  (`actor_type_or_none` / `actor_node_id_or_none`) since the command imports
+  them; importing an underscore-private name across modules is the smell that
+  rename avoids.
+
+  Validated against the live API rather than only against fakes: the whole
+  query set (including the new one) passes `scripts/validate_github_graphql.py`,
+  a 100-id call costs 1 point, and 154 real mathlib4 node ids resolved cleanly.
+  **That probe also corrected the doc's central premise** — the 2026-02-03
+  changeover was an account replacement (machine users → GitHub Apps), not a
+  rename. See Context; the correction strengthens the `actor_type` case and
+  narrows, without eliminating, the `actor_node_id` case.
+
+  Not yet done: running the drain against production data (Chunk 4 depends on
+  it, since the parquet dtype must be checked *after* rows have values).
 - 2026-08-15: **Chunk 2 landed.** `_actor_type_or_none` /
   `_actor_node_id_or_none` / `_actor_identity`, wired into all 12 branches of
   `_extract_event_fields` that set `actor_login`, plus

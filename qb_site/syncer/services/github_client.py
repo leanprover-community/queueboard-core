@@ -195,6 +195,26 @@ class GitHubClient:
         }
         return self.execute(query, variables)
 
+    NODES_IDS_MAX = 100  # GitHub's hard cap on `nodes(ids: [...])`
+
+    def get_timeline_actors_by_node_ids(
+        self,
+        *,
+        ids: Sequence[str],
+        query_path: str = "qb_site/syncer/queries/actor_types_by_node_ids.graphql",
+    ) -> Dict[str, Any]:
+        """Re-resolve the acting account for stored timeline item node ids.
+
+        Callers read ``data.nodes[]``, each carrying ``__typename``, ``id`` and
+        either ``actor`` or ``author`` (``null`` for ids that no longer
+        resolve). Used by the actor-type backfill (design doc 051).
+        """
+        query = self._read_file(query_path)
+        node_ids = list(ids)
+        if len(node_ids) > self.NODES_IDS_MAX:
+            raise ValueError(f"nodes(ids:) accepts at most {self.NODES_IDS_MAX} ids, got {len(node_ids)}")
+        return self.execute(query, {"ids": node_ids})
+
     def get_last_rate_limit(self) -> Optional[Dict[str, Any]]:
         """Return the last seen rateLimit snapshot (if any)."""
         return self._last_rate_limit

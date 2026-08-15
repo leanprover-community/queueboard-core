@@ -11,8 +11,8 @@ from django.test import TestCase
 
 from syncer.models import PRActorType, PRTimelineEvent, PRTimelineEventType
 from syncer.services.sub.timeline_sync import (
-    _actor_node_id_or_none,
-    _actor_type_or_none,
+    actor_node_id_or_none,
+    actor_type_or_none,
     _extract_event_fields,
     _synthesize_dismissed_review_parent,
     sync_timeline_events,
@@ -32,24 +32,24 @@ def _ev(typename: str, node_id: str, **extra):
 
 class TestActorHelpers(TestCase):
     def test_known_typenames_pass_through(self) -> None:
-        self.assertEqual(_actor_type_or_none(USER), "User")
-        self.assertEqual(_actor_type_or_none(BOT), "Bot")
-        self.assertEqual(_actor_type_or_none(MANNEQUIN), "Mannequin")
+        self.assertEqual(actor_type_or_none(USER), "User")
+        self.assertEqual(actor_type_or_none(BOT), "Bot")
+        self.assertEqual(actor_type_or_none(MANNEQUIN), "Mannequin")
 
     def test_unknown_typename_is_dropped_not_stored_raw(self) -> None:
         # A future union member (Organization, EnterpriseUserAccount, …) must
         # not land in the column: NULL means unknown, and that is what it is.
-        self.assertIsNone(_actor_type_or_none({"__typename": "Organization", "id": "O_1", "login": "org"}))
+        self.assertIsNone(actor_type_or_none({"__typename": "Organization", "id": "O_1", "login": "org"}))
 
     def test_null_and_non_dict_actors(self) -> None:
         for actor in (None, "", [], {}):
-            self.assertIsNone(_actor_type_or_none(actor))
-            self.assertIsNone(_actor_node_id_or_none(actor))
+            self.assertIsNone(actor_type_or_none(actor))
+            self.assertIsNone(actor_node_id_or_none(actor))
 
     def test_node_id_is_stringified_and_empty_is_none(self) -> None:
-        self.assertEqual(_actor_node_id_or_none({"__typename": "User", "id": 12345}), "12345")
-        self.assertIsNone(_actor_node_id_or_none({"__typename": "User", "id": None}))
-        self.assertIsNone(_actor_node_id_or_none({"__typename": "User"}))
+        self.assertEqual(actor_node_id_or_none({"__typename": "User", "id": 12345}), "12345")
+        self.assertIsNone(actor_node_id_or_none({"__typename": "User", "id": None}))
+        self.assertIsNone(actor_node_id_or_none({"__typename": "User"}))
 
 
 class TestExtractEventFieldsActorIdentity(TestCase):

@@ -188,14 +188,21 @@ def main() -> int:
     timeline_payload = _post_graphql(token, timeline_query, timeline_vars)
     _require_no_errors("timeline_page.graphql", timeline_payload)
 
-    start_cursor = (
-        (timeline_payload.get("data") or {})
-        .get("repository", {})
-        .get("pullRequest", {})
-        .get("timelineItems", {})
-        .get("pageInfo", {})
-        .get("startCursor")
-    )
+    timeline_items = (timeline_payload.get("data") or {}).get("repository", {}).get("pullRequest", {}).get("timelineItems", {})
+
+    # actor_types_by_node_ids.graphql re-resolves stored timeline items by node
+    # id (design doc 051). Validate it against ids we just fetched, so the
+    # check exercises the real union rather than a synthetic id.
+    node_ids = [n.get("id") for n in (timeline_items.get("nodes") or []) if isinstance(n, dict) and n.get("id")]
+    if node_ids:
+        actor_types_query = _load_query(Path("qb_site/syncer/queries/actor_types_by_node_ids.graphql"))
+        print("Validating actor_types_by_node_ids.graphql...")
+        actor_types_payload = _post_graphql(token, actor_types_query, {"ids": node_ids})
+        _require_no_errors("actor_types_by_node_ids.graphql", actor_types_payload)
+    else:
+        print("Skipping actor_types_by_node_ids.graphql (no timeline node ids available).")
+
+    start_cursor = timeline_items.get("pageInfo", {}).get("startCursor")
     if not start_cursor:
         print("Skipping timeline_page_back.graphql (no startCursor available).")
         return 0

@@ -1,0 +1,44 @@
+# Re-resolve the acting account for stored timeline items, by node id.
+# Variables:
+#   $ids: [ID!]!  (GitHub caps `nodes(ids:)` at 100 per call)
+#
+# Used by the `backfill_timeline_actor_types` management command (design doc
+# 051) to fill `PRTimelineEvent.actor_type` / `actor_node_id` — and the
+# archive-imported rows' missing `actor_login` — on rows ingested before those
+# columns existed. This is exact rather than heuristic: it resolves the actual
+# actor object attached to each specific event, so renamed accounts resolve
+# correctly and login reuse cannot mis-type anything.
+#
+# `nodes` takes a heterogeneous id list and returns `null` in place of any id
+# that no longer resolves, so a hard-deleted comment does not fail the batch.
+
+query TimelineActorsByNodeIds($ids: [ID!]!) {
+  rateLimit { cost remaining resetAt used }
+  nodes(ids: $ids) {
+    __typename
+    id
+    # IssueComment and PullRequestReview expose `author` (via the Comment
+    # interface) rather than `actor`. This branch also covers the synthesized
+    # dismissed-review parent rows, whose stored node id *is* the review's.
+    ... on Comment { author { ...ActorIdentity } }
+    ... on LabeledEvent { actor { ...ActorIdentity } }
+    ... on UnlabeledEvent { actor { ...ActorIdentity } }
+    ... on AssignedEvent { actor { ...ActorIdentity } }
+    ... on UnassignedEvent { actor { ...ActorIdentity } }
+    ... on ReadyForReviewEvent { actor { ...ActorIdentity } }
+    ... on ConvertToDraftEvent { actor { ...ActorIdentity } }
+    ... on ReopenedEvent { actor { ...ActorIdentity } }
+    ... on ClosedEvent { actor { ...ActorIdentity } }
+    ... on HeadRefForcePushedEvent { actor { ...ActorIdentity } }
+    ... on ReviewDismissedEvent { actor { ...ActorIdentity } }
+    ... on ReviewRequestedEvent { actor { ...ActorIdentity } }
+    ... on ReviewRequestRemovedEvent { actor { ...ActorIdentity } }
+  }
+}
+
+fragment ActorIdentity on Actor {
+  __typename
+  ... on User { id login }
+  ... on Bot { id login }
+  ... on Mannequin { id login }
+}

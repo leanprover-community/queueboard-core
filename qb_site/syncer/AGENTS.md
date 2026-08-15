@@ -50,6 +50,18 @@ docker compose exec -T web python qb_site/manage.py bootstrap_archive_worklist \
 docker compose exec -T web python qb_site/manage.py resync_archive_touched_prs \
   --repo leanprover-community/mathlib4 --apply --limit 1000
 
+# Timeline actor-type backfill (design doc 051). Re-resolves each stored
+# PRTimelineEvent.github_node_id through GitHub's nodes(ids:) root field to
+# fill actor_type / actor_node_id, and fills archive rows' missing
+# actor_login in the same pass (fill-only — never overwrites a stored login).
+# A full 100-id call costs 1 GraphQL point, so the whole table is ~6k points.
+# Resumable and idempotent (target set is `actor_type IS NULL`); repeat runs
+# plateau at the genuinely-null-actor population rather than reaching zero.
+docker compose exec -T web python qb_site/manage.py backfill_timeline_actor_types \
+  --repo leanprover-community/mathlib4 --dry-run --limit 500
+# Unattended drain (sleeps until resetAt instead of stopping at the floor):
+docker compose exec -T web python qb_site/manage.py backfill_timeline_actor_types --wait-for-rate
+
 # App tests
 docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test syncer
 ```
