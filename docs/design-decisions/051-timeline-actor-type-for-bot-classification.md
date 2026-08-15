@@ -494,6 +494,32 @@ Non-Goals:
    `analytics-datasets` docs, and switch `DEFAULT_BOT_ACTORS` to be keyed on
    `actor_node_id`.
 
+   **Blocked as of 2026-08-15, and the blocker is ordering, not effort.** Every
+   assertion in this chunk reads production data that does not exist yet, so
+   nothing here can be pre-verified. It unblocks in this order:
+
+   1. Deploy chunks 1–3 and run `migrate`.
+   2. Drain, per repo, drip-fed. Start with a dry run to see the distribution
+      before writing anything:
+      ```
+      manage.py backfill_timeline_actor_types --repo leanprover-community/mathlib4 --dry-run --limit 2000
+      manage.py backfill_timeline_actor_types --wait-for-rate
+      ```
+      ~6 k points total, against 5 000/hr shared with the live syncer — expect
+      the drain to sleep through at least one reset.
+   3. Watch the two canaries in Validation Plan (the `actor_type IS NULL` count
+      per repo, and the archive-row `actor_login` count). A plateau at the
+      *starting* value means the fill-empty allowlist regressed.
+   4. Only then run the export, so the first parquet is written with values in
+      the columns and pandas infers `object`, not all-NaN `float64`.
+   5. Only then switch `DEFAULT_BOT_ACTORS` downstream.
+
+   Statically verified now, so these do not need re-checking later:
+   `EXPORT_TABLE_QUERIES["syncer_prtimelineevent"]` is `SELECT *`
+   (`backup_policy.py:135`), `scripts/validate_backup_policy.py` passes, and
+   `scripts/sanitize_backup.py` contains no reference to the table or to any
+   `actor_*` column — so both new columns flow to the export untouched.
+
 Follow-up deliberately out of scope: the same treatment for
 `PRReviewInlineComment.author_login` — see Non-Goals for why it is
 denormalization rather than new signal, and what would justify revisiting it.
@@ -610,6 +636,15 @@ denormalization rather than new signal, and what would justify revisiting it.
     GraphQL-validator registration step, and the AGENTS.md settings-hygiene
     note. Corrected the `node_kind`, `extra`-is-`{}`, `[bot]`-suffix, and
     `actor_login = ""` claims.
+- 2026-08-15: **Chunk 4 blocked on deployment, not on work.** Export coverage
+  and sanitization verified statically (see Chunk 4); everything else in the
+  chunk asserts against production rows that do not exist until the drain
+  runs. Chunk 4 now carries the ordered runbook. Note the repo-wide
+  `scripts/repo_check_compose.sh` could not run in this environment — Docker's
+  credential helper fails before the `web` image builds — so verification used
+  the documented host-against-dockerized-Postgres path plus
+  `scripts/validate_backup_policy.py` and `scripts/validate_github_graphql.py`
+  run directly.
 - 2026-08-15: **Chunk 3 landed.** `actor_types_by_node_ids.graphql` (+
   `GitHubClient.get_timeline_actors_by_node_ids`, + validator registration),
   and the `backfill_timeline_actor_types` command with `--repo` / `--limit` /
