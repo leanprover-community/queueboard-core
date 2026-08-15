@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from analyzer.services.revisions import mark_pr_revision_dirty_if_earlier
 from syncer.models.pr_review_inline_comment import PRReviewInlineComment
-from syncer.models.pr_timeline_event import PRTimelineEvent, PRTimelineEventType
+from syncer.models.pr_timeline_event import PRActorType, PRTimelineEvent, PRTimelineEventType
 from syncer.models.pull_request import PullRequest
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,41 @@ def _login_or_empty(actor: Any) -> str:
     return str(login) if login else ""
 
 
+def _actor_type_or_none(actor: Any) -> Optional[str]:
+    """Return ``actor.__typename`` when it is a known account kind, else ``None``.
+
+    The allowed set is derived from ``PRActorType.values`` so the helper cannot
+    drift from the model's choices. An unmodelled typename (a future
+    ``Organization``, say) is dropped rather than stored raw: ``None`` means
+    "unknown", and that is exactly what an unrecognized kind is.
+    """
+    if not isinstance(actor, dict):
+        return None
+    tn = actor.get("__typename")
+    return tn if tn in PRActorType.values else None
+
+
+def _actor_node_id_or_none(actor: Any) -> Optional[str]:
+    """Return the actor's GraphQL node id, or ``None`` when absent."""
+    if not isinstance(actor, dict):
+        return None
+    nid = actor.get("id")
+    return str(nid) if nid else None
+
+
+def _actor_identity(actor: Any) -> Dict[str, Optional[str]]:
+    """Return the ``actor_type`` / ``actor_node_id`` pair for one actor/author.
+
+    Both are ``None`` for a null or absent actor. GitHub returns a null actor
+    for a real share of events (workflow-driven label changes especially), so
+    this is a normal outcome, not an error path.
+    """
+    return {
+        "actor_type": _actor_type_or_none(actor),
+        "actor_node_id": _actor_node_id_or_none(actor),
+    }
+
+
 def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Translate one ``timelineItems.nodes[]`` entry into row fields.
 
@@ -104,6 +139,7 @@ def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             occurred_at=occurred_at,
             actor_login=_login_or_empty(ev.get("author")),
             inline_comment_total_count=int(total) if isinstance(total, int) else 0,
+            **_actor_identity(ev.get("author")),
         )
         return fields
 
@@ -119,11 +155,14 @@ def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if typename in ("LabeledEvent", "UnlabeledEvent"):
         fields["label_name"] = (ev.get("label") or {}).get("name")
         fields["actor_login"] = (ev.get("actor") or {}).get("login")
+        fields.update(_actor_identity(ev.get("actor")))
     elif typename in ("AssignedEvent", "UnassignedEvent"):
         fields["assignee_login"] = (ev.get("assignee") or {}).get("login")
         fields["actor_login"] = (ev.get("actor") or {}).get("login")
+        fields.update(_actor_identity(ev.get("actor")))
     elif typename in ("ReadyForReviewEvent", "ConvertToDraftEvent", "ReopenedEvent", "ClosedEvent"):
         fields["actor_login"] = (ev.get("actor") or {}).get("login")
+        fields.update(_actor_identity(ev.get("actor")))
     elif typename == "HeadRefForcePushedEvent":
         before_sha = (ev.get("beforeCommit") or {}).get("oid")
         after_sha = (ev.get("afterCommit") or {}).get("oid")
@@ -138,22 +177,31 @@ def _extract_event_fields(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         fields["before_sha"] = before_sha
         fields["after_sha"] = after_sha
         fields["actor_login"] = (ev.get("actor") or {}).get("login")
+        fields.update(_actor_identity(ev.get("actor")))
     elif typename == "IssueComment":
         fields["actor_login"] = _login_or_empty(ev.get("author"))
+        fields.update(_actor_identity(ev.get("author")))
     elif typename == "ReviewDismissedEvent":
         # Actor is the dismisser, NEVER the dismissed review's author. Review
         # may be null when the underlying review has been hard-deleted; in
         # that case omit the dismissed_review_* fields.
         fields["actor_login"] = _login_or_empty(ev.get("actor"))
+        fields.update(_actor_identity(ev.get("actor")))
         review = ev.get("review") if isinstance(ev.get("review"), dict) else None
         extra: Dict[str, Any] = {"previous_review_state": ev.get("previousReviewState")}
         if review is not None:
             extra["dismissed_review_node_id"] = review.get("id")
             extra["dismissed_review_author"] = _login_or_empty(review.get("author"))
             extra["dismissed_review_submitted_at"] = review.get("submittedAt")
+            # Denormalized so _synthesize_dismissed_review_parent can type the
+            # row it materializes; there is no other source for it, since the
+            # synthesized row is built entirely from this extra blob.
+            extra["dismissed_review_author_type"] = _actor_type_or_none(review.get("author"))
+            extra["dismissed_review_author_node_id"] = _actor_node_id_or_none(review.get("author"))
         fields["extra"] = extra
     elif typename in ("ReviewRequestedEvent", "ReviewRequestRemovedEvent"):
         fields["actor_login"] = _login_or_empty(ev.get("actor"))
+        fields.update(_actor_identity(ev.get("actor")))
         rr = ev.get("requestedReviewer") or {}
         rr_typename = rr.get("__typename") if isinstance(rr, dict) else None
         if rr_typename == "Team":
@@ -198,6 +246,12 @@ def _synthesize_dismissed_review_parent(pr: PullRequest, dismiss_extra: Dict[str
     previous_state = dismiss_extra.get("previous_review_state")
     submitted_at_iso = dismiss_extra.get("dismissed_review_submitted_at")
     author = dismiss_extra.get("dismissed_review_author") or ""
+    # Present only when the dismiss event was ingested under code that
+    # denormalizes them (design doc 051). Rows whose `extra` predates those
+    # keys synthesize with a null type/node id and are healed by the
+    # nodes(ids:) backfill instead.
+    author_type = dismiss_extra.get("dismissed_review_author_type") or None
+    author_node_id = dismiss_extra.get("dismissed_review_author_node_id") or None
 
     if not review_node_id or not previous_state or not submitted_at_iso:
         return (None, False)
@@ -232,6 +286,8 @@ def _synthesize_dismissed_review_parent(pr: PullRequest, dismiss_extra: Dict[str
             "type": ev_type,
             "occurred_at": occurred_at,
             "actor_login": str(author),
+            "actor_type": author_type if author_type in PRActorType.values else None,
+            "actor_node_id": str(author_node_id) if author_node_id else None,
             # inline_comment_total_count starts NULL: we don't know the count
             # without seeing the actual PullRequestReview node. The CHECK
             # constraint allows null on review-submission types. If a later
@@ -337,6 +393,8 @@ def sync_timeline_events(
                 "label_name",
                 "assignee_login",
                 "actor_login",
+                "actor_type",
+                "actor_node_id",
                 "before_sha",
                 "after_sha",
                 "requested_reviewer_login",
