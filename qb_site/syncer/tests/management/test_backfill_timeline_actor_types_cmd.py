@@ -332,6 +332,14 @@ class TestBackfillRepoScoping(BackfillCommandTestBase):
         self.assertEqual(PRTimelineEvent.objects.get(github_node_id="TL_MATHLIB").actor_type, PRActorType.USER)
         self.assertIsNone(PRTimelineEvent.objects.get(github_node_id="TL_OTHER").actor_type)
 
+    def test_explicit_repo_with_no_work_builds_no_client(self) -> None:
+        # Constructing a client needs a token, so a no-op run must not reach
+        # for one — it should just say there is nothing to do.
+        self._row("TL_DONE", actor_type=PRActorType.USER, actor_node_id="U_1")
+        out = self._run(repo="leanprover-community/mathlib4")
+        self.assertEqual(FakeClient.calls, [])
+        self.assertIn("Nothing to backfill", out)
+
     def test_client_is_constructed_per_repository(self) -> None:
         self._row("TL_A")
         FakeClient.responses = {"TL_A": {"__typename": "LabeledEvent", "id": "TL_A", "actor": _actor("User", "U_1", "alice")}}
