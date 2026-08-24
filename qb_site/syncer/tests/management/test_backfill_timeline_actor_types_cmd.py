@@ -416,6 +416,18 @@ class TestBackfillRepoScoping(BackfillCommandTestBase):
         self.assertEqual(FakeClient.calls, [])
         self.assertIn("Nothing to backfill", out)
 
+    def test_reports_measured_point_cost_and_remaining_budget(self) -> None:
+        # The whole point of a --limit test run is to see what it cost, so the
+        # spend comes from each response's rateLimit block rather than from
+        # api_calls times an assumed price.
+        self._row("TL_COST")
+        FakeClient.responses = {
+            "TL_COST": {"__typename": "LabeledEvent", "id": "TL_COST", "actor": _actor("User", "U_1", "alice")}
+        }
+        out = self._run()
+        self.assertIn("points=1", out)
+        self.assertIn("rate: remaining=4999", out)
+
     def test_client_is_constructed_per_repository(self) -> None:
         self._row("TL_A")
         FakeClient.responses = {"TL_A": {"__typename": "LabeledEvent", "id": "TL_A", "actor": _actor("User", "U_1", "alice")}}

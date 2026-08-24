@@ -88,6 +88,9 @@ class BackfillStats:
     # node id is still stored; actor_type stays NULL.
     unmodelled_type: int = 0
     api_calls: int = 0
+    # Sum of `rateLimit.cost` across responses — what the run actually spent,
+    # rather than api_calls x an assumed cost of 1.
+    points_spent: int = 0
     distribution: Counter = field(default_factory=Counter)
 
     def merge(self, other: "BackfillStats") -> None:
@@ -102,6 +105,7 @@ class BackfillStats:
         self.retries += other.retries
         self.unmodelled_type += other.unmodelled_type
         self.api_calls += other.api_calls
+        self.points_spent += other.points_spent
         self.distribution.update(other.distribution)
 
 
@@ -176,7 +180,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="Resolve and report the actor-type distribution without writing",
+            help="Resolve and report the actor-type distribution without writing (still spends GraphQL points)",
         )
         parser.add_argument(
             "--min-rate-remaining",
@@ -194,6 +198,9 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **opts):  # type: ignore[override]
+        # Last `rateLimit` block seen, so the run can report measured cost and
+        # the budget it leaves behind rather than an assumed per-call price.
+        self._last_rate: Optional[Dict[str, Any]] = None
         repo_filter = self._resolve_repo(opts.get("repo"))
         batch_size = max(1, min(int(opts.get("batch_size") or DEFAULT_BATCH_SIZE), GitHubClient.NODES_IDS_MAX))
         limit = max(0, int(opts.get("limit") or 0))
@@ -245,6 +252,11 @@ class Command(BaseCommand):
 
         self.stdout.write("")
         self._report(totals, prefix="TOTAL ")
+        if self._last_rate:
+            self.stdout.write(
+                f"rate: remaining={self._last_rate.get('remaining')} used={self._last_rate.get('used')} "
+                f"resetAt={self._last_rate.get('resetAt')}"
+            )
         remaining = self._base_queryset(repo_filter).count()
         self.stdout.write(f"{remaining} row(s) still have actor_type IS NULL.")
         if stopped_on_rate:
@@ -385,7 +397,14 @@ class Command(BaseCommand):
                     time.sleep(CALL_RETRY_BACKOFF_SECONDS * attempt)
                 continue
             else:
-                nodes = (payload.get("data") or {}).get("nodes") or []
+                data = payload.get("data") or {}
+                rate = data.get("rateLimit")
+                if isinstance(rate, dict):
+                    cost = rate.get("cost")
+                    if isinstance(cost, int):
+                        stats.points_spent += cost
+                    self._last_rate = rate
+                nodes = data.get("nodes") or []
                 return {n["id"]: n for n in nodes if isinstance(n, dict) and n.get("id")}
 
         if graphql_error is None:
@@ -463,7 +482,7 @@ class Command(BaseCommand):
             f"node_ids={stats.node_ids_filled} logins={stats.logins_filled} "
             f"null_actor={stats.null_actor} unresolved={stats.unresolved} "
             f"call_failed={stats.call_failed} unmodelled={stats.unmodelled_type} "
-            f"api_calls={stats.api_calls} retries={stats.retries}"
+            f"api_calls={stats.api_calls} retries={stats.retries} points={stats.points_spent}"
         )
         if stats.distribution:
             parts = ", ".join(f"{k}={v}" for k, v in sorted(stats.distribution.items(), key=lambda kv: (-kv[1], kv[0])))
