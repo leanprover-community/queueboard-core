@@ -16,6 +16,7 @@ destroy the rename history ``actor_node_id`` exists to expose.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -66,6 +67,19 @@ def _is_missing_node_error(message: str) -> bool:
     """True when GitHub is telling us one specific id does not resolve."""
     low = message.lower()
     return "could not resolve to a node" in low or "not a valid global id" in low
+
+
+# GitHub names the offending id in the message:
+#   Could not resolve to a node with the global id of 'IC_kwDOFcwZ1c7vKdns'.
+# Reading it back is what lets us drop the dead id and retry the rest, instead
+# of bisecting the batch to rediscover what the error already told us.
+_MISSING_ID_RE = re.compile(r"global id of '([^']+)'")
+
+
+def named_missing_ids(message: str, candidates: Sequence[str]) -> List[str]:
+    """Return the ids in ``candidates`` that ``message`` names as unresolvable."""
+    named = set(_MISSING_ID_RE.findall(message))
+    return [nid for nid in candidates if nid in named]
 
 
 @dataclass
@@ -370,10 +384,15 @@ class Command(BaseCommand):
           if it persists, the batch is recorded as unasked and the drain moves
           on to the next one. Deliberately *not* split: an outage would
           otherwise fan one batch out into hundreds of sleeping calls.
-        - **Any other GraphQL error.** One malformed or unresolvable id makes
-          GitHub reject the whole call, which would poison a 100-id batch, so
-          halve and recurse — every good id survives in at most log2(n) extra
-          calls and the bad one is isolated.
+        - **A dead node id.** One unresolvable id makes GitHub reject the whole
+          call, poisoning a 100-id batch. GitHub names the id, so drop the
+          named ones and retry the remainder: 2 calls, against the 13 that
+          bisecting a 100-id batch spends to rediscover the same fact. Dropped
+          ids are simply absent from the result, which is what makes ``_apply``
+          count them as unresolved.
+        - **Any other GraphQL error.** Nothing to parse, so fall back to
+          halving and recursing — every good id survives in at most log2(n)
+          extra calls and the bad one is isolated.
         """
         if not ids:
             return {}
@@ -413,6 +432,21 @@ class Command(BaseCommand):
         if graphql_error is None:
             logger.warning("backfill_actor_types.call_failed ids=%s error=%s", len(node_ids), transport_error)
             return {nid: _CALL_FAILED for nid in node_ids}
+
+        dead = named_missing_ids(graphql_error, node_ids)
+        if dead:
+            # One log line per batch, not per id: a dense run of deleted
+            # comments would otherwise bury everything else in the dyno log.
+            logger.warning(
+                "backfill_actor_types.unresolvable_node_ids count=%s of=%s ids=%s",
+                len(dead),
+                len(node_ids),
+                ",".join(dead[:5]) + ("…" if len(dead) > 5 else ""),
+            )
+            survivors = [nid for nid in node_ids if nid not in set(dead)]
+            # The dead ids stay out of the returned mapping, so they land in the
+            # `unresolved` count exactly as if we had asked about them alone.
+            return self._resolve_ids(client, survivors, stats)
 
         if len(node_ids) > 1:
             mid = len(node_ids) // 2
