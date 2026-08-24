@@ -31,7 +31,7 @@
   - Existing linked user path: unchanged.
   - Missing linked user path: issue a short-lived registration link (with explicit expiration time) instead of dead-end message.
 - Optional operator/debug path:
-  - `register_test` command issues a fresh registration link in DM regardless of whether a user is already linked.
+  - `register-test` command issues a fresh registration link in DM regardless of whether a user is already linked.
 
 ### 2) Registration link and pre-auth state
 - Add signed/encrypted registration token (similar to prefs token style) that includes:

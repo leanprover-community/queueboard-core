@@ -120,7 +120,7 @@
     `ZULIP_COMMAND_POLICY` gate (`zulip_bot/webhook/policy.py`: a command absent from the policy is
     ignored entirely; entries gate on explicit `allowed_user_ids`, live Zulip user-group membership,
     and context) on the commands that hand out a registration link — `prefs` for an unknown sender,
-    and `register_test` — plus the two maintainer-side paths, `import_reviewer_topics` and the
+    and `register-test` — plus the two maintainer-side paths, `import_reviewer_topics` and the
     Django admin.
   - *Authentication* — proving you are that reviewer — becomes GitHub OAuth instead of a DM'd token.
   - The console therefore adds **no new way to become a reviewer**; invariants 1–2 below are what

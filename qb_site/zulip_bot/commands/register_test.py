@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 @register_command(
-    name="register_test",
+    name="register-test",
     description="Get a private registration test link for GitHub OAuth.",
 )
 def register_test_command(context: CommandContext, args: str) -> CommandResult:

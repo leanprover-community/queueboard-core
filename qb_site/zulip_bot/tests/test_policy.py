@@ -143,3 +143,25 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
         mock_client.send_direct_message.assert_called_once()
         dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
         self.assertIn("https://queueboard.example/api/zulip/prefs/", dm_content)
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            # Deployments (and our own runbook) spell this key with an underscore; it must keep
+            # gating the command, whose canonical name is now hyphenated.
+            "register_test": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
+        },
+        QUEUEBOARD_BASE_URL="https://queueboard.example",
+    )
+    @patch("zulip_bot.commands.register_test.ZulipClient")
+    def test_register_test_dispatches_from_either_spelling(self, MockZulipClient: MagicMock) -> None:
+        # Regression: the command was registered as `register_test` while the parser hyphenates every
+        # incoming name, so neither `register_test` nor `register-test` could ever reach it.
+        for typed in ("register_test", "register-test"):
+            with self.subTest(typed=typed):
+                MockZulipClient.reset_mock()
+                result = self._post_payload(
+                    self._payload(content=typed, id=31, message_type="private", sender_id=101),
+                )
+                self.assert_ignored(result)  # the handler DMs and returns response_not_required
+                dm_content = MockZulipClient.return_value.send_direct_message.call_args.kwargs["content"]
+                self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
