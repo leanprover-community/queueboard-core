@@ -244,6 +244,17 @@ class TestBackfillWriteGuards(BackfillCommandTestBase):
         self.assertEqual(row.actor_node_id, "U_kgDODVl3LA")
         self.assertEqual(row.actor_type, PRActorType.USER)
 
+    def test_dry_run_labels_its_write_count_as_hypothetical(self) -> None:
+        # These reports get pasted into runbooks; "written" on a dry run reads
+        # as a claim that rows changed.
+        self._row("TL_DRY_LABEL", actor_login="alice")
+        FakeClient.responses = {
+            "TL_DRY_LABEL": {"__typename": "LabeledEvent", "id": "TL_DRY_LABEL", "actor": _actor("User", "U_1", "alice")}
+        }
+        out = self._run(dry_run=True)
+        self.assertIn("would_write=1", out)
+        self.assertNotIn("written=", out)
+
     def test_dry_run_resolves_but_writes_nothing(self) -> None:
         self._row("TL_DRY")
         FakeClient.responses = {

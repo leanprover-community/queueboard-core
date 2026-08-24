@@ -37,7 +37,10 @@ logger = logging.getLogger(__name__)
 # is a one-shot operator command, and a `getattr(settings, ...)` with no
 # matching os.getenv line in base.py would be a phantom setting (root AGENTS.md).
 DEFAULT_BATCH_SIZE = 100
-DEFAULT_MIN_RATE_REMAINING = 500
+# Headroom left for the live syncer, which shares this budget and only stops
+# itself at SYNCER_RATE_REMAINING_MIN (200). 2500 matches the floor the doc-043
+# forced-resync drain settled on (ARCHIVE_RESYNC_MIN_RATE_REMAINING).
+DEFAULT_MIN_RATE_REMAINING = 2500
 # Slack added to `resetAt` when sleeping, so we wake up after the window rolls.
 RATE_RESET_SLACK_SECONDS = 15
 # Bounded retry for transient transport failures (5xx, connection resets,
@@ -246,12 +249,12 @@ class Command(BaseCommand):
                 # Merge unconditionally: a run cut short by the rate floor has
                 # already written its earlier batches, so its counters are real.
                 totals.merge(stats)
-                self._report(stats, prefix="  ")
+                self._report(stats, prefix="  ", dry_run=dry_run)
             if stopped_on_rate:
                 break
 
         self.stdout.write("")
-        self._report(totals, prefix="TOTAL ")
+        self._report(totals, prefix="TOTAL ", dry_run=dry_run)
         if self._last_rate:
             self.stdout.write(
                 f"rate: remaining={self._last_rate.get('remaining')} used={self._last_rate.get('used')} "
@@ -476,9 +479,10 @@ class Command(BaseCommand):
 
     # ---- reporting -------------------------------------------------------
 
-    def _report(self, stats: BackfillStats, *, prefix: str) -> None:
+    def _report(self, stats: BackfillStats, *, prefix: str, dry_run: bool = False) -> None:
+        wrote = "would_write" if dry_run else "written"
         self.stdout.write(
-            f"{prefix}scanned={stats.scanned} written={stats.rows_written} typed={stats.typed} "
+            f"{prefix}scanned={stats.scanned} {wrote}={stats.rows_written} typed={stats.typed} "
             f"node_ids={stats.node_ids_filled} logins={stats.logins_filled} "
             f"null_actor={stats.null_actor} unresolved={stats.unresolved} "
             f"call_failed={stats.call_failed} unmodelled={stats.unmodelled_type} "
