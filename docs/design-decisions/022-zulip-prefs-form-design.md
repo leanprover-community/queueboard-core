@@ -218,10 +218,12 @@
    `zulip_bot.services.prefs_links.build_prefs_entry_link`, answers "where do reviewers edit
    preferences" (`PrefsEntryLink(url, expires_at_unix)`; `expires_at_unix is None` ⇒ the stable console
    URL), so the command and the registration DM/page cannot disagree. With the flag on:
-   - `prefs` replies **in place** with the stable URL (mirroring `commands/console.py` — nothing secret
-     to DM). Its registration-link branch stays a DM, because *that* link is a bearer secret, and its
-     "no preferences to edit" branch stays: a reviewer with no rows would be refused by the console's
-     admission gate, so Zulip is a better place to say so than a 403.
+   - `prefs` DMs the stable URL. It **stays a DM command**: the console URL is not secret, but an
+     accidental mention in a public stream should not post a reply there, so nothing is returned to the
+     triggering conversation. (`console` is the deliberate exception — an in-place reply by design, doc
+     050.) Its registration-link branch is a DM for the stronger reason, that link being a bearer
+     secret, and its "no preferences to edit" branch stays: a reviewer with no rows would be refused by
+     the console's admission gate, so Zulip is a better place to say so than a 403.
    - the registration success DM and `register_callback.html` advertise the stable URL, and
      `register_github_callback` promotes the console session (`console.session.set_reviewer`) so the
      "Edit Preferences Now" link lands signed in — no second OAuth round-trip. Success path only, and

@@ -60,15 +60,14 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
         )
     )
     if entry.is_stable:
-        # Nothing secret to protect: the console prefs URL is identical for every reviewer and the
-        # page self-authenticates via GitHub OAuth, so reply in place like `console` rather than
-        # DMing (design doc 022; cf. commands/console.py).
-        return CommandResult(
-            content=(
-                f"Open your [reviewer preferences]({entry.url}) in the reviewer console. "
-                "Sign in with GitHub — the link is stable and bookmarkable."
-            )
+        # The console URL is not secret (identical for everyone; the page self-authenticates), but
+        # `prefs` stays a DM command anyway: an accidental mention in a public stream should not put
+        # a reply there. Unlike `console`, which is an in-place reply by design (doc 050).
+        dm_content = (
+            f"Open your [reviewer preferences]({entry.url}) in the reviewer console. "
+            "Sign in with GitHub — the link is stable, so you can bookmark it."
         )
+        return _send_dm(context.sender_id, dm_content, "prefs_link_dm_failed")
 
     expires_at = timezone.now() + timedelta(seconds=int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800)))
     dm_content = (

@@ -42,10 +42,12 @@ This has a critical implication: **never return sensitive content (token links, 
 **Proactive DM** (commands that send private links): call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip does not deliver the webhook response at all; the DM goes to the user regardless of where the command was invoked. Use this whenever the reply contains a private token link or other content that must not appear in a stream.
 
 Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register_test`, `assigned-prs`.
-`prefs` is conditional: with `CONSOLE_PREFS_ENABLED` on it replies **in place** with the stable
-`/console/preferences/` URL (nothing secret to protect — the page self-authenticates, cf. `console`);
-with the flag off it DMs the expiring token link. Its registration-link branch, for a sender we have no
-`core.User` for, stays a DM either way — *that* link is a bearer secret.
+`prefs` stays in that list whatever `CONSOLE_PREFS_ENABLED` says — with the flag on it DMs the stable
+`/console/preferences/` URL instead of an expiring token link, but it still answers by DM. The URL is
+not secret (the page self-authenticates); the reason is noise: an accidental mention in a public stream
+must not post a reply there. `console` is the deliberate exception, an in-place reply by design (doc
+050). `prefs`'s registration-link branch is a DM for the stronger reason — *that* link is a bearer
+secret.
 
 ### Adding new commands
 
