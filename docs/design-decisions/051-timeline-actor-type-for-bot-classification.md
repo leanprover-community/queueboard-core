@@ -213,6 +213,19 @@
   (`delegated`, `ready-to-merge`). No backfill route can type these. Analysts
   must read `NULL` as *unknown*, never as `User` — this repo has no export
   README, so that documentation lives in `qb-notebook` / `analytics-datasets`.
+- **A login list is still required as the fallback for untyped rows, and
+  dropping it would silently reclassify bots as humans.** Measured after the
+  drain: **678 events carry a known automation login but `actor_type IS NULL`**
+  — 83 % of the 812 unresolvable node ids, concentrated in
+  `mathlib-dependent-issues` (564), whose comments the bot itself deletes and
+  reposts. Deleted comments are exactly the rows `nodes(ids:)` can never
+  re-resolve. Those are `ISSUE_COMMENTED` rows, i.e. a *first-touch* event
+  type, so a downstream predicate of `actor_type == 'Bot'` alone would count
+  them as human review touches — reintroducing a smaller version of the bug
+  this whole change exists to fix. The correct downstream shape is the union of
+  three tests: `actor_type == 'Bot'`, **or** `actor_node_id` in the frozen
+  machine-user set, **or** `actor_login` in the residual list. The list stops
+  being load-bearing for typed rows; it does not stop existing.
 - The set of `(actor_login, actor_node_id)` pairs is a free rename history —
   and read the other way, a *changed* node id under a similar-looking login is
   the signature of an account replacement like the 2026-02-03 one.
@@ -296,7 +309,32 @@
     drain saw with an empty login had no actor on GitHub either. So the gap was
     already closed by ordinary rewalks (`actor_login` has always been in the
     fill-empty allowlist), or it is a subset of the 42 289 floor — those events
-    are permanently unattributable, not merely unattributed.
+    are permanently unattributable, not merely unattributed. Measured after the
+    drain: **10** archive-imported rows still have an empty `actor_login`, so
+    the gap this scope item existed to close had already closed itself. Keeping
+    the fill in the command cost nothing and is still correct; it simply had no
+    work left to do.
+- **Post-drain typing confirmed on production, 2026-08-24.** The doc's central
+  claim holds at scale: the replacements are Apps and the retired accounts are
+  machine users.
+
+  | login | actor_type | events |
+  | --- | --- | --- |
+  | `github-actions` | `Bot` | 109 579 |
+  | `mathlib-bors` | `Bot` | 72 535 |
+  | `mathlib-triage` | `Bot` | 14 711 |
+  | `mathlib-merge-conflicts` | `Bot` | 7 117 |
+  | `mathlib-dependent-issues` | `Bot` | 3 853 |
+  | `leanprover-community-bot-assistant` | `User` | 10 499 |
+  | `mathlib4-dependent-issues-bot` | `User` | 8 103 |
+  | `mathlib4-merge-conflict-bot` | `User` | 7 564 |
+  | `leanprover-radar` | `User` | 1 713 |
+
+  So **207 795** automation events are now caught by `actor_type` alone with no
+  list to maintain, against **27 879** from machine users that still need one —
+  keyed on `actor_node_id`, since those four accounts are historical and frozen.
+  mathlib4 was the only repo with untyped rows left (42 289); every other repo
+  is fully typed.
 - Outstanding: the first post-drain export, and the `qb-notebook` switch.
 
 ### No new configuration
@@ -404,11 +442,14 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
 6. **Only then export** (`upload_backup.yaml`, daily 06:00 UTC or on demand),
    so the first parquet is written with values present and pandas infers
    `object`. Verify dtype, not just presence.
-7. **Only then switch downstream.** In `qb-notebook`: key the residual
-   automation list on `actor_node_id`, drop the `Bot`-typed accounts from it,
-   and document the `NULL` ≠ `User` invariant plus the machine-user caveat in
-   `docs/schema-notes.md`. Note that rows with `actor_type IS NULL` still need
-   the login list, so it shrinks rather than disappears.
+7. **Only then switch downstream.** In `qb-notebook`, replace the login-only
+   filter with the three-part union recorded under Consequences —
+   `actor_type == 'Bot'` **or** `actor_node_id` in the frozen machine-user set
+   (`U_kgDOBcsTTQ`, `U_kgDOCsITAQ`, `U_kgDODVl3LA`, `U_kgDOCG88RQ`) **or**
+   `actor_login` in the residual list, which must stay for the 678 untyped
+   automation events. Document the `NULL` ≠ `User` invariant and the
+   machine-user caveat in `docs/schema-notes.md`, and keep the fallback path
+   working against exports that predate these columns.
 
 ### Fallback
 
