@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone as _tz
 from typing import Any, Dict, List, Optional, Sequence
 
+import requests
 from django.core.management.base import BaseCommand, CommandError
 
 from core.models import Repository
@@ -39,6 +40,29 @@ DEFAULT_BATCH_SIZE = 100
 DEFAULT_MIN_RATE_REMAINING = 500
 # Slack added to `resetAt` when sleeping, so we wake up after the window rolls.
 RATE_RESET_SLACK_SECONDS = 15
+# Bounded retry for transient transport failures (5xx, connection resets,
+# timeouts). A full drain is ~6 k calls, so meeting one is near-certain, and
+# letting it propagate would abort the run before it printed its counters.
+CALL_RETRY_ATTEMPTS = 3
+CALL_RETRY_BACKOFF_SECONDS = 2
+
+# Marks an id whose call failed for a reason that says nothing about the id
+# itself. Those rows stay untyped and a later run retries them; keeping them out
+# of `unresolved` is what stops that count from reading as "these nodes are gone
+# from GitHub" when it actually means "we never got an answer".
+_CALL_FAILED = object()
+
+
+def _is_rate_limit_error(message: str) -> bool:
+    """True for the GraphQL rejection GitHub sends once the budget is spent."""
+    low = message.lower()
+    return "rate limit" in low or "rate_limited" in low
+
+
+def _is_missing_node_error(message: str) -> bool:
+    """True when GitHub is telling us one specific id does not resolve."""
+    low = message.lower()
+    return "could not resolve to a node" in low or "not a valid global id" in low
 
 
 @dataclass
@@ -54,6 +78,12 @@ class BackfillStats:
     null_actor: int = 0
     # The node id no longer resolves (hard-deleted comment/review, or a bad id).
     unresolved: int = 0
+    # The call carrying the row failed for a reason unrelated to the row itself,
+    # so we never learned anything about it. A later run retries these.
+    call_failed: int = 0
+    # Retried calls. `api_calls` counts every attempt; this counts the re-tries
+    # among them, so a run fighting a flaky API is visible in the report.
+    retries: int = 0
     # Actor reported a typename outside PRActorType (e.g. Organization). The
     # node id is still stored; actor_type stays NULL.
     unmodelled_type: int = 0
@@ -68,6 +98,8 @@ class BackfillStats:
         self.rows_written += other.rows_written
         self.null_actor += other.null_actor
         self.unresolved += other.unresolved
+        self.call_failed += other.call_failed
+        self.retries += other.retries
         self.unmodelled_type += other.unmodelled_type
         self.api_calls += other.api_calls
         self.distribution.update(other.distribution)
@@ -121,7 +153,10 @@ class Command(BaseCommand):
         "interrupted run simply continues where it stopped. Note that rows whose actor "
         "GitHub reports as null can never be typed, so repeat runs plateau at that "
         "population rather than reaching zero — the reported null_actor count is that "
-        "floor. Drip-feed with --limit, or use --wait-for-rate for an unattended drain."
+        "floor. Rows whose call failed outright (transport error, or a GraphQL error we "
+        "cannot pin on an id) are reported as call_failed and left for a later run, so "
+        "one flaky call never ends the drain. Drip-feed with --limit, or use "
+        "--wait-for-rate for an unattended drain."
     )
 
     def add_arguments(self, parser):  # type: ignore[override]
@@ -213,9 +248,11 @@ class Command(BaseCommand):
         remaining = self._base_queryset(repo_filter).count()
         self.stdout.write(f"{remaining} row(s) still have actor_type IS NULL.")
         if stopped_on_rate:
+            hint = "" if wait_for_rate else " Pass --wait-for-rate for an unattended drain."
             self.stdout.write(
                 self.style.WARNING(
-                    "Stopped early: GraphQL rate budget below the floor. Re-run to continue, or pass --wait-for-rate."
+                    "Stopped early: GraphQL rate budget exhausted (floor reached, or GitHub rejected the call). "
+                    f"Re-run to continue.{hint}"
                 )
             )
         elif dry_run:
@@ -305,35 +342,79 @@ class Command(BaseCommand):
         time.sleep(delay)
 
     def _resolve_ids(self, client: GitHubClient, ids: Sequence[str], stats: BackfillStats) -> Dict[str, Any]:
-        """Return ``{node_id: node}`` for ``ids``, halving the batch on GraphQL errors.
+        """Return ``{node_id: node}`` for ``ids``, or ``_CALL_FAILED`` per unasked id.
 
-        A single malformed or unresolvable id makes GitHub reject the whole
-        call, which would otherwise poison a 100-id batch. Splitting recovers
-        every good id in at most log2(n) extra calls and isolates the bad one.
+        Three failure shapes, handled differently because they mean different
+        things:
+
+        - **Rate-limit rejection.** The cached snapshot the gate reads lied —
+          Redis unavailable, or the live syncer spent the window between our
+          check and this call. Retrying or splitting would only spend more, so
+          unwind to the resumable stop.
+        - **Transport failure** (5xx, reset, timeout). Retried with backoff;
+          if it persists, the batch is recorded as unasked and the drain moves
+          on to the next one. Deliberately *not* split: an outage would
+          otherwise fan one batch out into hundreds of sleeping calls.
+        - **Any other GraphQL error.** One malformed or unresolvable id makes
+          GitHub reject the whole call, which would poison a 100-id batch, so
+          halve and recurse — every good id survives in at most log2(n) extra
+          calls and the bad one is isolated.
         """
         if not ids:
             return {}
-        try:
-            stats.api_calls += 1
-            payload = client.get_timeline_actors_by_node_ids(ids=ids)
-        except RuntimeError as exc:
-            if len(ids) == 1:
-                logger.warning("backfill_actor_types.unresolvable_node_id id=%s error=%s", ids[0], exc)
-                return {}
-            mid = len(ids) // 2
-            left = self._resolve_ids(client, ids[:mid], stats)
-            right = self._resolve_ids(client, ids[mid:], stats)
-            left.update(right)
+        node_ids = list(ids)
+        graphql_error: Optional[str] = None
+        transport_error: Optional[str] = None
+
+        for attempt in range(1, CALL_RETRY_ATTEMPTS + 1):
+            try:
+                stats.api_calls += 1
+                payload = client.get_timeline_actors_by_node_ids(ids=node_ids)
+            except RuntimeError as exc:
+                message = str(exc)
+                if _is_rate_limit_error(message):
+                    raise RateBudgetExhausted() from exc
+                # A query-level error answers the same way next time; go split.
+                graphql_error = message
+                break
+            except requests.RequestException as exc:
+                transport_error = str(exc)
+                if attempt < CALL_RETRY_ATTEMPTS:
+                    stats.retries += 1
+                    logger.warning("backfill_actor_types.transport_retry attempt=%s ids=%s error=%s", attempt, len(node_ids), exc)
+                    time.sleep(CALL_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            else:
+                nodes = (payload.get("data") or {}).get("nodes") or []
+                return {n["id"]: n for n in nodes if isinstance(n, dict) and n.get("id")}
+
+        if graphql_error is None:
+            logger.warning("backfill_actor_types.call_failed ids=%s error=%s", len(node_ids), transport_error)
+            return {nid: _CALL_FAILED for nid in node_ids}
+
+        if len(node_ids) > 1:
+            mid = len(node_ids) // 2
+            left = self._resolve_ids(client, node_ids[:mid], stats)
+            left.update(self._resolve_ids(client, node_ids[mid:], stats))
             return left
 
-        nodes = (payload.get("data") or {}).get("nodes") or []
-        return {n["id"]: n for n in nodes if isinstance(n, dict) and n.get("id")}
+        logger.warning("backfill_actor_types.node_id_rejected id=%s error=%s", node_ids[0], graphql_error)
+        # "Could not resolve" is a fact about the row: that node is gone. Any
+        # other query-level error is a fact about the call, so keep the two
+        # apart instead of reporting both as unresolved nodes.
+        if _is_missing_node_error(graphql_error):
+            return {}
+        return {node_ids[0]: _CALL_FAILED}
 
     def _apply(self, rows: List[PRTimelineEvent], resolved: Dict[str, Any], stats: BackfillStats, *, dry_run: bool) -> None:
         to_update: List[PRTimelineEvent] = []
         for row in rows:
             stats.scanned += 1
             node = resolved.get(row.github_node_id or "")
+            if node is _CALL_FAILED:
+                stats.call_failed += 1
+                stats.distribution["(call failed)"] += 1
+                continue
             if node is None:
                 stats.unresolved += 1
                 stats.distribution["(unresolved node)"] += 1
@@ -381,7 +462,8 @@ class Command(BaseCommand):
             f"{prefix}scanned={stats.scanned} written={stats.rows_written} typed={stats.typed} "
             f"node_ids={stats.node_ids_filled} logins={stats.logins_filled} "
             f"null_actor={stats.null_actor} unresolved={stats.unresolved} "
-            f"unmodelled={stats.unmodelled_type} api_calls={stats.api_calls}"
+            f"call_failed={stats.call_failed} unmodelled={stats.unmodelled_type} "
+            f"api_calls={stats.api_calls} retries={stats.retries}"
         )
         if stats.distribution:
             parts = ", ".join(f"{k}={v}" for k, v in sorted(stats.distribution.items(), key=lambda kv: (-kv[1], kv[0])))

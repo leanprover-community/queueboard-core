@@ -6,6 +6,7 @@ from io import StringIO
 from typing import Any, Dict, List, Sequence
 from unittest import mock
 
+import requests
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -28,6 +29,13 @@ class FakeClient:
     responses: Dict[str, Any] = {}
     # node ids that make the whole call fail, forcing the batch-splitting path.
     poison: set = set()
+    # GraphQL message the poison raises. The default is the one GitHub sends
+    # for an id it cannot resolve, which is the only splittable shape.
+    poison_message: str = "GraphQL error(s): Could not resolve to a node with the global id"
+    # Number of leading calls that die at the transport layer (5xx / reset).
+    transport_failures: int = 0
+    # Make every call come back as GitHub's rate-limit rejection.
+    rate_limited: bool = False
 
     def __init__(self, **kwargs: Any) -> None:
         self.token_id = "fake-token"
@@ -40,6 +48,9 @@ class FakeClient:
     def reset(cls) -> None:
         cls.responses = {}
         cls.poison = set()
+        cls.poison_message = "GraphQL error(s): Could not resolve to a node with the global id"
+        cls.transport_failures = 0
+        cls.rate_limited = False
         cls.calls = []
         cls.batches = []
 
@@ -48,8 +59,13 @@ class FakeClient:
         FakeClient.batches.append(ids)
         if len(ids) > self.NODES_IDS_MAX:
             raise ValueError("batch exceeded the nodes(ids:) cap")
+        if FakeClient.rate_limited:
+            raise RuntimeError("GraphQL error(s): API rate limit exceeded for user ID 1")
+        if FakeClient.transport_failures > 0:
+            FakeClient.transport_failures -= 1
+            raise requests.ConnectionError("502 Server Error: Bad Gateway")
         if FakeClient.poison & set(ids):
-            raise RuntimeError("GraphQL error(s): Could not resolve to a node with the global id")
+            raise RuntimeError(FakeClient.poison_message)
         nodes = [FakeClient.responses.get(i) for i in ids]
         return {"data": {"rateLimit": {"cost": 1, "remaining": 4999}, "nodes": nodes}}
 
@@ -297,7 +313,7 @@ class TestBackfillRateGating(BackfillCommandTestBase):
             out = self._run(min_rate_remaining=500)
         self.assertEqual(FakeClient.batches, [])
         self.assertIsNone(PRTimelineEvent.objects.get(github_node_id="TL_RATE").actor_type)
-        self.assertIn("rate budget below the floor", out)
+        self.assertIn("rate budget exhausted", out)
 
     def test_runs_when_snapshot_is_healthy(self) -> None:
         self._row("TL_RATE_OK")
@@ -307,6 +323,66 @@ class TestBackfillRateGating(BackfillCommandTestBase):
         with mock.patch(f"{CMD}.get_rate_snapshot", return_value={"remaining": 4000, "resetAt": None}):
             self._run(min_rate_remaining=500)
         self.assertEqual(PRTimelineEvent.objects.get(github_node_id="TL_RATE_OK").actor_type, PRActorType.USER)
+
+
+class TestBackfillCallFailures(BackfillCommandTestBase):
+    """A ~6 k-call drain meets a flaky API; none of it may end the run."""
+
+    def _row_with_response(self, node_id: str) -> None:
+        self._row(node_id)
+        FakeClient.responses[node_id] = {
+            "__typename": "LabeledEvent",
+            "id": node_id,
+            "actor": _actor("User", f"U_{node_id}", "alice"),
+        }
+
+    def test_transport_failure_is_retried_and_then_succeeds(self) -> None:
+        self._row_with_response("TL_FLAKY")
+        FakeClient.transport_failures = 1
+        with mock.patch(f"{CMD}.time.sleep") as sleep:
+            out = self._run()
+        self.assertEqual(PRTimelineEvent.objects.get(github_node_id="TL_FLAKY").actor_type, PRActorType.USER)
+        self.assertEqual([len(b) for b in FakeClient.batches], [1, 1])
+        self.assertIn("retries=1", out)
+        sleep.assert_called_once()
+
+    def test_persistent_transport_failure_is_counted_and_never_split(self) -> None:
+        # Splitting an outage would fan one batch out into hundreds of
+        # sleeping calls, so the batch is recorded unasked and the drain
+        # moves on. The rows stay untyped for a later run.
+        for i in range(4):
+            self._row_with_response(f"TL_DOWN_{i}")
+        FakeClient.transport_failures = 99
+        with mock.patch(f"{CMD}.time.sleep"):
+            out = self._run(batch_size=4)
+        self.assertEqual(PRTimelineEvent.objects.filter(actor_type__isnull=False).count(), 0)
+        # Three attempts at the same batch of 4 — no halving.
+        self.assertEqual([len(b) for b in FakeClient.batches], [4, 4, 4])
+        self.assertIn("call_failed=4", out)
+        # And not misreported as nodes GitHub no longer has.
+        self.assertIn("unresolved=0", out)
+
+    def test_api_rate_limit_rejection_stops_the_drain(self) -> None:
+        # The gate reads a cached snapshot, so it can be stale. A live
+        # rejection must unwind rather than retry or split — both would only
+        # spend more of a budget that is already gone.
+        self._row_with_response("TL_LIMITED")
+        FakeClient.rate_limited = True
+        out = self._run()
+        self.assertEqual([len(b) for b in FakeClient.batches], [1])
+        self.assertIsNone(PRTimelineEvent.objects.get(github_node_id="TL_LIMITED").actor_type)
+        self.assertIn("rate budget exhausted", out)
+
+    def test_unattributable_graphql_error_is_not_counted_as_unresolved(self) -> None:
+        # GitHub's "something went wrong" is a fact about the call, not about
+        # the row; only "could not resolve" means the node is really gone.
+        self._row_with_response("TL_SHRUG")
+        FakeClient.poison = {"TL_SHRUG"}
+        FakeClient.poison_message = "GraphQL error(s): Something went wrong while executing your query"
+        out = self._run()
+        self.assertIsNone(PRTimelineEvent.objects.get(github_node_id="TL_SHRUG").actor_type)
+        self.assertIn("call_failed=1", out)
+        self.assertIn("unresolved=0", out)
 
 
 class TestBackfillRepoScoping(BackfillCommandTestBase):
