@@ -42,6 +42,10 @@ This has a critical implication: **never return sensitive content (token links, 
 **Proactive DM** (commands that send private links): call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip does not deliver the webhook response at all; the DM goes to the user regardless of where the command was invoked. Use this whenever the reply contains a private token link or other content that must not appear in a stream.
 
 Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register_test`, `assigned-prs`.
+`prefs` is conditional: with `CONSOLE_PREFS_ENABLED` on it replies **in place** with the stable
+`/console/preferences/` URL (nothing secret to protect — the page self-authenticates, cf. `console`);
+with the flag off it DMs the expiring token link. Its registration-link branch, for a sender we have no
+`core.User` for, stays a DM either way — *that* link is a bearer secret.
 
 ### Adding new commands
 
@@ -65,7 +69,9 @@ Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `pref
   - `registration_oauth_state.py`,
   - `registration_linking.py`,
   - `registration_bootstrap.py` (initial bootstrap helpers),
-  - `prefs_links.py` (preference deep-link generation),
+  - `prefs_links.py` (preference deep-link generation, plus `build_prefs_entry_link` — the single
+    flag-aware answer to "where do I send a reviewer to edit preferences", used by the `prefs` command
+    and the registration DM/page so they cannot disagree),
   - `close_pr_links.py` (close-PR confirmation link generation),
   - `label_pr_links.py` (label-PR confirmation link generation),
   - `user_timezone.py` (the timezone a reviewer's local times are interpreted in: Zulip's reported
@@ -81,7 +87,12 @@ Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `pref
   and expect both pages to pick the change up.
 - `views.prefs_form` is now only the token *auth* path: validate the link, run the anti-tamper checks
   in `_load_authorized_preferences`, then hand the rows to the shared builder. It is slated for
-  removal once the console page is the advertised entry point (022, phase 3).
+  removal once the token flow is retired (022, phase 3).
+- `views.register_github_callback` **opens the console session** (`console.session.set_reviewer`) when
+  the console owns preferences and the new reviewer has rows to edit, so the "Edit Preferences Now"
+  link lands signed in instead of bouncing through OAuth again. That promotion is strictly stronger
+  than a console sign-in: registration proves Zulip identity (the registration token) *and* GitHub
+  identity (OAuth). Success path only — a link conflict returns before it.
 - `static/zulip_bot/prefs_form.js` is imported by `close_pr_form.js` and `label_pr_form.js` for the
   expiry helpers (`getExpiryState`, `formatRemaining`), so it must stay a sibling of those files —
   relative ES imports resolve against the *served* static path in the browser but the *on-disk* path

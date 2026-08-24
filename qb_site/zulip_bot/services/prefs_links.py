@@ -1,3 +1,14 @@
+"""Prefs links: the transitional seam between the two prefs auth models (design doc 022).
+
+``build_prefs_entry_link`` is the one place that answers "where do I send a reviewer to edit their
+preferences": the stable console URL when ``CONSOLE_PREFS_ENABLED`` is on, otherwise the expiring
+Fernet token link this module implements. Every caller (the ``prefs`` command, the registration
+success DM and page) goes through it so they cannot disagree about the entry point.
+
+When the token flow is retired (022, phase 3) this whole module goes away and callers use
+``build_site_url(reverse("console:prefs"))`` directly.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -10,6 +21,7 @@ from urllib.parse import quote
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
+from django.urls import reverse
 
 from core.services.site_urls import build_site_url
 
@@ -38,6 +50,32 @@ class PrefsTokenInvalid(PrefsTokenError):
 def build_prefs_link(*, claims: PrefsLinkClaims) -> str:
     token = issue_prefs_token(claims=claims)
     return build_site_url(f"/api/zulip/prefs/{quote(token, safe='')}/")
+
+
+@dataclass(frozen=True)
+class PrefsEntryLink:
+    """Where to send a reviewer, and when the link dies (``None`` = stable, bookmarkable)."""
+
+    url: str
+    expires_at_unix: int | None
+
+    @property
+    def is_stable(self) -> bool:
+        return self.expires_at_unix is None
+
+
+def build_prefs_entry_link(*, claims: PrefsLinkClaims) -> PrefsEntryLink:
+    """The prefs entry point for this reviewer, honoring ``CONSOLE_PREFS_ENABLED``.
+
+    ``claims`` are consumed only by the token branch; the console URL is identical for every reviewer
+    because that page self-authenticates.
+    """
+    if bool(getattr(settings, "CONSOLE_PREFS_ENABLED", False)):
+        return PrefsEntryLink(url=build_site_url(reverse("console:prefs")), expires_at_unix=None)
+    return PrefsEntryLink(
+        url=build_prefs_link(claims=claims),
+        expires_at_unix=int(time.time()) + _token_ttl_seconds(),
+    )
 
 
 def issue_prefs_token(*, claims: PrefsLinkClaims) -> str:

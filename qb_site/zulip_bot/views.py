@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import datetime, timezone as dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,6 +14,7 @@ from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from console import session as console_session
 from core.models import ReviewerPreference, User
 from core.services.reviewer_prefs import build_preferences_formset
 from core.utils.zulip_time import format_global_time
@@ -58,10 +59,11 @@ from zulip_bot.services.label_pr_links import (
     validate_label_pr_token,
 )
 from zulip_bot.services.prefs_links import (
+    PrefsEntryLink,
     PrefsLinkClaims,
     PrefsTokenExpired,
     PrefsTokenInvalid,
-    build_prefs_link,
+    build_prefs_entry_link,
     validate_prefs_token,
 )
 from zulip_bot.services.registration_links import (
@@ -314,17 +316,24 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
         logger.info("registration_link_conflict", extra={"reason": "link_conflict"})
         return _register_invalid_response(request, reason="link_conflict")
     bootstrap_result = ensure_default_preferences_for_user(user=link_result.user)
-    prefs_link, prefs_expires_unix, prefs_expires_iso = _build_prefs_link_for_user(
+    prefs_entry = _build_prefs_link_for_user(
         user=link_result.user,
         zulip_user_id=registration_claims.zulip_user_id,
     )
+    # The reviewer just proved this GitHub identity in this browser, and registration additionally
+    # proves their Zulip identity (the registration token) — strictly more than a console sign-in
+    # establishes. So when the console owns preferences, open the session here and let the link on
+    # this page land signed in, instead of bouncing them straight back through OAuth (doc 022).
+    # Success path only: a link conflict returned above, before this point.
+    if prefs_entry is not None and prefs_entry.is_stable:
+        console_session.set_reviewer(request, link_result.user)
     dm_sent = _send_registration_success_dm(
         zulip_user_id=registration_claims.zulip_user_id,
         github_login=identity.github_login,
-        prefs_link=prefs_link,
-        prefs_expires_unix=prefs_expires_unix,
+        prefs_entry=prefs_entry,
     )
 
+    prefs_expires_unix = prefs_entry.expires_at_unix if prefs_entry else None
     response = TemplateResponse(
         request,
         "zulip_bot/register_callback.html",
@@ -333,9 +342,11 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
             "identity": identity,
             "link_result": link_result,
             "bootstrap_result": bootstrap_result,
-            "prefs_link": prefs_link,
+            "prefs_link": prefs_entry.url if prefs_entry else None,
             "prefs_expires_unix": prefs_expires_unix,
-            "prefs_expires_iso": prefs_expires_iso,
+            "prefs_expires_iso": (
+                datetime.fromtimestamp(prefs_expires_unix, tz=dt_timezone.utc).isoformat() if prefs_expires_unix else None
+            ),
             "dm_sent": dm_sent,
         },
         status=200,
@@ -829,40 +840,40 @@ def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResp
     return response
 
 
-def _build_prefs_link_for_user(*, user: User, zulip_user_id: int) -> tuple[str | None, int | None, str | None]:
+def _build_prefs_link_for_user(*, user: User, zulip_user_id: int) -> PrefsEntryLink | None:
+    """The prefs entry point to advertise to a freshly registered reviewer, or ``None`` if they have
+    no preference rows to edit."""
     preference_ids = tuple(ReviewerPreference.objects.filter(user_id=user.id).values_list("id", flat=True).order_by("id"))
     if not preference_ids:
-        return (None, None, None)
-    prefs_link = build_prefs_link(
+        return None
+    return build_prefs_entry_link(
         claims=PrefsLinkClaims(
             user_id=user.id,
             zulip_user_id=zulip_user_id,
             preference_ids=preference_ids,
         )
     )
-    ttl_seconds = int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
-    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-    expires_unix = int(expires_at.timestamp())
-    return (prefs_link, expires_unix, datetime.fromtimestamp(expires_unix, tz=dt_timezone.utc).isoformat())
 
 
 def _send_registration_success_dm(
     *,
     zulip_user_id: int,
     github_login: str,
-    prefs_link: str | None,
-    prefs_expires_unix: int | None,
+    prefs_entry: PrefsEntryLink | None,
 ) -> bool:
-    if prefs_link and prefs_expires_unix:
-        content = (
-            f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
-            f"Next step: click this private link to [finalize your reviewer preferences]({prefs_link}). "
-            f"It expires at {format_global_time(prefs_expires_unix)}."
+    linked = f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
+    if prefs_entry is None:
+        content = linked + "You do not currently have any reviewer preferences to edit."
+    elif prefs_entry.is_stable:
+        content = linked + (
+            f"Next step: [set your reviewer preferences]({prefs_entry.url}) in the reviewer console. "
+            "The link is stable, so bookmark it — you are already signed in on the browser you just "
+            "registered from."
         )
     else:
-        content = (
-            f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
-            "You do not currently have any reviewer preferences to edit."
+        content = linked + (
+            f"Next step: click this private link to [finalize your reviewer preferences]({prefs_entry.url}). "
+            f"It expires at {format_global_time(prefs_entry.expires_at_unix)}."
         )
     try:
         ZulipClient().send_direct_message(to=[zulip_user_id], content=content)

@@ -61,6 +61,11 @@
     by the syncer) can open a session.
 - Console access is keyed on the authenticated `github_login`, matched **case-insensitively**
   against `AssignmentProposal.reviewer_login`. A reviewer can only act on their own proposals.
+- **A second place opens this session.** `zulip_bot.views.register_github_callback` calls
+  `console.session.set_reviewer` after a successful registration (when `CONSOLE_PREFS_ENABLED` is on
+  and the new reviewer has preference rows), so the reviewer lands on the prefs page already signed
+  in. It is the same GitHub-OAuth verification the console does, plus a Zulip-identity proof. Any
+  future caller of `set_reviewer` outside this app must clear that same bar.
 - **Admission gate (`_is_reviewer` / `_reviewer_from_session`).** Resolve-only is not reviewer-only:
   `syncer` upserts a `core.User` for every PR author, so a "known GitHub account" is usually just a
   contributor. A session is granted only to a user with ≥1 `ReviewerPreference` row **or** an active

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.conf import settings
 from django.urls import reverse
 
 from core.services.site_urls import build_site_url
@@ -16,9 +17,11 @@ def console_command(context: CommandContext, args: str) -> CommandResult:
     # or secret, so we reply in place rather than DMing a private link (cf. commands/prefs.py).
     del context, args
     console_url = build_site_url(reverse("console:home"))
+    what = "accept or decline the assignment proposals made to you"
+    if bool(getattr(settings, "CONSOLE_PREFS_ENABLED", False)):
+        what += ", and edit your reviewer preferences"
     return CommandResult(
         content=(
-            f"Open the [reviewer console]({console_url}) to accept or decline the assignment "
-            "proposals made to you. Sign in with GitHub — the link is stable and bookmarkable."
+            f"Open the [reviewer console]({console_url}) to {what}. Sign in with GitHub — the link is stable and bookmarkable."
         )
     )

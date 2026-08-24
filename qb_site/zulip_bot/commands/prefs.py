@@ -9,7 +9,7 @@ from django.utils import timezone
 from core.models import ReviewerPreference, User
 from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
-from zulip_bot.services.prefs_links import PrefsLinkClaims, build_prefs_link
+from zulip_bot.services.prefs_links import PrefsLinkClaims, build_prefs_entry_link
 from zulip_bot.services.registration_links import RegistrationLinkClaims, build_registration_link
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -52,17 +52,28 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
             content="You do not currently have any reviewer preferences to edit.",
         )
 
-    link = build_prefs_link(
+    entry = build_prefs_entry_link(
         claims=PrefsLinkClaims(
             user_id=user.id,
             zulip_user_id=context.sender_id,
             preference_ids=preference_ids,
         )
     )
-    ttl_seconds = int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
-    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+    if entry.is_stable:
+        # Nothing secret to protect: the console prefs URL is identical for every reviewer and the
+        # page self-authenticates via GitHub OAuth, so reply in place like `console` rather than
+        # DMing (design doc 022; cf. commands/console.py).
+        return CommandResult(
+            content=(
+                f"Open your [reviewer preferences]({entry.url}) in the reviewer console. "
+                "Sign in with GitHub — the link is stable and bookmarkable."
+            )
+        )
+
+    expires_at = timezone.now() + timedelta(seconds=int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800)))
     dm_content = (
-        f"Use this private link to [open your reviewer preferences form]({link}). It expires at {format_global_time(expires_at)}."
+        f"Use this private link to [open your reviewer preferences form]({entry.url}). "
+        f"It expires at {format_global_time(expires_at)}."
     )
     return _send_dm(context.sender_id, dm_content, "prefs_link_dm_failed")
 
