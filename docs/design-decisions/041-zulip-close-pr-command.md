@@ -57,8 +57,15 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
    - If `permission` in `{"write", "admin"}`: **permitted** (`maintain` role maps to `write` here).
    - Otherwise: return private "you don't have permission to close this PR" message.
 
-### Token Service: `close_pr_links.py`
-- Pattern mirrors the prefs link module of the time (`prefs_links.py`, retired in design doc 022): Fernet encryption, `iat`/`exp` claims. `close_pr_links.py` is now the reference implementation.
+### Token Service: `pr_action_links.py` (was `close_pr_links.py`)
+- Pattern mirrored the prefs link module of the time (`prefs_links.py`, retired in design doc 022):
+  Fernet encryption, `iat`/`exp` claims.
+- **Since consolidated.** `close_pr_links.py` and `label_pr_links.py` were byte-identical apart from
+  one URL path, and both hand-rolled the Fernet primitive that `core.services.signed_payloads` already
+  provided. They are now one `pr_action_links.py` keyed by a `PRAction` constant (`CLOSE_PR` /
+  `LABEL_PR`). Secret, salt, TTL and URL path stay per-action, so this is wire-compatible and the
+  settings below are unchanged; distinct salts also keep a `label-pr` token from validating as a
+  `close-pr` one. The claims and settings named here are otherwise as-shipped.
 - Claims: `zulip_user_id`, `github_login`, `pr_owner`, `pr_repo`, `pr_number`.
 - Settings:
   - `ZULIP_CLOSE_PR_TOKEN_SECRET` (falls back to `SECRET_KEY`)
@@ -145,7 +152,7 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
 ### Commit 2 (implementation) ✓
 - New files:
   - `qb_site/zulip_bot/commands/close_pr.py`
-  - `qb_site/zulip_bot/services/close_pr_links.py`
+  - `qb_site/zulip_bot/services/close_pr_links.py` (later merged into `pr_action_links.py`)
   - `qb_site/zulip_bot/services/close_pr_execution.py`
   - `qb_site/templates/zulip_bot/close_pr_form.html`
   - `qb_site/templates/zulip_bot/close_pr_invalid.html`

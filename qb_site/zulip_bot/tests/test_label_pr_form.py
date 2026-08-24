@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from unittest.mock import patch
 
@@ -7,7 +8,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from zulip_bot.services.label_pr_execution import LabelPRError, LiveIssueDetails
-from zulip_bot.services.label_pr_links import LabelPRLinkClaims, issue_label_pr_token
+from zulip_bot.services.pr_action_links import LABEL_PR, PRActionLinkClaims, issue_pr_action_token
 
 
 def _token(
@@ -17,15 +18,18 @@ def _token(
     pr_owner: str = "leanprover-community",
     pr_repo: str = "mathlib4",
     pr_number: int = 999,
+    now: int | None = None,
 ) -> str:
-    return issue_label_pr_token(
-        claims=LabelPRLinkClaims(
+    return issue_pr_action_token(
+        action=LABEL_PR,
+        claims=PRActionLinkClaims(
             zulip_user_id=zulip_user_id,
             github_login=github_login,
             pr_owner=pr_owner,
             pr_repo=pr_repo,
             pr_number=pr_number,
-        )
+        ),
+        now=now,
     )
 
 
@@ -67,10 +71,8 @@ def _patch_post_actions():
 
 class TestLabelPRFormGet(TestCase):
     def test_expired_token_returns_403(self) -> None:
-        with patch("zulip_bot.services.label_pr_links.time.time", return_value=1_700_000_000):
-            tok = _token()
-        with patch("zulip_bot.services.label_pr_links.time.time", return_value=1_700_000_000 + 2_000):
-            response = self.client.get(_url(tok))
+        tok = _token(now=int(time.time()) - 2000)
+        response = self.client.get(_url(tok))
         self.assertEqual(response.status_code, 403)
         self.assertTemplateUsed(response, "zulip_bot/label_pr_invalid.html")
         self.assertIn("expired", response.context["reason"])

@@ -5,7 +5,10 @@
 - Main apps:
   - `core`: shared models/services/admin plumbing, plus forms over its own models
     (`core.forms.ReviewerPreferenceForm` + `core.services.reviewer_prefs`, shared by the console and
-    Zulip prefs surfaces).
+    Zulip prefs surfaces). `core.services.signed_payloads` is the **only** Fernet
+    encrypt+integrity+TTL primitive in the repo — every opaque string we hand out (OAuth `state`, the
+    registration link, the `close-pr`/`label-pr` action links) is built on it. Add a consumer, not a
+    second primitive; each supplies its own secret/salt and owns its claims and exception types.
   - `syncer`: GitHub ingestion, cursors/backfills, Celery sync tasks.
   - `analyzer`: derived queue/revision/dependency state and snapshots.
   - `api`: DRF views/serializers for queueboard surfaces.
