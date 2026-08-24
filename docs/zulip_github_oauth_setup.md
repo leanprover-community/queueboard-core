@@ -87,8 +87,9 @@ If your team shares a deployed app, prefer separate local vs production OAuth ap
 ## 4) Quick Verification Checklist
 
 0. Add a command policy entry for live testing, for example:
-   - `register_test`: allow your admin/test Zulip group in `dm`.
-1. Send `register_test` to the bot in a DM.
+   - `register-test`: allow your admin/test Zulip group in `dm`. (An existing `register_test` key
+     still works — policy keys and typed names share one normalized name space, see design doc 021.)
+1. Send `register-test` to the bot in a DM (`register_test` works too).
    - Bot should return a fresh registration link regardless of whether a Queueboard user row already exists.
 2. Open registration link:
    - Page should show `Continue with GitHub` when OAuth is configured.
@@ -105,7 +106,7 @@ Example policy snippet:
 
 ```json
 {
-  "register_test": {
+  "register-test": {
     "allowed_groups": [1234],
     "allowed_user_ids": [101],
     "allowed_contexts": ["dm"]

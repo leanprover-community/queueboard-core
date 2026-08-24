@@ -74,6 +74,23 @@ class TestCommandRegistry(TestCase):
         all_names = [cmd.name for cmd in list_commands()]
         self.assertNotIn("my_cmd", all_names)
 
+    def test_underscore_declared_command_is_reachable_by_the_parsed_name(self) -> None:
+        # Regression: `register_test` was declared with an underscore while the webhook parser
+        # hyphenates every incoming name, so `get_command` never found it and the command could not
+        # be dispatched in either spelling. Registration now normalizes the name.
+        from zulip_bot.commands import get_command
+        from zulip_bot.webhook.payload import parse_command
+
+        self._register("under_scored")
+
+        parsed = parse_command("under_scored some args")
+        cmd = get_command(parsed.name)
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        self.assertEqual(cmd.name, "under-scored")
+        # And the hyphenated spelling a user might type instead resolves to the same definition.
+        self.assertIs(get_command("under-scored"), cmd)
+
     def test_command_without_aliases(self) -> None:
         from zulip_bot.commands import get_command, list_commands
 

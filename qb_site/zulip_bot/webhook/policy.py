@@ -6,7 +6,7 @@ from typing import Any
 
 from django.conf import settings
 
-from zulip_bot.commands import CommandContext, list_commands
+from zulip_bot.commands import CommandContext, list_commands, normalize_command_name
 from zulip_bot.webhook.membership import GroupMembershipChecker
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,9 @@ def _load_command_policy() -> dict[str, CommandPolicy]:
     for command_name, rule in raw_policy.items():
         if not isinstance(command_name, str) or not isinstance(rule, dict):
             continue
+        # Normalized like every other command name, so a deployment whose ZULIP_COMMAND_POLICY still
+        # spells a key `register_test` keeps gating the (now hyphenated) command.
+        command_name = normalize_command_name(command_name)
         groups = _parse_group_set(rule.get("allowed_groups"))
         user_ids = _parse_user_id_set(rule.get("allowed_user_ids"))
         contexts = _parse_context_set(rule.get("allowed_contexts"))
