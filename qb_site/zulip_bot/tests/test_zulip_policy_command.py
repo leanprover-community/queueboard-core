@@ -187,3 +187,60 @@ class TestZulipPolicyCommand(SimpleTestCase):
             self.assertTrue(output.endswith("}'"))
             self.assertIn('"echo"', output)
             self.assertIn('"help"', output)
+
+
+class TestZulipPolicyCommandNameSpace(SimpleTestCase):
+    """Policy keys share the command name space (design doc 021), like the runtime loader."""
+
+    def _write(self, temp_dir: str, payload: dict) -> Path:
+        path = Path(temp_dir) / "policy.json"
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return path
+
+    def test_validate_accepts_an_underscore_spelling(self) -> None:
+        # A deployment (and our own runbook until recently) spells this `register_test`; the runtime
+        # still gates on it, so the validator must not reject the file it is running.
+        with TemporaryDirectory() as temp_dir:
+            path = self._write(temp_dir, {"register_test": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]}})
+            out = io.StringIO()
+
+            call_command("zulip_policy", "validate", str(path), stdout=out)
+
+            output = out.getvalue()
+            self.assertIn("Valid policy", output)
+            # The canonical name counts as present, so it is not reported as missing.
+            self.assertNotIn("register-test", output.split("Missing entries", 1)[-1])
+
+    def test_validate_rejects_two_spellings_of_one_command(self) -> None:
+        # At runtime these collapse into a single rule with the last one silently winning.
+        with TemporaryDirectory() as temp_dir:
+            path = self._write(
+                temp_dir,
+                {
+                    "register_test": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
+                    "register-test": {"allowed_groups": [], "allowed_contexts": []},
+                },
+            )
+
+            with self.assertRaisesMessage(CommandError, "duplicate entries for command 'register-test'"):
+                call_command("zulip_policy", "validate", str(path))
+
+    def test_validate_reports_both_spellings_for_an_unknown_command(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = self._write(temp_dir, {"nope_here": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]}})
+
+            with self.assertRaisesMessage(CommandError, "'nope_here' (normalized: 'nope-here')"):
+                call_command("zulip_policy", "validate", str(path))
+
+    def test_sync_does_not_duplicate_an_underscore_entry(self) -> None:
+        # Before key normalization, sync would have appended a `register-test` entry beside the
+        # existing `register_test` one, producing exactly the collapsing pair above.
+        with TemporaryDirectory() as temp_dir:
+            path = self._write(temp_dir, {"register_test": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]}})
+
+            call_command("zulip_policy", "sync", str(path), stdout=io.StringIO())
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn("register-test", payload)
+            self.assertNotIn("register_test", payload)  # canonicalized in place
+            self.assertEqual(payload["register-test"]["allowed_contexts"], ["dm"])  # rule preserved

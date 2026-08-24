@@ -39,7 +39,15 @@ def _load_command_policy() -> dict[str, CommandPolicy]:
             continue
         # Normalized like every other command name, so a deployment whose ZULIP_COMMAND_POLICY still
         # spells a key `register_test` keeps gating the (now hyphenated) command.
+        raw_command_name = command_name
         command_name = normalize_command_name(command_name)
+        if command_name in policies:
+            # Two spellings of one command: last wins, which is easy to misread as "both applied".
+            # `manage.py zulip_policy validate` rejects this outright; here we can only shout.
+            logger.warning(
+                "zulip_command_policy_duplicate_entry",
+                extra={"command": command_name, "raw": raw_command_name},
+            )
         groups = _parse_group_set(rule.get("allowed_groups"))
         user_ids = _parse_user_id_set(rule.get("allowed_user_ids"))
         contexts = _parse_context_set(rule.get("allowed_contexts"))
