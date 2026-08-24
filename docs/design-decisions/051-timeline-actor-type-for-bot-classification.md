@@ -1,47 +1,33 @@
 # Timeline Actor Type for Bot Classification
 
-> Status: **In progress** — Chunks 1–3 landed (backfill built and validated
-> against the live API; the drain itself has not been run). Living
-> implementation plan; drafted
-> from a downstream (`qb-notebook`) data-quality investigation, 2026-08-12.
-> Reviewed and revised against the tree 2026-08-13 (see Progress Notes for what
-> changed and why).
+> Status: **Accepted** — implemented in PR #194 (`doc/051-timeline-actor-type`).
+> The production drain, the first post-drain export, and the downstream switch
+> in `qb-notebook` are still outstanding; see Operational Notes.
+> Converted from a living implementation plan to a decision record on
+> 2026-08-23 (plan history is in git).
 
 ## Context
 
-- `PRTimelineEvent.actor_login` stores *who* acted, but not *what kind of
+- `PRTimelineEvent.actor_login` stored *who* acted, but not *what kind of
   account* acted, and not a rename-stable identity for that account. Every
-  downstream consumer that needs "was this a human?" therefore hardcodes a
-  list of bot logins.
-- **GitHub already tells us, and we already ask for it, and we throw it away.**
-  All three live timeline queries select the actor's `__typename`:
-  - `qb_site/syncer/queries/pr_bundle.graphql:131-231`
-  - `qb_site/syncer/queries/timeline_page.graphql`
-  - `qb_site/syncer/queries/timeline_page_back.graphql`
-
-  each shaped `actor { __typename ... on User { login } ... on Bot { login } ... on Mannequin { login } }`.
-  `_login_or_empty()` (`qb_site/syncer/services/sub/timeline_sync.py:47-58`)
-  then keeps only `login` and discards `__typename`.
-- Concrete downstream failure that motivated this. `qb-notebook`'s
-  `DEFAULT_BOT_ACTORS` (`qb_notebook/review_states.py`) is used to find each
-  PR's first *human* review touch. The mathlib bots changed identity on
-  **2026-02-03** and the list silently went stale:
-
-  | filtered (old login) | last event | unfiltered (new login) | first event |
-  | --- | --- | --- | --- |
-  | `mathlib4-dependent-issues-bot` | 2026-02-02 | `mathlib-dependent-issues` | 2026-02-03 |
-  | `mathlib4-merge-conflict-bot` | 2026-02-02 | `mathlib-merge-conflicts` | 2026-02-03 |
-  | `leanprover-community-mathlib4-bot` | 2026-02-02 | *(no successor)* | — |
-
-  Effect on the "open → first review" metric for a last-90-days cohort
-  (snapshot 2026-08-10): **15.7 % of first-touches were bot events**, and the
-  median moved 0.261 d → 0.467 d once filtered — i.e. a reported ~41 %
-  latency improvement was mostly an artifact. Six months of a wrong number
-  from a change nobody downstream could have known about.
-
-  **Correction, measured live 2026-08-15 (Chunk 3):** this was *not* a rename.
-  The old logins still resolve to their original accounts, and the new ones are
-  different accounts of a different kind:
+  downstream consumer that needed "was this a human?" therefore hardcoded a
+  list of bot logins — and **login is the wrong key**, which is the root cause:
+  any identity change silently invalidates the list.
+- GitHub already told us, we already asked, and we threw it away. All three
+  live timeline queries selected the actor's `__typename`
+  (`pr_bundle.graphql`, `timeline_page.graphql`, `timeline_page_back.graphql`);
+  `_login_or_empty()` in `syncer/services/sub/timeline_sync.py` kept only
+  `login` and dropped it.
+- **Motivating failure.** `qb-notebook`'s `DEFAULT_BOT_ACTORS`
+  (`qb_notebook/review_states.py`) finds each PR's first *human* review touch.
+  The mathlib bots changed identity on **2026-02-03** and the list went stale
+  unnoticed. Effect on "open → first review" for a last-90-days cohort
+  (snapshot 2026-08-10): **15.7 % of first touches were bot events**, and the
+  median moved 0.261 d → 0.467 d once filtered — a reported ~41 % latency
+  improvement that was mostly an artifact. Six months of a wrong number from a
+  change nobody downstream could have seen.
+- **What the changeover actually was** (resolved live 2026-08-15, correcting
+  the original "rename" reading):
 
   | login | kind | node id |
   | --- | --- | --- |
@@ -50,659 +36,307 @@
   | `mathlib4-dependent-issues-bot` | `User` | `U_kgDOCsITAQ` |
   | `mathlib-dependent-issues` | **`Bot`** | `BOT_kgDOD2_cBQ` |
 
-  The machine-user bots were **replaced by GitHub Apps**. This matters in three
-  ways, and all three are good news for this design:
-  1. The replacements are true `Bot`s, so `actor_type` alone catches them —
-     and would catch any future App the mathlib maintainers add, with no list
-     to update.
-  2. No key, node id included, would have survived this particular
-     substitution — a new account is a new account. So `actor_node_id` is not
-     retroactively vindicated by *this* incident; it is justified by the
-     ordinary renames it does survive, and by giving the residual machine-user
-     list a stable key.
-  3. The residual machine-user list is the *old* accounts (`U_kgDODVl3LA`,
-     `U_kgDOCsITAQ`, plus `leanprover-community-bot-assistant` =
-     `U_kgDOBcsTTQ`). Those are historical and frozen, which makes keying them
-     on node id both easy and permanent.
+  The machine-user bots were **replaced by GitHub Apps** — not renamed. The old
+  logins still resolve to their original accounts. Consequences: `actor_type`
+  alone catches the replacements and any future App with no list to update; no
+  key, node id included, could have bridged the substitution, so
+  `actor_node_id` is justified by the ordinary renames it *does* survive and by
+  giving the residual machine-user list a stable key. That residual list is the
+  old, frozen accounts (`U_kgDODVl3LA`, `U_kgDOCsITAQ`, and
+  `leanprover-community-bot-assistant` = `U_kgDOBcsTTQ`), plus
+  `leanprover-radar` (`User`, `U_kgDOCG88RQ`); `mathlib-triage` is a `Bot`
+  (`BOT_kgDOD2_uYQ`).
+- Automation accounts with no API-side bot signal at all, found in the same
+  sweep: `mathlib-auto-merge`, `mathlib-splicebot`, `leanprover-bot`,
+  `mergify`, `downstream-reports-automation`, `botbaki-review`,
+  `copilot-pull-request-reviewer`, `copilot-swe-agent`.
+- No usable substitute existed in the export:
+  - `core_user.github_node_id` encodes the kind in its prefix, but `core_user`
+    is a PR-**author** table: 60 event actors accounting for **111,864 touch
+    events (~41 %)** have no row there, because most bots never open PRs.
+  - The GitHub App `[bot]` login suffix is not available: **0** occurrences
+    anywhere in the export. GraphQL's `Bot.login` never includes it (REST's
+    `/users/<slug>[bot]` does), so this is not something we strip.
+  - `PRTimelineEvent.extra` is populated only for `REVIEW_DISMISSED` rows and
+    arrives in parquet as a JSON *string*; not a substitute for a typed column.
+- Precedent inside the same function: the `ReviewRequested` /
+  `ReviewRequestRemoved` branch already read `requestedReviewer.__typename` to
+  route `User`/`Bot`/`Mannequin` vs `Team`, and the top-level `author`
+  selections already requested `id`. The timeline actor unions just never did.
 
-  The same probe surfaced two automation accounts not in the doc's original
-  sweep: `mathlib-triage` (`Bot`, `BOT_kgDOD2_uYQ`) and `leanprover-radar`
-  (`User`, `U_kgDOCG88RQ`).
-- Other unlisted bots found in the same sweep, all with zero API support for
-  identifying them as bots: `mathlib-auto-merge`, `mathlib-splicebot`,
-  `leanprover-bot`, `mergify`, `downstream-reports-automation`,
-  `botbaki-review`, `copilot-pull-request-reviewer`, `copilot-swe-agent`.
-- **Login is the wrong key, and that is the root cause.** A login-keyed list
-  breaks on any identity change. Typing the actor fixes the GitHub App half
-  outright; the machine-user half still needs a list, and keying that list on
-  node id is what keeps it from going stale again (see Subtleties). Both
-  halves are in scope here for that reason.
-- No usable substitute exists in the current export:
-  - `core_user.github_node_id` (`qb_site/core/models/user.py:29`) does encode
-    the account kind in its prefix (`BOT_…` / legacy `04:Bot…`), but
-    `core_user` is a PR-**author** table. 60 event actors accounting for
-    **111,864 touch events (~41 %)** have no `core_user` row at all, because
-    most bots never open PRs. (Note: the `node_kind` referenced in the
-    original draft is a `qb-notebook`-side decode of that prefix, not a column
-    in this repo.)
-  - The GitHub App `[bot]` login suffix is not preserved: **0** occurrences in
-    `actor_login`, `assignee_login`, `requested_reviewer_login`, or
-    `core_user.github_login`. This is not something we strip — GraphQL's
-    `Bot.login` never includes the suffix (REST's `/users/<slug>[bot]` does).
-  - `PRTimelineEvent.extra` was reported as `{}` for all 598,030 exported
-    rows. That is almost certainly an **export artifact, not a fact about the
-    table**: `timeline_sync.py:149-154` populates `extra` on every
-    `REVIEW_DISMISSED` row. The export path is
-    Postgres → CSV → `pd.read_csv` → parquet
-    (`scripts/export_for_analysis.py:45-56`), so `extra` arrives as a JSON
-    *string* column, not a dict. Worth re-checking downstream; either way
-    `extra` is not a substitute for a typed column.
-- Precedent inside the very same function: the
-  `ReviewRequestedEvent` / `ReviewRequestRemovedEvent` branch already reads
-  `requestedReviewer.__typename` to route `User`/`Bot`/`Mannequin` vs `Team`
-  (`timeline_sync.py:158-162`). This change generalizes that idiom to actors.
-- Precedent for selecting the actor's `id`: the top-level `author` selections
-  in `pr_bundle.graphql:63-98` already request `id` for both `User` and `Bot`.
-  The timeline actor unions just never did.
+## Decision
 
-## Goals / Non-Goals
+- **Columns.** `PRTimelineEvent` gains `actor_type` (`PRActorType` choices
+  `User` / `Bot` / `Mannequin`, GitHub's exact wire casing) and
+  `actor_node_id`, both nullable — migration
+  `syncer/migrations/0054_prtimelineevent_actor_type_and_node_id.py`. `NULL`
+  means *unknown*, never `User`.
+  - **No index on either.** `actor_type` is three-valued, the "first human
+    touch per PR" shape is already served by `syncer_prtimeline_pr_time_idx`,
+    and the analytics consumer reads a `SELECT *` parquet. Add one when an
+    in-repo query needs it.
+  - **No CHECK constraint.** Unlike `before_sha` / `label_name` /
+    `requested_*`, these are meaningful on every event type, so there is
+    nothing to type-scope. In particular, do not encode "`actor_type` set ⟹
+    `actor_login` non-empty": it holds today but is a GitHub-side invariant we
+    do not control.
+- **Wire.** `id` added to the 12 timeline `actor` unions, the `IssueComment` /
+  `PullRequestReview` `author` unions, and `ReviewDismissedEvent`'s
+  `review { author }` in all three live queries. Adding fields to an existing
+  selection does not change GraphQL point cost. The inline-comment `author`
+  under `PullRequestReview.comments.nodes` is deliberately left `login`-only
+  (see the non-goal below).
+- **Extraction.** `actor_type_or_none` / `actor_node_id_or_none` (public,
+  because the backfill command imports them) plus a thin `_actor_identity`
+  pair-builder in `timeline_sync.py`, applied in every branch of
+  `_extract_event_fields` that sets `actor_login` — both `actor` idioms and the
+  `author` branches. The allowed typename set is derived from
+  `PRActorType.values` so the helper cannot drift from the model. An
+  *unmodelled* typename (a hypothetical `Organization`) yields
+  `actor_type = NULL` but still stores `actor_node_id`: the node id is exact
+  regardless of whether we model the kind.
+  `_extract_event_fields` is the single funnel for all five
+  `sync_timeline_events` call sites, so one extraction change covers every
+  ingest path, archive import included.
+- **Synthesized dismissed-review parents.** `REVIEW_DISMISSED` rows now
+  denormalize `dismissed_review_author_type` / `_node_id` into `extra`, and
+  `_synthesize_dismissed_review_parent` reads them back — otherwise those rows
+  (which are exactly the review events the motivating metric reads) would be
+  `NULL` even under fresh ingestion. Rows whose `extra` predates the new keys
+  stay `NULL` and are healed by the backfill.
+- **Backfill: targeted `nodes(ids:)` resolution, not a rewalk.** Every row
+  already stores the timeline item's own `github_node_id`, and GitHub
+  re-resolves that node's actor on demand.
+  `syncer/queries/actor_types_by_node_ids.graphql` (registered in
+  `scripts/validate_github_graphql.py`, which uses an explicit list, not a
+  glob) plus `manage.py backfill_timeline_actor_types`. This is *exact*, not
+  heuristic: it resolves the actual actor object attached to each specific
+  event, so renamed accounts resolve correctly and login reuse cannot mis-type
+  anything. Measured live: `rateLimit.cost` is **1 at the full 100-id cap**, so
+  ~600 k rows ≈ **~6 k points** — roughly 1/20th of a schema-version rewalk
+  wave, with no reset migration and no interaction with the upgrader chain.
+  - A named `ActorIdentity` fragment keeps the 13 inline fragments readable;
+    `... on Comment` is what covers `IssueComment`, `PullRequestReview`, and
+    the synthesized dismissed-review parents (whose stored node id *is* the
+    review's).
+  - Per-repository clients and an outer repo loop, because a single cross-repo
+    client would bypass GitHub App operation-token resolution that every other
+    syncer entry point goes through.
+- **Archive-row `actor_login` healing, in the same pass.** The legacy archive
+  fragment omitted the `actor` field entirely for eight event types, so those
+  rows have no attribution at all — not merely no typename. The same
+  `nodes(ids:)` response carries `login`, so the drain fills it, guarded
+  **fill-only**: write only when the resolved login is non-empty *and* the
+  stored value is empty, with the predicate covering both `NULL` and `''`
+  because the two extraction idioms disagree. A non-empty stored login is the
+  login *as of ingest time*; clobbering it with today's login would destroy the
+  rename history `actor_node_id` exists to expose. (Nothing to fix in
+  `src/queueboard/queries/pr_info.graphql`: it is no longer a live fetch path,
+  so the backfill is the only available remedy.)
+- **Fill-empty allowlist extended.** `actor_type` and `actor_node_id` are added
+  to the explicit column tuple `sync_timeline_events` iterates when updating
+  existing rows. The drain writes via `bulk_update` and does not depend on
+  this, but every ordinary rewalk does — including the continuous timeline
+  backfill for PRs not yet `timeline_backfill_done`. **This is the single
+  easiest thing to break in any future change here**; omit it and those paths
+  silently never populate the columns.
+- **Export and sanitization unchanged.**
+  `EXPORT_TABLE_QUERIES["syncer_prtimelineevent"]` is `SELECT *`, so the
+  columns flow through automatically; `scripts/sanitize_backup.py` references
+  neither the table nor any `actor_*` column. `actor_type` is a three-valued
+  enum and `actor_node_id` an opaque GitHub identifier already exported for
+  authors via `core_user.github_node_id`.
+- **Not in scope: `PRReviewInlineComment.author_login`.** The mechanism would
+  work verbatim (the wire already carries `author { __typename … }`,
+  `github_node_id` is unique, the table is exported), but it carries **no new
+  information**: an inline comment's author is the parent review's author.
+  Sampled 30 recent merged mathlib4 PRs (2026-08-13): 33 inline comments, **0
+  author mismatches** against their parent review — 3 were bot-authored, so
+  bots do post inline comments, they just do it as their own review. So
+  `author_type` is derivable by joining `review_node_id` →
+  `PRTimelineEvent.github_node_id`. Treat the sample as absence-of-
+  counterexample, not proof. Residual gap: comments whose parent
+  `PRTimelineEvent` row does not exist (the documented null
+  `parent_review_event` case) have nothing to join to. What would justify
+  revisiting: per-comment review-effort metrics that count inline comments per
+  author *without* joining to the parent, where
+  `copilot-pull-request-reviewer` / `copilot-swe-agent` would inflate human
+  review volume. Denormalization for convenience, not correctness — so it
+  should be driven by a real downstream query, not by symmetry with this
+  change.
 
-Goals:
-- Persist the actor's GraphQL `__typename` on `PRTimelineEvent` so bot
-  classification is exact.
-- Persist the actor's GraphQL node `id` so downstream lists can be keyed on a
-  **rename-stable identity** instead of a login. This is what makes the fix
-  durable rather than a one-time patch.
-- Make both available in the `analytics-datasets` export for `qb-notebook`.
-- Backfill historical rows — the analytical value is almost entirely
-  historical, so new-rows-only is close to worthless here.
-- While the backfill is resolving those rows anyway, fill the **missing
-  `actor_login`** on archive-imported rows. The legacy archive fragment
-  omitted the actor entirely, so these rows have no attribution at all; the
-  same `nodes(ids:)` response that carries the typename carries the login.
-
-Non-Goals:
-- **Not** a complete "is this a human" oracle. See the machine-user caveat in
-  Subtleties — downstream lists shrink and stop being rename-fragile, but do
-  not disappear.
-- Not changing `actor_login` semantics for rows that already have a value, the
-  `""`-when-null convention, or any existing consumer. Filling
-  previously-empty `actor_login` is additive and uses the same fill-only
-  guard.
-- **Not classifying `PRReviewInlineComment.author_login`.** Deliberate, and
-  the reasoning is worth recording because the surface looks identical:
-  - Everything needed is already there. The wire carries
-    `author { __typename ... }` (`pr_bundle.graphql:199`),
-    `PRReviewInlineComment.github_node_id` is `unique=True`, so the same
-    `nodes(ids:)` backfill mechanism works verbatim, and the table is already
-    exported (`scripts/backup_policy.py:136`). The cost would be an
-    `author_type` / `author_node_id` pair mirroring this change, plus a second
-    table argument on the backfill command.
-  - It nonetheless carries **no new information**, because an inline comment's
-    author is the parent review's author. Sampled 30 recent merged mathlib4
-    PRs on 2026-08-13: 33 inline comments, **0 author mismatches** against
-    their parent review's author (3 of the 33 were bot-authored, so bots do
-    post inline comments — they just do it as their own review). GitHub
-    attributes a review's comments to the reviewer; a reply by someone else
-    becomes its own review. So `author_type` here is derivable by joining
-    `review_node_id` → `PRTimelineEvent.github_node_id` and reading that
-    row's `actor_type`. Treat the sample as absence-of-counterexample, not
-    proof.
-  - Residual gap if we skip it: inline comments whose parent
-    `PRTimelineEvent` row does not exist — the documented null
-    `parent_review_event` case where a dismiss event had `review: null` on
-    GitHub — have nothing to join to, so their author stays untyped. Expected
-    to be a small population.
-  - What would justify doing it later: per-comment review-effort or
-    review-depth metrics that count inline comments per author without
-    joining to the parent, where bot-authored comments
-    (`copilot-pull-request-reviewer`, `copilot-swe-agent`) would inflate
-    human review volume. Denormalization for convenience, not for
-    correctness — so it should be driven by a real downstream query, not by
-    symmetry with this change.
-
-## Proposed Design
-
-- **Model.** Add to `qb_site/syncer/models/pr_timeline_event.py`:
-
-  ```python
-  class PRActorType(models.TextChoices):
-      USER = "User", "user"
-      BOT = "Bot", "bot"
-      MANNEQUIN = "Mannequin", "mannequin"
-
-  # GraphQL __typename of the acting account, as returned by the timeline
-  # queries. Null for rows ingested before this column existed, for
-  # archive-imported rows whose legacy fragment omits the actor entirely,
-  # and for events where GitHub itself returns a null actor.
-  actor_type = models.CharField(max_length=16, choices=PRActorType.choices, null=True, blank=True)
-  # GraphQL node id of the acting account. Stable across login renames, so
-  # downstream automation lists should key on this rather than actor_login.
-  # Null under the same conditions as actor_type.
-  actor_node_id = models.CharField(max_length=255, null=True, blank=True)
-  ```
-
-  Store GitHub's exact casing (`"Bot"`) rather than a normalized form — it is
-  the wire value, and `requested_*` routing already compares raw typenames.
-  Null (not `""`) means "unknown".
-
-  **No `db_index=True` on either column.** `actor_type` is three-valued, so a
-  btree on it is not selective enough for Postgres to use on the obvious
-  `= 'Bot'` predicate; the downstream "first human touch per PR" shape is
-  already served by `syncer_prtimeline_pr_time_idx`, and the analytics
-  consumer reads a `SELECT *` parquet where indexes are irrelevant. Add an
-  index only when an in-repo query needs one. (Contrast
-  `requested_reviewer_login`, which is indexed because reviewer assignment
-  queries it.)
-
-  **No new CHECK constraint.** Unlike `before_sha` / `label_name` /
-  `requested_*`, these columns are meaningful on every event type, so there is
-  no type-scoping to enforce. Do not add an
-  "`actor_type` set ⟹ `actor_login` non-empty" constraint either: it holds
-  today but is a GitHub-side invariant we do not control.
-
-  `actor_node_id` is separable — it is the second half of Chunk 1 and can be
-  dropped if the added width (~40 B × 600 k rows, plus export size) is
-  unwelcome. Dropping it means keeping the rename fragility downstream.
-
-- **Wire change.** Add `id` to the actor/author unions in all three live
-  queries, mirroring `pr_bundle.graphql:63-98`:
-  `actor { __typename ... on User { id login } ... on Bot { id login } ... on Mannequin { id login } }`.
-  Adding fields to an existing selection does not change GraphQL point cost
-  (cost is driven by connection `first`/`last`), so this is free on the rate
-  budget.
-
-  Scope of "actor/author unions": the 12 timeline `actor` selections, the
-  `IssueComment` / `PullRequestReview` `author` selections, and the
-  `ReviewDismissedEvent`'s `review { author }` (needed for the synthesized-row
-  denormalization below). **Not** the inline-comment `author` under
-  `PullRequestReview.comments.nodes` — typing that author is an explicit
-  Non-Goal, so selecting an id we would never store is noise. The `assignee`
-  and `requestedReviewer` unions are likewise untouched.
-
-- **Extraction.** Add siblings to `_login_or_empty`:
-
-  ```python
-  def _actor_type_or_none(actor: Any) -> Optional[str]:
-      """Return actor.__typename when it is a known account kind, else None."""
-      if not isinstance(actor, dict):
-          return None
-      tn = actor.get("__typename")
-      return tn if tn in PRActorType.values else None
-
-
-  def _actor_node_id_or_none(actor: Any) -> Optional[str]:
-      """Return the actor's GraphQL node id, or None when absent."""
-      if not isinstance(actor, dict):
-          return None
-      nid = actor.get("id")
-      return str(nid) if nid else None
-  ```
-
-  Deriving the allowed set from `PRActorType.values` rather than a literal
-  tuple keeps the helper from drifting if the choices change.
-
-  As implemented there is a third, trivial helper — `_actor_identity(actor)`
-  returning `{"actor_type": …, "actor_node_id": …}` — so each branch takes one
-  added `fields.update(...)` line instead of two, matching the `fields.update`
-  idiom already in the function. The two primitives stay separate because the
-  synthesized-parent path and the backfill command need them individually.
-
-  Note an asymmetry worth knowing: an *unmodelled* typename (a hypothetical
-  `Organization` actor) yields `actor_type = NULL` but still stores
-  `actor_node_id`. The node id is exact regardless of whether we model the
-  kind, so there is no reason to discard it.
-
-  Set `fields["actor_type"]` / `fields["actor_node_id"]` at every branch of
-  `_extract_event_fields` that currently sets `actor_login`. **There are two
-  idioms in that function** — `_login_or_empty(ev.get("actor"))` and the raw
-  `(ev.get("actor") or {}).get("login")` — plus `ev.get("author")` for
-  `IssueComment` / `PullRequestReview`. All of them need the parallel lines;
-  see the Chunk 2 checklist.
-
-- **Backfill: targeted `nodes(ids:)` resolution, not a rewalk.** Every
-  `PRTimelineEvent` already stores the timeline item's own
-  `github_node_id`, and GitHub will re-resolve that node's actor on demand.
-  Verified against the live API on 2026-08-13:
-
-  - `nodes(ids: [...])` resolves timeline items and returns the actor union
-    exactly as the timeline path does — probed side by side on three
-    `LabeledEvent`s of `mathlib4#30723`, identical results including the
-    two null actors.
-  - Heterogeneous batches work: one call mixing `LabeledEvent`,
-    `IssueComment`, and `PullRequestReview` ids returned each one's
-    `actor`/`author` typename and login (`mathlib-bors` → `Bot`,
-    `github-actions` → `Bot`, humans → `User`).
-  - Measured `rateLimit.cost` was **1** for a 10-id call. `nodes` accepts at
-    most 100 ids, so ~598 k rows ≈ **~6 k points**, against a 5 000 pt/hour
-    primary budget — roughly an hour or two of drip-fed budget, versus the
-    <24 h a full v4 rewalk wave took for v3. Re-measure cost at 100 ids
-    before assuming the ratio holds.
-
-  This route is *exact*, not heuristic: it resolves the actual actor object
-  attached to each specific event, so renamed accounts resolve correctly and
-  login reuse cannot mis-type anything. It fills `actor_node_id` in the same
-  call. It needs no schema-version wave, no reset migration, and does not
-  interact with the upgrader machinery.
-
-  It also covers the synthesized dismissed-review rows for free: their
-  `github_node_id` is the `PullRequestReview` node id
-  (`timeline_sync.py:228-241`), which resolves via the same call and carries
-  `author`.
-
-  **And it fills the archive rows' missing `actor_login` in the same pass**,
-  since the resolved actor carries `login` alongside `__typename` and `id`.
-  Guarded as fill-only, mirroring `timeline_sync.py:346`: write only when the
-  resolved login is non-empty **and** the stored value is empty. The predicate
-  must cover both empties — `actor_login IS NULL OR actor_login = ''` — because
-  the two extraction idioms disagree (see Subtleties). Never overwrite a
-  non-empty stored login: it is the login as of ingest time, and clobbering it
-  with today's login would destroy the rename history that `actor_node_id`
-  exists to expose.
-
-  Rows with `github_node_id IS NULL` cannot be backfilled this way. In
-  practice there should be none from this path —
-  `_extract_event_fields` returns `None` when the node id is missing — but the
-  command should count and report them rather than assume zero.
-
-  See Alternatives Considered for the two routes this replaces.
-
-- **Export.** No `scripts/backup_policy.py` change required:
-  `EXPORT_TABLE_QUERIES["syncer_prtimelineevent"]` is
-  `SELECT * FROM syncer_prtimelineevent ORDER BY id`
-  (`scripts/backup_policy.py:135`), so new columns flow through
-  automatically. **But verify dtype, not just presence** — see the parquet
-  drift trap in Subtleties.
-
-- **Sanitization.** No change. `scripts/sanitize_backup.py` does not touch
-  `syncer_prtimelineevent` or `actor_login`; `actor_type` is a three-valued
-  enum and `actor_node_id` is an opaque GitHub identifier already exported
-  for authors via `core_user.github_node_id`.
-
-## Subtleties / Invariants
+## Consequences
 
 - **`__typename == "Bot"` identifies GitHub *Apps*, not all automation.**
-  Machine accounts that are ordinary GitHub user accounts report `User`.
-  Confirmed live 2026-08-15: `leanprover-community-bot-assistant`,
-  `leanprover-radar`, and both retired mathlib bots all report `User`. So
-  `actor_type` alone is *necessary but not sufficient* — the residual
-  machine-user list shrinks but does not disappear.
+  Machine accounts that are ordinary user accounts report `User` — confirmed
+  for `leanprover-community-bot-assistant`, `leanprover-radar`, and both
+  retired mathlib bots. `actor_type` is therefore **necessary but not
+  sufficient**: the downstream machine-user list shrinks and stops being
+  rename-fragile, but does not disappear. Key that residual list on
+  `actor_node_id`.
+- **`actor_type IS NULL` is a permanent, non-trivial population.** GitHub
+  returns a null actor for a real share of events: 12 of the first 100 real
+  mathlib4 nodes probed, concentrated in workflow-driven label events
+  (`delegated`, `ready-to-merge`). No backfill route can type these. Analysts
+  must read `NULL` as *unknown*, never as `User` — this repo has no export
+  README, so that documentation lives in `qb-notebook` / `analytics-datasets`.
+- The set of `(actor_login, actor_node_id)` pairs is a free rename history —
+  and read the other way, a *changed* node id under a similar-looking login is
+  the signature of an account replacement like the 2026-02-03 one.
+- The update path is fill-only (`new_val and not getattr(obj, col)`), so a
+  rewalk never overwrites an existing `actor_type`. That makes the drain
+  idempotent and order-independent with respect to the live syncer.
+- Synthesis uses `get_or_create`, so a synthesized parent row that already
+  exists from a pre-051 ingest is **not** retyped by a later dismiss-event
+  re-ingest. Those rows are healed by the ordinary update path if the
+  `PullRequestReview` node itself is walked, and by the drain otherwise. Left
+  as-is rather than special-cased: the fill-only convention stays uniform.
+- **Parquet dtype drift.** `scripts/export_for_analysis.py` goes
+  Postgres → `COPY … CSV` → `pd.read_csv` → `to_parquet`. An export run while a
+  column is entirely NULL infers all-NaN **float64** and lands as `double`; a
+  later export lands as `object`. `requested_team_slug` in the current artifact
+  is `double` for exactly this reason. Hence the export must be sequenced
+  *after* the drain, and the check is on dtype, not just column presence.
+- Width cost: ~40 B × ~600 k rows on two columns, in the table and in the
+  export. `actor_node_id` is the separable half if that is ever unwelcome —
+  dropping it would mean keeping the rename fragility downstream.
+- Tunables are CLI args plus module constants, deliberately not settings: a
+  one-shot operator command must not introduce a `getattr(settings, …)` with no
+  matching `os.getenv` in `base.py` (root `AGENTS.md`). If the drain ever
+  becomes beat-driven, wire it through `base.py` *and* `.env.example` then.
 
-  Downstream should key that residual list on `actor_node_id`, so a rename
-  changes nothing. Say this explicitly in the downstream docs, along with the
-  fact that the list survives in reduced form. Bonus: the set of
-  `(actor_login, actor_node_id)` pairs in the table is a free rename history —
-  and, read the other way, a *change* of node id under a similar-looking login
-  is the signature of an account replacement like the 2026-02-03 one.
-- **GitHub returns a null actor for a real share of events, permanently.**
-  Sampled two mathlib4 PRs' last-100 timelines on 2026-08-13: of 5
-  `LabeledEvent`s, **3 had `actor: null`** (`delegated`, `ready-to-merge` —
-  workflow labels), confirmed identical via both the timeline path and
-  `nodes(ids:)`. No backfill route can type these; `actor_type IS NULL` will
-  remain a non-trivial population forever. This is evidence, not a
-  hypothetical, for the invariant below.
-- **Analysts must treat `actor_type IS NULL` as unknown, never as `User`.**
-  Document this wherever the export schema is described. Note that repo has
-  no export README — that documentation lives in `qb-notebook` /
-  `analytics-datasets`, so this is a cross-repo action item.
-- **Parquet dtype drift.** `scripts/export_for_analysis.py:45-56` exports via
-  `COPY … CSV` → `pd.read_csv` → `to_parquet`. If the first export runs while
-  `actor_type` is entirely NULL, pandas infers an all-NaN **float64** column
-  and the parquet lands as `double`; a later export with values lands as
-  `object`. Same for `actor_node_id`. So sequence the first export *after* the
-  backfill has written some rows, and assert dtype in Chunk 4 — not just that
-  the column exists.
-- **The fill-empty column allowlist must be extended.**
-  `timeline_sync.py:336-344` updates existing rows by iterating an explicit
-  tuple of column names (`label_name`, `assignee_login`, `actor_login`,
-  `before_sha`, `after_sha`, `requested_reviewer_login`,
-  `requested_team_slug`). **`actor_type` and `actor_node_id` must be added
-  there.** The chosen backfill route writes via bulk UPDATE and does not
-  depend on this, but every ordinary rewalk does — including the continuous
-  timeline backfill for PRs that are not yet `timeline_backfill_done`, and any
-  future schema wave. Omit it and those paths silently never populate the new
-  columns. This is still the single easiest thing to miss in this change.
-- The `new_val and not getattr(obj, col)` guard makes the update path
-  fill-only / append-only: a rewalk never overwrites an existing
-  `actor_type`. Correct default, and it means the backfill is idempotent and
-  order-independent with respect to the live syncer.
-- **The synthesized dismissed-review rows need explicit handling.**
-  `_synthesize_dismissed_review_parent` (`timeline_sync.py:228-241`) creates
-  `REVIEW_APPROVED` / `REVIEW_CHANGES_REQUESTED` rows with `actor_login` taken
-  from `extra["dismissed_review_author"]`, where no type information exists —
-  so these rows get `actor_type = NULL` even under fresh live ingestion.
-  These are review events, i.e. exactly what the motivating downstream metric
-  reads. Two fixes, both worth doing:
-  - Live: `pr_bundle.graphql:208` already selects
-    `review { id submittedAt author { __typename … } }`, so denormalize
-    `dismissed_review_author_type` (and `_node_id`) into `extra` and pass them
-    through to the synthesized row. Rows whose `extra` predates the new keys
-    stay NULL.
-  - Historical: the `nodes(ids:)` backfill already covers them, because the
-    synthesized row's `github_node_id` *is* the review's node id.
-- **`actor_login = ""` is not a reliable "deleted account" marker today**, so
-  do not lean on it. The Labeled/Unlabeled/Assigned/Unassigned/ReadyForReview/
-  ConvertToDraft/Reopened/Closed/ForcePushed branches write `None` for a null
-  actor (raw `.get("login")`), while IssueComment/ReviewDismissed/
-  ReviewRequested/PullRequestReview write `""` via `_login_or_empty`. The
-  `actor_type` NULL-means-unknown convention stands on its own and does not
-  depend on resolving that inconsistency.
-- **Archive-import rows have no actor at all, not merely no typename.** The
-  legacy fragment `src/queueboard/queries/pr_info.graphql:212-345` omits the
-  `actor` field entirely for `LabeledEvent`, `UnlabeledEvent`,
-  `AssignedEvent`, `ClosedEvent`, `ReopenedEvent`, `HeadRefForcePushedEvent`,
-  `ReadyForReviewEvent`, and `ConvertToDraftEvent` — so those rows have NULL
-  `actor_login` today, not just NULL `actor_type`. The `nodes(ids:)` backfill
-  re-resolves all three from GitHub, so it heals them (in scope, per Goals).
+## Operational Notes
 
-  Note there is nothing to fix *in the query*: `pr_info.graphql` is not loaded
-  by any code in this repo (the only remaining reference is
-  `scripts/basic_pr_info.sh`, which uses the `basic_pr_info.graphql` subset).
-  The archive JSON is already-captured output produced outside this repo, so
-  the file is documentation of a historical shape, not a live fetch path.
-  Widening it would change nothing. The backfill is the only available fix,
-  which is part of why folding it in here is worth it even though the importer
-  is not expected to run again.
-- `_extract_event_fields` is the **single funnel** for every ingest path —
-  verified: `sync_timeline_events(` has five call sites
-  (`pr_sync_service.py:166,471,508`, `sync_tasks.py:274`,
-  `archive_import.py:328`) and all route through `timeline_sync.py:316`. So
-  unlike the sub-sync wire-up hazard called out in design doc 044
-  ("three-call-site rule"), one extraction change covers every path. Confirmed
-  there is no separate extraction in `sync_schema_upgrade_v2.py` / `_v3.py`.
-- `PullRequestReview` and `IssueComment` carry `author`, not `actor`; the
-  other branches carry `actor`. Both selection sets already include the
-  typename union.
-- **New query files must be registered with the validator.**
-  `scripts/validate_github_graphql.py` uses an explicit list of query paths
-  (`:167-214`), not a glob, and runs inside `scripts/repo_check_compose.sh`.
-  A new `.graphql` file that is not added there is silently unvalidated.
-- **Tunables: CLI args and module constants, not settings.** The backfill is a
-  one-shot operator command, so batch size / rate floor belong on the
-  argument parser with module-level constants for defaults. Per the root
-  `AGENTS.md`, do **not** reach for `getattr(settings, "FOO", default)`
-  without a matching `os.getenv` line in `base.py` — that phantom setting can
-  never be configured. If the drain ever becomes beat-driven, wire the
-  settings properly through `base.py` *and* `.env.example` at that point.
+### Status
 
-## Implementation Plan (Chunks)
+- Chunks 1–3 landed in PR #194: columns + migration `0054` + admin
+  (`actor_type` in `list_display`/`list_filter`, `actor_node_id` in
+  `search_fields`, both in `readonly_fields`), extraction, and the backfill
+  command with 22 + 23 tests. Full `syncer` suite green (524 tests) on
+  host-against-dockerized-Postgres; `scripts/validate_github_graphql.py` and
+  `scripts/validate_backup_policy.py` pass; CI `checks` + `docker` (which runs
+  `scripts/repo_check_compose.sh`) green.
+- Validated against the live API, not only fakes: 154 real mathlib4 node ids
+  resolved through the new query, every actor typed as expected, 12 null
+  actors in the first 100, 0 unresolvable, and cost 1 at the 100-id cap.
+- Outstanding: the drain, the first post-drain export, and the `qb-notebook`
+  switch.
 
-1. **Model + migration + wire.** `PRActorType` choices, `actor_type` and
-   `actor_node_id` fields, migration
-   `0054_prtimelineevent_actor_type_and_node_id.py` (latest existing is
-   `0053`). Add `id` to the actor/author unions in `pr_bundle.graphql`,
-   `timeline_page.graphql`, `timeline_page_back.graphql`. Update
-   `qb_site/syncer/admin.py` `PRTimelineEventAdmin` per the AGENTS.md
-   admin-sync rule: `actor_type` into `list_display` (`:906`) and
-   `list_filter` (`:914` — a three-valued enum is a filter, not a search
-   field), `actor_node_id` into `search_fields` (`:920`), and both into
-   `readonly_fields` (`:935`) alongside `actor_login`.
-2. **Extraction.** `_actor_type_or_none` / `_actor_node_id_or_none` helpers;
-   set both fields in every branch that sets `actor_login`:
-   - `LabeledEvent`, `UnlabeledEvent`
-   - `AssignedEvent`, `UnassignedEvent`
-   - `ReadyForReviewEvent`, `ConvertToDraftEvent`, `ReopenedEvent`, `ClosedEvent`
-   - `HeadRefForcePushedEvent`
-   - `IssueComment` (`author`)
-   - `PullRequestReview` (`author`)
-   - `ReviewDismissedEvent` (dismisser)
-   - `ReviewRequestedEvent`, `ReviewRequestRemovedEvent`
+### No new configuration
 
-   …plus `_synthesize_dismissed_review_parent` via new
-   `dismissed_review_author_type` / `_node_id` keys in `extra`, and add
-   `"actor_type"` and `"actor_node_id"` to the fill-empty tuple at
-   `timeline_sync.py:336`.
-3. **Backfill.** New query `qb_site/syncer/queries/actor_types_by_node_ids.graphql`
-   (registered in `scripts/validate_github_graphql.py`) plus management
-   command `backfill_timeline_actor_types`:
-   - id-cursor batches over
-     `PRTimelineEvent.objects.filter(actor_type__isnull=True, github_node_id__isnull=False)`,
-     100 node ids per `nodes(ids:)` call;
-   - `bulk_update` of `actor_type` / `actor_node_id`, plus fill-only
-     `actor_login` where the stored value is NULL or `""` (archive rows);
-   - pause when the cached rate snapshot is below a floor
-     (`syncer/services/rate_budget.get_rate_snapshot`);
-   - `--dry-run` reporting the resolved distribution without writing,
-     plus `--limit` / `--batch-size`;
-   - counts and reports rows skipped for NULL `github_node_id` and nodes
-     GitHub returned as null/unresolvable.
+The command adds **no settings and no env vars**. It uses the same token path
+as the live syncer — `GitHubClient(operation="syncer_pr_read", owner=…,
+repo=…)`, i.e. the GitHub App installation token, falling back to
+`GH_TOKEN`/`GITHUB_TOKEN` — and reads the rate snapshot from the Redis behind
+`CELERY_BROKER_URL`, which the worker already uses. If Redis is unreachable the
+snapshot is `None`, the rate gate silently does nothing, and the drain instead
+stops on GitHub's own rejection (below). Request pacing comes from the existing
+`SYNCER_GH_THROTTLE_MS` (250 ms), shared cross-process with the live syncer.
 
-   As built, three things the draft did not anticipate:
-   - **Batch splitting on GraphQL errors.** One malformed or unresolvable id
-     makes GitHub reject the entire call, which would poison a 100-id batch.
-     `_resolve_ids` halves the batch on `RuntimeError` and recurses, isolating
-     the bad id in ≤ log2(n) extra calls and keeping every good id.
-   - **A named `ActorIdentity` fragment.** The query needs 13 inline fragments
-     (12 event types plus `... on Comment` for `IssueComment` /
-     `PullRequestReview`); spelling the union out 13 times would be
-     unreadable. `... on Comment` is what covers the synthesized
-     dismissed-review parents, whose stored node id is the review's.
-   - **Per-repository clients and an outer repo loop.** A single cross-repo
-     client would bypass GitHub App operation-token resolution, which every
-     other syncer entry point goes through. Scoping the drain per repo also
-     makes the per-repo canary below directly comparable to progress output.
+### Runbook
 
-   Rate handling: the drain stops at the floor by default and is resumable
-   (the target set is `actor_type IS NULL`); `--wait-for-rate` sleeps until
-   `resetAt` for an unattended drain. Since ~6 k points exceeds the 5 000/hr
-   primary budget, expect at least one wait.
-4. **Export verification.** After one export run, confirm
-   `syncer_prtimelineevent.parquet` carries `actor_type` and `actor_node_id`
-   **with string dtype** (not all-NaN float64), and that the known bot logins
-   come back as `Bot`. Note the machine-user exceptions and the
-   NULL-means-unknown invariant in the `qb-notebook` /
-   `analytics-datasets` docs, and switch `DEFAULT_BOT_ACTORS` to be keyed on
-   `actor_node_id`.
+1. **Deploy.** Merge and push; the Procfile `release` phase runs `migrate`.
+   Both columns are nullable with no default, so `0054` is a metadata-only
+   `ALTER TABLE` — no rewrite and no long lock on ~600 k rows. From here the
+   live syncer types new events, and rewalks heal old rows through the
+   fill-empty allowlist.
+2. **Dry run, to see the distribution before writing anything.** Heroku
+   consumes `--flags` before passthrough, so keep the `--`, and set
+   `PYTHONPATH` the way the Procfile does:
 
-   **Blocked as of 2026-08-15, and the blocker is ordering, not effort.** Every
-   assertion in this chunk reads production data that does not exist yet, so
-   nothing here can be pre-verified. It unblocks in this order:
+   ```bash
+   heroku run --app queueboard-backend --no-tty -- \
+     sh -c 'export PYTHONPATH=$PWD/qb_site:$PWD${PYTHONPATH:+:$PYTHONPATH}; \
+            exec python qb_site/manage.py backfill_timeline_actor_types \
+              --repo leanprover-community/mathlib4 --dry-run --limit 2000'
+   ```
+3. **Drain.** ~6 k points against a 5 000/hr budget *shared with the live
+   syncer*, plus 250 ms throttle per call — expect a few hours and at least one
+   sleep through a rate reset. Use a detached dyno so a dropped connection does
+   not kill it:
 
-   1. Deploy chunks 1–3 and run `migrate`.
-   2. Drain, per repo, drip-fed. Start with a dry run to see the distribution
-      before writing anything:
-      ```
-      manage.py backfill_timeline_actor_types --repo leanprover-community/mathlib4 --dry-run --limit 2000
-      manage.py backfill_timeline_actor_types --wait-for-rate
-      ```
-      ~6 k points total, against 5 000/hr shared with the live syncer — expect
-      the drain to sleep through at least one reset.
-   3. Watch the two canaries in Validation Plan (the `actor_type IS NULL` count
-      per repo, and the archive-row `actor_login` count). A plateau at the
-      *starting* value means the fill-empty allowlist regressed.
-   4. Only then run the export, so the first parquet is written with values in
-      the columns and pandas infers `object`, not all-NaN `float64`.
-   5. Only then switch `DEFAULT_BOT_ACTORS` downstream.
+   ```bash
+   heroku run:detached --app queueboard-backend --size=standard-1x -- \
+     sh -c 'export PYTHONPATH=$PWD/qb_site:$PWD${PYTHONPATH:+:$PYTHONPATH}; \
+            exec python qb_site/manage.py backfill_timeline_actor_types --wait-for-rate'
+   heroku logs --app queueboard-backend --dyno run.NNNN --tail
+   ```
 
-   Statically verified now, so these do not need re-checking later:
-   `EXPORT_TABLE_QUERIES["syncer_prtimelineevent"]` is `SELECT *`
-   (`backup_policy.py:135`), `scripts/validate_backup_policy.py` passes, and
-   `scripts/sanitize_backup.py` contains no reference to the table or to any
-   `actor_*` column — so both new columns flow to the export untouched.
+   Without `--wait-for-rate` the drain stops cleanly at the floor
+   (`--min-rate-remaining`, default 500) and is resumable — the target set is
+   just `actor_type IS NULL`. `--limit` / `--batch-size` / `--repo` drip-feed it
+   under supervision.
+4. **Read the counters.** Per repo and in total:
+   `scanned`, `written`, `typed`, `node_ids`, `logins`, then the four ways a row
+   can come back untyped, which mean different things and must not be conflated:
+   - `null_actor` — GitHub says there is no actor. Permanent; this is the floor
+     the drain plateaus at.
+   - `unresolved` — the node id no longer resolves (hard-deleted comment or
+     review). Also permanent.
+   - `call_failed` — the call failed for a reason unrelated to the row
+     (transport error, or a GraphQL error not attributable to an id). Retried
+     up to 3 times with backoff first; whatever is left is **not** a fact about
+     the row, and a later run picks it up.
+   - `unmodelled` — a typename outside `PRActorType`. The node id is still
+     stored.
 
-Follow-up deliberately out of scope: the same treatment for
-`PRReviewInlineComment.author_login` — see Non-Goals for why it is
-denormalization rather than new signal, and what would justify revisiting it.
+   A rate-limit rejection from GitHub unwinds to the same resumable stop as the
+   floor rather than retrying or splitting, since both would only spend a
+   budget that is already gone. `retries` counts re-attempts, so a run fighting
+   a flaky API is visible.
+5. **Watch the canaries** (per the syncer `AGENTS.md` ingestion checklist):
+   - `SELECT count(*) FROM syncer_prtimelineevent WHERE actor_type IS NULL`,
+     per repo. Should fall steeply, then plateau at the genuinely-null-actor
+     population. **A plateau at the *starting* value means the fill-empty
+     allowlist regressed.**
+   - `SELECT count(*) FROM syncer_prtimelineevent WHERE archive_imported_at IS
+     NOT NULL AND coalesce(actor_login, '') = ''` — should fall substantially,
+     bottoming out at the null-actor share rather than at zero.
+   - `SELECT actor_login, actor_type, count(*) … GROUP BY 1,2` should show
+     `Bot` for `github-actions`, `mathlib-bors`, `mathlib-dependent-issues`,
+     `mathlib-merge-conflicts`, `mathlib-triage`, and `User` for the machine
+     accounts — **including** the two retired `mathlib4-*-bot` logins, which
+     are machine users, not Apps. Do not expect those to come back as `Bot`.
+   - The `(actor_login, actor_node_id)` pairs should reproduce 2026-02-03 as a
+     replacement: retired `mathlib4-*` logins keep their `U_…` ids and stop
+     after 2026-02-02; `mathlib-*` logins appear from 2026-02-03 with fresh
+     `BOT_…` ids.
+6. **Only then export** (`upload_backup.yaml`, daily 06:00 UTC or on demand),
+   so the first parquet is written with values present and pandas infers
+   `object`. Verify dtype, not just presence.
+7. **Only then switch downstream.** In `qb-notebook`: key the residual
+   automation list on `actor_node_id`, drop the `Bot`-typed accounts from it,
+   and document the `NULL` ≠ `User` invariant plus the machine-user caveat in
+   `docs/schema-notes.md`. Note that rows with `actor_type IS NULL` still need
+   the login list, so it shrinks rather than disappears.
 
-## Validation Plan
+### Fallback
 
-- tests (`qb_site/syncer/tests/services/`, colocated with the existing
-  timeline-sync coverage):
-  - `_extract_event_fields` unit coverage: one case per `__typename` branch
-    asserting `actor_type` / `actor_node_id` alongside `actor_login`,
-    including `Bot` and `Mannequin` actors and a null/absent actor → `None`.
-  - Unknown typename (e.g. a future `Organization`) → `None`, not stored raw.
-  - Fill-empty path: an existing row with `actor_type=None` gets populated on
-    rewalk; an existing non-null `actor_type` is **not** overwritten.
-  - Synthesized dismissed-review parent picks up the type/node id when
-    `extra` carries the new keys, and stays `None` when it does not.
-  - Archive mode: rows ingest fine with `actor_type=None`.
-  - Backfill command: idempotent; leaves already-populated rows untouched;
-    handles a `nodes` response containing `null` entries; batches at the
-    100-id cap.
-  - Backfill `actor_login` fill-only behavior: a row with NULL `actor_login`
-    and one with `""` both get populated; a row with an existing login is
-    **not** overwritten even when GitHub now reports a different (renamed)
-    login for the same account.
-- manual checks:
-  - ~~Re-measure `rateLimit.cost` for a full 100-id `nodes(ids:)` call~~
-    **Done 2026-08-15: cost = 1 at the full 100-id cap** (two calls, 100 and 54
-    ids, both cost 1). The ~6 k-point estimate for ~598 k rows holds.
-  - Post-backfill, `SELECT actor_login, actor_type, count(*) … GROUP BY 1,2`
-    should show `Bot` for `github-actions`, `mathlib-bors`,
-    `mathlib-dependent-issues`, `mathlib-merge-conflicts`, `mathlib-triage`,
-    and `User` for the machine accounts noted above — including the two
-    *retired* mathlib bots, which are machine users, not Apps. Do **not**
-    expect the old `mathlib4-*-bot` logins to come back as `Bot`.
-  - ~~Cross-check a handful of rows against the live GraphQL response.~~
-    **Done 2026-08-15:** 154 real mathlib4 timeline node ids resolved through
-    `actor_types_by_node_ids.graphql`; every actor typed as expected, 12 of the
-    first 100 had `actor: null`, 0 unresolvable.
-  - Post-deploy canary (per the syncer AGENTS.md ingestion checklist): track
-    `SELECT count(*) FROM syncer_prtimelineevent WHERE actor_type IS NULL`
-    per repo. It should fall steeply during the drain and then plateau at the
-    genuinely-null-actor population — a plateau at the *starting* value means
-    the fill-empty allowlist was missed.
-  - Confirm the `(actor_login, actor_node_id)` pairs reproduce the 2026-02-03
-    changeover as an account **replacement**: the retired `mathlib4-*-bot`
-    logins keep their `U_…` ids and stop appearing after 2026-02-02, and the
-    `mathlib-*` logins appear from 2026-02-03 with fresh `BOT_…` ids. (The
-    original "same node id, two logins" phrasing was wrong — see Context.)
-  - Archive rows: `SELECT count(*) FROM syncer_prtimelineevent WHERE
-    archive_imported_at IS NOT NULL AND coalesce(actor_login, '') = ''`
-    should fall substantially during the drain, bottoming out at the
-    genuinely-null-actor share rather than at zero.
+If `nodes(ids:)` ever proves unable to resolve some class of stored node id, the
+schema-version wave remains available and cheap to write
+(`CURRENT_SYNC_SCHEMA_VERSION = 4`, `UpgradeToV4` subclassing `UpgradeToV3`, a
+reset migration mirroring `0045`); v3 drained in under 24 h. Its one genuine
+advantage is that it re-ingests *everything*, so it would also pick up any
+other field the legacy archive fragment omitted.
 
-## Alternatives Considered
+## Alternatives
 
-- **Login → type map resolved from the API** (the original draft's
-  recommendation). Rejected on two counts. First, the stated mechanism does
-  not exist: GitHub's GraphQL has no `bot(login:)` root field, and
-  `user(login:)` / `repositoryOwner(login:)` cannot return a `Bot`, so "Bot"
-  could only be inferred from lookup *failure* — which conflates bots with
-  deleted accounts, organizations, and mannequins, the opposite of the
-  exactness this doc wants. REST (`/users/<slug>[bot]` → `type: "Bot"`) can do
-  it, but `github_client.py:66` is GraphQL-only, so that is new plumbing.
-  (Confirmed live 2026-08-15: `repositoryOwner(login: "mathlib-merge-conflicts")`
-  returns `null` precisely because that account is a `Bot`.)
-  Second, and fatally, a map resolved *today* is blind to the retired logins
-  (`mathlib4-merge-conflict-bot`, `leanprover-community-mathlib4-bot`) that
-  motivated the whole exercise.
-- **Schema-version wave** (`CURRENT_SYNC_SCHEMA_VERSION = 4`, `UpgradeToV4`,
-  a `0055` reset migration mirroring `0045`). Correct and exact, and cheap to
-  *write* — `UpgradeToV3` is `class UpgradeToV3(UpgradeToV2): version = 3`
-  (`sync_schema_upgrade_v3.py:38-47`) plus a 25-line reset, and the machinery
-  is proven (v3 drained in <24 h). Kept **in reserve**: the targeted
-  `nodes(ids:)` route gets the same exactness for roughly 1/20th of the rate
-  budget, needs no reset migration, and does not stall or interact with the
-  upgrader chain — and it heals the archive rows' `actor_login` just as well,
-  so that is no longer a differentiator. Fall back to the wave if
-  `nodes(ids:)` turns out to be rate-limited differently at 100 ids than the
-  probe suggests, or if it proves unable to resolve some class of stored node
-  id. The wave's one genuine advantage is that it re-ingests *everything*, so
-  it would also pick up any other field the legacy archive fragment omitted —
-  worth remembering if a second archive-shaped gap ever surfaces.
-- **A normalized actor-directory table** (login or node id → type), rather
-  than denormalizing onto ~600 k event rows. Attractive because account kind
-  really is a property of the account. Rejected because the historical rows
-  still need per-event resolution to be typed at all (the retired logins are
-  only recoverable through the events that reference them), so the directory
-  would not avoid the expensive part — and a denormalized column needs no
-  join in the parquet export, which is the only consumer.
-
-## Progress Notes
-
-- 2026-08-12: Drafted. Not started. Motivating investigation and all measured
-  numbers above come from a `qb-notebook` session; the stale-list symptom was
-  patched downstream by extending `DEFAULT_BOT_ACTORS`, which is a stopgap —
-  it will go stale again at the next rename. That patch is the reason this is
-  worth doing, not a substitute for it.
-- 2026-08-13: Reviewed against the tree. Claims about the three live queries,
-  the single extraction funnel, the fill-empty allowlist, the `SELECT *`
-  export, sanitization, and migration `0053` all verified. Revisions:
-  - Backfill route changed from a login→type map to targeted `nodes(ids:)`
-    resolution, after live probes showed the map's mechanism does not exist in
-    GraphQL and the node route is both exact and ~20× cheaper than a wave.
-    Wave demoted to a recorded fallback.
-  - `actor_node_id` added to scope: `actor_type` alone leaves the
-    machine-user half of the downstream list login-keyed, so it does not
-    actually fix the motivating rename bug.
-  - `_synthesize_dismissed_review_parent` added to the extraction checklist —
-    it was missing, and it produces exactly the review rows the downstream
-    metric reads.
-  - Dropped `db_index=True` (three-valued column, no in-repo consumer, and
-    the export reads a flat parquet).
-  - Added the parquet dtype-drift trap, the empirical null-actor rate, the
-    GraphQL-validator registration step, and the AGENTS.md settings-hygiene
-    note. Corrected the `node_kind`, `extra`-is-`{}`, `[bot]`-suffix, and
-    `actor_login = ""` claims.
-- 2026-08-15: **Chunk 4 blocked on deployment, not on work.** Export coverage
-  and sanitization verified statically (see Chunk 4); everything else in the
-  chunk asserts against production rows that do not exist until the drain
-  runs. Chunk 4 now carries the ordered runbook. Note the repo-wide
-  `scripts/repo_check_compose.sh` could not run in this environment — Docker's
-  credential helper fails before the `web` image builds — so verification used
-  the documented host-against-dockerized-Postgres path plus
-  `scripts/validate_backup_policy.py` and `scripts/validate_github_graphql.py`
-  run directly.
-- 2026-08-15: **Chunk 3 landed.** `actor_types_by_node_ids.graphql` (+
-  `GitHubClient.get_timeline_actors_by_node_ids`, + validator registration),
-  and the `backfill_timeline_actor_types` command with `--repo` / `--limit` /
-  `--batch-size` / `--dry-run` / `--min-rate-remaining` / `--wait-for-rate`.
-  18 command tests. The two helpers were renamed public
-  (`actor_type_or_none` / `actor_node_id_or_none`) since the command imports
-  them; importing an underscore-private name across modules is the smell that
-  rename avoids.
-
-  Validated against the live API rather than only against fakes: the whole
-  query set (including the new one) passes `scripts/validate_github_graphql.py`,
-  a 100-id call costs 1 point, and 154 real mathlib4 node ids resolved cleanly.
-  **That probe also corrected the doc's central premise** — the 2026-02-03
-  changeover was an account replacement (machine users → GitHub Apps), not a
-  rename. See Context; the correction strengthens the `actor_type` case and
-  narrows, without eliminating, the `actor_node_id` case.
-
-  Not yet done: running the drain against production data (Chunk 4 depends on
-  it, since the parquet dtype must be checked *after* rows have values).
-- 2026-08-15: **Chunk 2 landed.** `_actor_type_or_none` /
-  `_actor_node_id_or_none` / `_actor_identity`, wired into all 12 branches of
-  `_extract_event_fields` that set `actor_login`, plus
-  `dismissed_review_author_type` / `_node_id` in the `REVIEW_DISMISSED` `extra`
-  and read back by `_synthesize_dismissed_review_parent`. `actor_type` and
-  `actor_node_id` added to the fill-empty allowlist. 22 new tests in
-  `syncer/tests/services/test_timeline_actor_type.py`; full `syncer` suite (501
-  tests) green on host-against-dockerized-Postgres.
-
-  One behavior worth recording: synthesis uses `get_or_create`, so a
-  synthesized parent row that already exists from a pre-051 ingest is **not**
-  retyped by a later dismiss-event re-ingest. Those rows are healed by the
-  ordinary update path if the `PullRequestReview` node itself is walked, and
-  by the Chunk 3 backfill otherwise. Left as-is rather than special-cased:
-  the backfill covers it and the fill-only convention stays uniform.
-- 2026-08-15: **Chunk 1 landed.** `PRActorType` + `actor_type` /
-  `actor_node_id` on `PRTimelineEvent`, migration `0054`, `id` added to the
-  actor/author unions in the three live queries, and `PRTimelineEventAdmin`
-  updated (`actor_type` in `list_display` + `list_filter`, `actor_node_id` in
-  `search_fields`, both in `readonly_fields`). One deviation from the drafted
-  wire change: the inline-comment `author` union under
-  `PullRequestReview.comments.nodes` keeps `login`-only, since typing that
-  author is a Non-Goal — recorded under Proposed Design.
-- 2026-08-13 (follow-up): archive-row `actor_login` healing **promoted from
-  follow-up into scope** — the backfill resolves those nodes anyway, and it is
-  the only possible fix since `pr_info.graphql` is no longer a live fetch path
-  in this repo. Fill is guarded fill-only so ingest-time logins and the rename
-  history survive. `PRReviewInlineComment.author_login` stays out of scope,
-  with the reasoning recorded under Non-Goals after a probe found 0 author
-  mismatches against parent reviews in a 33-comment sample.
-
-## Finalization Notes
-
-- After Chunk 4, collapse into a final decision record: keep the machine-user
-  caveat, the `NULL` ≠ `User` invariant, the key-on-`actor_node_id` guidance,
-  the fill-empty-allowlist requirement, and the parquet dtype trap; drop the
-  chunk sequencing, the probe transcripts, and the Alternatives Considered
-  deliberation once the route has been executed. Keep the archive-row outcome
-  (how much `actor_login` the backfill recovered) as a migration outcome, and
-  keep the `PRReviewInlineComment.author_login` non-goal with its reasoning
-  rather than letting it vanish with the plan — the next person to notice the
-  asymmetry will ask.
+- **Login → type map resolved from the API.** Rejected: the mechanism does not
+  exist. GraphQL has no `bot(login:)` root field, and `user(login:)` /
+  `repositoryOwner(login:)` cannot return a `Bot` — confirmed live, where
+  `repositoryOwner(login: "mathlib-merge-conflicts")` returns `null` precisely
+  *because* that account is a `Bot`. "Bot" could only be inferred from lookup
+  failure, conflating bots with deleted accounts, organizations, and
+  mannequins. REST could do it, but `github_client.py` is GraphQL-only. Fatally,
+  a map resolved *today* is blind to the retired logins that motivated the
+  exercise.
+- **Schema-version wave.** Correct and exact, but ~20× the rate budget, needs a
+  reset migration, and stalls behind the upgrader chain. Kept in reserve
+  (above).
+- **A normalized actor-directory table** (login or node id → type) instead of
+  denormalizing onto ~600 k rows. Attractive, since account kind really is a
+  property of the account. Rejected because the historical rows still need
+  per-event resolution to be typed at all — the retired logins are only
+  recoverable through the events that reference them — so the directory would
+  not avoid the expensive part, and a denormalized column needs no join in the
+  parquet export, which is the only consumer.
