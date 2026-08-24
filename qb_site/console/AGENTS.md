@@ -1,8 +1,9 @@
 # Reviewer Console Guidelines
 
 ## Scope
-- `qb_site/console/` is the GitHub-OAuth authenticated **reviewer console** (design decision 050):
-  a `confirm`-mode reviewer signs in and accepts/declines the assignment proposals made to them.
+- `qb_site/console/` is the GitHub-OAuth authenticated **reviewer console**: a `confirm`-mode
+  reviewer signs in and accepts/declines the assignment proposals made to them (design decision 050),
+  and edits their reviewer preferences at `/console/preferences/` (design decision 022 amendment).
 - It is a plain server-rendered Django app (no DRF, no models of its own). State lives in
   `analyzer.AssignmentProposal` / `analyzer.ReviewerOptOut`; identity is `core.User`.
 - Mounted at `/console/` (`qb_site/qb_site/urls.py`). Templates in `qb_site/templates/console/`.
@@ -53,6 +54,40 @@
     by the syncer) can open a session.
 - Console access is keyed on the authenticated `github_login`, matched **case-insensitively**
   against `AssignmentProposal.reviewer_login`. A reviewer can only act on their own proposals.
+- **Admission gate (`_is_reviewer` / `_reviewer_from_session`).** Resolve-only is not reviewer-only:
+  `syncer` upserts a `core.User` for every PR author, so a "known GitHub account" is usually just a
+  contributor. A session is granted only to a user with ≥1 `ReviewerPreference` row **or** an active
+  `AssignmentProposal` for their login (the OR clause keeps a reviewer whose row was removed
+  mid-flight able to answer the proposal already made to them). Enforced in `oauth_callback` (refuse
+  the session, 403 `NOT_A_REVIEWER_MESSAGE`) *and* on every view via `_reviewer_from_session`, which
+  returns `(reviewer, None)` / `(None, None)` for "not signed in" / `(None, 403 response)`. Route new
+  views through it rather than calling `console_session.get_reviewer` directly.
+
+## Preferences page (`views.prefs`)
+- `/console/preferences/` renders the *same* reviewer-preferences form as the Zulip token link, under
+  the console session instead of an expiring token (design doc 022 amendment). Gated by
+  `CONSOLE_PREFS_ENABLED` (default off; renders `unavailable.html` while off, and the home-page link
+  is hidden).
+- Do not re-implement the form here. `core.forms.ReviewerPreferenceForm` owns the editable fields and
+  validation, `core.services.reviewer_prefs.build_preferences_formset` owns formset assembly, and
+  `templates/shared/_reviewer_prefs_fields.html` owns the field markup — all shared with
+  `zulip_bot/prefs_form.html` so the two pages cannot drift.
+- **This page never creates `ReviewerPreference` rows.** A row *is* assignment-pool membership
+  (`analyzer.services.reviewer_assignment.build_reviewer_catalog`) and `auto_assign` defaults to
+  `True`, so a "create my preferences" affordance on a public sign-in surface would let any
+  contributor into the pool. A reviewer with no rows gets an explanatory empty state pointing at the
+  Zulip bot; bootstrapping stays in `zulip_bot.services.registration_bootstrap`.
+- Ownership scoping lives in the shared builder: the queryset is narrowed to the supplied rows *and*
+  their owner on GET and POST alike, so a posted `form-<n>-id` naming someone else's row fails
+  validation. Never widen that queryset at a call site.
+- Timezone comes from `zulip_bot.services.user_timezone.resolve_user_timezone_name` (Zulip's zone →
+  `core.User.timezone` → Django default) and is what naive `away_until` input means. The page renders
+  no countdown: the session bounds it, and `SESSION_SAVE_EVERY_REQUEST` slides that window.
+- Styling/JS: `templates/console/prefs.html` extends `console/base.html` and uses its `extra_css` /
+  `extra_js` blocks to load `zulip_bot/prefs_form.css|js`. Those assets deliberately stay in
+  `zulip_bot/static/` — `close_pr_form.js` and `label_pr_form.js` import the expiry helpers from
+  `./prefs_form.js` as a sibling, and relative ES imports must resolve both as served paths (browser)
+  and on-disk paths (vitest). `mountPrefsForm` treats the countdown elements as optional.
 
 ## Accept / decline / assign-anyway / unassign (the load-bearing handlers)
 - All `POST`. Accept and decline re-validate live state via the single
@@ -93,6 +128,8 @@
 ## Testing
 - `docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test console`
 - View tests mock `console.views.GitHubOAuthClient`, `console.views.assign_reviewer_and_record`,
-  `console.views.GitHubAssignmentClient` (unassign), and `console.views._enqueue_pr_sync`, and seed
-  the session directly; no real GitHub calls. Canonical full run stays
-  `bash scripts/repo_check_compose.sh`.
+  `console.views.GitHubAssignmentClient` (unassign), `console.views._enqueue_pr_sync`, and
+  `console.views.resolve_user_timezone_name` (prefs), and seed the session directly; no real GitHub
+  or Zulip calls. `tests/test_prefs.py` pins the prefs invariants (no row creation, admission gate at
+  sign-in *and* per view, cross-reviewer POST rejection, timezone interpretation). Canonical full run
+  stays `bash scripts/repo_check_compose.sh`.

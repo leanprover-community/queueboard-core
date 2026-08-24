@@ -52,38 +52,53 @@ export function mountPrefsForm(root = document) {
   }
   const form = root.getElementById("prefs-form");
   const submitButton = root.getElementById("submit-button");
+  if (!form || !submitButton) {
+    return () => undefined;
+  }
+
+  // The expiry countdown belongs to the token-link page only. The session-authenticated console page
+  // (/console/preferences/) renders no countdown, so every expiry element is optional — the
+  // unsaved-changes guard and the clear-away buttons below must keep working without them
+  // (design doc 022).
   const countdownText = root.getElementById("countdown-text");
   const countdownLabel = root.getElementById("countdown-label");
   const hint = root.getElementById("submit-hint");
   const expiresAt = root.getElementById("expires-at");
-  if (!form || !submitButton || !countdownText || !countdownLabel || !hint || !expiresAt) {
-    return () => undefined;
-  }
-
   const expUnix = Number(container.dataset.expUnix || "0");
-  const expIso = String(container.dataset.expIso || "");
-  const timezone = String(container.dataset.timezone || "UTC");
-  expiresAt.textContent = formatExpiryDate(expIso, timezone);
+  const hasExpiry = Boolean(countdownText && countdownLabel && expiresAt && expUnix > 0);
+
+  if (hasExpiry) {
+    const expIso = String(container.dataset.expIso || "");
+    const timezone = String(container.dataset.timezone || "UTC");
+    expiresAt.textContent = formatExpiryDate(expIso, timezone);
+  }
 
   let dirty = false;
   let initialSnapshot = serializeForm(form);
 
   const update = () => {
+    if (!hasExpiry) {
+      return;
+    }
     const state = getExpiryState(expUnix);
     if (state.expired) {
       countdownLabel.textContent = "Expired:";
       countdownText.textContent = "This link has expired. Request a fresh one in Zulip.";
       submitButton.disabled = true;
-      hint.textContent = "Submitting is disabled after expiration.";
+      if (hint) {
+        hint.textContent = "Submitting is disabled after expiration.";
+      }
     } else {
       countdownLabel.textContent = "Expires in:";
       countdownText.textContent = formatRemaining(state.remainingMs);
       submitButton.disabled = false;
-      hint.textContent = "You can submit repeatedly until expiration.";
+      if (hint) {
+        hint.textContent = "You can submit repeatedly until expiration.";
+      }
     }
   };
   update();
-  const intervalId = window.setInterval(update, SECOND_MS);
+  const intervalId = hasExpiry ? window.setInterval(update, SECOND_MS) : null;
 
   const onClearAway = (event) => {
     const target = event.currentTarget;
@@ -129,7 +144,9 @@ export function mountPrefsForm(root = document) {
   });
 
   return () => {
-    window.clearInterval(intervalId);
+    if (intervalId !== null) {
+      window.clearInterval(intervalId);
+    }
     window.removeEventListener("beforeunload", onBeforeUnload);
     for (const button of root.querySelectorAll(".js-clear-away")) {
       button.removeEventListener("click", onClearAway);

@@ -1,3 +1,12 @@
+"""Forms over ``core`` models shared by every reviewer-facing surface.
+
+``ReviewerPreferenceForm`` is the single definition of "what a reviewer may edit about themselves".
+It is rendered by the reviewer console (``/console/preferences/``, session-authenticated) and, until
+the token flow is retired, by the Zulip prefs link (``/api/zulip/prefs/<token>/``) — see
+`docs/design-decisions/022-zulip-prefs-form-design.md`. Keep it auth-agnostic: callers supply the
+already-authorized rows and the resolved timezone; nothing here decides *who* may edit *what*.
+"""
+
 from __future__ import annotations
 
 import re

@@ -3,12 +3,15 @@
 ## Module Focus & Layout
 - `qb_site/` is the Django project; settings are layered in `qb_site/qb_site/settings/{base,local,ci,production}.py`.
 - Main apps:
-  - `core`: shared models/services/admin plumbing.
+  - `core`: shared models/services/admin plumbing, plus forms over its own models
+    (`core.forms.ReviewerPreferenceForm` + `core.services.reviewer_prefs`, shared by the console and
+    Zulip prefs surfaces).
   - `syncer`: GitHub ingestion, cursors/backfills, Celery sync tasks.
   - `analyzer`: derived queue/revision/dependency state and snapshots.
   - `api`: DRF views/serializers for queueboard surfaces.
   - `zulip_bot`: Zulip webhook/command integration and policies.
-  - `console`: GitHub-OAuth reviewer console for accepting/declining assignment proposals (design doc 050).
+  - `console`: GitHub-OAuth reviewer console — accept/decline assignment proposals (design doc 050)
+    and edit reviewer preferences at `/console/preferences/` (design doc 022 amendment).
 - Keep new modules inside the owning app (`models/`, `services/`, `tasks/`, `management/commands/`, `tests/`).
 - App-specific guidance:
   - `qb_site/api/AGENTS.md` for public API endpoints, common patterns, and authentication notes.

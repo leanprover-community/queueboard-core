@@ -5,6 +5,7 @@
     <h1>Reviewer console</h1>
     <div class="meta signin-row">
       <span>Signed in as {{ reviewer.github_login }}.</span>
+      {% if prefs_enabled %}<a href="{{ prefs_url }}">Reviewer preferences</a>{% endif %}
       <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
     </div>
   </section>
