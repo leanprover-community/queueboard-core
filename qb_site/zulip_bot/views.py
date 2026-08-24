@@ -5,19 +5,15 @@ import logging
 from dataclasses import replace
 from datetime import datetime, timezone as dt_timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.urls import reverse
 from django.template.response import TemplateResponse
-from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from console import session as console_session
-from core.models import ReviewerPreference, User
-from core.services.reviewer_prefs import build_preferences_formset
-from core.utils.zulip_time import format_global_time
+from core.models import ReviewerPreference
 from zulip_bot.commands import CommandResult, get_command
 from zulip_bot.commands import assign as _assign  # noqa: F401
 from zulip_bot.commands import assigned_prs as _assigned_prs  # noqa: F401
@@ -31,9 +27,8 @@ from zulip_bot.commands import register_test as _register_test  # noqa: F401
 from zulip_bot.commands import pr_info as _pr_info  # noqa: F401
 from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
-from zulip_bot.services.user_timezone import resolve_user_timezone_name
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
-from core.services.site_urls import resolve_site_base_url
+from core.services.site_urls import build_site_url, resolve_site_base_url
 from zulip_bot.services.close_pr_execution import (
     add_pr_labels,
     ClosePRError,
@@ -57,14 +52,6 @@ from zulip_bot.services.label_pr_links import (
     LabelPRTokenExpired,
     LabelPRTokenInvalid,
     validate_label_pr_token,
-)
-from zulip_bot.services.prefs_links import (
-    PrefsEntryLink,
-    PrefsLinkClaims,
-    PrefsTokenExpired,
-    PrefsTokenInvalid,
-    build_prefs_entry_link,
-    validate_prefs_token,
 )
 from zulip_bot.services.registration_links import (
     RegistrationTokenExpired,
@@ -162,60 +149,6 @@ def webhook(request: HttpRequest) -> HttpResponse:
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("zulip_command_unexpected_error")
         return zulip_response(_unexpected_error_response(exc))
-
-
-def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
-    try:
-        claims = validate_prefs_token(token)
-    except PrefsTokenExpired:
-        return _prefs_invalid_response(request, reason="expired")
-    except PrefsTokenInvalid:
-        return _prefs_invalid_response(request, reason="invalid")
-
-    prefs = _load_authorized_preferences(claims.user_id, claims.zulip_user_id, claims.preference_ids)
-    if not prefs:
-        return _prefs_invalid_response(request, reason="invalid")
-
-    user = prefs[0].user
-    user_timezone_name = resolve_user_timezone_name(user=user, zulip_user_id=claims.zulip_user_id)
-    user_timezone = ZoneInfo(user_timezone_name)
-
-    submitted = request.method == "GET" and request.GET.get("saved") == "1"
-    saved_at: datetime | None = None
-    with timezone.override(user_timezone):
-        formset = build_preferences_formset(
-            preferences=prefs,
-            user_timezone=user_timezone,
-            data=request.POST if request.method == "POST" else None,
-        )
-        if request.method == "POST" and formset.is_valid():
-            formset.save()
-            url = reverse("zulip-prefs-form", kwargs={"token": token})
-            return HttpResponseRedirect(f"{url}?saved=1")
-        if submitted:
-            saved_at = timezone.localtime(timezone.now(), user_timezone)
-
-    expires_at_unix = claims.exp
-    if expires_at_unix is None:
-        return _prefs_invalid_response(request, reason="invalid")
-    expires_at_utc = datetime.fromtimestamp(expires_at_unix, tz=dt_timezone.utc)
-
-    response = TemplateResponse(
-        request,
-        "zulip_bot/prefs_form.html",
-        {
-            "formset": formset,
-            "submitted": submitted,
-            "saved_at": saved_at,
-            "user": user,
-            "expires_at_unix": expires_at_unix,
-            "expires_at_iso": expires_at_utc.isoformat(),
-            "user_timezone_name": user_timezone_name,
-        },
-        status=200,
-    )
-    response["Cache-Control"] = "no-store"
-    return response
 
 
 def register_start(request: HttpRequest, token: str) -> HttpResponse:
@@ -316,24 +249,21 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
         logger.info("registration_link_conflict", extra={"reason": "link_conflict"})
         return _register_invalid_response(request, reason="link_conflict")
     bootstrap_result = ensure_default_preferences_for_user(user=link_result.user)
-    prefs_entry = _build_prefs_link_for_user(
-        user=link_result.user,
-        zulip_user_id=registration_claims.zulip_user_id,
-    )
+    has_preferences = ReviewerPreference.objects.filter(user_id=link_result.user.id).exists()
+    prefs_link = build_site_url(reverse("console:prefs")) if has_preferences else None
     # The reviewer just proved this GitHub identity in this browser, and registration additionally
     # proves their Zulip identity (the registration token) — strictly more than a console sign-in
-    # establishes. So when the console owns preferences, open the session here and let the link on
-    # this page land signed in, instead of bouncing them straight back through OAuth (doc 022).
-    # Success path only: a link conflict returned above, before this point.
-    if prefs_entry is not None and prefs_entry.is_stable:
+    # establishes. So open the console session here and let the link on this page land signed in,
+    # instead of bouncing them straight back through OAuth (doc 022). Success path only: a link
+    # conflict returned above, before this point.
+    if has_preferences:
         console_session.set_reviewer(request, link_result.user)
     dm_sent = _send_registration_success_dm(
         zulip_user_id=registration_claims.zulip_user_id,
         github_login=identity.github_login,
-        prefs_entry=prefs_entry,
+        prefs_link=prefs_link,
     )
 
-    prefs_expires_unix = prefs_entry.expires_at_unix if prefs_entry else None
     response = TemplateResponse(
         request,
         "zulip_bot/register_callback.html",
@@ -342,11 +272,7 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
             "identity": identity,
             "link_result": link_result,
             "bootstrap_result": bootstrap_result,
-            "prefs_link": prefs_entry.url if prefs_entry else None,
-            "prefs_expires_unix": prefs_expires_unix,
-            "prefs_expires_iso": (
-                datetime.fromtimestamp(prefs_expires_unix, tz=dt_timezone.utc).isoformat() if prefs_expires_unix else None
-            ),
+            "prefs_link": prefs_link,
             "dm_sent": dm_sent,
         },
         status=200,
@@ -818,17 +744,6 @@ def _close_pr_invalid_response(request: HttpRequest, *, reason: str) -> HttpResp
     return response
 
 
-def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
-    response = TemplateResponse(
-        request,
-        "zulip_bot/prefs_invalid.html",
-        {"reason": reason},
-        status=403,
-    )
-    response["Cache-Control"] = "no-store"
-    return response
-
-
 def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
     response = TemplateResponse(
         request,
@@ -840,40 +755,20 @@ def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResp
     return response
 
 
-def _build_prefs_link_for_user(*, user: User, zulip_user_id: int) -> PrefsEntryLink | None:
-    """The prefs entry point to advertise to a freshly registered reviewer, or ``None`` if they have
-    no preference rows to edit."""
-    preference_ids = tuple(ReviewerPreference.objects.filter(user_id=user.id).values_list("id", flat=True).order_by("id"))
-    if not preference_ids:
-        return None
-    return build_prefs_entry_link(
-        claims=PrefsLinkClaims(
-            user_id=user.id,
-            zulip_user_id=zulip_user_id,
-            preference_ids=preference_ids,
-        )
-    )
-
-
 def _send_registration_success_dm(
     *,
     zulip_user_id: int,
     github_login: str,
-    prefs_entry: PrefsEntryLink | None,
+    prefs_link: str | None,
 ) -> bool:
     linked = f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
-    if prefs_entry is None:
+    if prefs_link is None:
         content = linked + "You do not currently have any reviewer preferences to edit."
-    elif prefs_entry.is_stable:
-        content = linked + (
-            f"Next step: [set your reviewer preferences]({prefs_entry.url}) in the reviewer console. "
-            "The link is stable, so bookmark it — you are already signed in on the browser you just "
-            "registered from."
-        )
     else:
         content = linked + (
-            f"Next step: click this private link to [finalize your reviewer preferences]({prefs_entry.url}). "
-            f"It expires at {format_global_time(prefs_entry.expires_at_unix)}."
+            f"Next step: [set your reviewer preferences]({prefs_link}) in the reviewer console. "
+            "The link is stable, so bookmark it — you are already signed in on the browser you just "
+            "registered from."
         )
     try:
         ZulipClient().send_direct_message(to=[zulip_user_id], content=content)
@@ -896,22 +791,6 @@ def _github_oauth_redirect_uri(request: HttpRequest) -> str:
     path = reverse("zulip-register-github-callback")
     base = resolve_site_base_url()
     return f"{base}{path}" if base else request.build_absolute_uri(path)
-
-
-def _load_authorized_preferences(user_id: int, zulip_user_id: int, preference_ids: tuple[int, ...]) -> list[ReviewerPreference]:
-    pref_ids = tuple(dict.fromkeys(preference_ids))
-    if not pref_ids:
-        return []
-    prefs = list(ReviewerPreference.objects.filter(id__in=pref_ids).select_related("repository", "user"))
-    if len(prefs) != len(pref_ids):
-        return []
-    by_id = {pref.id: pref for pref in prefs}
-    ordered = [by_id[pref_id] for pref_id in pref_ids]
-    if any(pref.user_id != user_id for pref in ordered):
-        return []
-    if any(pref.user.zulip_user_id not in (None, zulip_user_id) for pref in ordered):
-        return []
-    return ordered
 
 
 def _unexpected_error_response(exc: Exception) -> CommandResult:

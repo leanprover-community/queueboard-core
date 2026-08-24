@@ -307,16 +307,16 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
   "assignment activity" view joining proposals with the assignment timeline.
 - Hybrid "propose, then assign anyway if all candidates time out" — revisit only if PRs sitting
   unproposed becomes a real problem.
-- **Stable `/prefs` URL sharing the console session — designed, see
-  `022-zulip-prefs-form-design.md` ("Amendment: GitHub-OAuth Session Auth").** The prefs form moves
-  to `/console/preferences/` under the console session, retiring the expiring Fernet token after a
-  soak. Decided shape: admission stays exactly where it is (the `ZULIP_COMMAND_POLICY` gate on the
-  commands that hand out a registration link, plus `import_reviewer_topics` and the admin) and only
-  authentication changes, so the console adds no new way to become a reviewer; the page edits
-  existing `ReviewerPreference` rows only and never bootstraps them (those rows *are* candidate-pool
-  membership and `auto_assign` defaults to `True`); scoping moves from the token's `preference_ids`
-  snapshot to a queryset filtered by the session reviewer on GET *and* POST. The console's own
-  admission gate is tightened in the same pass (see the Auth bullets above).
+- ~~**Stable `/prefs` URL sharing the console session.**~~ **Shipped** — see
+  `022-zulip-prefs-form-design.md`. Preferences are served at `/console/preferences/` under the
+  console session and the expiring Fernet link is retired. Admission stayed where it was (the
+  `ZULIP_COMMAND_POLICY` gate on the commands that hand out a registration link, plus
+  `import_reviewer_topics` and the admin) and only authentication changed, so the console adds no new
+  way to become a reviewer: the page edits existing `ReviewerPreference` rows and never bootstraps
+  them (those rows *are* candidate-pool membership and `auto_assign` defaults to `True`), and scoping
+  is a queryset filtered by the session reviewer on GET *and* POST. The console's own admission gate
+  was tightened in the same work (see the Auth bullets above), and registration now opens the console
+  session so a new reviewer lands on the prefs page signed in.
 
 ## Alternatives (discarded)
 

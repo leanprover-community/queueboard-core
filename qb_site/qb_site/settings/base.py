@@ -171,9 +171,11 @@ ZULIP_BOT_EMAIL = os.getenv("ZULIP_BOT_EMAIL", "")
 ZULIP_BOT_API_KEY = os.getenv("ZULIP_BOT_API_KEY", "")
 ZULIP_USER_EMAIL = os.getenv("ZULIP_USER_EMAIL", "")
 ZULIP_USER_API_KEY = os.getenv("ZULIP_USER_API_KEY", "")
-ZULIP_PREFS_TOKEN_SECRET = os.getenv("ZULIP_PREFS_TOKEN_SECRET", "")
-ZULIP_PREFS_TOKEN_SALT = os.getenv("ZULIP_PREFS_TOKEN_SALT", "zulip_bot.prefs")
-ZULIP_PREFS_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
+# Shared signing secret for the Zulip *link* tokens that remain (registration + its OAuth state);
+# falls back to SECRET_KEY when unset. Formerly ZULIP_PREFS_TOKEN_SECRET, which the retired prefs
+# links owned (design doc 022); that env name is still read here so existing deployments keep the
+# same key and their in-flight registration links stay valid.
+ZULIP_LINK_TOKEN_SECRET = os.getenv("ZULIP_LINK_TOKEN_SECRET", os.getenv("ZULIP_PREFS_TOKEN_SECRET", ""))
 ZULIP_REGISTRATION_TOKEN_SALT = os.getenv("ZULIP_REGISTRATION_TOKEN_SALT", "zulip_bot.registration")
 ZULIP_REGISTRATION_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_REGISTRATION_TOKEN_TTL_SECONDS", 1800))
 ZULIP_REGISTRATION_OAUTH_STATE_SALT = os.getenv("ZULIP_REGISTRATION_OAUTH_STATE_SALT", "zulip_bot.registration.oauth_state")
@@ -197,10 +199,6 @@ GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "read:user")
 # Reviewer console (design doc 050): TTL for the signed OAuth `state` round-trip (sign-in click ->
 # GitHub -> callback). Ten minutes is plenty; the per-session CSRF nonce is the real guard.
 CONSOLE_OAUTH_STATE_TTL_SECONDS = int(os.getenv("CONSOLE_OAUTH_STATE_TTL_SECONDS", 600))
-# Serve reviewer preferences from the console at /console/preferences/ (design doc 022 amendment).
-# Off by default during the staged rollout: the Zulip `prefs` token link stays the advertised entry
-# point until this is on. Only gates the console page — the token link is unaffected either way.
-CONSOLE_PREFS_ENABLED = env_bool(os.getenv("CONSOLE_PREFS_ENABLED"), False)
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_APP_TOKEN_CONFIG: dict[str, object] = {}
 _GITHUB_APP_TOKEN_CONFIG_ENV = os.getenv("GITHUB_APP_TOKEN_CONFIG", "").strip()

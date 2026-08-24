@@ -3,7 +3,7 @@
 ## Scope
 - `qb_site/console/` is the GitHub-OAuth authenticated **reviewer console**: a `confirm`-mode
   reviewer signs in and accepts/declines the assignment proposals made to them (design decision 050),
-  and edits their reviewer preferences at `/console/preferences/` (design decision 022 amendment).
+  and edits their reviewer preferences at `/console/preferences/` (design decision 022).
 - It is a plain server-rendered Django app (no DRF, no models of its own). State lives in
   `analyzer.AssignmentProposal` / `analyzer.ReviewerOptOut`; identity is `core.User`.
 - Mounted at `/console/` (`qb_site/qb_site/urls.py`). Templates in `qb_site/templates/console/`.
@@ -62,9 +62,8 @@
 - Console access is keyed on the authenticated `github_login`, matched **case-insensitively**
   against `AssignmentProposal.reviewer_login`. A reviewer can only act on their own proposals.
 - **A second place opens this session.** `zulip_bot.views.register_github_callback` calls
-  `console.session.set_reviewer` after a successful registration (when `CONSOLE_PREFS_ENABLED` is on
-  and the new reviewer has preference rows), so the reviewer lands on the prefs page already signed
-  in. It is the same GitHub-OAuth verification the console does, plus a Zulip-identity proof. Any
+  `console.session.set_reviewer` after a successful registration (when the new reviewer has preference
+  rows), so they land on the prefs page already signed in. It is the same GitHub-OAuth verification the console does, plus a Zulip-identity proof. Any
   future caller of `set_reviewer` outside this app must clear that same bar.
 - **Admission gate (`_is_reviewer` / `_reviewer_from_session`).** Resolve-only is not reviewer-only:
   `syncer` upserts a `core.User` for every PR author, so a "known GitHub account" is usually just a
@@ -76,14 +75,13 @@
   views through it rather than calling `console_session.get_reviewer` directly.
 
 ## Preferences page (`views.prefs`)
-- `/console/preferences/` renders the *same* reviewer-preferences form as the Zulip token link, under
-  the console session instead of an expiring token (design doc 022 amendment). Gated by
-  `CONSOLE_PREFS_ENABLED` (default off; renders `unavailable.html` while off, and the home-page link
-  is hidden).
+- `/console/preferences/` is **the** place reviewers edit their preferences (design doc 022; the
+  expiring Zulip token page it replaced is gone, and the `CONSOLE_PREFS_ENABLED` flag that staged the
+  rollout was removed with it). The `prefs` Zulip command DMs this URL.
 - Do not re-implement the form here. `core.forms.ReviewerPreferenceForm` owns the editable fields and
   validation, `core.services.reviewer_prefs.build_preferences_formset` owns formset assembly, and
-  `templates/shared/_reviewer_prefs_fields.html` owns the field markup — all shared with
-  `zulip_bot/prefs_form.html` so the two pages cannot drift.
+  `templates/shared/_reviewer_prefs_fields.html` owns the field markup. They live in `core`/`shared`
+  because the *model* is `core`'s, not because a second page still renders them.
 - **This page never creates `ReviewerPreference` rows.** A row *is* assignment-pool membership
   (`analyzer.services.reviewer_assignment.build_reviewer_catalog`) and `auto_assign` defaults to
   `True`, so a "create my preferences" affordance on a public sign-in surface would let any
@@ -96,10 +94,11 @@
   `core.User.timezone` → Django default) and is what naive `away_until` input means. The page renders
   no countdown: the session bounds it, and `SESSION_SAVE_EVERY_REQUEST` slides that window.
 - Styling/JS: `templates/console/prefs.html` extends `console/base.html` and uses its `extra_css` /
-  `extra_js` blocks to load `zulip_bot/prefs_form.css|js`. Those assets deliberately stay in
-  `zulip_bot/static/` — `close_pr_form.js` and `label_pr_form.js` import the expiry helpers from
-  `./prefs_form.js` as a sibling, and relative ES imports must resolve both as served paths (browser)
-  and on-disk paths (vitest). `mountPrefsForm` treats the countdown elements as optional.
+  `extra_js` blocks to load `console/prefs_form.css|js`, both console-owned. The JS is progressive
+  enhancement only (unsaved-changes guard, "clear away time" buttons) with **no countdown** — the
+  session bounds this page, not a link TTL — which is why the expiry helpers stayed behind in
+  `zulip_bot/static/zulip_bot/expiry.js` for the close-pr / label-pr token pages. Its vitest spec lives
+  with those, in `qb_site/zulip_bot/frontend/tests/`.
 
 ## Accept / decline / assign-anyway / unassign (the load-bearing handlers)
 - All `POST`. Accept and decline re-validate live state via the single
@@ -143,5 +142,6 @@
   `console.views.GitHubAssignmentClient` (unassign), `console.views._enqueue_pr_sync`, and
   `console.views.resolve_user_timezone_name` (prefs), and seed the session directly; no real GitHub
   or Zulip calls. `tests/test_prefs.py` pins the prefs invariants (no row creation, admission gate at
-  sign-in *and* per view, cross-reviewer POST rejection, timezone interpretation). Canonical full run
+  sign-in *and* per view, cross-reviewer POST rejection, timezone interpretation) and
+  `tests/test_prefs_form_fields.py` covers fields, validation and the label catalog. Canonical full run
   stays `bash scripts/repo_check_compose.sh`.

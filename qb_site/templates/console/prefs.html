@@ -3,10 +3,9 @@
 {% block title %}Reviewer preferences — Reviewer console{% endblock %}
 
 {% comment %}
-The form's own stylesheet is shared with the Zulip prefs page; it must load after console.css so its
-form-control rules win on this page (design doc 022).
+The form's own stylesheet must load after console.css so its form-control rules win on this page.
 {% endcomment %}
-{% block extra_css %}<link rel="stylesheet" href="{% static 'zulip_bot/prefs_form.css' %}">{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'console/prefs_form.css' %}">{% endblock %}
 
 {% block body %}
   <section class="hero">
@@ -30,8 +29,8 @@ form-control rules win on this page (design doc 022).
     {% endif %}
 
     {% comment %}
-    `prefs-root` and `prefs-form` are the ids prefs_form.js mounts on. No countdown here: the session,
-    not a token, bounds this page's lifetime. Note Django only strips {# #} comments on a single line
+    `prefs-root` and `prefs-form` are the ids console/prefs_form.js mounts on. No countdown: the
+    session bounds this page, not a link TTL. Note Django only strips {# #} comments on a single line
     — anything multi-line must use {% comment %} or it renders as page text.
     {% endcomment %}
     <div id="prefs-root">
@@ -60,4 +59,4 @@ form-control rules win on this page (design doc 022).
   {% endif %}
 {% endblock %}
 
-{% block extra_js %}<script type="module" src="{% static 'zulip_bot/prefs_form.js' %}"></script>{% endblock %}
+{% block extra_js %}<script type="module" src="{% static 'console/prefs_form.js' %}"></script>{% endblock %}

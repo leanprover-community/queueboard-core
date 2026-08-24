@@ -12,7 +12,7 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
 # Policy inspection helper
 docker compose exec -T web python qb_site/manage.py zulip_policy
 
-# Frontend tests (prefs form)
+# Frontend tests (expiry helpers here + the console's prefs JS; one vitest project covers both)
 cd qb_site/zulip_bot/frontend && npm test
 ```
 
@@ -47,12 +47,10 @@ This has a critical implication: **never return sensitive content (token links, 
 **Proactive DM** (commands that send private links): call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip does not deliver the webhook response at all; the DM goes to the user regardless of where the command was invoked. Use this whenever the reply contains a private token link or other content that must not appear in a stream.
 
 Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register-test`, `assigned-prs`.
-`prefs` stays in that list whatever `CONSOLE_PREFS_ENABLED` says — with the flag on it DMs the stable
-`/console/preferences/` URL instead of an expiring token link, but it still answers by DM. The URL is
-not secret (the page self-authenticates); the reason is noise: an accidental mention in a public stream
-must not post a reply there. `console` is the deliberate exception, an in-place reply by design (doc
-050). `prefs`'s registration-link branch is a DM for the stronger reason — *that* link is a bearer
-secret.
+`prefs` DMs the stable `/console/preferences/` URL. That URL is *not* secret (the page
+self-authenticates) — the reason it is a DM is noise: an accidental mention in a public stream must not
+post a reply there. `console` is the deliberate exception, an in-place reply by design (doc 050).
+`prefs`'s registration-link branch is a DM for the stronger reason — *that* link is a bearer secret.
 
 ### Adding new commands
 
@@ -76,35 +74,31 @@ secret.
   - `registration_oauth_state.py`,
   - `registration_linking.py`,
   - `registration_bootstrap.py` (initial bootstrap helpers),
-  - `prefs_links.py` (preference deep-link generation, plus `build_prefs_entry_link` — the single
-    flag-aware answer to "where do I send a reviewer to edit preferences", used by the `prefs` command
-    and the registration DM/page so they cannot disagree),
   - `close_pr_links.py` (close-PR confirmation link generation),
   - `label_pr_links.py` (label-PR confirmation link generation),
   - `user_timezone.py` (the timezone a reviewer's local times are interpreted in: Zulip's reported
     zone → `core.User.timezone` → Django default). Shared with the console prefs page so a naive
     `away_until` means the same thing on both; it lives here because the authoritative source is
     Zulip's user record, and `core` carries no app dependencies.
-- Zulip prefs form/UI behavior spans Django forms/views and `frontend/` tests; keep behavior parity across backend validation and frontend affordances.
-- **The preferences form itself is not owned by this app.** `core.forms.ReviewerPreferenceForm` (the
-  editable-field set + validation) and `core.services.reviewer_prefs` (formset assembly, ownership
-  scoping, label catalog) are shared with the reviewer console, which serves the same form at
-  `/console/preferences/` under its GitHub-OAuth session (design doc 022 amendment). The fields live
-  in one partial, `templates/shared/_reviewer_prefs_fields.html`. Change those, not a per-page copy —
-  and expect both pages to pick the change up.
-- `views.prefs_form` is now only the token *auth* path: validate the link, run the anti-tamper checks
-  in `_load_authorized_preferences`, then hand the rows to the shared builder. It is slated for
-  removal once the token flow is retired (022, phase 3).
+- **This app does not own the preferences form.** It lives in the reviewer console
+  (`/console/preferences/`, design doc 022): `core.forms.ReviewerPreferenceForm` owns the editable
+  fields and validation, `core.services.reviewer_prefs` the formset assembly, and
+  `templates/shared/_reviewer_prefs_fields.html` the markup. The expiring `prefs` token page here was
+  retired; this app's remaining role is the `prefs` command (which DMs the console URL) and the
+  timezone resolver above.
 - `views.register_github_callback` **opens the console session** (`console.session.set_reviewer`) when
-  the console owns preferences and the new reviewer has rows to edit, so the "Edit Preferences Now"
-  link lands signed in instead of bouncing through OAuth again. That promotion is strictly stronger
-  than a console sign-in: registration proves Zulip identity (the registration token) *and* GitHub
-  identity (OAuth). Success path only — a link conflict returns before it.
-- `static/zulip_bot/prefs_form.js` is imported by `close_pr_form.js` and `label_pr_form.js` for the
-  expiry helpers (`getExpiryState`, `formatRemaining`), so it must stay a sibling of those files —
-  relative ES imports resolve against the *served* static path in the browser but the *on-disk* path
-  under vitest, and only colocation satisfies both. The console prefs page therefore loads
-  `zulip_bot/prefs_form.*` rather than a copy; mounting tolerates a missing countdown block.
+  the new reviewer has rows to edit, so the "Edit Preferences Now" link lands signed in instead of
+  bouncing through OAuth again. That promotion is strictly stronger than a console sign-in:
+  registration proves Zulip identity (the registration token) *and* GitHub identity (OAuth). Success
+  path only — a link conflict returns before it.
+- `static/zulip_bot/expiry.js` holds the countdown helpers (`getExpiryState`, `formatRemaining`) for
+  the token pages that remain (`close_pr_form.js`, `label_pr_form.js`). They import it as a **sibling**
+  and must stay colocated: a relative ES import has to resolve against the *served* static path in the
+  browser and the *on-disk* path under vitest, and only colocation satisfies both. The console's prefs
+  JS is separate and has no countdown at all.
+- Registration tokens and their OAuth state share `ZULIP_LINK_TOKEN_SECRET` (formerly
+  `ZULIP_PREFS_TOKEN_SECRET`, whose env name `base.py` still honors so existing deployments keep the
+  same key).
 
 ## Testing Expectations
 - Canonical full validation for repo changes is `bash scripts/repo_check_compose.sh`.

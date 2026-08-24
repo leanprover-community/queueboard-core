@@ -103,9 +103,11 @@ def _parse_claims(payload: Any) -> RegistrationLinkClaims:
 
 
 def _token_secret() -> str:
-    prefs_secret = getattr(settings, "ZULIP_PREFS_TOKEN_SECRET", "").strip()
-    if prefs_secret:
-        return prefs_secret
+    # Shared with the registration OAuth state; see ZULIP_LINK_TOKEN_SECRET in settings/base.py, which
+    # also honors the legacy ZULIP_PREFS_TOKEN_SECRET env name.
+    custom = getattr(settings, "ZULIP_LINK_TOKEN_SECRET", "").strip()
+    if custom:
+        return custom
     return settings.SECRET_KEY
 
 

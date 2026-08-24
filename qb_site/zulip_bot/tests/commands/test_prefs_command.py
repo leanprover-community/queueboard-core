@@ -26,22 +26,8 @@ class TestPrefsCommand(TestCase):
         )
 
     @patch("zulip_bot.commands.prefs.ZulipClient")
-    def test_prefs_command_returns_link_for_reviewer(self, MockZulipClient: MagicMock) -> None:
-        mock_client = MockZulipClient.return_value
-        user = User.objects.create(github_login="reviewer", zulip_user_id=101)
-        repo = Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master")
-        ReviewerPreference.objects.create(user=user, repository=repo)
-
-        result = prefs_command(self._context(sender_id=101), "")
-        self.assertTrue(result.response_not_required)
-        mock_client.send_direct_message.assert_called_once()
-        dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
-        self.assertIn("[open your reviewer preferences form](", dm_content)
-        self.assertIn("https://queueboard.example/api/zulip/prefs/", dm_content)
-        self.assertRegex(dm_content, re.compile(r"<time:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00>"))
-
-    @patch("zulip_bot.commands.prefs.ZulipClient")
     def test_prefs_command_handles_missing_user_link(self, MockZulipClient: MagicMock) -> None:
+        # The registration link *is* secret (unlike the prefs URL), so it must stay a DM.
         mock_client = MockZulipClient.return_value
         result = prefs_command(self._context(sender_id=101), "")
         self.assertTrue(result.response_not_required)
@@ -52,13 +38,6 @@ class TestPrefsCommand(TestCase):
         self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
         self.assertRegex(dm_content, re.compile(r"<time:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00>"))
 
-    def test_prefs_command_handles_missing_preferences(self) -> None:
-        User.objects.create(github_login="reviewer", zulip_user_id=101)
-
-        result = prefs_command(self._context(sender_id=101), "")
-        self.assertIn("do not currently have any reviewer preferences", result.content)
-
-    @override_settings(CONSOLE_PREFS_ENABLED=True)
     @patch("zulip_bot.commands.prefs.ZulipClient")
     def test_prefs_command_dms_the_stable_console_url(self, MockZulipClient: MagicMock) -> None:
         # `prefs` stays a DM command even though the console URL is not secret: an accidental mention
@@ -78,19 +57,6 @@ class TestPrefsCommand(TestCase):
         self.assertNotIn("/api/zulip/prefs/", dm_content)
         self.assertNotIn("expires", dm_content)
 
-    @override_settings(CONSOLE_PREFS_ENABLED=True)
-    @patch("zulip_bot.commands.prefs.ZulipClient")
-    def test_prefs_command_still_dms_the_registration_link(self, MockZulipClient: MagicMock) -> None:
-        # The registration link *is* secret, so it stays a DM regardless of where prefs live.
-        mock_client = MockZulipClient.return_value
-
-        result = prefs_command(self._context(sender_id=101), "")
-
-        self.assertTrue(result.response_not_required)
-        dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
-        self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
-
-    @override_settings(CONSOLE_PREFS_ENABLED=True)
     def test_prefs_command_still_reports_missing_preferences(self) -> None:
         # A reviewer with no rows would be refused by the console's admission gate; say so in Zulip
         # rather than sending them to a 403.

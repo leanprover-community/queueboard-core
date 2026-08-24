@@ -27,12 +27,7 @@ class TestConsoleCommand(SimpleTestCase):
         self.assertFalse(result.response_not_required)
         self.assertIn("[reviewer console](https://queue.example.org/console/)", result.content)
 
-    @override_settings(QUEUEBOARD_BASE_URL="https://queue.example.org", CONSOLE_PREFS_ENABLED=False)
-    def test_omits_preferences_while_the_console_does_not_own_them(self) -> None:
-        result = console_command(self._context(), "")
-        self.assertNotIn("preferences", result.content)
-
-    @override_settings(QUEUEBOARD_BASE_URL="https://queue.example.org", CONSOLE_PREFS_ENABLED=True)
-    def test_mentions_preferences_once_the_console_owns_them(self) -> None:
+    @override_settings(QUEUEBOARD_BASE_URL="https://queue.example.org")
+    def test_mentions_preferences(self) -> None:
         result = console_command(self._context(), "")
         self.assertIn("reviewer preferences", result.content)
