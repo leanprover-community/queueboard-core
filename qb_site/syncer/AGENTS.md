@@ -57,6 +57,9 @@ docker compose exec -T web python qb_site/manage.py resync_archive_touched_prs \
 # A full 100-id call costs 1 GraphQL point, so the whole table is ~6k points.
 # Resumable and idempotent (target set is `actor_type IS NULL`); repeat runs
 # plateau at the genuinely-null-actor population rather than reaching zero.
+# Watch progress per repo on the SyncerConvergenceSnapshot admin page:
+# `timeline_events_missing_actor_type` (the command's own target set) and
+# `timeline_events_untyped_with_login` (converges to ~0).
 docker compose exec -T web python qb_site/manage.py backfill_timeline_actor_types \
   --repo leanprover-community/mathlib4 --dry-run --limit 500
 # Unattended drain (sleeps until resetAt instead of stopping at the floor):
@@ -142,7 +145,7 @@ front and expensive to recover from when skipped.
   - `syncer.harvest_commit_history` / `syncer.harvest_commit_history_sweep` (optional),
   - `syncer.archive_import_tick` → `syncer.archive_import_pr_item` — beat-driven worklist drain for the archive backfill importer (design doc 043). Tick runs every `ARCHIVE_IMPORT_TICK_SECONDS` (default 60s) and gates on `ARCHIVE_IMPORT_ENABLED` so operators can toggle activity without restarting beat. Status surface: `python manage.py archive_import_status [--repo OWNER/NAME] [--errors N]`.
   - `syncer.resync_archive_touched_tick` — beat-driven drain for the doc-043 forced-resync remediation. Every `ARCHIVE_RESYNC_TICK_SECONDS` (default 600s) it enqueues up to `ARCHIVE_RESYNC_PER_TICK` (default 0 = disabled) `sync_pr(force=True)` tasks from `archive_touched_resync_targets` (open first, stalest `last_synced_at` first, healed PRs excluded), skipping the tick when the cached GraphQL budget is below `ARCHIVE_RESYNC_MIN_RATE_REMAINING` and deduping against still-queued sync_pr enqueues. Self-completing: returns `status=drained` once the target set is empty; `remaining` in the task result tracks progress, and `syncer.collect_convergence` records the same count as `archive_resync_remaining` on `SyncerConvergenceSnapshot` for admin monitoring.
-  - `syncer.collect_convergence` — records syncer convergence metrics,
+  - `syncer.collect_convergence` — records syncer convergence metrics. Includes the doc-051 actor-typing counters: `timeline_events_missing_actor_type` is the `backfill_timeline_actor_types` target set and plateaus at the genuinely-null-actor population, while `timeline_events_untyped_with_login` counts only rows known to have had an actor, so it converges to ~0 and is the standing canary for the fill-empty column allowlist in `sync_timeline_events`,
   - `syncer.collect_metrics` — records sync throughput/lag metrics.
 - Keep task behavior idempotent and retry-safe; prefer explicit status/reason payloads in return dicts.
 

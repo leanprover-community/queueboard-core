@@ -8,6 +8,7 @@ from django.utils import timezone
 from syncer.models import (
     ArchiveImportItem,
     ArchiveImportItemStatus,
+    PRTimelineEvent,
     PullRequest,
     CommitHistoryHarvest,
     RepoBackfillCursor,
@@ -105,6 +106,14 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
 
         inconsistent_open = inconsistent_open_prs_queryset(repo).count()
 
+        # Doc-051 actor typing. The first count is the backfill command's target
+        # set and plateaus at the null-actor floor; the second only counts rows
+        # we know had an actor, so it converges and doubles as the standing
+        # canary for the fill-empty allowlist.
+        events = PRTimelineEvent.objects.filter(pull_request__repository=repo, actor_type__isnull=True)
+        events_missing_actor_type = events.filter(github_node_id__isnull=False).count()
+        events_untyped_with_login = events.exclude(actor_login__isnull=True).exclude(actor_login="").count()
+
         SyncerConvergenceSnapshot.objects.create(
             repository=repo,
             collected_at=collected_at,
@@ -128,6 +137,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
             archive_completed=archive_completed,
             archive_failed_permanent=archive_failed_permanent,
             archive_resync_remaining=archive_resync_remaining,
+            timeline_events_missing_actor_type=events_missing_actor_type,
+            timeline_events_untyped_with_login=events_untyped_with_login,
         )
         rows += 1
         per_repo.append(
@@ -160,6 +171,8 @@ def collect_syncer_convergence_task(self) -> dict:  # type: ignore[no-redef]
                 "archive_completed": archive_completed,
                 "archive_failed_permanent": archive_failed_permanent,
                 "archive_resync_remaining": archive_resync_remaining,
+                "timeline_events_missing_actor_type": events_missing_actor_type,
+                "timeline_events_untyped_with_login": events_untyped_with_login,
             }
         )
     return {"repos": len(repos), "rows_created": rows, "per_repo": per_repo, "request_meta": request_meta}

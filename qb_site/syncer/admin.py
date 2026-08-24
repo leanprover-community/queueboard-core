@@ -1326,6 +1326,8 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "archive_completed",
         "archive_failed_permanent",
         "archive_resync_remaining",
+        "timeline_events_missing_actor_type",
+        "timeline_events_untyped_with_login",
     )
     list_filter = ("repository", "history_cursor_completed", "discovery_continuation_active")
     date_hierarchy = "collected_at"
@@ -1354,6 +1356,8 @@ class SyncerConvergenceSnapshotAdmin(ReadOnlyAdmin):
         "archive_completed",
         "archive_failed_permanent",
         "archive_resync_remaining",
+        "timeline_events_missing_actor_type",
+        "timeline_events_untyped_with_login",
         "created_at",
     )
 
