@@ -119,6 +119,16 @@
   Note the installation's GraphQL budget is **~9 700 points/hour**, not the
   5 000 a PAT gets (GitHub App limits scale with repos and users), so the whole
   drain fits inside a single rate window if the live syncer leaves room.
+  - **Dead node ids are dropped by name, not by bisection.** Deleted comments
+    and reviews are common enough to matter: one unresolvable id makes GitHub
+    reject the whole call, and bisecting a 100-id batch to rediscover which id
+    was bad costs 13 calls. GitHub already names it in the error message
+    (`…global id of 'IC_…'`), so the command parses the named ids out, drops
+    them, and retries the remainder in one more call. At 0.25 % deleted rows
+    over ~608 k that is the difference between ~18 k wasted points and ~1.5 k.
+    Halving survives only as the fallback for error messages with no id to
+    parse. Dropped ids are absent from the result, which is what makes them
+    land in `unresolved` — a fact about the row, not about the call.
   - A named `ActorIdentity` fragment keeps the 13 inline fragments readable;
     `... on Comment` is what covers `IssueComment`, `PullRequestReview`, and
     the synthesized dismissed-review parents (whose stored node id *is* the
@@ -257,6 +267,11 @@
   - `logins=0` is likewise an artifact of id order: archive rows were imported
     later and carry higher ids, so the `actor_login` healing shows up in the
     back half of the drain.
+  - The first live drain (2026-08-24) then hit dense runs of deleted
+    `IssueComment` ids, which is what surfaced the bisection cost above. The
+    probe's id-head slice had none, so the dry run could not have predicted
+    it — worth remembering that a 2 000-row head-of-table probe does not
+    characterise the whole id space.
 - Outstanding: the drain, the first post-drain export, and the `qb-notebook`
   switch.
 

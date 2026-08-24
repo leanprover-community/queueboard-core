@@ -29,9 +29,11 @@ class FakeClient:
     responses: Dict[str, Any] = {}
     # node ids that make the whole call fail, forcing the batch-splitting path.
     poison: set = set()
-    # GraphQL message the poison raises. The default is the one GitHub sends
-    # for an id it cannot resolve, which is the only splittable shape.
+    # GraphQL message the poison raises when `name_poison_ids` is off — the
+    # shape of GitHub's message minus the id, i.e. nothing to parse.
     poison_message: str = "GraphQL error(s): Could not resolve to a node with the global id"
+    # When on, the error names each dead id the way GitHub really does.
+    name_poison_ids: bool = False
     # Number of leading calls that die at the transport layer (5xx / reset).
     transport_failures: int = 0
     # Make every call come back as GitHub's rate-limit rejection.
@@ -49,6 +51,7 @@ class FakeClient:
         cls.responses = {}
         cls.poison = set()
         cls.poison_message = "GraphQL error(s): Could not resolve to a node with the global id"
+        cls.name_poison_ids = False
         cls.transport_failures = 0
         cls.rate_limited = False
         cls.calls = []
@@ -64,7 +67,11 @@ class FakeClient:
         if FakeClient.transport_failures > 0:
             FakeClient.transport_failures -= 1
             raise requests.ConnectionError("502 Server Error: Bad Gateway")
-        if FakeClient.poison & set(ids):
+        dead = FakeClient.poison & set(ids)
+        if dead:
+            if FakeClient.name_poison_ids:
+                named = "; ".join(f"Could not resolve to a node with the global id of '{i}'." for i in ids if i in dead)
+                raise RuntimeError(f"GraphQL error(s): {named}")
             raise RuntimeError(FakeClient.poison_message)
         nodes = [FakeClient.responses.get(i) for i in ids]
         return {"data": {"rateLimit": {"cost": 1, "remaining": 4999}, "nodes": nodes}}
@@ -295,7 +302,47 @@ class TestBackfillBatching(BackfillCommandTestBase):
         self.assertEqual([len(b) for b in FakeClient.batches], [3, 2])
         self.assertEqual(PRTimelineEvent.objects.filter(actor_type__isnull=False).count(), 5)
 
-    def test_graphql_error_splits_the_batch_and_isolates_the_bad_id(self) -> None:
+    def test_named_dead_ids_are_dropped_without_bisecting(self) -> None:
+        # GitHub names the unresolvable id, so re-deriving it by halving the
+        # batch costs 13 calls where 2 will do. On a 600 k-row drain with even
+        # 0.25 % deleted comments that difference is ~18 k GraphQL points.
+        for i in range(4):
+            node_id = f"TL_{i}"
+            self._row(node_id)
+            FakeClient.responses[node_id] = {
+                "__typename": "IssueComment",
+                "id": node_id,
+                "author": _actor("User", f"U_{i}", "alice"),
+            }
+        FakeClient.poison = {"TL_2"}
+        FakeClient.name_poison_ids = True
+
+        out = self._run(batch_size=4)
+        self.assertEqual(PRTimelineEvent.objects.filter(actor_type__isnull=False).count(), 3)
+        self.assertIsNone(PRTimelineEvent.objects.get(github_node_id="TL_2").actor_type)
+        # One rejected call naming TL_2, then one clean call for the other three.
+        self.assertEqual([len(b) for b in FakeClient.batches], [4, 3])
+        # Dropped, not merely unasked: it is a fact about the row.
+        self.assertIn("unresolved=1", out)
+        self.assertIn("call_failed=0", out)
+
+    def test_all_named_dead_ids_are_dropped_in_one_retry(self) -> None:
+        for i in range(5):
+            node_id = f"TL_{i}"
+            self._row(node_id)
+            FakeClient.responses[node_id] = {
+                "__typename": "LabeledEvent",
+                "id": node_id,
+                "actor": _actor("Bot", f"BOT_{i}", "mathlib-bors"),
+            }
+        FakeClient.poison = {"TL_1", "TL_3"}
+        FakeClient.name_poison_ids = True
+
+        out = self._run(batch_size=5)
+        self.assertEqual([len(b) for b in FakeClient.batches], [5, 3])
+        self.assertIn("unresolved=2", out)
+
+    def test_unparseable_graphql_error_falls_back_to_splitting(self) -> None:
         for i in range(4):
             node_id = f"TL_{i}"
             self._row(node_id)
