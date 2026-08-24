@@ -2,8 +2,10 @@
 {% load static %}
 {% block title %}Reviewer preferences — Reviewer console{% endblock %}
 
-{# The form's own stylesheet is shared with the Zulip prefs page; it must load after console.css so
-   its form-control rules win on this page (design doc 022). #}
+{% comment %}
+The form's own stylesheet is shared with the Zulip prefs page; it must load after console.css so its
+form-control rules win on this page (design doc 022).
+{% endcomment %}
 {% block extra_css %}<link rel="stylesheet" href="{% static 'zulip_bot/prefs_form.css' %}">{% endblock %}
 
 {% block body %}
@@ -27,10 +29,16 @@
       <div class="status status-error" role="alert">{{ formset.non_form_errors|join:", " }}</div>
     {% endif %}
 
-    {# `prefs-root` and `prefs-form` are the ids prefs_form.js mounts on. No countdown here: the
-       session, not a token, bounds this page's lifetime. #}
+    {% comment %}
+    `prefs-root` and `prefs-form` are the ids prefs_form.js mounts on. No countdown here: the session,
+    not a token, bounds this page's lifetime. Note Django only strips {# #} comments on a single line
+    — anything multi-line must use {% comment %} or it renders as page text.
+    {% endcomment %}
     <div id="prefs-root">
-      <p class="meta">Times are entered and shown in <strong>{{ user_timezone_name }}</strong>.</p>
+      {# `.meta` is hero-only (pale text for the dark gradient); this strip is the light-background idiom. #}
+      <section class="form-context">
+        <span>Times are entered and shown in <strong>{{ user_timezone_name }}</strong></span>
+      </section>
       <form method="post" id="prefs-form">
         {% csrf_token %}
         {% include "shared/_reviewer_prefs_fields.html" %}
@@ -44,7 +52,7 @@
   {% else %}
     <section class="card">
       <p>You have no reviewer preferences on this server yet, so there is nothing to edit here.</p>
-      <p class="meta">
+      <p class="help">
         Reviewer preferences are created when you register with the Zulip bot. Send it the
         <code>prefs</code> command to start, then come back to this page.
       </p>

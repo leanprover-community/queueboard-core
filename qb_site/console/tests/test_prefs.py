@@ -185,6 +185,11 @@ class ConsolePrefsTests(TestCase):
         self.assertNotContains(resp, "maintainer-merge")
         # No countdown on this page — the session bounds it, not a token.
         self.assertNotContains(resp, "countdown-text")
+        # Django only strips `{#  #}` comments on a single line, so a multi-line one leaks as page
+        # text. Nothing that looks like template syntax may reach the reader.
+        self.assertNotContains(resp, "{#")
+        self.assertNotContains(resp, "{%")
+        self.assertNotIn("prefs_form.js mounts", body)
 
     def test_post_saves_and_redirects_with_saved_flag(self) -> None:
         self._login_session()
