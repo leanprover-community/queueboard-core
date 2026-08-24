@@ -198,6 +198,12 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
     proposals).
   - The session key is **rotated on login promotion** (`cycle_key`, like
     `django.contrib.auth.login`) against session fixation.
+  - *Planned (see `022-zulip-prefs-form-design.md`):* resolve-only is not the same as
+    reviewer-only. The syncer upserts a `core.User` for every PR author, so today any ingested
+    contributor can open a session and see an empty dashboard. The prefs migration tightens
+    admission to "has ≥1 `ReviewerPreference` row **or** an active proposal for their login",
+    enforced in one helper shared by every console view and at `oauth_callback`, so a non-reviewer
+    gets the existing "only for registered reviewers" 403 instead of a session.
 - Access is keyed on the authenticated `github_login`, matched case-insensitively against
   `AssignmentProposal.reviewer_login`; a reviewer can only act on their own proposals, and console
   access is independent of Zulip reachability.
@@ -300,15 +306,16 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
   "assignment activity" view joining proposals with the assignment timeline.
 - Hybrid "propose, then assign anyway if all candidates time out" — revisit only if PRs sitting
   unproposed becomes a real problem.
-- **Stable `/prefs` URL sharing the console session.** Today the Zulip prefs form authenticates via
-  an expiring Fernet token embedding a `preference_ids` snapshot; the console authenticates via
-  GitHub OAuth → Django session (`core.User` id). A follow-up could give prefs a token-less, stable
-  URL that reads the same session and loads the user's live preferences. Feasible and clean (the
-  console already resolves identity by `github_login`, so the eligible population is essentially the
-  same), but it is an auth-model change, not a URL tweak — it makes GitHub OAuth the entry point for
-  a flow that today needs none, changes scoping from a token snapshot to all-current prefs, and
-  wants its own CSRF/session plumbing, tests, and security-surface review. Deliberately kept off this
-  branch so the gate's rollout stays focused.
+- **Stable `/prefs` URL sharing the console session — designed, see
+  `022-zulip-prefs-form-design.md` ("Amendment: GitHub-OAuth Session Auth").** The prefs form moves
+  to `/console/preferences/` under the console session, retiring the expiring Fernet token after a
+  soak. Decided shape: admission stays exactly where it is (the `ZULIP_COMMAND_POLICY` gate on the
+  commands that hand out a registration link, plus `import_reviewer_topics` and the admin) and only
+  authentication changes, so the console adds no new way to become a reviewer; the page edits
+  existing `ReviewerPreference` rows only and never bootstraps them (those rows *are* candidate-pool
+  membership and `auto_assign` defaults to `True`); scoping moves from the token's `preference_ids`
+  snapshot to a queryset filtered by the session reviewer on GET *and* POST. The console's own
+  admission gate is tightened in the same pass (see the Auth bullets above).
 
 ## Alternatives (discarded)
 
@@ -324,6 +331,7 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
 ## Related Decisions
 
 - `020-reviewer-opt-outs-and-timeline-assignments.md`
+- `022-zulip-prefs-form-design.md`
 - `026-zulip-assign-unassign-and-github-app-tokens.md`
 - `027-github-app-operation-token-services.md`
 - `028-reviewer-queue-nudges-v1-daily-report.md`

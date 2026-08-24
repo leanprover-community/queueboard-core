@@ -1,5 +1,11 @@
 # Zulip Reviewer Preferences Form Design
 
+> Status: **Stages A/B implemented; auth model amended (planned).** The expiring-link flow under
+> "Implemented (Current Behavior)" is what ships today. The auth model is being replaced by the
+> reviewer console's GitHub-OAuth session — see "Amendment: GitHub-OAuth Session Auth" below. That
+> amendment closes the deferred follow-up recorded in
+> `050-reviewer-assignment-acceptance-gate.md` ("Stable `/prefs` URL sharing the console session").
+
 ## Context
 - We want reviewers to self-serve edits to `core.ReviewerPreference` via a Zulip DM command.
 - The desired UX is:
@@ -35,7 +41,7 @@
     - `ZULIP_PREFS_TOKEN_SECRET` (or `SECRET_KEY` fallback)
     - `ZULIP_PREFS_TOKEN_SALT`
   - TTL comes from `ZULIP_PREFS_TOKEN_TTL_SECONDS` (default 1800).
-  - URL base uses `ZULIP_PREFS_URL_BASE` when configured.
+  - Absolute URL comes from `core.services.site_urls.build_site_url` (`QUEUEBOARD_BASE_URL`).
 - Web endpoints and real UI:
   - Route: `/api/zulip/prefs/<token>/` in `qb_site/zulip_bot/urls.py`.
   - View in `qb_site/zulip_bot/views.py`:
@@ -86,6 +92,151 @@
   - Prefs form tests now cover successful updates, repeated submissions pre-expiry, validation failures, invalid/expired token handling, cross-user token misuse rejection, and timezone selection from Zulip API.
   - Frontend JS unit tests cover countdown expiry logic and submit-disable behavior.
 
+## Amendment: GitHub-OAuth Session Auth
+
+> Planned; not yet implemented. Supersedes the token-link *auth model* above (everything about the
+> form, fields, validation, and UX carries over unchanged).
+
+### Why
+
+- The prefs link is a bearer secret in a URL with a 30-minute TTL: not bookmarkable, re-requested
+  from Zulip for every edit, and gone from browser history's usefulness the moment it expires.
+- It is unreachable for reviewers with no Zulip link. `prefs` requires a `core.User` matched by
+  `zulip_user_id`, so reviewers created by `import_reviewer_topics` (github handle only) cannot get
+  a prefs link at all today.
+- Doc 050 shipped a reviewer console with exactly the auth this form wants: GitHub OAuth → Django
+  session holding a resolved `core.User` id, at a stable token-less URL.
+- One reviewer-facing surface, one auth model. Two auth paths over the same writable rows is the
+  drift risk this repo avoids elsewhere (one validity authority, one chunking helper, one
+  `_prepare_assignment_inputs`).
+
+### Decision
+
+- Serve the prefs form from the reviewer console at **`/console/preferences/`**, authenticated by
+  the console session (`console.session`); retire the token route after a soak window.
+- **Admission is unchanged; only authentication changes.**
+  - *Admission* — becoming a reviewer at all — stays where it is: the deny-by-default
+    `ZULIP_COMMAND_POLICY` gate (`zulip_bot/webhook/policy.py`: a command absent from the policy is
+    ignored entirely; entries gate on explicit `allowed_user_ids`, live Zulip user-group membership,
+    and context) on the commands that hand out a registration link — `prefs` for an unknown sender,
+    and `register_test` — plus the two maintainer-side paths, `import_reviewer_topics` and the
+    Django admin.
+  - *Authentication* — proving you are that reviewer — becomes GitHub OAuth instead of a DM'd token.
+  - The console therefore adds **no new way to become a reviewer**; invariants 1–2 below are what
+    make that true in code rather than by convention.
+
+### Invariants
+
+1. **The console never creates `ReviewerPreference` rows.**
+   `core.services.github_identity.resolve_user_from_identity` is resolve-only, but it resolves *any*
+   `core.User` — and `syncer.services.sub.pull_request_sync` upserts one for every PR author
+   (`upsert_user_from_github(..., create_missing=True)`), so "known GitHub account" means thousands
+   of contributors, not reviewers. Because a `ReviewerPreference` row *is* candidate-pool membership
+   (`analyzer.services.reviewer_assignment.build_reviewer_catalog` hydrates the pool from these rows)
+   and `auto_assign` defaults to `True`, a "create my preferences" affordance on a public sign-in
+   surface would let any contributor enter the assignment pool. The prefs page edits existing rows
+   only; bootstrapping stays in the registration flow (`ensure_default_preferences_for_user`).
+2. **Console admission is "is a reviewer here", not "is a known GitHub account".** A session is
+   granted only when the resolved user has ≥1 `ReviewerPreference` row **or** an active
+   `AssignmentProposal` for their login. The proposal clause preserves the console's promise when a
+   maintainer removes a prefs row while a proposal is pending: accept/decline still work, and the
+   hourly expiry sweep retires the proposal otherwise.
+   - This **tightens the shipped console**: today any syncer-ingested contributor can complete
+     sign-in and see an empty dashboard. Enforced in one helper that every console view calls, and at
+     `oauth_callback` so refusal renders the existing "only for registered reviewers" 403 instead of
+     an empty page.
+   - "≥1 preference row" is the durable definition of reviewer-ness, deliberately not "has
+     registered": registration bootstraps rows for all active repos, but rows also arrive via
+     `import_reviewer_topics` and the admin, and it is the rows the engine actually reads.
+3. **Ownership scoping replaces token scoping.** The formset queryset is filtered by
+   `user=<session reviewer>` on GET *and* POST, so a posted `form-N-id` cannot reach another
+   reviewer's row (Django validates ids against the supplied queryset). The token-era anti-tamper
+   checks (`_load_authorized_preferences`: ids belong to the claimed user, `zulip_user_id` matches)
+   become unnecessary rather than reimplemented.
+4. **Scope becomes live rather than a snapshot.** The page always edits the reviewer's current rows,
+   so a repository activated after registration shows up without a fresh link.
+
+### Shape of the change
+
+- **One authority for the form.** Move `ReviewerPreferenceForm` and
+  `reviewer_preference_unaccounted_fields` to `core/forms.py` (it is a `core` model form), and the
+  formset/context assembly — label catalog, topic-label pattern, timezone resolution, save/redirect
+  — into `core/services/reviewer_prefs.py`. Both entry points call it while both exist, so the two
+  pages cannot drift.
+- **Route.** `console/urls.py`: `path("preferences/", views.prefs, name="prefs")`. Method-restricted,
+  `Cache-Control: no-store`, POST → redirect `?saved=1` (no token left in browser history).
+  `_safe_next` / `_login_url` already handle `?next=/console/preferences/` unchanged.
+- **Templates.** `templates/console/prefs.html` extends `console/base.html`; the formset body moves
+  into a partial that `zulip_bot/prefs_form.html` also includes while the token page lives. Header is
+  the console's "Signed in as X · Sign out" row; no countdown section.
+- **Static.** Move `prefs_form.css` / `prefs_form.js` from `qb_site/zulip_bot/static/zulip_bot/` to
+  `qb_site/static/shared/` (app-neutral, beside `shared_pages.css`) and update the vitest import path.
+- **`mountPrefsForm` must tolerate a missing expiry block.** It currently returns a no-op unless
+  `#countdown-text`, `#countdown-label` *and* `#expires-at` all exist, which would silently drop the
+  unsaved-changes guard and the "clear away time" buttons on a page with no countdown. Make the
+  countdown optional and keep the guard unconditional. CI runs these tests
+  (`.github/workflows/ci.yml` → `qb_site/zulip_bot/frontend`, vitest + jsdom).
+- **Cross-links.** "Reviewer preferences" from console home; back to the console from prefs.
+- **Session lifetime replaces token TTL.** Set `SESSION_SAVE_EVERY_REQUEST = True` so activity slides
+  the two-week `SESSION_COOKIE_AGE`; otherwise a long edit can lose its POST to a cookie that lapsed
+  mid-session. The `beforeunload` dirty guard remains the backstop.
+
+### Timezone
+
+- Today the token carries `zulip_user_id` and the view asks Zulip for the reviewer's timezone
+  (`_fetch_zulip_user_timezone_name` → `ZulipClient().get_user_by_id`), falling back to
+  `core.User.timezone`, then the Django default. That timezone is what the naive `datetime-local`
+  `away_until` is interpreted in (`ReviewerPreferenceForm.clean_away_until`).
+- Under session auth the same chain runs with `user.zulip_user_id`. Every registered reviewer has a
+  Zulip link (registration is Zulip-command-driven and stays that way), so behavior is unchanged; the
+  fallbacks matter only for importer-created rows, which land on the project default timezone.
+- Follow-up (deliberately not now): `core.User.timezone` is **admin-only — no code path writes it**.
+  Persisting a browser-reported `Intl.DateTimeFormat().resolvedOptions().timeZone` would make the
+  fallback real and let us drop the per-render Zulip API round-trip.
+
+### Phases
+
+1. **Additive.** Shared form/context extraction, `/console/preferences/`, the reviewer-admission gate
+   (invariant 2), JS + static moves, tests. Behind `CONSOLE_PREFS_ENABLED` (default off), wired in
+   `settings/base.py` **and** `.env.example`. Token route untouched.
+2. **Make it the entry point.** `prefs` replies in place with the stable URL for a registered sender
+   (mirroring `zulip_bot/commands/console.py` — nothing secret to DM), keeping its registration-link
+   branch for unknown senders and its "no preferences to edit" branch. The registration success DM
+   and `register_callback.html` link the stable URL instead of minting a prefs token. Because the
+   reviewer just proved that GitHub identity in that browser, `register_github_callback` promotes the
+   console session (`console_session.set_reviewer`) on the success path only, so the link lands
+   already signed in with no second OAuth round-trip — a promotion strictly stronger than a console
+   login, since it proves Zulip identity (registration token) *and* GitHub identity (OAuth).
+3. **Retire the token path** (separate PR, after a soak). Pre-flight: expect zero
+   `ReviewerPreference` rows whose user has a null/blank `github_login` — under GitHub OAuth that,
+   not `zulip_user_id`, is what would lock someone out. Then delete `prefs/<token>/`,
+   `zulip_bot/services/prefs_links.py`, the prefs branch of `prefs_invalid.html`, the
+   `ZULIP_PREFS_TOKEN_*` settings from `base.py` and `.env.example`, and the token tests.
+   `close_pr` / `label_pr` keep their own independent token modules.
+
+### Test coverage to add
+
+- Anonymous GET → console login with `next=/console/preferences/`.
+- Signed-in GET renders one card per owned row; POST saves and redirects `?saved=1`.
+- A known-but-not-reviewer account (a syncer-ingested PR author) is refused at sign-in **and** by
+  every console view, and **no `ReviewerPreference` row is created** (invariant 1).
+- A reviewer with a pending proposal but no preference rows keeps access (invariant 2's OR clause).
+- Posting another reviewer's `form-N-id` is rejected (invariant 3).
+- Timezone resolution with and without `zulip_user_id`.
+- vitest: `mountPrefsForm` keeps the dirty guard and clear-away buttons when no expiry block exists.
+
+### Consequences of the amendment
+
+- Prefs editing gains a stable, bookmarkable URL and becomes reachable for reviewers with no Zulip
+  link; the whole reviewer-facing surface shares one auth model.
+- Prefs editing now depends on GitHub OAuth being configured (sign-in renders 503 otherwise) — the
+  Zulip DM path alone no longer suffices. `QUEUEBOARD_BASE_URL` and the root-registered OAuth
+  callback (`docs/zulip_github_oauth_setup.md`) become prerequisites for prefs, not just the console.
+- Tightening console admission is user-visible for contributors who could previously sign in to an
+  empty console; they now get the "only for registered reviewers" page.
+- Editing scope widens from a token snapshot to all current rows — intended, and the reason
+  ownership filtering must be applied on POST as well as GET.
+
 ## Future Work (Detailed Outline)
 - Stage C1: Logging and observability.
   - Add structured logs for:
@@ -95,8 +246,9 @@
     - rejected save (authz/validation category).
   - Avoid logging raw tokens or sensitive form content.
 - Stage C2: Security hardening options (post-MVP).
-  - Optional revocation model (stateful one-time token/jti blacklist) if needed.
-  - Optional shorter TTL by environment.
+  - Optional revocation model (stateful one-time token/jti blacklist) if needed. *(Moot once the
+    token path is retired — see the amendment; session logout is the revocation.)*
+  - Optional shorter TTL by environment. *(Moot for the same reason.)*
   - Optional user confirmation DM on successful preference changes.
 - Stage C3: Further testing.
   - Expand JS DOM tests for unsaved-change warning and clear-away behavior.
@@ -118,7 +270,7 @@
   - `ZULIP_BOT_EMAIL`
   - `ZULIP_BOT_API_KEY`
 - Prefs-link env:
-  - `ZULIP_PREFS_URL_BASE`
+  - `QUEUEBOARD_BASE_URL` (absolute link base, shared by every reviewer-facing surface)
   - `ZULIP_PREFS_TOKEN_SECRET`
   - `ZULIP_PREFS_TOKEN_SALT`
   - `ZULIP_PREFS_TOKEN_TTL_SECONDS`
