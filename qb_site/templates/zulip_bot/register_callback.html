@@ -34,13 +34,24 @@
 
       {% if prefs_link %}
         <div class="cta-wrap">
-          <p>Next step: click this button now to finalize your reviewer preferences.</p>
+          {% if prefs_expires_iso %}
+            <p>Next step: click this button now to finalize your reviewer preferences.</p>
+          {% else %}
+            <p>Next step: set your reviewer preferences in the reviewer console.</p>
+          {% endif %}
           <a class="cta" href="{{ prefs_link }}">Edit Preferences Now</a>
         </div>
-        <p class="help">
-          This link expires at <time datetime="{{ prefs_expires_iso }}">{{ prefs_expires_iso }}</time>.
-          We also sent this same link to you in Zulip.
-        </p>
+        {% if prefs_expires_iso %}
+          <p class="help">
+            This link expires at <time datetime="{{ prefs_expires_iso }}">{{ prefs_expires_iso }}</time>.
+            We also sent this same link to you in Zulip.
+          </p>
+        {% else %}
+          <p class="help">
+            You are signed in on this browser, and the link is stable — bookmark it and come back any
+            time. We also sent it to you in Zulip.
+          </p>
+        {% endif %}
       {% else %}
         <div class="status status-warn">No preferences are available to edit yet.</div>
       {% endif %}

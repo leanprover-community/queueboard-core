@@ -1,12 +1,11 @@
 # Zulip Reviewer Preferences Form Design
 
-> Status: **Stages A/B implemented; auth-model amendment phase 1 implemented** (behind
-> `CONSOLE_PREFS_ENABLED`, default off). The expiring-link flow under "Implemented (Current
-> Behavior)" still ships and is still the advertised entry point; the console now serves the same
-> form at `/console/preferences/` under its GitHub-OAuth session — see "Amendment: GitHub-OAuth
-> Session Auth" below, whose Phases section tracks what remains. The amendment closes the deferred
-> follow-up recorded in `050-reviewer-assignment-acceptance-gate.md` ("Stable `/prefs` URL sharing
-> the console session").
+> Status: **Stages A/B implemented; auth-model amendment phases 1–2 implemented** (behind
+> `CONSOLE_PREFS_ENABLED`, default off). With the flag on, `/console/preferences/` is the advertised
+> entry point and the expiring-link flow under "Implemented (Current Behavior)" is dormant but intact;
+> with it off, nothing changes. Only phase 3 (retiring the token path) remains — see "Amendment:
+> GitHub-OAuth Session Auth" below. The amendment closes the deferred follow-up recorded in
+> `050-reviewer-assignment-acceptance-gate.md` ("Stable `/prefs` URL sharing the console session").
 
 ## Context
 - We want reviewers to self-serve edits to `core.ReviewerPreference` via a Zulip DM command.
@@ -96,7 +95,7 @@
 
 ## Amendment: GitHub-OAuth Session Auth
 
-> Phase 1 implemented; phases 2–3 pending. Supersedes the token-link *auth model* above (everything
+> Phases 1–2 implemented; phase 3 pending. Supersedes the token-link *auth model* above (everything
 > about the form, fields, validation, and UX carries over unchanged).
 
 ### Why
@@ -215,14 +214,22 @@
    `.env.example`; `SESSION_SAVE_EVERY_REQUEST = True` added. Token route untouched and still the
    advertised entry point. Deltas from the plan: the static move was dropped (see above) and timezone
    resolution landed in `zulip_bot/services/user_timezone.py` rather than `core`.
-2. **Make it the entry point.** `prefs` replies in place with the stable URL for a registered sender
-   (mirroring `zulip_bot/commands/console.py` — nothing secret to DM), keeping its registration-link
-   branch for unknown senders and its "no preferences to edit" branch. The registration success DM
-   and `register_callback.html` link the stable URL instead of minting a prefs token. Because the
-   reviewer just proved that GitHub identity in that browser, `register_github_callback` promotes the
-   console session (`console_session.set_reviewer`) on the success path only, so the link lands
-   already signed in with no second OAuth round-trip — a promotion strictly stronger than a console
-   login, since it proves Zulip identity (registration token) *and* GitHub identity (OAuth).
+2. **Make it the entry point — done.** One flag-aware seam,
+   `zulip_bot.services.prefs_links.build_prefs_entry_link`, answers "where do reviewers edit
+   preferences" (`PrefsEntryLink(url, expires_at_unix)`; `expires_at_unix is None` ⇒ the stable console
+   URL), so the command and the registration DM/page cannot disagree. With the flag on:
+   - `prefs` replies **in place** with the stable URL (mirroring `commands/console.py` — nothing secret
+     to DM). Its registration-link branch stays a DM, because *that* link is a bearer secret, and its
+     "no preferences to edit" branch stays: a reviewer with no rows would be refused by the console's
+     admission gate, so Zulip is a better place to say so than a 403.
+   - the registration success DM and `register_callback.html` advertise the stable URL, and
+     `register_github_callback` promotes the console session (`console.session.set_reviewer`) so the
+     "Edit Preferences Now" link lands signed in — no second OAuth round-trip. Success path only, and
+     only when the new reviewer actually has rows. The promotion is strictly stronger than a console
+     sign-in: registration proves Zulip identity (the registration token) *and* GitHub identity (OAuth).
+   - the `console` command mentions preferences alongside proposals.
+   The token-branch page copy is left verbatim (an existing assertion pins it), so flipping the flag
+   off restores the old flow exactly.
 3. **Retire the token path** (separate PR, after a soak). Pre-flight: expect zero
    `ReviewerPreference` rows whose user has a null/blank `github_login` — under GitHub OAuth that,
    not `zulip_user_id`, is what would lock someone out. Then delete `prefs/<token>/`,
