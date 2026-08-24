@@ -56,4 +56,27 @@ describe("mountPrefsForm", () => {
     expect(text.textContent).toContain("expired");
     unmount();
   });
+
+  // The session-authenticated console page renders no countdown at all. Mounting must still wire the
+  // clear-away buttons and leave submit enabled, rather than bailing out (design doc 022).
+  it("still mounts with no expiry block, keeping submit enabled and clear-away working", () => {
+    document.body.innerHTML = `
+      <main id="prefs-root">
+        <form id="prefs-form">
+          <input id="away" name="away_until" value="2026-01-01T09:00" />
+          <button id="submit-button" type="submit">Save</button>
+          <button type="button" class="js-clear-away" data-target="away"></button>
+        </form>
+      </main>
+    `;
+
+    const unmount = mountPrefsForm(document);
+    const submit = document.getElementById("submit-button");
+    const away = document.getElementById("away");
+    expect(submit.disabled).toBe(false);
+
+    document.querySelector(".js-clear-away").click();
+    expect(away.value).toBe("");
+    unmount();
+  });
 });

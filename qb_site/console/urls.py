@@ -13,6 +13,7 @@ urlpatterns = [
     path("login/", views.login, name="login"),
     path("oauth/callback/", views.oauth_callback, name="oauth-callback"),
     path("logout/", views.logout, name="logout"),
+    path("preferences/", views.prefs, name="prefs"),
     path("proposals/<int:proposal_id>/accept/", views.accept, name="accept"),
     path("proposals/<int:proposal_id>/assign-anyway/", views.assign_anyway, name="assign-anyway"),
     path("proposals/<int:proposal_id>/decline/", views.decline, name="decline"),

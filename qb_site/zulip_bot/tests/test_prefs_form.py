@@ -11,7 +11,7 @@ from core.services.reviewer_notification_settings import (
     DEFAULT_STALE_NUDGE_DAYS,
 )
 from syncer.models import LabelDef
-from zulip_bot.forms import reviewer_preference_unaccounted_fields
+from core.forms import reviewer_preference_unaccounted_fields
 from zulip_bot.services.prefs_links import PrefsLinkClaims, issue_prefs_token
 
 

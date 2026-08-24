@@ -46,6 +46,11 @@ ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").
 
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]
 
+# The reviewer console's session is what bounds a signed-in reviewer's editing window (there is no
+# link TTL any more — design doc 022). Re-save the session on each request so activity slides the
+# default two-week SESSION_COOKIE_AGE instead of expiring mid-edit and losing a POST.
+SESSION_SAVE_EVERY_REQUEST = True
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -192,6 +197,10 @@ GITHUB_OAUTH_SCOPE = os.getenv("GITHUB_OAUTH_SCOPE", "read:user")
 # Reviewer console (design doc 050): TTL for the signed OAuth `state` round-trip (sign-in click ->
 # GitHub -> callback). Ten minutes is plenty; the per-session CSRF nonce is the real guard.
 CONSOLE_OAUTH_STATE_TTL_SECONDS = int(os.getenv("CONSOLE_OAUTH_STATE_TTL_SECONDS", 600))
+# Serve reviewer preferences from the console at /console/preferences/ (design doc 022 amendment).
+# Off by default during the staged rollout: the Zulip `prefs` token link stays the advertised entry
+# point until this is on. Only gates the console page — the token link is unaffected either way.
+CONSOLE_PREFS_ENABLED = env_bool(os.getenv("CONSOLE_PREFS_ENABLED"), False)
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 GITHUB_APP_TOKEN_CONFIG: dict[str, object] = {}
 _GITHUB_APP_TOKEN_CONFIG_ENV = os.getenv("GITHUB_APP_TOKEN_CONFIG", "").strip()

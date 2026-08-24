@@ -1,10 +1,12 @@
 # Zulip Reviewer Preferences Form Design
 
-> Status: **Stages A/B implemented; auth model amended (planned).** The expiring-link flow under
-> "Implemented (Current Behavior)" is what ships today. The auth model is being replaced by the
-> reviewer console's GitHub-OAuth session — see "Amendment: GitHub-OAuth Session Auth" below. That
-> amendment closes the deferred follow-up recorded in
-> `050-reviewer-assignment-acceptance-gate.md` ("Stable `/prefs` URL sharing the console session").
+> Status: **Stages A/B implemented; auth-model amendment phase 1 implemented** (behind
+> `CONSOLE_PREFS_ENABLED`, default off). The expiring-link flow under "Implemented (Current
+> Behavior)" still ships and is still the advertised entry point; the console now serves the same
+> form at `/console/preferences/` under its GitHub-OAuth session — see "Amendment: GitHub-OAuth
+> Session Auth" below, whose Phases section tracks what remains. The amendment closes the deferred
+> follow-up recorded in `050-reviewer-assignment-acceptance-gate.md` ("Stable `/prefs` URL sharing
+> the console session").
 
 ## Context
 - We want reviewers to self-serve edits to `core.ReviewerPreference` via a Zulip DM command.
@@ -94,8 +96,8 @@
 
 ## Amendment: GitHub-OAuth Session Auth
 
-> Planned; not yet implemented. Supersedes the token-link *auth model* above (everything about the
-> form, fields, validation, and UX carries over unchanged).
+> Phase 1 implemented; phases 2–3 pending. Supersedes the token-link *auth model* above (everything
+> about the form, fields, validation, and UX carries over unchanged).
 
 ### Why
 
@@ -158,19 +160,30 @@
 
 ### Shape of the change
 
-- **One authority for the form.** Move `ReviewerPreferenceForm` and
-  `reviewer_preference_unaccounted_fields` to `core/forms.py` (it is a `core` model form), and the
-  formset/context assembly — label catalog, topic-label pattern, timezone resolution, save/redirect
-  — into `core/services/reviewer_prefs.py`. Both entry points call it while both exist, so the two
-  pages cannot drift.
+- **One authority for the form.** `ReviewerPreferenceForm` and
+  `reviewer_preference_unaccounted_fields` live in `core/forms.py` (it is a `core` model form);
+  formset assembly — ownership-scoped queryset, label catalog, topic-label pattern — lives in
+  `core/services/reviewer_prefs.py` (`build_preferences_formset`, `preferences_for_user`). It reads
+  `syncer.models.LabelDef` at module scope, matching the existing `core/admin.py` precedent. Both
+  entry points call it while both exist, so the two pages cannot drift.
+- **Timezone resolution lives in `zulip_bot/services/user_timezone.py`, not `core`.** Its
+  authoritative source is Zulip's own user record, and `core/services` otherwise carries no app
+  dependencies; the console imports it (console access stays independent of Zulip *reachability* —
+  an unlinked or unreachable Zulip just falls through to the fallbacks).
 - **Route.** `console/urls.py`: `path("preferences/", views.prefs, name="prefs")`. Method-restricted,
   `Cache-Control: no-store`, POST → redirect `?saved=1` (no token left in browser history).
   `_safe_next` / `_login_url` already handle `?next=/console/preferences/` unchanged.
-- **Templates.** `templates/console/prefs.html` extends `console/base.html`; the formset body moves
-  into a partial that `zulip_bot/prefs_form.html` also includes while the token page lives. Header is
-  the console's "Signed in as X · Sign out" row; no countdown section.
-- **Static.** Move `prefs_form.css` / `prefs_form.js` from `qb_site/zulip_bot/static/zulip_bot/` to
-  `qb_site/static/shared/` (app-neutral, beside `shared_pages.css`) and update the vitest import path.
+- **Templates.** `templates/console/prefs.html` extends `console/base.html` (which gained
+  `extra_css` / `extra_js` blocks); the fields live in `templates/shared/_reviewer_prefs_fields.html`,
+  included by both pages. Header is the console's "Signed in as X · Sign out" row; no countdown
+  section. A reviewer with no rows gets an explanatory empty state — never a create affordance.
+- **Static: the assets stay in `zulip_bot/static/zulip_bot/`.** Moving them to `static/shared/` was
+  the plan and does not work: `close_pr_form.js` and `label_pr_form.js` import the expiry helpers
+  from `./prefs_form.js` as a *sibling*, and a relative ES import has to resolve both against the
+  served static path (browser, where `zulip_bot/` and `shared/` are siblings) and the on-disk path
+  (vitest, where they are not). Only colocation satisfies both, so the console page loads
+  `zulip_bot/prefs_form.css|js` directly. Relocating all three scripts together is phase-3 cleanup,
+  once the token pages' fate is settled.
 - **`mountPrefsForm` must tolerate a missing expiry block.** It currently returns a no-op unless
   `#countdown-text`, `#countdown-label` *and* `#expires-at` all exist, which would silently drop the
   unsaved-changes guard and the "clear away time" buttons on a page with no countdown. Make the
@@ -196,9 +209,12 @@
 
 ### Phases
 
-1. **Additive.** Shared form/context extraction, `/console/preferences/`, the reviewer-admission gate
-   (invariant 2), JS + static moves, tests. Behind `CONSOLE_PREFS_ENABLED` (default off), wired in
-   `settings/base.py` **and** `.env.example`. Token route untouched.
+1. **Additive — done.** Shared form/context extraction, `/console/preferences/`, the
+   reviewer-admission gate (invariant 2, applied to the whole console), the optional-countdown JS fix,
+   and tests. Behind `CONSOLE_PREFS_ENABLED` (default off), wired in `settings/base.py` **and**
+   `.env.example`; `SESSION_SAVE_EVERY_REQUEST = True` added. Token route untouched and still the
+   advertised entry point. Deltas from the plan: the static move was dropped (see above) and timezone
+   resolution landed in `zulip_bot/services/user_timezone.py` rather than `core`.
 2. **Make it the entry point.** `prefs` replies in place with the stable URL for a registered sender
    (mirroring `zulip_bot/commands/console.py` — nothing secret to DM), keeping its registration-link
    branch for unknown senders and its "no preferences to edit" branch. The registration success DM
@@ -214,7 +230,7 @@
    `ZULIP_PREFS_TOKEN_*` settings from `base.py` and `.env.example`, and the token tests.
    `close_pr` / `label_pr` keep their own independent token modules.
 
-### Test coverage to add
+### Test coverage (added in phase 1: `qb_site/console/tests/test_prefs.py`)
 
 - Anonymous GET → console login with `next=/console/preferences/`.
 - Signed-in GET renders one card per owned row; POST saves and redirects `?saved=1`.

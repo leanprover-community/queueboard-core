@@ -67,8 +67,26 @@ Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `pref
   - `registration_bootstrap.py` (initial bootstrap helpers),
   - `prefs_links.py` (preference deep-link generation),
   - `close_pr_links.py` (close-PR confirmation link generation),
-  - `label_pr_links.py` (label-PR confirmation link generation).
+  - `label_pr_links.py` (label-PR confirmation link generation),
+  - `user_timezone.py` (the timezone a reviewer's local times are interpreted in: Zulip's reported
+    zone → `core.User.timezone` → Django default). Shared with the console prefs page so a naive
+    `away_until` means the same thing on both; it lives here because the authoritative source is
+    Zulip's user record, and `core` carries no app dependencies.
 - Zulip prefs form/UI behavior spans Django forms/views and `frontend/` tests; keep behavior parity across backend validation and frontend affordances.
+- **The preferences form itself is not owned by this app.** `core.forms.ReviewerPreferenceForm` (the
+  editable-field set + validation) and `core.services.reviewer_prefs` (formset assembly, ownership
+  scoping, label catalog) are shared with the reviewer console, which serves the same form at
+  `/console/preferences/` under its GitHub-OAuth session (design doc 022 amendment). The fields live
+  in one partial, `templates/shared/_reviewer_prefs_fields.html`. Change those, not a per-page copy —
+  and expect both pages to pick the change up.
+- `views.prefs_form` is now only the token *auth* path: validate the link, run the anti-tamper checks
+  in `_load_authorized_preferences`, then hand the rows to the shared builder. It is slated for
+  removal once the console page is the advertised entry point (022, phase 3).
+- `static/zulip_bot/prefs_form.js` is imported by `close_pr_form.js` and `label_pr_form.js` for the
+  expiry helpers (`getExpiryState`, `formatRemaining`), so it must stay a sibling of those files —
+  relative ES imports resolve against the *served* static path in the browser but the *on-disk* path
+  under vitest, and only colocation satisfies both. The console prefs page therefore loads
+  `zulip_bot/prefs_form.*` rather than a copy; mounting tolerates a missing countdown block.
 
 ## Testing Expectations
 - Canonical full validation for repo changes is `bash scripts/repo_check_compose.sh`.

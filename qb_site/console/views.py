@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import secrets
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db import transaction
@@ -21,7 +22,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from analyzer.models import AssignmentProposal, ReviewerAssignmentApplication, ReviewerOptOut
 from analyzer.services.assignment_proposal_validity import (
@@ -45,7 +46,7 @@ from analyzer.services.reviewer_load import (
     reviewer_load_with_breakdown,
 )
 from console import session as console_session
-from core.models import Repository, ReviewerPreference
+from core.models import Repository, ReviewerPreference, User
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_identity import resolve_user_from_identity
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
@@ -55,13 +56,67 @@ from core.services.oauth_state import (
     issue_console_oauth_state,
     validate_console_oauth_state,
 )
+from core.services.reviewer_prefs import build_preferences_formset, preferences_for_user
 from core.services.site_urls import build_site_url
 from syncer.models import PRLabel, PullRequest
 
+# The reviewer's timezone comes from Zulip's own user record, so the resolver lives in `zulip_bot`
+# (see `zulip_bot.services.user_timezone`). Both prefs surfaces share it so a naive `away_until`
+# means the same thing on each; console access itself stays independent of Zulip reachability —
+# an unlinked or unreachable Zulip only falls through to the project default.
+from zulip_bot.services.user_timezone import resolve_user_timezone_name
+
 log = logging.getLogger(__name__)
+
+# Shown to a GitHub account we cannot let in: unknown to us, a recycled login, or known but not a
+# reviewer here. One message for all three — the distinction is not the visitor's business.
+NOT_A_REVIEWER_MESSAGE = (
+    "This console is only for registered reviewers. If you review for a tracked "
+    "repository, register with the Zulip bot first, then sign in here."
+)
 
 
 # --- auth --------------------------------------------------------------------
+
+
+def _is_reviewer(user: User) -> bool:
+    """Whether ``user`` may hold a console session.
+
+    Resolve-only identity is not enough: `syncer` upserts a `core.User` for every PR author, so a
+    "known GitHub account" is usually just a contributor. Reviewer-ness is exactly what the
+    assignment engine reads — a `ReviewerPreference` row — plus a pending-proposal escape hatch, so a
+    reviewer whose row is removed while a proposal is open can still answer it (design doc 022,
+    invariant 2; the hourly expiry sweep retires the proposal otherwise).
+    """
+    if ReviewerPreference.objects.filter(user=user).exists():
+        return True
+    login = _normalize_login(user.github_login or "")
+    if not login:
+        return False
+    return AssignmentProposal.objects.filter(
+        reviewer_login__iexact=login,
+        state=AssignmentProposal.STATE_PROPOSED,
+    ).exists()
+
+
+def _not_a_reviewer_response(request: HttpRequest) -> HttpResponse:
+    return render(request, "console/error.html", {"message": NOT_A_REVIEWER_MESSAGE}, status=403)
+
+
+def _reviewer_from_session(request: HttpRequest) -> tuple[User | None, HttpResponse | None]:
+    """Resolve the session reviewer, applying the admission gate.
+
+    Returns ``(reviewer, None)`` when signed in as a reviewer, ``(None, None)`` when not signed in
+    (the caller decides between a sign-in page and a redirect), and ``(None, response)`` when the
+    session belongs to someone who is not a reviewer here — normally unreachable, since sign-in
+    refuses them, but reachable if their last preference row is removed mid-session.
+    """
+    reviewer = console_session.get_reviewer(request)
+    if reviewer is None:
+        return None, None
+    if not _is_reviewer(reviewer):
+        return None, _not_a_reviewer_response(request)
+    return reviewer, None
 
 
 def _safe_next(request: HttpRequest, raw: str | None) -> str:
@@ -122,17 +177,12 @@ def oauth_callback(request: HttpRequest) -> HttpResponse:
     user = resolve_user_from_identity(identity)
     if user is None:
         log.info("console.oauth_callback: unknown GitHub login %r denied", identity.github_login)
-        return render(
-            request,
-            "console/error.html",
-            {
-                "message": (
-                    "This console is only for registered reviewers. If you review for a tracked "
-                    "repository, register with the Zulip bot first, then sign in here."
-                )
-            },
-            status=403,
-        )
+        return _not_a_reviewer_response(request)
+    # Resolve-only is not reviewer-only: refuse a session to a known-but-not-reviewer account rather
+    # than handing it an empty console (design doc 022, invariant 2).
+    if not _is_reviewer(user):
+        log.info("console.oauth_callback: non-reviewer GitHub login %r denied", identity.github_login)
+        return _not_a_reviewer_response(request)
     console_session.set_reviewer(request, user)
     return redirect(_safe_next(request, claims.next))
 
@@ -152,7 +202,9 @@ def _login_url(next_path: str) -> str:
 
 @require_GET
 def home(request: HttpRequest) -> HttpResponse:
-    reviewer = console_session.get_reviewer(request)
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
     if reviewer is None:
         return render(request, "console/login.html", {"login_url": _login_url(reverse("console:home"))})
 
@@ -256,6 +308,8 @@ def _build_home_context(reviewer) -> dict:
         "repo_groups": repo_groups,
         "logout_url": reverse("console:logout"),
         "unassign_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)),
+        "prefs_enabled": bool(getattr(settings, "CONSOLE_PREFS_ENABLED", False)),
+        "prefs_url": reverse("console:prefs"),
     }
 
 
@@ -312,6 +366,68 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
         if name:
             out.setdefault(int(pr_id), []).append(name)
     return out
+
+
+# --- preferences -------------------------------------------------------------
+
+
+@require_http_methods(["GET", "POST"])
+def prefs(request: HttpRequest) -> HttpResponse:
+    """Reviewer preferences at a stable, token-less URL (design doc 022 amendment).
+
+    The same form the Zulip prefs link renders, authenticated by the console session instead of an
+    expiring token. Rows are the reviewer's *current* ones, and the shared builder scopes the
+    queryset to their owner on GET and POST alike, so a posted `form-<n>-id` cannot reach anyone
+    else's row. This page never creates preference rows: a `ReviewerPreference` row *is* reviewer
+    pool membership, so bootstrapping stays in the Zulip registration flow (invariant 1).
+    """
+    if not bool(getattr(settings, "CONSOLE_PREFS_ENABLED", False)):
+        return render(
+            request,
+            "console/unavailable.html",
+            {"message": "Editing preferences here isn’t enabled yet — use the `prefs` command in Zulip for now."},
+        )
+
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:prefs")))
+
+    preferences = preferences_for_user(reviewer)
+    user_timezone_name = resolve_user_timezone_name(user=reviewer)
+    user_timezone = ZoneInfo(user_timezone_name)
+
+    saved = request.method == "GET" and request.GET.get("saved") == "1"
+    saved_at = None
+    formset = None
+    with timezone.override(user_timezone):
+        if preferences:
+            formset = build_preferences_formset(
+                preferences=preferences,
+                user_timezone=user_timezone,
+                data=request.POST if request.method == "POST" else None,
+            )
+            if request.method == "POST" and formset.is_valid():
+                formset.save()
+                return redirect(f"{reverse('console:prefs')}?saved=1")
+        if saved:
+            saved_at = timezone.localtime(timezone.now(), user_timezone)
+
+    response = render(
+        request,
+        "console/prefs.html",
+        {
+            "reviewer": reviewer,
+            "formset": formset,
+            "saved": saved,
+            "saved_at": saved_at,
+            "user_timezone_name": user_timezone_name,
+            "logout_url": reverse("console:logout"),
+        },
+    )
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 # --- accept / decline --------------------------------------------------------
@@ -430,7 +546,9 @@ def _retire(proposal: AssignmentProposal, validity: ProposalValidity, *, now) ->
 
 def _load_actionable_proposal(request: HttpRequest, proposal_id: int):
     """Return (reviewer, proposal) or an ``HttpResponse`` to short-circuit with."""
-    reviewer = console_session.get_reviewer(request)
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
     if reviewer is None:
         return redirect(_login_url(reverse("console:home")))
     proposal = AssignmentProposal.objects.select_related("repository", "snapshot").filter(id=int(proposal_id)).first()
@@ -676,7 +794,9 @@ def unassign(request: HttpRequest) -> HttpResponse:
     the *authenticated reviewer's own* — never taken from the request — so this surface can only ever
     unassign the person operating it. Each success enqueues a per-PR sync so state converges.
     """
-    reviewer = console_session.get_reviewer(request)
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
     if reviewer is None:
         return redirect(_login_url(reverse("console:home")))
 

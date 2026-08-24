@@ -198,12 +198,13 @@ cannot diverge; data-driven and ungated (no proposals ⇒ no-op):
     proposals).
   - The session key is **rotated on login promotion** (`cycle_key`, like
     `django.contrib.auth.login`) against session fixation.
-  - *Planned (see `022-zulip-prefs-form-design.md`):* resolve-only is not the same as
-    reviewer-only. The syncer upserts a `core.User` for every PR author, so today any ingested
-    contributor can open a session and see an empty dashboard. The prefs migration tightens
-    admission to "has ≥1 `ReviewerPreference` row **or** an active proposal for their login",
-    enforced in one helper shared by every console view and at `oauth_callback`, so a non-reviewer
-    gets the existing "only for registered reviewers" 403 instead of a session.
+  - Resolve-only is not the same as reviewer-only: the syncer upserts a `core.User` for every PR
+    author, so an ingested contributor could originally open a session and see an empty dashboard.
+    Admission is now **reviewer-ness** — ≥1 `ReviewerPreference` row **or** an active proposal for
+    that login (the OR clause keeps a reviewer whose row was removed mid-flight able to answer the
+    proposal already made to them). Enforced in `console.views._reviewer_from_session` (every view)
+    and at `oauth_callback`, which refuses the session with the existing "only for registered
+    reviewers" 403. Added with the prefs migration — see `022-zulip-prefs-form-design.md`.
 - Access is keyed on the authenticated `github_login`, matched case-insensitively against
   `AssignmentProposal.reviewer_login`; a reviewer can only act on their own proposals, and console
   access is independent of Zulip reachability.
