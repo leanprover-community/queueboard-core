@@ -272,8 +272,32 @@
     probe's id-head slice had none, so the dry run could not have predicted
     it — worth remembering that a 2 000-row head-of-table probe does not
     characterise the whole id space.
-- Outstanding: the drain, the first post-drain export, and the `qb-notebook`
-  switch.
+- **Drain complete for mathlib4, 2026-08-24.** 607 558 untyped rows at the
+  start; **565 269 typed**, leaving **42 289 (7.0 %)** that no route can ever
+  type — 41 477 where GitHub reports a null actor and 812 whose node id no
+  longer resolves. That remainder is exactly the final pass's
+  `null_actor + unresolved`, which is what proves the drain finished rather
+  than stalled. Of the 267 542 rows typed in the second pass, **39.7 % were
+  `Bot`** — the population a login list could not see.
+  - Cost: 3 099 points for that pass, exactly 1 per 100-id batch. The 347
+    batches containing a dead id cost **nothing** — GitHub does not charge for
+    a rejected query — so `api_calls` (3 446) exceeds `points` by precisely the
+    rejection count. `retries=0` and `call_failed=0` across ~3.4 k calls.
+  - Dead ids were 0.26 % of rows (812 across 347 batches, 2.34 per affected
+    batch), not the ~1 % a dense log window suggested mid-run. Correcting the
+    projection that prompted the name-parsing fix: bisection's *failing*
+    sub-calls are also free, so the penalty was ~6 extra charged points per
+    affected batch (~2 k points here), and mostly a **wall-clock** cost of ~12
+    extra throttled calls per affected batch. The fix was still worth
+    deploying, but the "several rate windows" scenario was an artifact of
+    extrapolating from a dense pocket.
+  - **`logins=0` — the archive-row `actor_login` healing recovered nothing.**
+    Not a failure of the mechanism: across the whole id space, every row the
+    drain saw with an empty login had no actor on GitHub either. So the gap was
+    already closed by ordinary rewalks (`actor_login` has always been in the
+    fill-empty allowlist), or it is a subset of the 42 289 floor — those events
+    are permanently unattributable, not merely unattributed.
+- Outstanding: the first post-drain export, and the `qb-notebook` switch.
 
 ### No new configuration
 
@@ -364,8 +388,10 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
      Should approach 0; whatever remains is unresolved nodes and unmodelled
      typenames, which the command's counters name explicitly.
    - `SELECT count(*) FROM syncer_prtimelineevent WHERE archive_imported_at IS
-     NOT NULL AND coalesce(actor_login, '') = ''` — should fall substantially,
-     bottoming out at the null-actor share rather than at zero.
+     NOT NULL AND coalesce(actor_login, '') = ''`. On mathlib4 the drain filled
+     **zero** logins, so this should come back no larger than the 42 289 floor
+     and consist entirely of rows GitHub reports with a null actor — i.e. it
+     bottoms out wherever it already was, and that is the answer, not a miss.
    - `SELECT actor_login, actor_type, count(*) … GROUP BY 1,2` should show
      `Bot` for `github-actions`, `mathlib-bors`, `mathlib-dependent-issues`,
      `mathlib-merge-conflicts`, `mathlib-triage`, and `User` for the machine
