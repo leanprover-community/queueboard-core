@@ -6,7 +6,7 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
 
-from zulip_bot.commands import list_commands
+from zulip_bot.commands import list_commands, normalize_command_name
 from zulip_bot.commands import echo as _echo  # noqa: F401
 from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
@@ -123,11 +123,19 @@ class Command(BaseCommand):
         known_commands = {command.name for command in list_commands()}
         normalized: dict[str, dict[str, list[int | str]]] = {}
 
-        for command, rule in policy.items():
-            if not isinstance(command, str) or not command.strip():
+        for raw_command, rule in policy.items():
+            if not isinstance(raw_command, str) or not raw_command.strip():
                 raise CommandError("each command name must be a non-empty string")
+            # Keys share the command name space (design doc 021), exactly as the runtime policy loader
+            # reads them — so a file still spelling `register_test` validates, and every path that
+            # writes a file back (`sync`) canonicalizes it.
+            command = normalize_command_name(raw_command)
             if command not in known_commands:
-                raise CommandError(f"unknown command in policy: {command}")
+                spelled = f"{raw_command!r}" if command == raw_command else f"{raw_command!r} (normalized: {command!r})"
+                raise CommandError(f"unknown command in policy: {spelled}")
+            if command in normalized:
+                # Both spellings collapse to one command at runtime, where the last one silently wins.
+                raise CommandError(f"duplicate entries for command '{command}' (they collapse to one rule)")
             if not isinstance(rule, dict):
                 raise CommandError(f"rule for '{command}' must be an object")
 

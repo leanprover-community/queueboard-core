@@ -19,8 +19,10 @@ cd qb_site/zulip_bot/frontend && npm test
 ## Command Architecture Notes
 - Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `pr-info`, `prefs`, `console`, `help`, `echo`, `register-test`, `close-pr`, `label-pr`.
 - **Command names are normalized** by `commands.normalize_command_name` (trim, lowercase, `_`→`-`) at
-  registration, at parse time, and for `ZULIP_COMMAND_POLICY` keys. Register hyphenated names; a name
-  outside that space used to be silently undispatchable (`register_test` was, for exactly this reason).
+  registration, at parse time, and for `ZULIP_COMMAND_POLICY` keys — including in
+  `manage.py zulip_policy` (`validate` accepts a legacy underscore key and rejects two spellings of one
+  command; `sync` canonicalizes keys in place). Register hyphenated names; a name outside that space
+  used to be silently undispatchable (`register_test` was, for exactly this reason).
 - `console`: replies in place with the stable, token-less reviewer console URL (`build_site_url(reverse("console:home"))`, design doc 050) where a reviewer accepts/declines assignment proposals. The link is non-secret and identical for everyone (the console self-authenticates via GitHub OAuth), so it is an in-place reply, not a proactive DM.
 - `pr-info`: parses GitHub PR links from Zulip `rendered_content`, reacts with 👀, then sends one message per PR (up to 10) with queue info sourced from `analyzer.services.pr_info`. Replies in the same conversation as the triggering message. Renders the acceptance-gate "Proposed to X (awaiting acceptance, expires …)" state (design doc 050) on its own line, distinct from Assignees.
 - Assignment command flow (all under `services/`) is split for clarity:

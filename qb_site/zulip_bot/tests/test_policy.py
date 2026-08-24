@@ -165,3 +165,20 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
                 self.assert_ignored(result)  # the handler DMs and returns response_not_required
                 dm_content = MockZulipClient.return_value.send_direct_message.call_args.kwargs["content"]
                 self.assertIn("https://queueboard.example/api/zulip/register/", dm_content)
+
+    @override_settings(
+        ZULIP_COMMAND_POLICY={
+            "register_test": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
+            "register-test": {"allowed_groups": ["all"], "allowed_contexts": ["dm"]},
+        }
+    )
+    def test_duplicate_policy_spellings_are_logged(self) -> None:
+        # The runtime cannot reject config, so it warns; `zulip_policy validate` is what refuses it.
+        from zulip_bot.webhook.policy import _load_command_policy
+
+        with self.assertLogs("zulip_bot.webhook.policy", level="WARNING") as logs:
+            policy = _load_command_policy()
+
+        self.assertIn("register-test", policy)
+        self.assertEqual(len(policy), 1)
+        self.assertTrue(any("zulip_command_policy_duplicate_entry" in line for line in logs.output))
