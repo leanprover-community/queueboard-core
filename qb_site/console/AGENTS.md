@@ -19,6 +19,13 @@
 - The shared system is intentionally light-only (matching the other reviewer pages); don't add a
   console-specific `prefers-color-scheme` block. When adjusting shared components, remember the
   `zulip_bot` templates consume the same file.
+- **`.meta` is hero-only.** It is `color: #d8f3f2`, pale text for the dark teal `.hero` gradient; on a
+  white `.card` or the page background it is nearly invisible. For secondary text there use `.help`
+  (`var(--muted)`), as `unavailable.html` does. For a context strip above a form, use `.form-context`
+  (shares the `.countdown` chrome from `prefs_form.css`, minus the expiry semantics).
+- Django strips `{# … #}` comments **only on a single line**. A multi-line one renders as visible page
+  text — use `{% comment %}` instead. `console/tests/test_prefs.py` guards the prefs page against
+  raw template syntax reaching the reader.
 
 ## Home dashboard (`views.home` / `_build_home_context`)
 - Beyond pending proposals, the home page is a small per-repo dashboard. A repo earns a section only
