@@ -112,9 +112,13 @@
   glob) plus `manage.py backfill_timeline_actor_types`. This is *exact*, not
   heuristic: it resolves the actual actor object attached to each specific
   event, so renamed accounts resolve correctly and login reuse cannot mis-type
-  anything. Measured live: `rateLimit.cost` is **1 at the full 100-id cap**, so
-  ~600 k rows ≈ **~6 k points** — roughly 1/20th of a schema-version rewalk
+  anything. Measured live: `rateLimit.cost` is **1 at the full 100-id cap**,
+  confirmed again by a 2 000-row probe on production (20 calls, 20 points), so
+  ~608 k rows ≈ **~6.1 k points** — roughly 1/20th of a schema-version rewalk
   wave, with no reset migration and no interaction with the upgrader chain.
+  Note the installation's GraphQL budget is **~9 700 points/hour**, not the
+  5 000 a PAT gets (GitHub App limits scale with repos and users), so the whole
+  drain fits inside a single rate window if the live syncer leaves room.
   - A named `ActorIdentity` fragment keeps the 13 inline fragments readable;
     `... on Comment` is what covers `IssueComment`, `PullRequestReview`, and
     the synthesized dismissed-review parents (whose stored node id *is* the
@@ -239,6 +243,20 @@
 - Validated against the live API, not only fakes: 154 real mathlib4 node ids
   resolved through the new query, every actor typed as expected, 12 null
   actors in the first 100, 0 unresolvable, and cost 1 at the 100-id cap.
+- Production probe, 2026-08-24 (`--dry-run --limit 2000` on mathlib4, 607 558
+  rows then untyped): 20 calls, **20 points**, 1 994 rows typed — `User` 1 340,
+  **`Bot` 654 (33 %)**, 6 null actors, 0 unresolved, 0 call failures. The token
+  came from the GitHub App path (`github_app_token_minted`), and the run left
+  `remaining=9621 used=79`, which is how the ~9 700/hr installation budget
+  above was measured.
+  - The null-actor rate here is **0.3 %**, against 12 % in the earlier
+    recent-timeline probe. The id-ordered head of the table predates the
+    workflow-label automation that produces most null actors, so the eventual
+    plateau lands somewhere between the two — a rising `null_actor` share as
+    the drain reaches newer rows is expected, not a fault.
+  - `logins=0` is likewise an artifact of id order: archive rows were imported
+    later and carry higher ids, so the `actor_login` healing shows up in the
+    back half of the drain.
 - Outstanding: the drain, the first post-drain export, and the `qb-notebook`
   switch.
 
@@ -272,10 +290,12 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
             exec python qb_site/manage.py backfill_timeline_actor_types \
               --repo leanprover-community/mathlib4 --dry-run --limit 2000'
    ```
-3. **Drain.** ~6 k points against a 5 000/hr budget *shared with the live
-   syncer*, plus 250 ms throttle per call — expect a few hours and at least one
-   sleep through a rate reset. Use a detached dyno so a dropped connection does
-   not kill it:
+3. **Drain.** ~6.1 k points against a measured ~9 700/hr budget *shared with
+   the live syncer*, so the binding constraint is wall clock, not points:
+   ~6 080 calls at 250 ms of shared throttle each is ~25 minutes of throttle
+   alone, realistically an hour or so end to end. Expect no sleep, or one if
+   the syncer is busy. Use a detached dyno so a dropped connection does not
+   kill it:
 
    ```bash
    heroku run:detached --app queueboard-backend --size=standard-1x -- \
@@ -284,8 +304,11 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
    heroku logs --app queueboard-backend --dyno run.NNNN --tail
    ```
 
-   Without `--wait-for-rate` the drain stops cleanly at the floor
-   (`--min-rate-remaining`, default 500) and is resumable — the target set is
+   The default `--min-rate-remaining` is 2 500, matching the floor the doc-043
+   forced-resync drain settled on: the live syncer stops itself only at
+   `SYNCER_RATE_REMAINING_MIN` (200), so that headroom keeps it fed while the
+   drain runs. Without `--wait-for-rate` the drain stops cleanly at the floor
+   and is resumable — the target set is
    just `actor_type IS NULL`. `--limit` / `--batch-size` / `--repo` drip-feed it
    under supervision.
 4. **Read the counters.** Per repo and in total:
