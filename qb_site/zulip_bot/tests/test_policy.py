@@ -142,7 +142,7 @@ class TestZulipWebhookPolicy(WebhookTestMixin, TestCase):
         self.assert_ignored(result)
         mock_client.send_direct_message.assert_called_once()
         dm_content = mock_client.send_direct_message.call_args.kwargs["content"]
-        self.assertIn("https://queueboard.example/api/zulip/prefs/", dm_content)
+        self.assertIn("https://queueboard.example/console/preferences/", dm_content)
 
     @override_settings(
         ZULIP_COMMAND_POLICY={

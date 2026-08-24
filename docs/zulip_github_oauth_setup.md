@@ -47,16 +47,15 @@ Set these in your Queueboard environment (`.env` or deployment secrets):
   - `GITHUB_OAUTH_CLIENT_ID`
   - `GITHUB_OAUTH_CLIENT_SECRET`
   - `QUEUEBOARD_BASE_URL` — canonical site base (`https://<your-host>`, no trailing path). Every
-    deep-link is built from this: both OAuth callbacks (registration and console), the console link
-    in reviewer DMs, and the Zulip prefs/registration links. **Must be set for the
+    deep-link is built from this: both OAuth callbacks (registration and console), the console and
+    preferences links in reviewer DMs, and the Zulip registration links. **Must be set for the
     console/notification rollout** and for OAuth to produce an absolute `redirect_uri`.
 - Optional:
   - `CONSOLE_OAUTH_STATE_TTL_SECONDS` (default 600) — console OAuth state round-trip TTL.
-  - `CONSOLE_PREFS_ENABLED` (default off) — serve reviewer preferences from the console at
-    `/console/preferences/` (design doc 022). When on, the `prefs` command replies in place with that
-    stable URL instead of DMing an expiring link, the registration success DM/page point at it, and
-    registration opens the console session so the reviewer lands signed in. No OAuth-app change is
-    needed: the console callback is already covered by the site-root registration below.
+  - `ZULIP_LINK_TOKEN_SECRET` — dedicated signing secret for the remaining Zulip link tokens
+    (registration + its OAuth state); falls back to `DJANGO_SECRET_KEY`. Replaces
+    `ZULIP_PREFS_TOKEN_SECRET`, which is still read as a legacy alias, so a deployment that set it
+    keeps the same key.
 
 Optional overrides (defaults shown):
 - `GITHUB_OAUTH_AUTHORIZE_URL=https://github.com/login/oauth/authorize`
@@ -125,8 +124,9 @@ Example policy snippet:
   - Expired or tampered OAuth `state` token.
   - Registration token expired before callback completed.
 - Link expired
-  - User waited past token TTL; ask user to run `prefs` again. With `CONSOLE_PREFS_ENABLED` on there is
-    no prefs-link TTL at all — `/console/preferences/` is stable and bounded only by the session.
+  - User waited past the token TTL of a `close-pr` / `label-pr` / registration link; ask them to run the
+    command again. Reviewer *preferences* have no link TTL — `/console/preferences/` is stable and
+    bounded only by the console session (design doc 022).
 - "This console is only for registered reviewers" (403)
   - The GitHub account signed in is known to us but has no `ReviewerPreference` row (and no pending
     proposal) — e.g. someone the syncer ingested as a PR author. Expected; they must register with the

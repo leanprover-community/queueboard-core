@@ -1,4 +1,4 @@
-import { formatRemaining, getExpiryState } from "./prefs_form.js";
+import { formatRemaining, getExpiryState } from "./expiry.js";
 
 function serializeForm(form) {
   return new URLSearchParams(new FormData(form)).toString();

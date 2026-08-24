@@ -308,7 +308,6 @@ def _build_home_context(reviewer) -> dict:
         "repo_groups": repo_groups,
         "logout_url": reverse("console:logout"),
         "unassign_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)),
-        "prefs_enabled": bool(getattr(settings, "CONSOLE_PREFS_ENABLED", False)),
         "prefs_url": reverse("console:prefs"),
     }
 
@@ -375,19 +374,12 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
 def prefs(request: HttpRequest) -> HttpResponse:
     """Reviewer preferences at a stable, token-less URL (design doc 022 amendment).
 
-    The same form the Zulip prefs link renders, authenticated by the console session instead of an
-    expiring token. Rows are the reviewer's *current* ones, and the shared builder scopes the
+    The only place reviewers edit their preferences (the expiring Zulip token link it replaced was
+    retired in 022 phase 3). Rows are the reviewer's *current* ones, and the shared builder scopes the
     queryset to their owner on GET and POST alike, so a posted `form-<n>-id` cannot reach anyone
     else's row. This page never creates preference rows: a `ReviewerPreference` row *is* reviewer
     pool membership, so bootstrapping stays in the Zulip registration flow (invariant 1).
     """
-    if not bool(getattr(settings, "CONSOLE_PREFS_ENABLED", False)):
-        return render(
-            request,
-            "console/unavailable.html",
-            {"message": "Editing preferences here isn’t enabled yet — use the `prefs` command in Zulip for now."},
-        )
-
     reviewer, denied = _reviewer_from_session(request)
     if denied is not None:
         return denied

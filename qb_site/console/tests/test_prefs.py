@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -23,7 +23,6 @@ from core.services.reviewer_notification_settings import DEFAULT_AUTO_UNASSIGN_D
 from syncer.models import LabelDef
 
 
-@override_settings(CONSOLE_PREFS_ENABLED=True)
 class ConsolePrefsTests(TestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -156,13 +155,6 @@ class ConsolePrefsTests(TestCase):
         self.assertContains(resp, "no reviewer preferences")
         self.assertFalse(ReviewerPreference.objects.filter(user=self.reviewer).exists())
 
-    @override_settings(CONSOLE_PREFS_ENABLED=False)
-    def test_page_is_unavailable_while_the_flag_is_off(self) -> None:
-        self._login_session()
-        resp = self.client.get(self.url)
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "isn’t enabled yet")
-
     # ---- render / save -------------------------------------------------
 
     def test_get_renders_a_card_per_owned_row(self) -> None:
@@ -266,9 +258,3 @@ class ConsolePrefsTests(TestCase):
         self._login_session()
         resp = self.client.get(reverse("console:home"))
         self.assertContains(resp, self.url)
-
-    @override_settings(CONSOLE_PREFS_ENABLED=False)
-    def test_home_hides_the_prefs_link_while_the_flag_is_off(self) -> None:
-        self._login_session()
-        resp = self.client.get(reverse("console:home"))
-        self.assertNotContains(resp, self.url)

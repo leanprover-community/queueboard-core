@@ -58,7 +58,7 @@ Performed using a GitHub App token for operation `close_pr` (mapped to `queueboa
    - Otherwise: return private "you don't have permission to close this PR" message.
 
 ### Token Service: `close_pr_links.py`
-- Pattern mirrors `prefs_links.py` (Fernet encryption, `iat`/`exp` claims).
+- Pattern mirrors the prefs link module of the time (`prefs_links.py`, retired in design doc 022): Fernet encryption, `iat`/`exp` claims. `close_pr_links.py` is now the reference implementation.
 - Claims: `zulip_user_id`, `github_login`, `pr_owner`, `pr_repo`, `pr_number`.
 - Settings:
   - `ZULIP_CLOSE_PR_TOKEN_SECRET` (falls back to `SECRET_KEY`)

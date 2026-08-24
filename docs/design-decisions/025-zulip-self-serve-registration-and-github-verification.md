@@ -11,7 +11,7 @@
   - `core.User.github_node_id` (stable GitHub identifier)
   - `core.User.github_login` (mutable username)
   - `core.User.zulip_user_id` (stable Zulip ID in realm)
-- Existing secure-link pattern exists (`zulip_bot.services.prefs_links`) and can be reused for a registration handshake token model.
+- Existing secure-link pattern exists (`zulip_bot.services.prefs_links`, since retired — see design doc 022; the pattern now lives in `close_pr_links.py` / `label_pr_links.py`) and can be reused for a registration handshake token model.
 - Existing architecture already routes bot flows through `/api/zulip/*` and supports private responses and policy gating.
 
 ## Decision
@@ -95,9 +95,9 @@
 
 ## Subtleties and Notes Discovered During Implementation
 - URL base:
-  - Registration links use `ZULIP_PREFS_URL_BASE` (single shared Zulip web URL base).
+  - Registration links use `QUEUEBOARD_BASE_URL` via `core.services.site_urls.build_site_url`.
 - Token secret:
-  - Registration tokens reuse `ZULIP_PREFS_TOKEN_SECRET` (or `SECRET_KEY` fallback), while keeping a distinct registration salt.
+  - Registration tokens use `ZULIP_LINK_TOKEN_SECRET` (or `SECRET_KEY` fallback; the legacy `ZULIP_PREFS_TOKEN_SECRET` env name is still honored), while keeping a distinct registration salt.
   - This keeps secrets simpler while still providing token namespace separation through salt values.
 - Current registration entrypoint is intentionally a placeholder page:
   - It validates token integrity/expiry and provides OAuth entry when configured.

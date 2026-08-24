@@ -4,12 +4,13 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
+from django.urls import reverse
 from django.utils import timezone
 
 from core.models import ReviewerPreference, User
+from core.services.site_urls import build_site_url
 from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
-from zulip_bot.services.prefs_links import PrefsLinkClaims, build_prefs_entry_link
 from zulip_bot.services.registration_links import RegistrationLinkClaims, build_registration_link
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
@@ -52,27 +53,12 @@ def prefs_command(context: CommandContext, args: str) -> CommandResult:
             content="You do not currently have any reviewer preferences to edit.",
         )
 
-    entry = build_prefs_entry_link(
-        claims=PrefsLinkClaims(
-            user_id=user.id,
-            zulip_user_id=context.sender_id,
-            preference_ids=preference_ids,
-        )
-    )
-    if entry.is_stable:
-        # The console URL is not secret (identical for everyone; the page self-authenticates), but
-        # `prefs` stays a DM command anyway: an accidental mention in a public stream should not put
-        # a reply there. Unlike `console`, which is an in-place reply by design (doc 050).
-        dm_content = (
-            f"Open your [reviewer preferences]({entry.url}) in the reviewer console. "
-            "Sign in with GitHub — the link is stable, so you can bookmark it."
-        )
-        return _send_dm(context.sender_id, dm_content, "prefs_link_dm_failed")
-
-    expires_at = timezone.now() + timedelta(seconds=int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800)))
+    # The console URL is not secret (identical for everyone; the page self-authenticates), but `prefs`
+    # is a DM command anyway: an accidental mention in a public stream should not put a reply there.
+    # Unlike `console`, which is an in-place reply by design (doc 050).
     dm_content = (
-        f"Use this private link to [open your reviewer preferences form]({entry.url}). "
-        f"It expires at {format_global_time(expires_at)}."
+        f"Open your [reviewer preferences]({build_site_url(reverse('console:prefs'))}) in the reviewer "
+        "console. Sign in with GitHub — the link is stable, so you can bookmark it."
     )
     return _send_dm(context.sender_id, dm_content, "prefs_link_dm_failed")
 

@@ -1,12 +1,12 @@
 {% comment %}
-Reviewer-preference fields, shared verbatim by every prefs surface (design docs 022, 050):
+Reviewer-preference fields, included by `console/prefs.html` (the `/console/preferences/` page — see
+design doc 022). Expects `formset`, built by
+`core.services.reviewer_prefs.build_preferences_formset`, in context; the enclosing `<form>`, its CSRF
+token and its submit row belong to the including page.
 
-- `console/prefs.html` — the session-authenticated `/console/preferences/` page
-- `zulip_bot/prefs_form.html` — the expiring token link, until it is retired
-
-Expects `formset` (built by `core.services.reviewer_prefs.build_preferences_formset`) in context. The
-enclosing `<form>`, its CSRF token and its submit row belong to the including page — only the fields
-live here, so the two pages cannot drift in what a reviewer may edit.
+Kept as a partial in `shared/` rather than inlined: it pairs with the `core`-owned form and formset
+builder, so what a reviewer may edit is defined in one place per layer. A second surface (the retired
+Zulip token page) used to include it too.
 {% endcomment %}
     {{ formset.management_form }}
 

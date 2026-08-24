@@ -1,4 +1,4 @@
-import { formatRemaining, getExpiryState } from "./prefs_form.js";
+import { formatRemaining, getExpiryState } from "./expiry.js";
 import { formatTimestamp } from "./close_pr_form.js";
 
 function serializeForm(form) {
