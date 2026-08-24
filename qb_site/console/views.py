@@ -61,9 +61,9 @@ from core.services.site_urls import build_site_url
 from syncer.models import PRLabel, PullRequest
 
 # The reviewer's timezone comes from Zulip's own user record, so the resolver lives in `zulip_bot`
-# (see `zulip_bot.services.user_timezone`). Both prefs surfaces share it so a naive `away_until`
-# means the same thing on each; console access itself stays independent of Zulip reachability —
-# an unlinked or unreachable Zulip only falls through to the project default.
+# (see `zulip_bot.services.user_timezone`). Console access itself stays independent of Zulip
+# reachability — an unlinked or unreachable Zulip only falls through to `core.User.timezone`, then the
+# project default.
 from zulip_bot.services.user_timezone import resolve_user_timezone_name
 
 log = logging.getLogger(__name__)
@@ -372,13 +372,13 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
 
 @require_http_methods(["GET", "POST"])
 def prefs(request: HttpRequest) -> HttpResponse:
-    """Reviewer preferences at a stable, token-less URL (design doc 022 amendment).
+    """Reviewer preferences at a stable, token-less URL (design doc 022).
 
-    The only place reviewers edit their preferences (the expiring Zulip token link it replaced was
-    retired in 022 phase 3). Rows are the reviewer's *current* ones, and the shared builder scopes the
-    queryset to their owner on GET and POST alike, so a posted `form-<n>-id` cannot reach anyone
-    else's row. This page never creates preference rows: a `ReviewerPreference` row *is* reviewer
-    pool membership, so bootstrapping stays in the Zulip registration flow (invariant 1).
+    The only place reviewers edit their preferences. Rows are the reviewer's *current* ones, and the
+    shared builder scopes the queryset to their owner on GET and POST alike, so a posted
+    `form-<n>-id` cannot reach anyone else's row. This page never creates preference rows: a
+    `ReviewerPreference` row *is* assignment-pool membership, so bootstrapping stays in the Zulip
+    registration flow (invariant 1).
     """
     reviewer, denied = _reviewer_from_session(request)
     if denied is not None:

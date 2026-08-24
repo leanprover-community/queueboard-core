@@ -1,9 +1,9 @@
 """Resolve the timezone to interpret a reviewer's local times in.
 
 Lives in ``zulip_bot`` because the authoritative source is Zulip's own user record (which Zulip
-derives from the user's browser); ``core`` stays free of app dependencies. Consumed by both prefs
-surfaces — the Zulip token link and the reviewer console — so the naive ``datetime-local``
-``away_until`` input means the same thing on both (design docs 022, 050).
+derives from the user's browser); ``core`` stays free of app dependencies. Consumed by the reviewer
+console's preferences page, where it decides what the naive ``datetime-local`` ``away_until`` input
+means (design doc 022).
 
 Resolution order: Zulip's reported timezone → ``core.User.timezone`` → the Django default. A missing
 Zulip link (or an unconfigured/unreachable Zulip) simply falls through; it is never an error. Note

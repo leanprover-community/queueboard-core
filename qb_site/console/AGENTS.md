@@ -138,6 +138,8 @@
 
 ## Testing
 - `docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test console`
+- This app is step `[12/12]` of `scripts/repo_check_compose.sh`. It was missing from that script until
+  the prefs work added it, so console tests had never run in CI — if you add an app, add its step.
 - View tests mock `console.views.GitHubOAuthClient`, `console.views.assign_reviewer_and_record`,
   `console.views.GitHubAssignmentClient` (unassign), `console.views._enqueue_pr_sync`, and
   `console.views.resolve_user_timezone_name` (prefs), and seed the session directly; no real GitHub
