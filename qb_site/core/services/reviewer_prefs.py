@@ -1,12 +1,12 @@
-"""One assembly path for the reviewer-preferences formset (design docs 022, 050).
+"""Assembly of the reviewer-preferences formset (design doc 022).
 
-Both prefs surfaces render the same rows with the same widgets: the reviewer console
-(``/console/preferences/``, session-authenticated) and — until the token flow is retired — the Zulip
-prefs link (``/api/zulip/prefs/<token>/``). Callers differ only in how they *authorize* and *order*
-the rows; everything after that (queryset scoping, label catalog, topic-label pattern, form kwargs)
-lives here so the two pages cannot drift apart.
+Consumed by the reviewer console's ``/console/preferences/`` page. It lives in ``core`` — with
+``core.forms.ReviewerPreferenceForm`` — because the model is ``core``'s: the caller supplies the rows
+it has already authorized, and everything after that (queryset scoping, label catalog, topic-label
+pattern, form kwargs) is decided in one place. A second surface, the retired Zulip token page, used
+to share it.
 
-Ownership is enforced here rather than at each call site: the queryset is always narrowed to the
+Ownership is enforced here rather than at the call site: the queryset is always narrowed to the
 supplied rows **and** their owner, on GET and POST alike, so a posted ``form-<n>-id`` naming another
 reviewer's row fails validation instead of being saved (Django validates formset ids against the
 queryset it was handed). See invariant 3 in design doc 022.

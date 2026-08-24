@@ -1,4 +1,4 @@
-"""Tests for the session-authenticated reviewer preferences page (design doc 022 amendment).
+"""Tests for the session-authenticated reviewer preferences page (design doc 022).
 
 Covers the invariants that make GitHub-OAuth auth safe for a writable surface: the page never
 creates preference rows, console admission is reviewer-ness rather than "known GitHub account", and
