@@ -260,8 +260,10 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
    `ALTER TABLE` — no rewrite and no long lock on ~600 k rows. From here the
    live syncer types new events, and rewalks heal old rows through the
    fill-empty allowlist.
-2. **Dry run, to see the distribution before writing anything.** Heroku
-   consumes `--flags` before passthrough, so keep the `--`, and set
+2. **Dry run, to see the distribution before writing anything.** It resolves
+   for real and only skips the writes, so it **spends the same GraphQL points**
+   as a live run of the same size — which is what makes it a usable cost probe.
+   Heroku consumes `--flags` before passthrough, so keep the `--`, and set
    `PYTHONPATH` the way the Procfile does:
 
    ```bash
@@ -299,6 +301,12 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
      the row, and a later run picks it up.
    - `unmodelled` — a typename outside `PRActorType`. The node id is still
      stored.
+
+   `points` is the summed `rateLimit.cost` from the responses themselves —
+   measured spend, not `api_calls` × an assumed price — and the closing `rate:`
+   line reports the `remaining` / `used` / `resetAt` the run leaves behind. A
+   small `--limit` run is therefore a direct cost probe: extrapolate from its
+   `points` / `scanned` ratio before committing to the full drain.
 
    A rate-limit rejection from GitHub unwinds to the same resumable stop as the
    floor rather than retrying or splitting, since both would only spend a
