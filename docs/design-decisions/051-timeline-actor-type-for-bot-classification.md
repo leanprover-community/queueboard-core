@@ -146,6 +146,25 @@
   neither the table nor any `actor_*` column. `actor_type` is a three-valued
   enum and `actor_node_id` an opaque GitHub identifier already exported for
   authors via `core_user.github_node_id`.
+- **Progress is monitored, not eyeballed.** `syncer.collect_convergence`
+  records two per-repo counters on `SyncerConvergenceSnapshot` (migration
+  `0055`), following the precedent of `archive_resync_remaining` for the
+  doc-043 drain:
+  - `timeline_events_missing_actor_type` — the backfill command's exact target
+    set (`actor_type IS NULL AND github_node_id IS NOT NULL`), so the admin
+    page and the command's own output agree. It **plateaus** at the null-actor
+    floor rather than reaching 0.
+  - `timeline_events_untyped_with_login` — the same rows narrowed to those
+    carrying a login. A row with a login demonstrably had an actor, so this is
+    typeable work: it converges to ~0 and then **stays** there. That makes it
+    the standing regression canary — if it climbs later, ingestion stopped
+    typing actors, most likely because the fill-empty allowlist was dropped.
+
+  Both are `COUNT(*)` over `syncer_prtimelineevent` per active repo every
+  `ANALYTICS_CONVERGENCE_PERIOD_SECONDS` (900 s). With no index on
+  `actor_type` that is a sequential scan, which is acceptable at this table
+  size and cadence; a partial index `WHERE actor_type IS NULL` is the escape
+  hatch if the collector ever gets slow.
 - **Not in scope: `PRReviewInlineComment.author_login`.** The mechanism would
   work verbatim (the wire already carries `author { __typename … }`,
   `github_node_id` is unique, the table is exported), but it carries **no new
@@ -209,10 +228,11 @@
 
 ### Status
 
-- Chunks 1–3 landed in PR #194: columns + migration `0054` + admin
+- Landed in PR #194: columns + migration `0054` + admin
   (`actor_type` in `list_display`/`list_filter`, `actor_node_id` in
   `search_fields`, both in `readonly_fields`), extraction, and the backfill
-  command with 22 + 23 tests. Full `syncer` suite green (524 tests) on
+  command with 22 + 23 tests, and the two convergence counters (migration
+  `0055`) with 3 tests. Full `syncer` suite green (527 tests) on
   host-against-dockerized-Postgres; `scripts/validate_github_graphql.py` and
   `scripts/validate_backup_policy.py` pass; CI `checks` + `docker` (which runs
   `scripts/repo_check_compose.sh`) green.
@@ -284,11 +304,19 @@ stops on GitHub's own rejection (below). Request pacing comes from the existing
    floor rather than retrying or splitting, since both would only spend a
    budget that is already gone. `retries` counts re-attempts, so a run fighting
    a flaky API is visible.
-5. **Watch the canaries** (per the syncer `AGENTS.md` ingestion checklist):
-   - `SELECT count(*) FROM syncer_prtimelineevent WHERE actor_type IS NULL`,
-     per repo. Should fall steeply, then plateau at the genuinely-null-actor
-     population. **A plateau at the *starting* value means the fill-empty
-     allowlist regressed.**
+5. **Watch the canaries** (per the syncer `AGENTS.md` ingestion checklist).
+   The first two are on the `SyncerConvergenceSnapshot` admin change list,
+   refreshed every 15 minutes, so the drain can be followed there rather than
+   by hand — but the collector only starts recording them from the deploy that
+   carries `0055`, so the first snapshot is the baseline:
+   - `timeline_events_missing_actor_type` per repo. Should fall steeply, then
+     plateau at the genuinely-null-actor population. **A plateau at the
+     *starting* value means the fill-empty allowlist regressed.** Equivalent
+     SQL: `SELECT count(*) FROM syncer_prtimelineevent WHERE actor_type IS
+     NULL AND github_node_id IS NOT NULL`.
+   - `timeline_events_untyped_with_login` per repo — the converging half.
+     Should approach 0; whatever remains is unresolved nodes and unmodelled
+     typenames, which the command's counters name explicitly.
    - `SELECT count(*) FROM syncer_prtimelineevent WHERE archive_imported_at IS
      NOT NULL AND coalesce(actor_login, '') = ''` — should fall substantially,
      bottoming out at the null-actor share rather than at zero.

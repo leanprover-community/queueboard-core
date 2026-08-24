@@ -60,6 +60,20 @@ class SyncerConvergenceSnapshot(models.Model):
     # enabled means ticks are being rate-skipped or the worker is backlogged.
     archive_resync_remaining = models.IntegerField(default=0)
 
+    # Actor typing drain (design doc 051), counted in timeline *events*, not PRs.
+    # ``timeline_events_missing_actor_type`` is the drain's exact target set — a
+    # resolvable node id and no ``actor_type`` — so it lines up with the
+    # backfill command's own per-repo output. It does **not** reach 0: GitHub
+    # returns a null actor for a real share of events, so it plateaus at that
+    # floor. Watch the trend, not the absolute value.
+    # ``timeline_events_untyped_with_login`` is the converging companion: a row
+    # carrying a login must have had an actor, so whatever is left here is
+    # typeable work. It should fall to ~0 during the drain and stay there. A
+    # later climb means ingestion stopped typing actors — most likely the
+    # fill-empty column allowlist in ``sync_timeline_events`` was dropped.
+    timeline_events_missing_actor_type = models.IntegerField(default=0)
+    timeline_events_untyped_with_login = models.IntegerField(default=0)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
