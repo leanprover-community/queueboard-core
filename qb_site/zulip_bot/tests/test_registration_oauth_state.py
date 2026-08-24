@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from django.test import SimpleTestCase
 
 from zulip_bot.services.registration_oauth_state import (
@@ -32,13 +30,12 @@ class TestRegistrationOAuthState(SimpleTestCase):
             validate_registration_oauth_state("not-a-state")
 
     def test_expired_state_rejected(self) -> None:
-        with patch("core.services.oauth_state.time.time", return_value=1_700_000_000):
-            state = issue_registration_oauth_state(
-                claims=RegistrationOAuthStateClaims(
-                    registration_token="reg-token",
-                    registration_nonce="nonce-123",
-                )
-            )
-        with patch("core.services.oauth_state.time.time", return_value=1_700_000_000 + 900):
-            with self.assertRaises(RegistrationOAuthStateExpired):
-                validate_registration_oauth_state(state)
+        state = issue_registration_oauth_state(
+            claims=RegistrationOAuthStateClaims(
+                registration_token="reg-token",
+                registration_nonce="nonce-123",
+            ),
+            now=1_700_000_000,
+        )
+        with self.assertRaises(RegistrationOAuthStateExpired):
+            validate_registration_oauth_state(state, now=1_700_000_000 + 900)

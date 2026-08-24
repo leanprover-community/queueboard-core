@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from django.test import SimpleTestCase, TestCase, override_settings
 
 from zulip_bot.services.registration_links import (
@@ -48,16 +46,15 @@ class TestRegistrationLinks(SimpleTestCase):
             validate_registration_token("not-a-token")
 
     def test_validate_registration_token_rejects_expired_token(self) -> None:
-        with patch("zulip_bot.services.registration_links.time.time", return_value=1_700_000_000):
-            token = issue_registration_token(
-                claims=RegistrationLinkClaims(
-                    zulip_user_id=101,
-                    sender_email="reviewer@example.com",
-                )
-            )
-        with patch("zulip_bot.services.registration_links.time.time", return_value=1_700_000_000 + 1_900):
-            with self.assertRaises(RegistrationTokenExpired):
-                validate_registration_token(token)
+        token = issue_registration_token(
+            claims=RegistrationLinkClaims(
+                zulip_user_id=101,
+                sender_email="reviewer@example.com",
+            ),
+            now=1_700_000_000,
+        )
+        with self.assertRaises(RegistrationTokenExpired):
+            validate_registration_token(token, now=1_700_000_000 + 1_900)
 
 
 @override_settings(ZULIP_LINK_TOKEN_SECRET="shared-link-secret")

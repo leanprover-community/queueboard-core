@@ -37,21 +37,18 @@ from zulip_bot.services.close_pr_execution import (
     post_pr_comment,
 )
 from zulip_bot.services.close_pr_presets import load_close_pr_presets
-from zulip_bot.services.close_pr_links import (
-    ClosePRTokenExpired,
-    ClosePRTokenInvalid,
-    validate_close_pr_token,
-)
 from zulip_bot.services.label_pr_execution import (
     LabelPRError,
     fetch_issue_details_for_form,
     fetch_repo_labels_from_db,
     set_pr_labels,
 )
-from zulip_bot.services.label_pr_links import (
-    LabelPRTokenExpired,
-    LabelPRTokenInvalid,
-    validate_label_pr_token,
+from zulip_bot.services.pr_action_links import (
+    CLOSE_PR,
+    LABEL_PR,
+    PRActionTokenExpired,
+    PRActionTokenInvalid,
+    validate_pr_action_token,
 )
 from zulip_bot.services.registration_links import (
     RegistrationTokenExpired,
@@ -283,10 +280,10 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
 
 def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     try:
-        claims = validate_close_pr_token(token)
-    except ClosePRTokenExpired:
+        claims = validate_pr_action_token(token, action=CLOSE_PR)
+    except PRActionTokenExpired:
         return _close_pr_invalid_response(request, reason="expired")
-    except ClosePRTokenInvalid:
+    except PRActionTokenInvalid:
         return _close_pr_invalid_response(request, reason="invalid")
 
     from datetime import datetime, timezone as dt_timezone
@@ -530,10 +527,10 @@ def _resolve_repo_log_target(*, owner: str, repo: str) -> dict | None:
 
 def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     try:
-        claims = validate_label_pr_token(token)
-    except LabelPRTokenExpired:
+        claims = validate_pr_action_token(token, action=LABEL_PR)
+    except PRActionTokenExpired:
         return _label_pr_invalid_response(request, reason="expired")
-    except LabelPRTokenInvalid:
+    except PRActionTokenInvalid:
         return _label_pr_invalid_response(request, reason="invalid")
 
     from datetime import datetime, timezone as dt_timezone

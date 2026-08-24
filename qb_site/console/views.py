@@ -52,10 +52,10 @@ from core.services.github_identity import resolve_user_from_identity
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 from core.services.oauth_state import (
     ConsoleOAuthStateClaims,
-    SignedStateError,
     issue_console_oauth_state,
     validate_console_oauth_state,
 )
+from core.services.signed_payloads import SignedPayloadError
 from core.services.reviewer_prefs import build_preferences_formset, preferences_for_user
 from core.services.site_urls import build_site_url
 from syncer.models import PRLabel, PullRequest
@@ -156,7 +156,7 @@ def oauth_callback(request: HttpRequest) -> HttpResponse:
         return render(request, "console/error.html", {"message": "Sign-in was cancelled or failed."}, status=400)
     try:
         claims = validate_console_oauth_state(state)
-    except SignedStateError:
+    except SignedPayloadError:
         return render(request, "console/error.html", {"message": "Sign-in link expired or was invalid. Try again."}, status=400)
     # CSRF: the state's nonce must match the one we stored in this browser's session.
     if not expected_nonce or not secrets.compare_digest(expected_nonce, claims.nonce):

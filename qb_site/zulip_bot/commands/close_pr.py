@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from django.conf import settings
 from django.utils import timezone
 
 from core.models import User
@@ -11,7 +10,7 @@ from core.utils.zulip_time import format_global_time
 from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, _parse_single_pr_ref
 from zulip_bot.services.close_pr_execution import PermissionOutcome, check_close_pr_permission
-from zulip_bot.services.close_pr_links import ClosePRLinkClaims, build_close_pr_link
+from zulip_bot.services.pr_action_links import CLOSE_PR, PRActionLinkClaims, build_pr_action_link, ttl_seconds
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 logger = logging.getLogger(__name__)
@@ -86,17 +85,17 @@ def close_pr_command(context: CommandContext, args: str) -> CommandResult:
     # Zulip outgoing webhook responses always go back to the triggering
     # conversation, so private delivery requires a proactive send_direct_message
     # call; returning the content via CommandResult would expose it in a stream.
-    link = build_close_pr_link(
-        claims=ClosePRLinkClaims(
+    link = build_pr_action_link(
+        action=CLOSE_PR,
+        claims=PRActionLinkClaims(
             zulip_user_id=context.sender_id,
             github_login=github_login,
             pr_owner=pr.owner,
             pr_repo=pr.repo,
             pr_number=pr.number,
-        )
+        ),
     )
-    ttl_seconds = int(getattr(settings, "ZULIP_CLOSE_PR_TOKEN_TTL_SECONDS", 1800))
-    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+    expires_at = timezone.now() + timedelta(seconds=ttl_seconds(CLOSE_PR))
     pr_ref = f"`{pr.owner}/{pr.repo}#{pr.number}`"
     title_suffix = f' ("{result.pr_title}")' if result.pr_title else ""
     dm_content = (

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from zulip_bot.services.close_pr_execution import ClosePRError, LivePRDetails
-from zulip_bot.services.close_pr_links import ClosePRLinkClaims, issue_close_pr_token
+from zulip_bot.services.pr_action_links import CLOSE_PR, PRActionLinkClaims, issue_pr_action_token
 
 
 def _token(
@@ -16,15 +17,18 @@ def _token(
     pr_owner: str = "leanprover-community",
     pr_repo: str = "mathlib4",
     pr_number: int = 999,
+    now: int | None = None,
 ) -> str:
-    return issue_close_pr_token(
-        claims=ClosePRLinkClaims(
+    return issue_pr_action_token(
+        action=CLOSE_PR,
+        claims=PRActionLinkClaims(
             zulip_user_id=zulip_user_id,
             github_login=github_login,
             pr_owner=pr_owner,
             pr_repo=pr_repo,
             pr_number=pr_number,
-        )
+        ),
+        now=now,
     )
 
 
@@ -72,11 +76,9 @@ def _patch_presets(presets=None):
 
 class TestClosePRFormGet(TestCase):
     def test_expired_token_returns_403(self) -> None:
-        with patch("zulip_bot.services.close_pr_links.time.time", return_value=1_700_000_000):
-            tok = _token()
-        with patch("zulip_bot.services.close_pr_links.time.time", return_value=1_700_000_000 + 1_900):
-            with _patch_pr_details(_open_pr()):
-                response = self.client.get(_url(tok))
+        tok = _token(now=int(time.time()) - 1900)
+        with _patch_pr_details(_open_pr()):
+            response = self.client.get(_url(tok))
         self.assertEqual(response.status_code, 403)
         self.assertTemplateUsed(response, "zulip_bot/close_pr_invalid.html")
         self.assertIn("expired", response.context["reason"])
@@ -190,10 +192,8 @@ class TestClosePRFormPost(TestCase):
 
     @override_settings(ZULIP_CLOSE_PR_MUTATIONS_ENABLED="true")
     def test_expired_token_on_post_returns_403(self) -> None:
-        with patch("zulip_bot.services.close_pr_links.time.time", return_value=1_700_000_000):
-            tok = _token()
-        with patch("zulip_bot.services.close_pr_links.time.time", return_value=1_700_000_000 + 1_900):
-            response = self.client.post(_url(tok))
+        tok = _token(now=int(time.time()) - 1900)
+        response = self.client.post(_url(tok))
         self.assertEqual(response.status_code, 403)
 
 

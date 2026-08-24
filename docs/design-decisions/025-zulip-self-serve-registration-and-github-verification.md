@@ -11,7 +11,7 @@
   - `core.User.github_node_id` (stable GitHub identifier)
   - `core.User.github_login` (mutable username)
   - `core.User.zulip_user_id` (stable Zulip ID in realm)
-- Existing secure-link pattern exists (`zulip_bot.services.prefs_links`, since retired — see design doc 022; the pattern now lives in `close_pr_links.py` / `label_pr_links.py`) and can be reused for a registration handshake token model.
+- Existing secure-link pattern exists (`zulip_bot.services.prefs_links`, since retired — see design doc 022; the Fernet primitive now lives in `core.services.signed_payloads`, with `pr_action_links.py` as the other consumer) and can be reused for a registration handshake token model.
 - Existing architecture already routes bot flows through `/api/zulip/*` and supports private responses and policy gating.
 
 ## Decision

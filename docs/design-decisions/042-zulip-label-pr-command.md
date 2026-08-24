@@ -74,8 +74,11 @@
   could also inspect the `role_name` field in the API response to grant access to triage users.
   This limitation also applies to `close-pr` (noted in doc 041).
 
-#### Token Service: `label_pr_links.py`
-- Mirrors `close_pr_links.py` (Fernet encryption, `iat`/`exp` claims).
+#### Token Service: `pr_action_links.py` (was `label_pr_links.py`)
+- Mirrored `close_pr_links.py` (Fernet encryption, `iat`/`exp` claims) — literally, byte for byte
+  apart from one URL path line, which is why the two were later merged into a single
+  `pr_action_links.py` keyed by a `PRAction` constant. See design doc 041 for the consolidation note;
+  it is wire-compatible and the settings below are unchanged.
 - Claims: `zulip_user_id`, `github_login`, `pr_owner`, `pr_repo`, `pr_number`.
 - Settings:
   - `ZULIP_LABEL_PR_TOKEN_SECRET` (falls back to `SECRET_KEY`)
@@ -266,7 +269,7 @@ Example addition to `operation_app_map`:
 ### Commit 2: `label-pr` command, form, and shared template/CSS refactor ✓
 - New files:
   - `qb_site/zulip_bot/commands/label_pr.py`
-  - `qb_site/zulip_bot/services/label_pr_links.py`
+  - `qb_site/zulip_bot/services/label_pr_links.py` (later merged into `pr_action_links.py`)
   - `qb_site/zulip_bot/services/label_pr_execution.py`
   - `qb_site/templates/zulip_bot/label_pr_form.html`
   - `qb_site/templates/zulip_bot/label_pr_invalid.html`
@@ -292,7 +295,7 @@ Example addition to `operation_app_map`:
 
 ## Validation Plan
 - Tests:
-  - Token service (`label_pr_links.py`): issue → validate round-trip; expiry; invalid/tampered.
+  - Token service (now `pr_action_links.py`, covered for both actions by `tests/test_pr_action_links.py`): issue → validate round-trip; expiry; invalid/tampered; cross-action rejection.
   - Permission check: permitted as write collaborator; permitted as admin; denied for read-only;
     denied for non-collaborator; issue/PR closed; token unavailable.
   - `fetch_repo_labels_from_db`: returns correct `LabelDef` list for known repo; empty list for
