@@ -106,6 +106,11 @@ secret.
 
 ## Testing Expectations
 - Canonical full validation for repo changes is `bash scripts/repo_check_compose.sh`.
+- `tests/test_command_registry.py::TestRegisteredCommandsAreDispatchable` iterates the **live**
+  registry and asserts every registered name and alias survives `parse_command` → `get_command`, and
+  that each canonical name is already normalized (it is what `help` prints). Adding a command with an
+  unreachable name fails there without anyone writing a per-command test. Verified to fail on the
+  reintroduced `register_test` bug, not just to pass today.
 - In sandboxed environments where Docker is blocked:
   - run app-level tests that are still feasible,
   - run frontend unit tests independently when possible,

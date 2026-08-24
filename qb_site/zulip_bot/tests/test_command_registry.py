@@ -100,3 +100,51 @@ class TestCommandRegistry(TestCase):
         assert cmd is not None
         self.assertEqual(cmd.aliases, ())
         self.assertIn("no-alias", [c.name for c in list_commands()])
+
+
+class TestRegisteredCommandsAreDispatchable(TestCase):
+    """Every registered command must survive the round trip a real message takes.
+
+    The webhook does exactly two things between reading a message and calling a handler:
+    `parse_command` (which normalizes the typed name) and `get_command`. So "is this command
+    reachable at all" is precisely "does its registered name survive that round trip" — the property
+    `register_test` violated for its whole life, since it registered an underscore that the parser
+    always hyphenated. A per-command test cannot catch that class of bug for the *next* command; this
+    one iterates the live registry, so a new command with an unreachable name fails immediately.
+
+    Policy is deliberately out of scope: commands are deny-by-default per deployment
+    (`ZULIP_COMMAND_POLICY`), which is configuration, not reachability.
+    """
+
+    def test_every_registered_name_and_alias_resolves_after_parsing(self) -> None:
+        import zulip_bot.views  # noqa: F401  -- imports every command module for its side effects
+        from zulip_bot.commands import get_command, list_commands
+        from zulip_bot.webhook.payload import parse_command
+
+        definitions = list_commands()
+        names = {definition.name for definition in definitions}
+        # Guard against a vacuous pass if the command modules ever stop being imported here. These
+        # are long-standing names, deliberately not the command this test was written for — the loop
+        # below is what must catch an unreachable name, not this sentinel.
+        self.assertLessEqual({"help", "prefs", "console"}, names)
+
+        for definition in definitions:
+            for spelling in (definition.name, *definition.aliases):
+                with self.subTest(command=definition.name, spelling=spelling):
+                    parsed = parse_command(spelling)
+                    self.assertIsNotNone(parsed)
+                    assert parsed is not None
+                    self.assertIs(
+                        get_command(parsed.name),
+                        definition,
+                        f"{spelling!r} parses to {parsed.name!r}, which does not resolve to this command",
+                    )
+
+    def test_every_registered_name_is_already_canonical(self) -> None:
+        """`help` and the unknown-command reply list these names, so they must be typeable as shown."""
+        import zulip_bot.views  # noqa: F401
+        from zulip_bot.commands import list_commands, normalize_command_name
+
+        for definition in list_commands():
+            with self.subTest(command=definition.name):
+                self.assertEqual(definition.name, normalize_command_name(definition.name))
