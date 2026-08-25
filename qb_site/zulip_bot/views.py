@@ -24,6 +24,7 @@ from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import label_pr as _label_pr  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.commands import register_test as _register_test  # noqa: F401
+from zulip_bot.commands import suggest_prs as _suggest_prs  # noqa: F401
 from zulip_bot.commands import pr_info as _pr_info  # noqa: F401
 from zulip_bot.commands import unassign as _unassign  # noqa: F401
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
