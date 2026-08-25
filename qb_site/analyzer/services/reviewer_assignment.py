@@ -400,8 +400,8 @@ def suggest_reviewers_many_with_trace(
 
 
 @dataclass
-class _AssignmentInputs:
-    """Proposal-aware candidate/load inputs shared by the builder and the trace."""
+class AssignmentInputs:
+    """Proposal-aware candidate/load inputs shared by the builder, the trace, and suggestions."""
 
     reviewers: list[ReviewerProfile]
     assignments: Dict[str, tuple[list[int], float, int]]
@@ -410,13 +410,13 @@ class _AssignmentInputs:
     excluded_by_pr: dict[int, set[str]]
 
 
-def _prepare_assignment_inputs(
+def prepare_assignment_inputs(
     repository: Repository,
     *,
     payload: dict,
     now: datetime,
     rule_set: QueueRuleSet | None,
-) -> _AssignmentInputs:
+) -> AssignmentInputs:
     """Assemble the candidate pool, reviewer load, and exclusions for a build.
 
     Beyond the legacy filters (active-assignee / assignment-forbidden labels / opt-outs) this
@@ -425,6 +425,10 @@ def _prepare_assignment_inputs(
     proposal are withheld from re-proposal, and reviewers with a recently expired proposal for a
     PR are excluded for it (soft cooldown, merged into the per-PR exclusion set alongside
     opt-outs).
+
+    Public because on-demand assignment suggestions (design doc 053, Invariant 5) must share
+    this exact pool: any candidate filter added elsewhere would let suggestions offer PRs the
+    nightly builder refuses. New exclusion rules belong here, not at a call site.
     """
     reviewers = build_reviewer_catalog(repository, now=now)
     assignment_stats = collect_assignment_statistics(payload)
@@ -455,7 +459,7 @@ def _prepare_assignment_inputs(
         _opt_outs_for_prs(repository, assignable_queue_prs),
         _proposal_cooldowns_for_prs(repository, assignable_queue_prs, now=now, cooldown_days=cooldown_days),
     )
-    return _AssignmentInputs(
+    return AssignmentInputs(
         reviewers=reviewers,
         assignments=assignments,
         queue_prs=queue_prs,
@@ -474,7 +478,7 @@ def build_reviewer_assignment_trace(
     current_time = now or datetime.now(timezone.utc)
     payload = queue_snapshot.payload
     topic_label_matcher = topic_label_matcher_for_repo(repository)
-    inputs = _prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=None)
+    inputs = prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=None)
     queue_prs = inputs.queue_prs
     assignable_queue_prs = inputs.assignable_queue_prs
 
@@ -616,7 +620,7 @@ class ReviewerAssignmentBuilder:
         queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
         payload = queue_obj.payload
 
-        inputs = _prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=rule_set)
+        inputs = prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=rule_set)
 
         automatic_assignments = suggest_reviewers_many(
             reviewers=inputs.reviewers,
@@ -779,6 +783,7 @@ class AreaStatsBuilder:
 
 
 __all__ = [
+    "AssignmentInputs",
     "AssignmentStatistics",
     "AreaStatsBuilder",
     "PRAssignmentPriority",
@@ -792,6 +797,7 @@ __all__ = [
     "collect_assignment_statistics",
     "compute_area_stats",
     "pending_proposal_load_for_repo",
+    "prepare_assignment_inputs",
     "rank_prs_for_assignment",
     "suggest_reviewer_for_pr",
     "suggest_reviewers_many",
