@@ -19,6 +19,18 @@
     per design doc 050) as of the latest cached queue snapshot, plus `format_load_line`. Single authority shared by
     the `assigned-prs` command, the daily reviewer-attention digest, and the reviewer console; read-only (never
     builds a snapshot), returns `{}`/`None` when no snapshot exists.
+  - `assignment_suggestions.py` — `suggest_prs_for_reviewer(repository, login, *, labels, limit)`:
+    on-demand "what should I review?" (design doc 053). Single authority for which open PRs a
+    reviewer could take right now and why not the rest; the Zulip `suggest-prs` command and the
+    console suggestions page both render its output and never re-derive eligibility. Shares the
+    nightly builder's candidate pool via `reviewer_assignment.prepare_assignment_inputs` (new pool
+    exclusions belong there, not at call sites), overrides only the requester's push throttles
+    (`away_until`, `auto_assign`, `maximum_capacity`) via a profile substitution — the engine is
+    unmodified and correctness rules (authorship, conflicts, opt-outs, cooldowns) stay in force —
+    and reads only the trace's `available`/`potential` membership, never the random `picked`, so
+    results are deterministic per snapshot. Read-only: never builds a snapshot, persists nothing.
+    Also exports `format_skip_summary` (the shared "why not more?" line) and the STATUS_*/SKIP_*
+    constants.
   - `pr_info.py` — `get_pr_queue_info(owner, repo, pr_number)`: returns `PRQueueInfo` for a single PR; prefers the default `QueueSnapshot`, falls back to direct DB queries for merged/closed PRs. Also exposes the acceptance-gate `proposed_to`/`proposal_expires_at` (design doc 050), read live from the single active `AssignmentProposal`, distinct from `assignee_logins`.
   - `ci_evaluation.py` — single-PR CI status evaluation against a ruleset's `required_ci_contexts`; use `ci_status_for_pr(pr, rules, repository)` instead of re-implementing context-matching logic.
 
