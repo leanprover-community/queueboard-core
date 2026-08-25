@@ -1,8 +1,9 @@
 # On-Demand Assignment Suggestions (Reviewer-Initiated "What Should I Review?")
 
-> Status: **Planned** (living implementation plan). No code written yet. All feature flags will
-> default off, following the 046/050 staged-rollout discipline. The design below is calibrated
-> against a production measurement taken 2026-08-25 — see [Measured Baseline](#measured-baseline).
+> Status: **Implemented** (2026-08-25), feature-flagged and dark: all `ANALYZER_ASSIGNMENT_SUGGESTIONS_*`
+> flags default off, following the 046/050 staged-rollout discipline. See the rollout steps under
+> [Operational Notes](#operational-notes). The design was calibrated against a production
+> measurement taken 2026-08-25 — see [Measured Baseline](#measured-baseline).
 
 ## Context
 
@@ -249,6 +250,7 @@ pair is counted once against the *first* rule that excluded it:
 
 | reason | meaning |
 | --- | --- |
+| `already_assigned` | the requester is already an assignee of the PR (see note below) |
 | `no_topic_label` | the PR carries no topic label at all (engine reason `missing-topic-label`) |
 | `authored` | the requester is the PR author |
 | `conflict_of_interest` | the requester lists the author as a conflict |
@@ -258,6 +260,13 @@ pair is counted once against the *first* rule that excluded it:
 
 There is deliberately **no `at_capacity` row**: the requester's capacity is always overridden, so it
 can never be the reason *they* were skipped.
+
+`already_assigned` was added during implementation, and it plugs a hole this doc had missed: the
+pool's active-assignee filter reads **real** availability, so an away/`auto_assign=false` requester
+does not count as an "active" assignee and their *own* assigned PRs survive into the shared pool —
+where the availability override would then have offered them right back. The service skips any pool
+PR the requester already sits on (mirroring the pool filter, scoped to the requester); it is a
+per-(reviewer, PR) rule like `authored`, not a second pool filter, so Invariant 5 stands.
 
 `outranked` is the non-obvious one and the reason this tally is worth building: without it, an empty
 or short result looks like a bug. It fires on 13.9% of the pairs where a reviewer matched an area,
@@ -621,6 +630,30 @@ re-run with `--size=standard-2x` — `tracemalloc` adds overhead at the moment t
      field alone would measure only half the claims.
   Also verified: the inverted-engine approach agrees with the live engine on all 29,412
   (reviewer, PR) pairs.
+- **2026-08-25 (implementation)** — all five chunks landed, flags dark. Deviations and additions
+  worth knowing about, each argued in place above:
+  1. **Chunks 1 and 2 merged into one commit**: the service reads
+     `ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT` / `_MAX_LABELS`, so a separate settings commit would
+     have left a phantom-settings window (the root AGENTS.md antipattern).
+  2. **Chunk order swapped (console before Zulip)**: the Zulip footer reverses
+     `console:suggestions`, so the console URL had to exist first.
+  3. **New `already_assigned` skip reason** — see the note under the skip-tally table. Without it,
+     an away/auto-assign-off reviewer could be suggested a PR they already hold.
+  4. **`format_skip_summary` lives in the service** so the "why not more?" line reads identically
+     in Zulip and on the console (same spirit as `format_load_line`).
+  5. **`unknown_labels` validates against `LabelDef` + the topic pattern**: a requested label is
+     known only when it matches the repo's topic-label pattern *and* exists in the synced label
+     catalog, so typos (`t-algebr`) are reported instead of silently yielding nothing.
+  6. **The console claim re-check runs with an effectively unbounded limit** (verifying
+     *eligibility*, not top-N membership): a still-eligible PR that drifted past rank 10 between
+     render and claim must not be rejected.
+  Validation: service unit tests (`analyzer/tests/services/test_assignment_suggestions.py`,
+  fixture payloads — prefix property, determinism, override/correctness-rule split, per-reason
+  skip tally, honest load line), console view tests (`console/tests/test_suggestions.py` — the
+  claim re-check runs the real service; GitHub mocked), Zulip command tests
+  (`zulip_bot/tests/commands/test_suggest_prs_command.py` — limit, footer, tally, repo scoping).
+  Full app suites (analyzer-services subset, console 78, zulip_bot 343) green against dockerized
+  Postgres; `scripts/repo_check_compose.sh` is the canonical pre-merge run.
 - **2026-08-25 (later)** — measured the one number the baseline had left open: the snapshot payload
   load, via `scripts/probe_053_payload_cost.py`. A request is ~476 ms and the payload read is 83% of
   it; all engine compute together is 85 ms. Two conclusions changed the doc. The cost note no longer
