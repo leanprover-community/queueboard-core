@@ -6,7 +6,7 @@ have to make?* — plus the funnel and the skip-reason mix that explain the numb
 
 Strictly read-only: no DB writes, no GitHub calls, no snapshot builds. It reads the latest
 cached QueueSnapshot exactly the way `analyzer.services.reviewer_load` does, reuses
-`_prepare_assignment_inputs` for the candidate pool, and drives the real engine
+`prepare_assignment_inputs` for the candidate pool, and drives the real engine
 (`suggest_reviewer_for_pr_with_trace`) for every (reviewer, PR) pair.
 
 Reviewer logins are pseudonymized by default (r01, r02, ... ordered by a salt-free sha256 of
@@ -53,7 +53,7 @@ from analyzer.services.reviewer_assignment import (  # noqa: E402
     _filter_assignment_forbidden_prs,
     _filter_prs_without_active_assignee,
     _filter_prs_without_active_proposal,
-    _prepare_assignment_inputs,
+    prepare_assignment_inputs,
     build_reviewer_catalog,
 )
 from analyzer.services.reviewer_assignment_engine import (  # noqa: E402
@@ -319,7 +319,7 @@ def probe_repo(repository: Repository, *, anon: Anonymizer, limit_probe: int, no
     all_prs = payload.get("prs", {})
     queue_prs = list(payload.get("lists", {}).get("dashboards", {}).get("Queue", []))
 
-    # --- funnel: reproduce _prepare_assignment_inputs step by step for the counts -------------
+    # --- funnel: reproduce prepare_assignment_inputs step by step for the counts -------------
     reviewers = build_reviewer_catalog(repository, now=now)
     after_assignee = _filter_prs_without_active_assignee(queue_prs, all_prs=all_prs, reviewers=reviewers)
     forbidden = _assignment_forbidden_labels(repository, rule_set=rule_set)
@@ -327,7 +327,7 @@ def probe_repo(repository: Repository, *, anon: Anonymizer, limit_probe: int, no
     active_rows = _active_proposal_rows(repository)
     after_proposal = _filter_prs_without_active_proposal(after_forbidden, prs_with_active_proposal={n for n, _ in active_rows})
 
-    inputs = _prepare_assignment_inputs(repository, payload=payload, now=now, rule_set=rule_set)
+    inputs = prepare_assignment_inputs(repository, payload=payload, now=now, rule_set=rule_set)
     pool = inputs.assignable_queue_prs
 
     no_topic_label = sum(1 for n in pool if not _topic_labels(all_prs.get(n) or all_prs.get(str(n)) or {}, matcher))

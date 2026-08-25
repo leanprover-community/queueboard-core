@@ -45,7 +45,7 @@ from django.db import connection  # noqa: E402
 
 from analyzer.models import QueueSnapshot  # noqa: E402
 from analyzer.services.queue_rules import default_rule_set_for_repo  # noqa: E402
-from analyzer.services.reviewer_assignment import _prepare_assignment_inputs  # noqa: E402
+from analyzer.services.reviewer_assignment import prepare_assignment_inputs  # noqa: E402
 from analyzer.services.reviewer_assignment_engine import rank_prs_for_assignment  # noqa: E402
 from analyzer.services.reviewer_assignment_engine import suggest_reviewer_for_pr_with_trace  # noqa: E402
 from analyzer.services.reviewer_load import reviewer_load_for  # noqa: E402
@@ -242,7 +242,7 @@ def measure_repo(repository: Repository, *, repeats: int) -> dict:
             phase_totals["payload"] += time.perf_counter() - t0
 
             t0 = time.perf_counter()
-            inputs = _prepare_assignment_inputs(repository, payload=payload_e2e, now=now, rule_set=rule_set)
+            inputs = prepare_assignment_inputs(repository, payload=payload_e2e, now=now, rule_set=rule_set)
             phase_totals["inputs"] += time.perf_counter() - t0
 
             t0 = time.perf_counter()

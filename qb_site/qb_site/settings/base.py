@@ -441,6 +441,21 @@ ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN = env_bool(os.getenv("ANALYZER_ASSIGNMENT_
 ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED = env_bool(
     os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED"), False
 )
+# On-demand assignment suggestions (design doc 053): a reviewer asks "what should I review?"
+# from Zulip (`suggest-prs`) or the console suggestions page. Read-only compute; staged rollout
+# like 046/050 — everything defaults off.
+#   ENABLED               master switch for the read path on both surfaces.
+#   CONSOLE_CLAIM_ENABLED the console claim endpoint's GitHub write (assign via the 046 path).
+#   LIMIT                 service default suggestion count; what the console renders.
+#   ZULIP_LIMIT           surface override for the in-channel reply (console link carries the rest).
+#   MAX_LABELS            cap on the per-request label override set (form and query string alike).
+ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED"), False)
+ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED = env_bool(
+    os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED"), False
+)
+ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT", "10"))
+ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT", "5"))
+ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS", "5"))
 # Acceptance window: a proposal expires this many days after creation unless accepted. The
 # per-reviewer override in ReviewerPreference.notification_settings is clamped to >= 7.
 ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", "7"))
