@@ -31,6 +31,13 @@ from analyzer.services.assignment_proposal_validity import (
     queue_membership,
     resolve_on_queue_exit_policy,
 )
+from analyzer.services.assignment_suggestions import (
+    STATUS_NO_LABELS,
+    STATUS_NO_SNAPSHOT,
+    STATUS_NOT_A_REVIEWER,
+    format_skip_summary,
+    suggest_prs_for_reviewer,
+)
 from analyzer.services.reviewer_assignment import _opt_outs_for_prs
 from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_record
 from analyzer.services.reviewer_assignment_engine import _normalize_login
@@ -309,6 +316,10 @@ def _build_home_context(reviewer) -> dict:
         "logout_url": reverse("console:logout"),
         "unassign_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)),
         "prefs_url": reverse("console:prefs"),
+        # On-demand suggestions entry point (design doc 053) — shown in the header row and, because
+        # the empty state used to be a dead end, in the empty state too.
+        "suggestions_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED", False)),
+        "suggestions_url": reverse("console:suggestions"),
     }
 
 
@@ -843,5 +854,197 @@ def unassign(request: HttpRequest) -> HttpResponse:
             "repo_label": f"{repo.owner}/{repo.name}",
             "unassigned": [{"number": n, "url": _pr_url(repo, n)} for n in unassigned],
             "failed": [{"number": n, "url": _pr_url(repo, n)} for n in failed],
+        },
+    )
+
+
+# --- on-demand suggestions (design doc 053) ------------------------------------
+
+# The claim re-check verifies *eligibility*, not membership in the rendered top-N: a PR the page
+# showed may drift past rank N by claim time and must still be claimable, so the re-run walks with
+# an effectively unbounded limit (the service walks the whole pool either way).
+_CLAIM_RECHECK_LIMIT = 100_000
+
+
+def _parse_labels_csv(raw: str | None) -> list[str]:
+    """Comma-separated label tokens from a query string or form field (service validates them)."""
+    if not raw:
+        return []
+    return [token.strip() for token in str(raw).split(",") if token.strip()]
+
+
+def _suggestion_group(repo, reviewer, *, labels: list[str]) -> dict:
+    """One repo's ``SuggestionResult`` flattened into template-ready display fields."""
+    result = suggest_prs_for_reviewer(repo, reviewer.github_login or "", labels=labels or None)
+    rows = []
+    for pr in result.suggestions:
+        matched = {label.lower() for label in pr.matched_labels}
+        rows.append(
+            {
+                "pr_number": pr.pr_number,
+                "title": pr.title,
+                "url": pr.url,
+                "author_login": pr.author_login,
+                "labels": [{"name": label, "matched": label.lower() in matched} for label in pr.topic_labels],
+                "queue_age": (format_compact_duration(int(pr.queue_age_seconds)) if pr.queue_age_seconds is not None else None),
+                "available_reviewer_count": pr.available_reviewer_count,
+                "load_weight": format_load_contribution(pr.load_weight),
+            }
+        )
+    return {
+        "repo_id": int(repo.id),
+        "repo_label": f"{repo.owner}/{repo.name}",
+        "result": result,
+        "rows": rows,
+        "load_line": format_load_line(result.load) if result.load is not None else None,
+        "skip_summary": format_skip_summary(result.skipped),
+        "no_snapshot": result.status == STATUS_NO_SNAPSHOT,
+        "no_labels": result.status == STATUS_NO_LABELS,
+        "not_a_reviewer": result.status == STATUS_NOT_A_REVIEWER,
+        "snapshot_generated_at": result.snapshot_generated_at,
+    }
+
+
+@require_GET
+def suggestions(request: HttpRequest) -> HttpResponse:
+    """Find PRs to review: render on-demand suggestions per repo (design doc 053).
+
+    Read-only. ``?repo=`` and ``?labels=`` pre-fill the request (the Zulip footer link carries
+    them) but are validated, never trusted: the repo must be one the reviewer has a preference in,
+    and the label set goes through the service's MAX_LABELS cap and unknown-label reporting. The
+    reviewer whose suggestions are computed is always the session reviewer.
+    """
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:suggestions")))
+
+    if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED", False)):
+        return render(
+            request, "console/unavailable.html", {"message": "Suggestions aren’t enabled yet — please check back later."}
+        )
+
+    repos = [
+        pref.repository
+        for pref in ReviewerPreference.objects.filter(user=reviewer)
+        .select_related("repository")
+        .order_by("repository__owner", "repository__name")
+    ]
+    repo_param = str(request.GET.get("repo") or "")
+    selected = next((r for r in repos if repo_param.isdigit() and int(r.id) == int(repo_param)), None)
+    labels = _parse_labels_csv(request.GET.get("labels"))
+
+    groups = [_suggestion_group(repo, reviewer, labels=labels) for repo in ([selected] if selected else repos)]
+    return render(
+        request,
+        "console/suggestions.html",
+        {
+            "reviewer": reviewer,
+            "groups": groups,
+            "labels_value": ", ".join(labels),
+            "filtered_repo": selected,
+            "claim_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED", False)),
+            "home_url": reverse("console:home"),
+            "logout_url": reverse("console:logout"),
+            "suggestions_url": reverse("console:suggestions"),
+        },
+    )
+
+
+@require_POST
+def claim(request: HttpRequest) -> HttpResponse:
+    """Assign the signed-in reviewer to one or more suggested PRs (design doc 053).
+
+    Posts ``repo_id`` + ``pr_numbers`` (+ the ``labels`` override the offer was made under). Each
+    number is re-verified against a fresh suggestion run before any GitHub write (Invariant 6) —
+    without the re-check this endpoint degrades into a general self-assign API that bypasses
+    conflict-of-interest and opt-out rules — and the login assigned is always the session
+    reviewer's own, never taken from the request. Assignment goes through the 046 mutation path
+    (``assign_reviewer_and_record``: GitHub assign + audit row + per-PR sync). Partial failures
+    are contained and rendered as an assigned/failed split. There is no hold (Invariant 8): a
+    concurrent claim by someone else legally yields two assignees, so co-assignees are surfaced
+    rather than implying exclusivity.
+    """
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:suggestions")))
+
+    if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED", False)) or not bool(
+        getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED", False)
+    ):
+        return render(request, "console/unavailable.html", {"message": "Claiming isn’t enabled yet — please try again later."})
+
+    repo = Repository.objects.filter(id=request.POST.get("repo_id") or 0).only("id", "owner", "name").first()
+    if repo is None:
+        return render(request, "console/unavailable.html", {"message": "That repository was not found."}, status=404)
+
+    numbers: set[int] = set()
+    for raw in request.POST.getlist("pr_numbers"):
+        try:
+            numbers.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not numbers:
+        return redirect(reverse("console:suggestions"))
+
+    # Invariant 6: a fresh eligibility run over the same inputs — the only things that can make it
+    # disagree with the offer are real state changes (someone claimed it, an opt-out landed, ...).
+    labels = _parse_labels_csv(request.POST.get("labels"))
+    recheck = suggest_prs_for_reviewer(repo, reviewer.github_login or "", labels=labels or None, limit=_CLAIM_RECHECK_LIMIT)
+    eligible = {int(pr.pr_number) for pr in recheck.suggestions}
+
+    from core.services.github_operation_tokens import resolve_github_app_operation_token
+
+    token = resolve_github_app_operation_token(operation="assign_pr", owner=repo.owner, repo=repo.name)
+    if not token:
+        return render(request, "console/unavailable.html", {"message": "Assignment is temporarily unavailable. Try again later."})
+
+    now = timezone.now()
+    assigned: list[dict] = []
+    failed: list[dict] = []
+    for number in sorted(numbers):
+        if number not in eligible:
+            failed.append({"number": number, "url": _pr_url(repo, number), "reason": "no longer eligible"})
+            continue
+        outcome, _client, record = assign_reviewer_and_record(
+            repository=repo,
+            pr_number=number,
+            login=reviewer.github_login,
+            snapshot=None,  # an on-demand claim is not anchored to a nightly assignment snapshot
+            run_date=now.date(),
+            token=token,
+        )
+        # Same "did it actually land?" semantics as the accept handler (see _github_assign_self).
+        landed = outcome == "applied" or (
+            outcome == "already_recorded" and record is not None and record.status == ReviewerAssignmentApplication.STATUS_APPLIED
+        )
+        if landed:
+            assigned.append({"number": number, "url": _pr_url(repo, number), "co_assignees": []})
+        else:
+            failed.append({"number": number, "url": _pr_url(repo, number), "reason": "GitHub didn’t confirm the assignment"})
+
+    # Surface co-assignees on the claimed PRs (Invariant 8: no hold, no pretence of one). Best
+    # effort from our own PR rows; the enqueued sync converges them shortly after the claim.
+    if assigned:
+        assignees_by_number = {
+            int(pr.number): [str(login) for login in (pr.assignees or []) if login]
+            for pr in PullRequest.objects.filter(repository=repo, number__in=[row["number"] for row in assigned]).only(
+                "number", "assignees"
+            )
+        }
+        me = _normalize_login(reviewer.github_login)
+        for row in assigned:
+            row["co_assignees"] = [login for login in assignees_by_number.get(row["number"], []) if _normalize_login(login) != me]
+
+    return render(
+        request,
+        "console/claimed.html",
+        {
+            "repo_label": f"{repo.owner}/{repo.name}",
+            "assigned": assigned,
+            "failed": failed,
         },
     )

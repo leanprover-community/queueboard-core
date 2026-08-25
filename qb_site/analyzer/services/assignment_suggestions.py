@@ -71,6 +71,31 @@ SKIP_OUTRANKED = "outranked"
 SKIP_EXCLUDED = "excluded"
 
 
+# Human phrasing for the skip tally, in the engine's evaluation order (also the render order).
+# Shared by both surfaces so "why not more?" reads the same in Zulip and on the console.
+_SKIP_PHRASES: dict[str, str] = {
+    SKIP_ALREADY_ASSIGNED: "already assigned to you",
+    SKIP_NO_TOPIC_LABEL: "with no topic label",
+    SKIP_AUTHORED: "authored by you",
+    SKIP_CONFLICT_OF_INTEREST: "conflict of interest",
+    SKIP_NO_AREA_MATCH: "not matching your labels",
+    SKIP_OUTRANKED: "outranked (another reviewer matches more of the PR's labels)",
+    SKIP_EXCLUDED: "opted out or on cooldown",
+}
+_SKIP_ORDER: tuple[str, ...] = tuple(_SKIP_PHRASES)
+
+
+def format_skip_summary(skipped: dict[str, int]) -> str:
+    """One-line human rendering of the skip tally, e.g. ``312 not matching your labels, 7 outranked (…)``.
+
+    Returns ``""`` for an empty tally. This is what makes an empty or short result legible instead
+    of looking like a bug — ``outranked`` especially (see the design doc's Measured Baseline).
+    """
+    parts = [f"{skipped[reason]} {_SKIP_PHRASES[reason]}" for reason in _SKIP_ORDER if skipped.get(reason)]
+    parts.extend(f"{count} {reason}" for reason, count in skipped.items() if reason not in _SKIP_PHRASES and count)
+    return ", ".join(parts)
+
+
 @dataclass(frozen=True)
 class SuggestedPR:
     pr_number: int
@@ -346,5 +371,6 @@ __all__ = [
     "STATUS_OK",
     "SuggestedPR",
     "SuggestionResult",
+    "format_skip_summary",
     "suggest_prs_for_reviewer",
 ]

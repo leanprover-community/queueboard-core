@@ -131,6 +131,32 @@
   per-PR sync per success, and renders `unassigned.html` with the removed/failed split (partial
   failures are contained, not fatal).
 
+## Suggestions page + claim (`views.suggestions` / `views.claim`, design doc 053)
+- `/console/suggestions/` ("Find PRs to review", `console:suggestions`) renders on-demand
+  assignment suggestions per repo from the single authority
+  `analyzer.services.assignment_suggestions.suggest_prs_for_reviewer` — the console never
+  re-derives eligibility. Read path is gated by `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED`; linked
+  from the home header row and the home empty state (which was previously a dead end).
+- `?repo=<id>` and `?labels=a,b` pre-fill the request (the Zulip `suggest-prs` footer link carries
+  them) but are **validated, never trusted**: the repo must be one the session reviewer has a
+  `ReviewerPreference` in (otherwise ignored), and labels go through the service's
+  `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS` cap and unknown-label reporting. The reviewer whose
+  suggestions are computed is always the session reviewer.
+- Each repo section shows the honest load line (`reviewer_load`-derived, the reviewer's *real*
+  capacity — never the request's capacity override; Invariant 7), a label-override search form, the
+  suggestion rows (matched labels highlighted, queue age, scarcity, per-PR load contribution), and
+  the `format_skip_summary` "why not more?" line.
+- `POST /console/suggestions/claim/` (`console:claim`, gated by
+  `ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED` on top of the read flag) takes
+  `repo_id` + `pr_numbers[]` + the `labels` override the offer was made under. Every posted number
+  is **re-verified against a fresh `suggest_prs_for_reviewer` run** before any GitHub write
+  (Invariant 6 — without it this endpoint degrades into a general self-assign API bypassing
+  conflict-of-interest/opt-out rules), and the login assigned is always the session reviewer's own.
+  Assignment reuses the 046 path (`assign_reviewer_and_record`, `assign_pr` operation token,
+  `snapshot=None`), with the same "did it land?" semantics as accept. Partial failures render as an
+  assigned/failed split (`claimed.html`), which also surfaces co-assignees — there is no hold on a
+  suggested PR (Invariant 8), so two claimers legally share the assignee set.
+
 ## Base URL
 - Absolute links (the DM console URL, the OAuth `redirect_uri`) come from
   `core.services.site_urls.build_site_url`, which resolves `QUEUEBOARD_BASE_URL`. Do not read the

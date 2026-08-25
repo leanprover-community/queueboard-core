@@ -18,4 +18,6 @@ urlpatterns = [
     path("proposals/<int:proposal_id>/assign-anyway/", views.assign_anyway, name="assign-anyway"),
     path("proposals/<int:proposal_id>/decline/", views.decline, name="decline"),
     path("unassign/", views.unassign, name="unassign"),
+    path("suggestions/", views.suggestions, name="suggestions"),
+    path("suggestions/claim/", views.claim, name="claim"),
 ]
