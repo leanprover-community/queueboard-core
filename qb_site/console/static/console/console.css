@@ -285,6 +285,46 @@ button.btn-unassign:hover {
   background: var(--bg);
 }
 
+/* On-demand suggestions page (design doc 053). Built on the shared tokens like everything else. */
+.suggestions-scope {
+  margin: 0 0 12px;
+}
+
+.label-override {
+  margin: 12px 0;
+}
+
+.label-override label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.label-override-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.label-override-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+}
+
+/* A topic label that matches the effective label set for this search. */
+.pr-label.matched {
+  background: var(--accent);
+  color: var(--card);
+  font-weight: 600;
+}
+
 @media (max-width: 760px) {
   .actions {
     flex-direction: column;
@@ -296,5 +336,9 @@ button.btn-unassign:hover {
   .cta-quiet {
     width: 100%;
     text-align: center;
+  }
+
+  .label-override-row {
+    flex-direction: column;
   }
 }

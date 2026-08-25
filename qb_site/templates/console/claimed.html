@@ -1,0 +1,34 @@
+{% extends "console/base.html" %}
+{% block title %}Assigned — Reviewer console{% endblock %}
+{% block body %}
+  <section class="hero">
+    <h1>Assigned</h1>
+  </section>
+  <section class="card">
+    {% if assigned %}
+      <div class="status status-ok" role="status">
+        Assigned you to {{ repo_label }}
+        {% for pr in assigned %}<a href="{{ pr.url }}">#{{ pr.number }}</a>{% if not forloop.last %}, {% endif %}{% endfor %}.
+      </div>
+      {% for pr in assigned %}
+        {% if pr.co_assignees %}
+          <p class="help"><a href="{{ pr.url }}">#{{ pr.number }}</a> is also assigned to {{ pr.co_assignees|join:", " }} — GitHub assignees are a set, so you share it.</p>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {% if failed %}
+      <div class="status status-warn" role="alert">
+        Could not assign you to
+        {% for pr in failed %}<a href="{{ pr.url }}">#{{ pr.number }}</a> ({{ pr.reason }}){% if not forloop.last %}, {% endif %}{% endfor %}.
+        The suggestions page always reflects the current state.
+      </div>
+    {% endif %}
+    {% if not assigned and not failed %}
+      <p>Nothing was assigned.</p>
+    {% endif %}
+    <div class="actions">
+      <a class="cta" href="{% url 'console:home' %}">Back to the console</a>
+      <a class="cta cta-quiet" href="{% url 'console:suggestions' %}">More suggestions</a>
+    </div>
+  </section>
+{% endblock %}

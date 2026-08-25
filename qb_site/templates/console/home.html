@@ -5,6 +5,7 @@
     <h1>Reviewer console</h1>
     <div class="meta signin-row">
       <span>Signed in as {{ reviewer.github_login }}.</span>
+      {% if suggestions_enabled %}<a href="{{ suggestions_url }}">Find PRs to review</a>{% endif %}
       <a href="{{ prefs_url }}">Reviewer preferences</a>
       <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
     </div>
@@ -78,6 +79,9 @@
   {% else %}
     <section class="card">
       <p class="empty">You have no proposals awaiting acceptance, and no PRs currently assigned to you.</p>
+      {% if suggestions_enabled %}
+        <p><a class="cta" href="{{ suggestions_url }}">Find PRs to review</a></p>
+      {% endif %}
     </section>
   {% endif %}
 {% endblock %}
