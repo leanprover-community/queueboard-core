@@ -33,7 +33,8 @@ cd qb_site/zulip_bot/frontend && npm test
   `assign #NNN` hint, the snapshot timestamp (the reply is a permanent channel message; the console
   page is live), and a token-less console link carrying `?repo=&labels=` so "more suggestions" means
   more of the same question. Label tokens *replace* the sender's stored `preferred_labels` for the
-  request; unknown/non-topic labels are reported back. **In-place reply by design** (like `console`):
+  request; unknown/non-topic labels are reported back, as are labels refused by the `MAX_LABELS`
+  cap. **In-place reply by design** (like `console`):
   nothing is sensitive and the follow-up `assign` is in-place too. Gated by
   `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED`; needs no mutation flag of its own (read-only — claiming
   reuses `assign`, which keeps its `ZULIP_ASSIGNMENT_MUTATIONS_ENABLED` + `ZULIP_COMMAND_POLICY`

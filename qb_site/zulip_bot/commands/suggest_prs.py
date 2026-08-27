@@ -130,6 +130,12 @@ def _render_repo_section(repo: Repository, reviewer_login: str, *, labels: list[
     if result.unknown_labels:
         ignored = ", ".join(f"`{label}`" for label in result.unknown_labels)
         lines.append(f"Ignored (not topic labels in {repo_label}): {ignored}.")
+    if result.dropped_labels:
+        # Distinct from the line above: these are perfectly good labels the per-request cap
+        # refused. Silently honouring a narrower request than the one asked for would make the
+        # result look like the reviewer's own labels were wrong.
+        dropped = ", ".join(f"`{label}`" for label in result.dropped_labels)
+        lines.append(f"Ignored (over the per-request label limit): {dropped}.")
     if result.status == STATUS_NO_LABELS:
         lines.append(f"You have no preferred labels for {repo_label} — name some, e.g. `suggest-prs {repo_label} t-algebra`.")
         return "\n".join(lines)
