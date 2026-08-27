@@ -1,0 +1,29 @@
+# Docker environment for running this repo's Compose checks from a SANDBOXED shell.
+# Not needed in a normal terminal — `bash scripts/repo_check_compose.sh` just works there.
+#
+# WHY THIS EXISTS: Docker Desktop's credential helper cannot start under a sandbox that blocks
+# writes to ~/Library/Containers, and it takes every image pull down with it — even though this
+# project pulls only public images and needs no credentials at all. Pointing DOCKER_CONFIG at a
+# config with no "credsStore" skips the helper entirely.
+#
+# Full explanation, verification and undo: docs/sandboxed_docker_setup.md
+#
+# Copy to `.docker-env` (gitignored, absolute paths are machine-specific):
+#
+#   mkdir -p .docker-nocreds
+#   printf '{"auths":{}}\n' > .docker-nocreds/config.json
+#   ln -sfn /Applications/Docker.app/Contents/Resources/cli-plugins .docker-nocreds/cli-plugins
+#   cat > .docker-env <<EOF
+#   DOCKER_CONFIG=$(pwd)/.docker-nocreds
+#   DOCKER_HOST=unix://$HOME/.docker/run/docker.sock
+#   EOF
+#
+# Then pass `.docker-env` to the sandbox wrapper, or: set -a; . ./.docker-env; set +a
+
+# Credential-helper-free Docker config. Kept in the repo deliberately: a new directory under
+# $HOME is not readable from the sandbox, while the repo is both readable and writable.
+DOCKER_CONFIG=/absolute/path/to/queueboard-core/.docker-nocreds
+
+# Required: overriding DOCKER_CONFIG also moves where the CLI resolves *contexts*, so the
+# desktop-linux context is no longer found and the daemon socket must be named explicitly.
+DOCKER_HOST=unix:///Users/<you>/.docker/run/docker.sock
