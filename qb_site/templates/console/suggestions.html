@@ -37,6 +37,11 @@
           {% for label in group.result.unknown_labels %}<span class="pr-label">{{ label }}</span>{% endfor %}
         </p>
       {% endif %}
+      {% if group.result.dropped_labels %}
+        <p class="help">Too many labels — these were not used:
+          {% for label in group.result.dropped_labels %}<span class="pr-label">{{ label }}</span>{% endfor %}
+        </p>
+      {% endif %}
 
       {% if group.no_snapshot %}
         <p class="empty">No queue snapshot is available for this repository right now — try again in a few minutes.</p>
