@@ -45,7 +45,16 @@ from django.db import connection  # noqa: E402
 
 from analyzer.models import QueueSnapshot  # noqa: E402
 from analyzer.services.queue_rules import default_rule_set_for_repo  # noqa: E402
-from analyzer.services.reviewer_assignment import prepare_assignment_inputs  # noqa: E402
+
+# The pool assembler was private (`_prepare_assignment_inputs`) until design doc 053 promoted it.
+# Accept either name: this probe measures the *pre-deploy* baseline, so it has to run against a
+# revision that predates the rename — a baseline probe that only runs post-deploy is useless.
+try:
+    from analyzer.services.reviewer_assignment import prepare_assignment_inputs  # noqa: E402
+except ImportError:  # deployed revision predates the 053 rename
+    from analyzer.services.reviewer_assignment import (  # noqa: E402
+        _prepare_assignment_inputs as prepare_assignment_inputs,
+    )
 from analyzer.services.reviewer_assignment_engine import rank_prs_for_assignment  # noqa: E402
 from analyzer.services.reviewer_assignment_engine import suggest_reviewer_for_pr_with_trace  # noqa: E402
 from analyzer.services.reviewer_load import reviewer_load_for  # noqa: E402
