@@ -55,12 +55,29 @@ class TestSharedRedisKeyCoverage(TestCase):
 
 
 class TestClearSharedRedisState(TestCase):
-    """The clear itself works, and stays inside the app's own namespaces."""
+    """The clear itself works, and stays inside the app's own namespaces.
 
-    def test_clears_app_keys_and_leaves_others_alone(self) -> None:
+    Skipped where Redis is unreachable, which includes `scripts/repo_check_compose.sh`: it starts
+    `web` against `db` only, so `redis:6379` does not resolve. That is also why the leak these
+    guards prevent never bit the canonical script — with no Redis, dedupe always fails open. It
+    bites the workflows that *do* have Redis up: a full `docker compose up`, or the focused
+    host-test loop in this directory's AGENTS.md.
+    """
+
+    def _reachable_client(self):
+        """Return a live Redis client, or skip. `_get_redis_client()` connects lazily, so it
+        returns an object even when nothing is listening — a `None` check alone is not enough."""
         client = _get_redis_client()
         if client is None:
             self.skipTest("no Redis broker configured")
+        try:
+            client.ping()
+        except Exception as exc:
+            self.skipTest(f"Redis broker not reachable ({exc})")
+        return client
+
+    def test_clears_app_keys_and_leaves_others_alone(self) -> None:
+        client = self._reachable_client()
         bystander = "someone-elses-key:test-redis-isolation"
         client.set(f"{TASK_RUNTIME_DEDUPE_PREFIX}sync_pr:1:11", "1", ex=300)
         client.set("gh:rate:snapshot", "1", ex=300)

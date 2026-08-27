@@ -85,8 +85,11 @@ uv run python qb_site/manage.py test zulip_bot
     python qb_site/manage.py test <app>                      # cached image, no rebuild
   ```
   Both the `cli-plugins` symlink and `DOCKER_HOST` are required: overriding `DOCKER_CONFIG` moves
-  where the CLI looks for plugins *and* for contexts. Ask the user to run the canonical script
-  outside the sandbox for a real end-to-end check, and say which steps you covered.
+  where the CLI looks for plugins *and* for contexts. With that env in place the **canonical
+  script itself runs green in the sandbox** — `bash scripts/repo_check_compose.sh` completes all
+  12 steps including the image build, so prefer running it over assembling the steps by hand.
+  This holds only while every image is public; a private-registry image would need the credential
+  helper, and therefore write access to `~/Library/Containers/com.docker.docker/`.
 - If Docker/Compose is unavailable:
   - run non-DB checks (`ruff`, GraphQL validation, pure-Python tests where applicable),
   - run targeted tests that do not require the DB,
