@@ -29,6 +29,10 @@
     unmodified and correctness rules (authorship, conflicts, opt-outs, cooldowns) stay in force —
     and reads only the trace's `available`/`potential` membership, never the random `picked`, so
     results are deterministic per snapshot. Read-only: never builds a snapshot, persists nothing.
+    Refuses a snapshot older than `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS`
+    (0 disables) so the no-active-rule-set `cache_key="default"` fallback cannot serve a long-dead
+    row as live. Label overrides report back both `unknown_labels` (not topic labels here) and
+    `dropped_labels` (refused by the `MAX_LABELS` cap) — neither is ever silently discarded.
     Also exports `format_skip_summary` (the shared "why not more?" line) and the STATUS_*/SKIP_*
     constants.
   - `pr_info.py` — `get_pr_queue_info(owner, repo, pr_number)`: returns `PRQueueInfo` for a single PR; prefers the default `QueueSnapshot`, falls back to direct DB queries for merged/closed PRs. Also exposes the acceptance-gate `proposed_to`/`proposal_expires_at` (design doc 050), read live from the single active `AssignmentProposal`, distinct from `assignee_logins`.

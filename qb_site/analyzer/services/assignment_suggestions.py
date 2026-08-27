@@ -42,6 +42,7 @@ from analyzer.services.reviewer_assignment import _compute_weight, prepare_assig
 from analyzer.services.reviewer_assignment_engine import (
     ReviewerProfile,
     _normalize_login,
+    _reviewer_candidate_state,
     _topic_labels,
     rank_prs_for_assignment,
     suggest_reviewer_for_pr_with_trace,
@@ -105,7 +106,7 @@ class SuggestedPR:
     topic_labels: list[str]
     matched_labels: list[str]  # intersection with the effective label set
     queue_age_seconds: float | None
-    available_reviewer_count: int  # scarcity, from the ranking scorer's `details`
+    available_reviewer_count: int  # scarcity, against the REAL catalog (never the override)
     load_weight: float  # what claiming it would add to the reviewer's load
 
 
@@ -116,6 +117,7 @@ class SuggestionResult:
     effective_labels: list[str]  # the override set, else the reviewer's preferred_labels
     label_override: bool
     unknown_labels: list[str]  # requested labels that are not topic labels in this repo
+    dropped_labels: list[str]  # requested labels past MAX_LABELS — used by neither, reported to both
     load: ReviewerLoad | None  # from the reviewer's REAL capacity — never the override
     suggestions: list[SuggestedPR]
     skipped: dict[str, int]  # reason -> count over the assignable pool
@@ -128,16 +130,18 @@ def _resolve_label_override(
     labels: Sequence[str] | None,
     *,
     matcher: TopicLabelMatcher,
-) -> tuple[list[str], list[str]]:
-    """Split the requested override labels into normalized ``(known, unknown)`` lists.
+) -> tuple[list[str], list[str], list[str]]:
+    """Split the requested override labels into normalized ``(known, unknown, dropped)`` lists.
 
-    Normalizes (strip + lowercase), dedupes preserving request order, and caps the set at
-    ``ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS`` (labels beyond the cap are dropped; the caller
-    can compare its request against ``effective_labels`` to see what was used). A label is
-    *known* when it matches the repo's topic-label pattern AND exists in the repo's synced label
-    catalog (``LabelDef``) — so typos and non-topic labels are reported back via
-    ``unknown_labels`` instead of silently yielding nothing. ``(labels or [])`` with no usable
-    tokens means "no override".
+    Normalizes (strip + lowercase) and dedupes preserving request order. A label is *known* when
+    it matches the repo's topic-label pattern AND exists in the repo's synced label catalog
+    (``LabelDef``) — so typos and non-topic labels come back in ``unknown`` instead of silently
+    yielding nothing. ``(labels or [])`` with no usable tokens means "no override".
+
+    Labels past ``ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS`` come back in ``dropped``. The cap
+    is applied *before* the known/unknown split, so without this third list they would land in
+    neither and the request would be silently narrowed — the broad label override is the feature's
+    biggest unlock, which makes quietly honouring five of eight labels the worst place to be quiet.
     """
     requested: list[str] = []
     seen: set[str] = set()
@@ -148,9 +152,9 @@ def _resolve_label_override(
         seen.add(norm)
         requested.append(norm)
     if not requested:
-        return [], []
+        return [], [], []
     max_labels = int(settings.ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS)
-    requested = requested[:max_labels]
+    requested, dropped = requested[:max_labels], requested[max_labels:]
     catalog_lower = set(
         LabelDef.objects.filter(repository=repository)
         .annotate(name_lower=Lower("name"))
@@ -160,7 +164,7 @@ def _resolve_label_override(
     known = [lab for lab in requested if matcher(lab) and lab in catalog_lower]
     known_set = set(known)
     unknown = [lab for lab in requested if lab not in known_set]
-    return known, unknown
+    return known, unknown, dropped
 
 
 def _classify_skip(
@@ -225,6 +229,7 @@ def suggest_prs_for_reviewer(
             effective_labels=[],
             label_override=False,
             unknown_labels=[],
+            dropped_labels=[],
             load=None,
             suggestions=[],
             skipped={},
@@ -242,6 +247,14 @@ def suggest_prs_for_reviewer(
         return _result(status=STATUS_NO_SNAPSHOT)
     payload = snapshot.payload
     generated_at = snapshot.generated_at
+    # A stale snapshot is no better than a missing one and fails far more quietly. When a repo has
+    # no *active* rule set, `cache_key` falls back to the literal "default" — where a long-dead row
+    # can still be sitting (production carries one generated five months ago). Without a ceiling the
+    # guard above is satisfied by that row and the feature serves months-old PRs as though live,
+    # which is exactly the fabricated answer Invariant 1 exists to prevent. `<= 0` disables it.
+    max_age_seconds = int(settings.ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS)
+    if max_age_seconds > 0 and (current_time - generated_at).total_seconds() > max_age_seconds:
+        return _result(status=STATUS_NO_SNAPSHOT, snapshot_generated_at=generated_at)
 
     # One candidate pool, shared with the nightly builder by construction (Invariant 5).
     inputs = prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=rule_set)
@@ -250,8 +263,8 @@ def suggest_prs_for_reviewer(
         return _result(status=STATUS_NOT_A_REVIEWER, snapshot_generated_at=generated_at)
 
     matcher = topic_label_matcher_for_repo(repository)
-    known_labels, unknown_labels = _resolve_label_override(repository, labels, matcher=matcher)
-    label_override = bool(known_labels or unknown_labels)
+    known_labels, unknown_labels, dropped_labels = _resolve_label_override(repository, labels, matcher=matcher)
+    label_override = bool(known_labels or unknown_labels or dropped_labels)
 
     # The request profile: an explicit request overrides the push throttles (Invariant 4). The
     # capacity override is unconditional (Invariant 7) — the load line below carries the honest
@@ -272,6 +285,7 @@ def suggest_prs_for_reviewer(
         effective_labels=effective_labels,
         label_override=label_override,
         unknown_labels=unknown_labels,
+        dropped_labels=dropped_labels,
         load=load,
         snapshot_generated_at=generated_at,
     )
@@ -334,6 +348,20 @@ def suggest_prs_for_reviewer(
         details = (ranking_trace.get(str(pr_number)) or {}).get("details") or {}
         topic_labels = _topic_labels(pr_entry, matcher)
         queue_age = details.get("queue_age_seconds")
+        # Scarcity is recomputed against the REAL catalog rather than read from the ranking's
+        # `details`. The ranking necessarily runs over the override catalog, where the requester
+        # is unconditionally available — so `details["available_reviewer_count"]` counts them even
+        # when they are really at capacity or away, overstating supply by one to exactly the
+        # reviewer reading the number, and most where it matters (a "1 available reviewer" PR is
+        # really 0). The ranking itself is deliberately left on the override catalog; only this
+        # displayed count is honest. Bounded by `limit`, so at most `limit` extra evaluations.
+        _, real_available, _, _ = _reviewer_candidate_state(
+            pr_entry=pr_entry,
+            reviewers=inputs.reviewers,
+            assignment_stats=inputs.assignments,
+            excluded_logins=inputs.excluded_by_pr.get(pr_number),
+            topic_label_matcher=matcher,
+        )
         suggestions.append(
             SuggestedPR(
                 pr_number=int(pr_number),
@@ -343,7 +371,7 @@ def suggest_prs_for_reviewer(
                 topic_labels=topic_labels,
                 matched_labels=[lab for lab in topic_labels if lab.lower() in requester.preferred_labels_lower],
                 queue_age_seconds=float(queue_age) if queue_age is not None else None,
-                available_reviewer_count=int(details.get("available_reviewer_count") or 0),
+                available_reviewer_count=len(real_available),
                 load_weight=_compute_weight(int(pr_number), pr_entry),
             )
         )

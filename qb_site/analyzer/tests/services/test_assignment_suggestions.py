@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.test import TestCase, override_settings
@@ -20,6 +21,7 @@ from analyzer.services.assignment_suggestions import (
     STATUS_OK,
     suggest_prs_for_reviewer,
 )
+from analyzer.services.reviewer_assignment_engine import ReviewerProfile, suggest_reviewer_for_pr_with_trace
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import LabelDef
 
@@ -149,6 +151,143 @@ class TestStatuses(SuggestionServiceTestCase):
         self.assertEqual(pr.available_reviewer_count, 2)
         # AwaitingReview -> claiming adds a full slot.
         self.assertEqual(pr.load_weight, 1.0)
+
+
+class TestLabelOverrideCap(SuggestionServiceTestCase):
+    """Labels past MAX_LABELS are reported, not silently honoured-in-part."""
+
+    @override_settings(ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS=2)
+    def test_labels_past_the_cap_are_reported(self) -> None:
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest(labels=["t-algebra", "t-topology", "t-order"])
+        self.assertEqual(result.effective_labels, ["t-algebra", "t-topology"])
+        self.assertEqual(result.dropped_labels, ["t-order"])
+        self.assertEqual(result.unknown_labels, [])
+
+    @override_settings(ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS=2)
+    def test_dropped_is_distinct_from_unknown(self) -> None:
+        # A typo inside the cap is `unknown`; a good label past the cap is `dropped`. Collapsing
+        # the two would tell a reviewer their own label was wrong when it was merely refused.
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest(labels=["t-algebra", "t-nonexistent", "t-topology"])
+        self.assertEqual(result.effective_labels, ["t-algebra"])
+        self.assertEqual(result.unknown_labels, ["t-nonexistent"])
+        self.assertEqual(result.dropped_labels, ["t-topology"])
+
+    def test_nothing_is_dropped_within_the_cap(self) -> None:
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest(labels=["t-algebra"])
+        self.assertEqual(result.dropped_labels, [])
+
+
+class TestSnapshotStaleness(SuggestionServiceTestCase):
+    """A stale snapshot is refused like a missing one — it must not be served as live."""
+
+    def test_snapshot_older_than_the_ceiling_is_refused(self) -> None:
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest(now=datetime(2026, 9, 1, tzinfo=dt_timezone.utc))
+        self.assertEqual(result.status, STATUS_NO_SNAPSHOT)
+        self.assertEqual(result.suggestions, [])
+        # Still reported, so an operator can see *how* stale rather than just "missing".
+        self.assertIsNotNone(result.snapshot_generated_at)
+
+    @override_settings(ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS=0)
+    def test_zero_disables_the_ceiling(self) -> None:
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest(now=datetime(2026, 9, 1, tzinfo=dt_timezone.utc))
+        self.assertEqual(result.status, STATUS_OK)
+
+    def test_a_fresh_snapshot_is_served(self) -> None:
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        self.assertEqual(self._suggest().status, STATUS_OK)
+
+
+class TestEngineTraceContract(TestCase):
+    """`_classify_skip` reads `trace["potential"]`; every trace shape must carry the key.
+
+    Without it, the three early-return paths were indistinguishable from "was contested and
+    lost", which would silently misattribute skips to `outranked` — the one reason a reviewer
+    cannot verify from the PR itself.
+    """
+
+    def _profile(self, login: str, labels: list[str]) -> ReviewerProfile:
+        return ReviewerProfile(
+            github_login=login,
+            maximum_capacity=10,
+            auto_assign=True,
+            temporary_break=False,
+            preferred_labels=labels,
+            preferred_labels_lower={lab.lower() for lab in labels},
+            free_form="",
+            conflict_of_interest=[],
+            conflict_of_interest_lower=set(),
+        )
+
+    def _trace(self, pr_entry: dict, reviewers: list[ReviewerProfile]) -> dict:
+        _result, trace = suggest_reviewer_for_pr_with_trace(
+            pr_entry=pr_entry, reviewers=reviewers, assignment_stats={}, rng=random.Random(0)
+        )
+        return trace
+
+    def test_missing_topic_label_path_carries_potential(self) -> None:
+        trace = self._trace(_pr(labels=[]), [self._profile("alice", ["t-algebra"])])
+        self.assertEqual(trace["reason"], "missing-topic-label")
+        self.assertIn("potential", trace)
+        self.assertEqual(trace["potential"], [])
+
+    def test_no_match_path_carries_potential(self) -> None:
+        trace = self._trace(_pr(labels=["t-order"]), [self._profile("alice", ["t-algebra"])])
+        self.assertEqual(trace["reason"], "no-match")
+        self.assertIn("potential", trace)
+        self.assertEqual(trace["potential"], [])
+
+    def test_success_path_still_reports_real_potential(self) -> None:
+        trace = self._trace(_pr(labels=["t-algebra"]), [self._profile("alice", ["t-algebra"])])
+        self.assertEqual(trace["potential"], ["alice"])
+        self.assertEqual(trace["available"], ["alice"])
+
+
+class TestScarcityCount(SuggestionServiceTestCase):
+    """`available_reviewer_count` reports the REAL supply, not the requester's override."""
+
+    def test_unavailable_requester_is_not_counted_as_available_supply(self) -> None:
+        # Alice is off auto-assign: the request overrides that for *her* eligibility (she still
+        # gets the suggestion), but the nightly run would not count her as available supply, so
+        # neither may the rendered scarcity number. Only bob really matches and has room.
+        self.alice_pref.auto_assign = False
+        self.alice_pref.save(update_fields=["auto_assign"])
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest()
+        [pr] = result.suggestions
+        self.assertEqual(pr.available_reviewer_count, 1)
+
+    def test_requester_at_capacity_is_not_counted_as_available_supply(self) -> None:
+        # Same for the capacity override — the other half of Invariant 7's "reported, never
+        # enforced": alice is suggested the PR, but she is not supply for it.
+        self.alice_pref.maximum_capacity = 0
+        self.alice_pref.save(update_fields=["maximum_capacity"])
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest()
+        [pr] = result.suggestions
+        self.assertEqual(pr.available_reviewer_count, 1)
+
+    def test_available_requester_is_counted(self) -> None:
+        # The control: with alice genuinely available, she counts alongside bob.
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        result = self._suggest()
+        [pr] = result.suggestions
+        self.assertEqual(pr.available_reviewer_count, 2)
+
+    def test_scarcity_is_zero_when_no_one_is_really_available(self) -> None:
+        # A PR only the unavailable requester matches reports 0 available reviewers — the signal
+        # the old reading could never produce, since the override always counted at least one.
+        self.alice_pref.auto_assign = False
+        self.alice_pref.preferred_labels = ["t-order"]
+        self.alice_pref.save(update_fields=["auto_assign", "preferred_labels"])
+        self._seed_snapshot({"1": _pr(labels=["t-order"])})
+        result = self._suggest()
+        [pr] = result.suggestions
+        self.assertEqual(pr.available_reviewer_count, 0)
 
 
 class TestOrderingAndLimits(SuggestionServiceTestCase):

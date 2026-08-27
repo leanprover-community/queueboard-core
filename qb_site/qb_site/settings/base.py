@@ -456,6 +456,14 @@ ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED = env_bool(
 ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT", "10"))
 ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT", "5"))
 ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS", "5"))
+#   MAX_SNAPSHOT_AGE_SECONDS  refuse to answer from a snapshot older than this (0 disables). Guards
+#                             the `cache_key="default"` fallback taken when a repo has no active
+#                             rule set, where a long-dead snapshot row can otherwise be served as
+#                             live. Default 24h — far above the 5-minute refresh cadence, so a
+#                             normal snapshot outage does not take the feature down.
+ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS = int(
+    os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS", "86400")
+)
 # Acceptance window: a proposal expires this many days after creation unless accepted. The
 # per-reviewer override in ReviewerPreference.notification_settings is clamped to >= 7.
 ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", "7"))

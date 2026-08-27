@@ -314,6 +314,11 @@ def _pr_trace_base(
         "labels": _topic_labels(pr_entry, topic_label_matcher),
         "author": pr_entry.get("author") or "",
         "opt_outs": sorted(login for login in excluded_logins if login),
+        # Default so that `potential` is always present, including on the early-return paths
+        # (missing-topic-label / no-match / no-matching-labels) that never reach the candidate
+        # contest. Readers such as the 053 skip classifier key off membership in this list, and a
+        # missing key there is indistinguishable from "was contested and lost".
+        "potential": [],
     }
 
 
@@ -528,6 +533,7 @@ def run_assignment_simulation(
                         "author": "",
                         "opt_outs": [],
                         "candidate_counts": {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0},
+                        "potential": [],
                         "available": [],
                         "picked": None,
                         "reason": "missing-pr",
