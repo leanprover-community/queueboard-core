@@ -70,6 +70,23 @@ uv run python qb_site/manage.py test zulip_bot
     Compose, which loads `.env` via `env_file`).
   - This is for quick iteration only; `scripts/repo_check_compose.sh` stays canonical
     (it also runs migrations via the `migrate` service and backup-policy validation).
+- If a build fails with `failed to solve: error getting credentials` and a
+  `docker-credential-desktop` crash trying to `mkdir` under `~/Library/Containers/`, that is a
+  sandboxed environment blocking the credential helper's writes — not a Docker or repo problem.
+  Every image this stack pulls is public (`python:3.12-slim`, `postgres:16-alpine`,
+  `redis:7-alpine`), so the helper is not needed at all; it runs only because `~/.docker/config.json`
+  sets `credsStore: "desktop"`. Reuse the already-built images and give Docker a config without it:
+  ```bash
+  export DOCKER_CONFIG="$SCRATCH/dockercfg"                  # containing just {"auths":{}}
+  ln -sfn ~/.docker/cli-plugins "$DOCKER_CONFIG/cli-plugins" # else `docker compose` vanishes
+  export DOCKER_HOST="unix://$HOME/.docker/run/docker.sock"  # else the desktop context is lost
+  docker compose up -d db redis
+  docker compose run --rm --no-deps -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci \
+    python qb_site/manage.py test <app>                      # cached image, no rebuild
+  ```
+  Both the `cli-plugins` symlink and `DOCKER_HOST` are required: overriding `DOCKER_CONFIG` moves
+  where the CLI looks for plugins *and* for contexts. Ask the user to run the canonical script
+  outside the sandbox for a real end-to-end check, and say which steps you covered.
 - If Docker/Compose is unavailable:
   - run non-DB checks (`ruff`, GraphQL validation, pure-Python tests where applicable),
   - run targeted tests that do not require the DB,
