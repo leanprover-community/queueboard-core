@@ -53,9 +53,18 @@ from analyzer.services.reviewer_assignment import (  # noqa: E402
     _filter_assignment_forbidden_prs,
     _filter_prs_without_active_assignee,
     _filter_prs_without_active_proposal,
-    prepare_assignment_inputs,
     build_reviewer_catalog,
 )
+
+# The pool assembler was private (`_prepare_assignment_inputs`) until design doc 053 promoted it.
+# Accept either name: this probe measures the *pre-deploy* baseline, so it has to run against a
+# revision that predates the rename — a baseline probe that only runs post-deploy is useless.
+try:
+    from analyzer.services.reviewer_assignment import prepare_assignment_inputs  # noqa: E402
+except ImportError:  # deployed revision predates the 053 rename
+    from analyzer.services.reviewer_assignment import (  # noqa: E402
+        _prepare_assignment_inputs as prepare_assignment_inputs,
+    )
 from analyzer.services.reviewer_assignment_engine import (  # noqa: E402
     _normalize_login,
     _topic_labels,
