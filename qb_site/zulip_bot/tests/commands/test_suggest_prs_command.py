@@ -134,6 +134,13 @@ class TestSuggestPrsCommand(TestCase):
         self.assertIn("`t-typo`", result.content)
         self.assertIn("#101", result.content)
 
+    @override_settings(ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS=1)
+    def test_labels_over_the_cap_are_reported_not_silently_ignored(self) -> None:
+        self._seed_snapshot({"101": _pr_entry(labels=["t-analysis"])})
+        result = suggest_prs_command(self._context(), "t-analysis t-algebra")
+        self.assertIn("over the per-request label limit", result.content)
+        self.assertIn("`t-algebra`", result.content)
+
     def test_no_preferred_labels_hints_at_the_label_override(self) -> None:
         pref = ReviewerPreference.objects.get(user=self.user)
         pref.preferred_labels = []
