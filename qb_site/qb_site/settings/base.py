@@ -228,6 +228,10 @@ CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 # Use django-celery-results when explicitly configured via env; fallback to broker
 # so existing environments continue to work until .env is updated.
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+# Test-only: clears the Redis namespaces the suite shares with a running dev stack before the
+# suite starts. Lives in base rather than ci so a host run picks it up too — the run-to-run dedupe
+# leak it prevents does not care which settings module you used. Inert outside `manage.py test`.
+TEST_RUNNER = "qb_site.test_runner.IsolatedRedisDiscoverRunner"
 CELERY_RESULT_EXTENDED = env_bool(os.getenv("CELERY_RESULT_EXTENDED"), True)
 CELERY_TASK_TRACK_STARTED = env_bool(os.getenv("CELERY_TASK_TRACK_STARTED"), True)
 CELERY_TIMEZONE = TIME_ZONE
