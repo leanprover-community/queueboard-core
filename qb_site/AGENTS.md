@@ -76,6 +76,27 @@ uv run python qb_site/manage.py test zulip_bot
   - or ask the user to run `scripts/repo_check_compose.sh` and share results.
 - When reporting verification, explicitly state what was and was not runnable.
 
+## Test Isolation: Shared Redis
+
+`syncer.services.task_dedupe` and `syncer.services.rate_budget` write short-TTL keys to the
+Celery broker's Redis. Dedupe keys are `(repo_id, pr_number)`-scoped and the test database is
+recreated on every run, so ids restart from 1 and a run collides with the *previous* run's
+leftovers — `sync_pr` returns `runtime_deduped` / `recently_processed` and any test expecting real
+work fails.
+
+Two guards, both in place:
+- `TEST_RUNNER` (`qb_site.test_runner.IsolatedRedisDiscoverRunner`, set in `base.py`) clears the
+  app's Redis namespaces before the suite starts. Scan-and-delete over the prefixes in
+  `SHARED_REDIS_KEY_PATTERNS`, never `FLUSHDB`.
+- `ci.py` repoints the broker at its own Redis database index (`CI_REDIS_DB_INDEX`, default 15) so
+  a test run cannot write into the keyspace a `docker compose up` dev stack is using.
+
+**If you add a Redis key prefix to those modules, add a matching entry to
+`SHARED_REDIS_KEY_PATTERNS`.** `syncer/tests/test_redis_isolation.py` scans both modules for key
+literals and fails if one is not covered. Symptoms of the leak returning are misleading — failures
+land in unrelated suites (backfill), only after several consecutive runs, and each failing test
+passes in isolation — so trust the guard test over the appearance of flakiness.
+
 ## Concurrent Writers and Unique Keys
 Celery workers overlap: per-PR tasks (`syncer.sync_pr`, `analyzer.process_pr`), periodic
 sweeps, admin actions, and management commands can all write the same rows at the same
