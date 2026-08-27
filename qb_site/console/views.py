@@ -441,6 +441,19 @@ def _pr_url(repository, number: int) -> str:
     return f"https://github.com/{repository.owner}/{repository.name}/pull/{int(number)}"
 
 
+def _repo_from_post(request: HttpRequest):
+    """``Repository`` named by the POSTed ``repo_id``, or ``None``.
+
+    The digit check is load-bearing, not defensive dressing: an ``id=`` lookup against a
+    non-numeric string raises ``ValueError`` inside the ORM, so a hand-rolled POST would 500
+    rather than reach the caller's not-found branch.
+    """
+    raw = str(request.POST.get("repo_id") or "").strip()
+    if not raw.isdigit():
+        return None
+    return Repository.objects.filter(id=int(raw)).only("id", "owner", "name").first()
+
+
 def _live_pr_for(proposal: AssignmentProposal) -> PullRequest | None:
     """Fetch the proposal's PR with just the fields the console needs to reason about it."""
     return (
@@ -806,7 +819,7 @@ def unassign(request: HttpRequest) -> HttpResponse:
     if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)):
         return render(request, "console/unavailable.html", {"message": "Unassigning isn’t enabled yet — please try again later."})
 
-    repo = Repository.objects.filter(id=request.POST.get("repo_id") or 0).only("id", "owner", "name").first()
+    repo = _repo_from_post(request)
     if repo is None:
         return render(request, "console/unavailable.html", {"message": "That repository was not found."}, status=404)
 
@@ -977,7 +990,7 @@ def claim(request: HttpRequest) -> HttpResponse:
     ):
         return render(request, "console/unavailable.html", {"message": "Claiming isn’t enabled yet — please try again later."})
 
-    repo = Repository.objects.filter(id=request.POST.get("repo_id") or 0).only("id", "owner", "name").first()
+    repo = _repo_from_post(request)
     if repo is None:
         return render(request, "console/unavailable.html", {"message": "That repository was not found."}, status=404)
 

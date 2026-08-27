@@ -117,6 +117,14 @@ class SuggestionViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "leanprover-community/mathlib4")
 
+    @override_settings(ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS=1)
+    def test_labels_over_the_cap_are_reported_on_the_page(self) -> None:
+        self._seed_default_snapshot()
+        self._login_session()
+        response = self.client.get(reverse("console:suggestions"), {"labels": "t-analysis, t-algebra"})
+        self.assertContains(response, "Too many labels")
+        self.assertContains(response, "t-algebra")
+
     def test_no_snapshot_renders_explanation(self) -> None:
         self._login_session()
         response = self.client.get(reverse("console:suggestions"))
@@ -242,3 +250,21 @@ class SuggestionViewTests(TestCase):
         response = self._claim([101])
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse("console:login"), response["Location"])
+
+    def test_claim_rejects_a_non_numeric_repo_id_without_erroring(self) -> None:
+        # An `id=` lookup against a non-numeric string raises ValueError inside the ORM, which
+        # would surface as a 500 rather than the not-found branch.
+        self._seed_default_snapshot()
+        self._login_session()
+        with patch("console.views.assign_reviewer_and_record") as mock_assign:
+            response = self.client.post(reverse("console:claim"), {"repo_id": "not-a-number", "pr_numbers": ["101"]})
+        mock_assign.assert_not_called()
+        self.assertEqual(response.status_code, 404)
+
+    def test_claim_rejects_an_unknown_repo_id(self) -> None:
+        self._seed_default_snapshot()
+        self._login_session()
+        with patch("console.views.assign_reviewer_and_record") as mock_assign:
+            response = self.client.post(reverse("console:claim"), {"repo_id": "999999", "pr_numbers": ["101"]})
+        mock_assign.assert_not_called()
+        self.assertEqual(response.status_code, 404)
