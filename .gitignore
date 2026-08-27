@@ -10,5 +10,8 @@ celerybeat-schedule*
 docs/graphql/github-schema.json
 zuliprc
 .zulip-policy.local.json
+# Sandboxed-Docker setup (machine-specific absolute paths); see docs/sandboxed_docker_setup.md
+.docker-env
+.docker-nocreds/
 .github-app-config.local.json
 node_modules/

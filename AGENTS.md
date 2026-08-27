@@ -73,6 +73,10 @@ Notes
 - Copy `.env.example` to `.env` for local Django work; supply database credentials, GitHub tokens, and task runner settings as described in `docs/django_backend_plan.md`.
 - Run the stack through `docker compose` against PostgreSQL; we no longer support SQLite fallbacks for quick tests.
 - Keep secrets out of version control—store them in the `.env` file or your chosen secret manager.
+- Running the Docker checks from a **sandboxed** shell (an agent harness restricting filesystem
+  writes) needs `DOCKER_CONFIG` / `DOCKER_HOST` set, because Docker Desktop's credential helper
+  cannot start under the sandbox and takes every image pull down with it. Setup, verification and
+  undo are in `docs/sandboxed_docker_setup.md`. A normal terminal needs none of it.
 - **Every configurable setting MUST be wired through `base.py` AND documented in `.env.example` — no exceptions.** This is forgotten often; treat it as part of "done" for any setting change:
   1. Define it in `qb_site/qb_site/settings/base.py` as `FOO = os.getenv("FOO", <default>)` (with a short comment).
   2. Add `FOO=<default-or-blank>` to `.env.example` with a comment explaining it.
