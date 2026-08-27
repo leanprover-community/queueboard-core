@@ -3,7 +3,8 @@
 > Status: **Implemented** (2026-08-25), feature-flagged and dark: all `ANALYZER_ASSIGNMENT_SUGGESTIONS_*`
 > flags default off, following the 046/050 staged-rollout discipline. See the rollout steps under
 > [Operational Notes](#operational-notes). The design was calibrated against a production
-> measurement taken 2026-08-25 — see [Measured Baseline](#measured-baseline).
+> measurement taken 2026-08-25 and **re-confirmed against production on 2026-08-27**
+> (`engine_mismatches: 0`) — see [Measured Baseline](#measured-baseline).
 
 ## Context
 
@@ -37,6 +38,43 @@ queue snapshot 8 minutes old). Reproduce with `scripts/probe_053_suggestions.py`
 [Reproducing the measurement](#reproducing-the-measurement)). These numbers are what the design
 below is calibrated against; **re-run the probe before enabling the flags** to confirm the shape
 has not changed.
+
+### Re-measured 2026-08-27 (pre-rollout confirmation)
+
+The probe was re-run against production immediately before enabling the flags, as this section
+instructs. **The shape holds and the cost improved.** The 08-25 figures below are left as written —
+they are what the design was calibrated against, and the audit trail is worth more than a tidy
+document. Deltas:
+
+| | 2026-08-25 | 2026-08-27 |
+| --- | --- | --- |
+| `engine_mismatches` (classifier vs live engine) | 0 | **0** |
+| assignable pool | 516 (463 with a topic label) | 519 (463 with a topic label) |
+| placed by the last nightly run | 11 | 14 |
+| median eligible PRs (availability + capacity overridden) | 69 | 70 |
+| reviewers with ≥ 10 eligible | 45 of 57 | 43 of 57 |
+| reviewers with 0 eligible | 3 needing a label override | 4 (2 of them have no stored labels) |
+| end-to-end request | 476 ms median (340–687) | **357 ms** median (333–368) |
+| — payload read share | 411 ms (82.9%) | 276 ms (77.5%) |
+| — all engine compute | 85 ms | 75 ms |
+| payload (compressed / JSON text) | 5.62 / 13.18 MB | 5.51 / 12.90 MB |
+| held payload / transient peak | 28.8 / 81.6 MB | 28.2 / 79.8 MB |
+| peak RSS (whole probe run) | 259 MB | 248 MB |
+| `over_cap_backlog` | (implied 0) | **0**, measured |
+| pool labels with no interested reviewer | none | **none** |
+
+Two integrity checks passed that are worth recording, because they are what make the skip tally
+trustworthy rather than merely plausible:
+
+- `engine_mismatches: 0` — the probe's own skip classifier was cross-checked against the live
+  `suggest_reviewer_for_pr_with_trace` on every (reviewer, PR) pair and never disagreed.
+- The skip tally sums to exactly 29,583 = 57 reviewers × 519 pool PRs in **both** the no-override
+  and the override pass. Every pair is attributed to exactly one reason — no gaps, no double
+  counting.
+
+The counterfactual also re-confirmed, and it is the sharpest number in this document: with no
+overrides — i.e. what the scheduled pipeline can see — **44 of 57 reviewers have zero eligible
+PRs**. With availability and capacity overridden, that falls to 4.
 
 **The candidate pool is large, and the scheduled pipeline places almost none of it.**
 
@@ -185,6 +223,7 @@ class SuggestionResult:
     effective_labels: list[str]      # the override set, else the reviewer's preferred_labels
     label_override: bool
     unknown_labels: list[str]        # requested labels that are not topic labels in this repo
+    dropped_labels: list[str]        # requested labels past MAX_LABELS — reported, never silent
     load: ReviewerLoad | None        # from the reviewer's REAL capacity — never the override
     suggestions: list[SuggestedPR]
     skipped: dict[str, int]          # reason -> count over the assignable pool
@@ -231,10 +270,18 @@ Algorithm:
    then queue age, then `feat:` priority, then PR number. That is the right order *among the PRs a
    given reviewer can take* — the PR that most needs this reviewer comes first. It is worth being
    honest that it is not a per-reviewer ordering: because scarcity-first front-loads PRs that are
-   scarce precisely because few reviewers match them, the median reviewer's first eligible PR sits
-   at rank ~78 of 516. Walking is cheap — 17 ms for the entire pool against a ~476 ms request — so
-   this costs nothing, and the early-stop at `limit` is not an optimisation worth reasoning about:
-   it can save at most 17 ms of a request dominated by the payload read.
+   scarce precisely because few reviewers match them, a reviewer's first eligible PR can sit deep
+   in the ranking. Measured 2026-08-27 under this pass's own semantics (availability and capacity
+   overridden, the reviewer's own labels), the rank of the first eligible PR is median **8**, p75
+   60, p90 **162**, max **302** of 519. Walking is cheap — 16 ms for the entire pool against a
+   ~357 ms request — so this costs nothing, and the early-stop at `limit` is not an optimisation
+   worth reasoning about: it can save at most 16 ms of a request dominated by the payload read.
+
+   **Do not "optimise" this by ranking or walking only a prefix of the pool.** The 16 ms walk is a
+   standing invitation to cap it, and the tail above is why that would be wrong: a top-100 cutoff
+   would return an empty result for the ~10% of reviewers whose first eligible PR ranks past 162,
+   and those are precisely the reviewers with the narrowest areas — the ones this feature exists to
+   reach. The failure would be silent, indistinguishable from "nothing to review right now".
 6. **Walk the ranking**, and for each PR call `suggest_reviewer_for_pr_with_trace` with the override
    catalog. Keep the PR when the normalized requester login appears in `trace["available"]`;
    otherwise record a skip reason. Stop at `limit`. The trace's `picked` field is **ignored** — this
@@ -316,7 +363,7 @@ Carry the request shape in the query string — `?repo=<id>&labels=t-algebra,t-t
 different query. The params are safe on a token-less URL because they pre-fill only repo and labels;
 the login still comes from the session and never from the request (Invariant 6). Validate them
 server-side regardless: `MAX_LABELS` applies to the query string too, and unknown labels already
-have somewhere to go in `unknown_labels`.
+have somewhere to go in `unknown_labels` — labels refused by the cap go to `dropped_labels`.
 
 **Footer wording must stay indefinite** — "more suggestions", never "the next 5" or "5 more like
 these". The prefix property (Invariant 2) holds only within one snapshot generation, and
@@ -507,7 +554,8 @@ Settings (all `settings/base.py` + `.env.example`):
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED` | off | the console's GitHub write |
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT` | 10 | service default; what the console renders |
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT` | 5 | surface override for the in-channel reply |
-| `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS` | 5 | cap on the label override set (form and query string alike) |
+| `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS` | 5 | cap on the label override set (form and query string alike); labels past it come back in `dropped_labels` |
+| `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS` | 86400 | refuse to answer from a snapshot older than this (0 disables); guards the no-active-rule-set fallback |
 
 `suggest_prs_for_reviewer(limit=None)` falls back to `ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT`, so the
 Zulip setting is a surface override rather than a second parallel knob.
@@ -644,6 +692,17 @@ re-run with `--size=standard-2x` — `tracemalloc` adds overhead at the moment t
   5. **`unknown_labels` validates against `LabelDef` + the topic pattern**: a requested label is
      known only when it matches the repo's topic-label pattern *and* exists in the synced label
      catalog, so typos (`t-algebr`) are reported instead of silently yielding nothing.
+  5b. **`dropped_labels` reports what the `MAX_LABELS` cap refused**, separately from
+     `unknown_labels`. The cap is applied before the known/unknown split, so without a third list
+     those labels land in neither and the request is silently narrowed. That matters more than it
+     looks: reviewers hold up to 11 stored labels against a cap of 5, and the broad label override
+     is the single biggest unlock in the [Measured Baseline](#measured-baseline) — quietly
+     honouring five of eight would make the reviewer's own labels look wrong.
+  5c. **A stale snapshot is refused like a missing one.** When a repo has no *active* rule set the
+     cache key falls back to the literal `"default"`, where a long-dead row can survive (production
+     carries one from 2026-03). Without `MAX_SNAPSHOT_AGE_SECONDS` the no-snapshot guard is
+     satisfied by that row and months-old PRs are served as live — the fabricated answer
+     Invariant 1 exists to prevent, in its quietest possible form.
   6. **The console claim re-check runs with an effectively unbounded limit** (verifying
      *eligibility*, not top-N membership): a still-eligible PR that drifted past rank 10 between
      render and claim must not be rejected.
