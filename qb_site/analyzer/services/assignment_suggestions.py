@@ -15,9 +15,12 @@ engine call then sees the override. Key invariants (numbered as in the design do
    random ``picked`` — and the ranking's sort key is a total order, so identical requests against
    one snapshot generation return identical ordered results (and a smaller ``limit`` returns a
    strict prefix of a larger one).
-4. Push-throttle preferences (``away_until``, ``auto_assign``, ``maximum_capacity``) are
-   overridden by the explicit request; correctness rules (authorship, conflict-of-interest,
-   opt-outs, cooldowns, assignment-forbidden labels, active assignees/proposals) never are.
+4. Push-throttle preferences (``away_until``, ``auto_assign``, ``maximum_capacity``, and the
+   rolling-window ``max_new_assignments_per_week`` of design doc 054) are overridden by the
+   explicit request; correctness rules (authorship, conflict-of-interest, opt-outs, cooldowns,
+   assignment-forbidden labels, active assignees/proposals) never are. The rate limit in
+   particular *depends* on this: it is a deliberately un-saveable weekly trickle, and this pull
+   path is where a reviewer with spare capacity right now catches up.
 5. One candidate pool: the assignable set comes from ``prepare_assignment_inputs``, shared with
    the nightly builder, so a suggestion can never offer what the scheduled run would refuse.
 7. Capacity is reported, never enforced: ``load`` comes from the reviewer's *real*
@@ -61,8 +64,9 @@ STATUS_NO_LABELS = "no_labels"
 STATUS_NONE_ELIGIBLE = "none_eligible"
 
 # Skip-tally reasons, in the engine's own evaluation order (each pool PR is counted once against
-# the first rule that excluded the requester). Deliberately no `at_capacity`: the requester's
-# capacity is always overridden, so it can never be the reason *they* were skipped (Invariant 7).
+# the first rule that excluded the requester). Deliberately no `at_capacity` and, for the same
+# reason, no `at_rate_limit`: both of the requester's capacity gates are always overridden, so
+# neither can ever be why *they* were skipped (Invariant 7).
 SKIP_ALREADY_ASSIGNED = "already_assigned"
 SKIP_NO_TOPIC_LABEL = "no_topic_label"
 SKIP_AUTHORED = "authored"
@@ -215,8 +219,9 @@ def suggest_prs_for_reviewer(
     Read-only (Invariant 1): reads the cached queue snapshot for the repo's default rule set —
     never builds one — and persists nothing. ``labels`` *replaces* the reviewer's stored
     ``preferred_labels`` for this request; the request also overrides ``away_until``,
-    ``auto_assign`` and ``maximum_capacity`` (push throttles, Invariant 4), while authorship,
-    conflict-of-interest, opt-outs, cooldowns and the pool filters stay in force.
+    ``auto_assign``, ``maximum_capacity`` and ``max_new_assignments_per_week`` (push throttles,
+    Invariant 4), while authorship, conflict-of-interest, opt-outs, cooldowns and the pool filters
+    stay in force.
     """
     current_time = now or datetime.now(timezone.utc)
     effective_limit = int(settings.ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT) if limit is None else int(limit)
@@ -268,8 +273,16 @@ def suggest_prs_for_reviewer(
 
     # The request profile: an explicit request overrides the push throttles (Invariant 4). The
     # capacity override is unconditional (Invariant 7) — the load line below carries the honest
-    # capacity signal instead.
-    override_kwargs: dict = {"auto_assign": True, "temporary_break": False, "maximum_capacity": sys.maxsize}
+    # capacity signal instead. `weekly_limit=None` retires the 054 rate limit for this request on
+    # the same footing: a reviewer *asking* for work is not a statement about how much the
+    # scheduled pipeline should send them, and this is the catch-up path a weekly window
+    # deliberately gives up on the push side.
+    override_kwargs: dict = {
+        "auto_assign": True,
+        "temporary_break": False,
+        "maximum_capacity": sys.maxsize,
+        "weekly_limit": None,
+    }
     if label_override:
         override_kwargs["preferred_labels"] = list(known_labels)
         override_kwargs["preferred_labels_lower"] = set(known_labels)
