@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import Iterable
+from typing import Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
@@ -30,6 +30,11 @@ from analyzer.services.assignment_proposal_validity import (
     live_proposal_validity,
     queue_membership,
     resolve_on_queue_exit_policy,
+)
+from analyzer.services.assignment_rate_limit import (
+    assignment_rate_window_days,
+    normalize_login,
+    recent_assignment_counts,
 )
 from analyzer.services.assignment_suggestions import (
     STATUS_NO_LABELS,
@@ -381,6 +386,26 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
 # --- preferences -------------------------------------------------------------
 
 
+def _recent_intake_by_repo(preferences: Sequence[ReviewerPreference]) -> dict[int, int]:
+    """``repository_id -> new PRs assigned to this reviewer in the rolling window`` (design doc 054).
+
+    Shown next to the rate-limit field so the number a reviewer types is informed by their own
+    history. Computed here rather than in ``core.services.reviewer_prefs`` because the count is an
+    ``analyzer`` concern and ``core`` must not import ``analyzer``. One small indexed query per
+    repository the reviewer has a preference row in — typically one.
+    """
+    window_days = assignment_rate_window_days()
+    now = timezone.now()
+    intake: dict[int, int] = {}
+    for pref in preferences:
+        login = getattr(pref.user, "github_login", "") or ""
+        if not login:
+            continue
+        counts = recent_assignment_counts(pref.repository, [login], window_days=window_days, now=now)
+        intake[int(pref.repository_id)] = counts.get(normalize_login(login), 0)
+    return intake
+
+
 @require_http_methods(["GET", "POST"])
 def prefs(request: HttpRequest) -> HttpResponse:
     """Reviewer preferences at a stable, token-less URL (design doc 022).
@@ -410,6 +435,7 @@ def prefs(request: HttpRequest) -> HttpResponse:
                 preferences=preferences,
                 user_timezone=user_timezone,
                 data=request.POST if request.method == "POST" else None,
+                recent_intake_by_repo=_recent_intake_by_repo(preferences),
             )
             if request.method == "POST" and formset.is_valid():
                 formset.save()
