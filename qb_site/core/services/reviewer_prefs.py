@@ -14,7 +14,7 @@ queryset it was handed). See invariant 3 in design doc 022.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import tzinfo
 
 from django.db.models import Case, IntegerField, QuerySet, When
@@ -51,11 +51,18 @@ def build_preferences_formset(
     preferences: Sequence[ReviewerPreference],
     user_timezone: tzinfo,
     data: QueryDict | None = None,
+    recent_intake_by_repo: Mapping[int, int] | None = None,
 ) -> BaseModelFormSet:
     """Build the formset over ``preferences`` (already authorized by the caller).
 
     ``data`` bound → a POST; ``None`` → a fresh render. ``user_timezone`` is what naive
     ``away_until`` input is interpreted in (see ``zulip_bot.services.user_timezone``).
+
+    ``recent_intake_by_repo`` (``repository_id -> new PRs in the rolling window``) is displayed
+    beside the rate-limit field so a reviewer can pick a number against their own history rather
+    than blind (design doc 054). It is *supplied by the caller* rather than computed here: the
+    figure lives in ``analyzer``, and ``core`` does not import ``analyzer``. Omitting it drops the
+    sentence and nothing else.
     """
     return ReviewerPreferenceFormSet(
         data,
@@ -64,6 +71,7 @@ def build_preferences_formset(
             "user_timezone": user_timezone,
             "label_catalog_by_repo": _label_catalog_by_repo(preferences),
             "topic_label_pattern_by_repo": _topic_label_pattern_by_repo(preferences),
+            "recent_intake_by_repo": dict(recent_intake_by_repo or {}),
         },
     )
 
