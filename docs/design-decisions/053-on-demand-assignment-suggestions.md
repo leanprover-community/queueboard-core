@@ -1,10 +1,13 @@
 # On-Demand Assignment Suggestions (Reviewer-Initiated "What Should I Review?")
 
-> Status: **Implemented** (2026-08-25), feature-flagged and dark: all `ANALYZER_ASSIGNMENT_SUGGESTIONS_*`
-> flags default off, following the 046/050 staged-rollout discipline. See the rollout steps under
-> [Operational Notes](#operational-notes). The design was calibrated against a production
-> measurement taken 2026-08-25 and **re-confirmed against production on 2026-08-27**
-> (`engine_mismatches: 0`) — see [Measured Baseline](#measured-baseline).
+> Status: **Deployed** (rolled out 2026-08-27). Implemented 2026-08-25 following the 046/050
+> staged-rollout discipline; the `ANALYZER_ASSIGNMENT_SUGGESTIONS_*` flags shipped dark and have
+> since been enabled in production — **both the read path (`_ENABLED`) and the console claim-write
+> (`_CONSOLE_CLAIM_ENABLED`) are on**, so `suggest-prs` (Zulip) and `/console/suggestions/` are live
+> for reviewers. The design was calibrated against a production measurement taken 2026-08-25 and
+> re-confirmed against production on 2026-08-27 (`engine_mismatches: 0`) immediately before the flags
+> were flipped — see [Measured Baseline](#measured-baseline) and the rollout entry under
+> [Progress Notes](#progress-notes).
 
 ## Context
 
@@ -567,6 +570,9 @@ Zulip setting is a surface override rather than a second parallel knob.
 - Rollout: re-run `scripts/probe_053_suggestions.py` to confirm the baseline still holds, enable the
   read path first on both surfaces (harmless — read-only), confirm the suggestions look sane against
   the queueboard, then enable the console claim flag.
+  - **Completed 2026-08-27** following exactly these steps: both `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED`
+    (read path, both surfaces) and `ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED` (console
+    claim-write) are enabled in production. The Zulip claim path (`assign`) needed no flag of its own.
 - **Cost:** a request is ~476 ms, of which ~411 ms is the snapshot payload read and ~85 ms is all
   engine compute combined (see [Measured Baseline](#measured-baseline)). That is acceptable for a
   deliberate "find me work" page and is not a blocker, but it is slow enough to be worth fixing —
@@ -721,6 +727,15 @@ re-run with `--size=standard-2x` — `tracemalloc` adds overhead at the moment t
   `(repo, reviewer, labels, cache_key)` around the *result*, because the expensive part is
   repo-scoped and reviewer-independent. And memory joined latency as a thing to watch: 28.8 MB
   resident per held payload, but an 81.6 MB transient peak while loading it.
+- **2026-08-27 (rollout)** — the feature was enabled in production, completing the staged rollout in
+  [Operational Notes](#operational-notes). The pre-rollout probe re-run (recorded above under
+  [Re-measured 2026-08-27](#re-measured-2026-08-27-pre-rollout-confirmation)) confirmed the baseline
+  still held (`engine_mismatches: 0`, `over_cap_backlog: 0`, no pool label without an interested
+  reviewer), then `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED` (read path, both surfaces) and
+  `ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED` (console claim-write) were both turned on.
+  `suggest-prs` / `next-pr` in Zulip and `/console/suggestions/` are now live for reviewers; claiming
+  from Zulip continues to reuse the existing `assign` command. The read-only status the earlier
+  entries describe (all flags dark) is now historical.
 
 ## Related Decisions
 
