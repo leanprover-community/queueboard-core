@@ -1,10 +1,12 @@
 # Reviewer Assignment Rate Limit (Rolling Weekly Intake Cap)
 
-> Status: **Implemented, not yet enabled for anyone** (2026-08-28). Chunks 1–8 of the
-> [Implementation Plan](#implementation-plan-chunks) have landed; the code is inert until a reviewer
-> sets `max_new_assignments_per_week`, which is also the whole rollout mechanism (no feature flag,
-> Open Question 5). Still to do: a pilot cohort, and the engine simulation Open Question 3 asks for
-> before any global default. The measurement probe was run against production first; see
+> Status: **Deployed to production, no limits set** (2026-08-28). Chunks 1–8 of the
+> [Implementation Plan](#implementation-plan-chunks) have landed and shipped; every
+> `max_new_assignments_per_week` is still `NULL`, so the push pipeline behaves exactly as it did
+> before. That null default is the whole rollout mechanism — there is no feature flag (Open
+> Question 5), so enabling is an edit to one field per reviewer and clearing it is the rollback.
+> Still to do: a pilot cohort, and the engine simulation Open Question 3 asks for before any global
+> default. The measurement probe was run against production before any code landed; see
 > [Measured Baseline](#measured-baseline-2026-08-28), which confirms the premise and re-sized
 > several claims. Origin: a Zulip thread (Christian Merten, with Yaël Dillies' earlier proposal and
 > Bryan Gin-ge Chen) on making reviewer capacity limits actually bind.
@@ -221,9 +223,9 @@ of the 32 active reviewers have crossed it in any rolling week.
    Folded into [Surfacing](#surfacing--extend-the-honest-load-line).
 
 §3c and §6d were added after the first run to answer exactly these two questions and were run the same
-day; their results are folded in above. One refinement is still outstanding: **§4b**, the 90-day
-replay restricted to the last 30 days, which will show how much of §4's cost estimate is rollout
-residue. It is in the script and has not been run.
+day; **§4b**, the 90-day replay restricted to the last 30 days, followed in a third run. All three are
+folded in above — and §4b refuted the prediction this doc had been carrying, which is why the cost
+figures moved *up* rather than down once the rollout period was excluded.
 
 ## Goals / Non-Goals
 
@@ -346,19 +348,35 @@ The concurrent load line (`reviewer_load.format_load_line`, shown by the `assign
 the daily attention DM, and the console) gains the weekly figure, e.g.:
 
 ```
-Load: 6 / 10   ·   this week: 4 / 5
+Load: 3 / 10 (7 free) · last 7 days: 4 / 5
+Load: 3 / 10 (7 free) · last 7 days: 5 / 5 ⚠ weekly limit reached
 ```
 
 Computed from the same `recent_assignment_counts` service so the parts agree. This is load-bearing UX,
 not decoration (same lesson as `053`'s Invariant 7): when the push goes quiet because the weekly limit
 is hit, the reviewer needs to see *why*, and the line is where they see it — along with the implicit
-nudge that `suggest-prs` will still serve them if they want more now.
+nudge that `suggest-prs` will still serve them if they want more now. The second line above is the
+state this feature exists to create and the one that most needs explaining: plenty of concurrent room,
+no new work arriving. A reviewer with no limit gets the old line back byte-for-byte.
+
+The copy says **"last 7 days", not "this week"** (an earlier draft of this section said the latter),
+and the day count is read from `ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS` rather than written out, so it
+cannot drift from the window actually being enforced. The window is rolling; "this week" invites the
+calendar reading and, with it, a "why am I blocked, it's Monday" bug report.
 
 The same number belongs **next to the field in the console preferences form**, before a limit is set.
 Measured intake is a median of 2/week against a median peak week of 6
 ([Measured Baseline](#measured-baseline-2026-08-28)), so a reviewer choosing a number blind will pick
-badly in either direction. Showing "you've received N new PRs in the last 7 days" beside the input
-costs nothing extra — the load line already computes exactly that count.
+badly in either direction. Showing "You have been assigned N new PRs in the last 7 days" beside the
+input costs nothing extra — the load line already computes exactly that count.
+
+One thing rendering the page revealed that the design did not anticipate: the new field lands beside
+`maximum_capacity` in the form's two-column grid — the right cell, stock next to flow — but
+`maximum_capacity` has **never had help text**. An annotated field beside a bare one reads as an
+oversight, and nothing on the page said these were two different *kinds* of limit. So
+`maximum_capacity` gained a one-line explanation naming it as the concurrent hold. The stock/flow
+distinction this doc is built on has to be legible on the surface where a reviewer sets both, not just
+in the engine.
 
 ## Subtleties / Invariants
 
@@ -559,7 +577,8 @@ provenance marker `053` deferred.
 The script was validated against a seeded local Postgres 16 in both login modes (aggregates checked
 against hand-built fixtures) and **run against production on 2026-08-28** —
 [Measured Baseline](#measured-baseline-2026-08-28). §§3c and 6d were added afterwards, prompted by
-that run, and have not yet been run against production.
+that run, and §4b after those; all three were run against production the same day, so every figure in
+the baseline is measured rather than projected.
 
 ## Operational Notes
 
@@ -737,3 +756,40 @@ that run, and have not yet been run against production.
   steps were reproduced individually against the dockerized Postgres. The three
   `syncer.tests.tasks.test_commit_history_tasks` errors are the documented bare-host `GH_TOKEN`
   absence, unrelated to this change.
+- **2026-08-28 (preferences page reviewed, two fixes)** — rendering `/console/preferences/` rather
+  than reasoning about it caught something the design had not: the rate-limit field lands beside
+  `maximum_capacity` in the two-column grid, which is the right cell, but `maximum_capacity` has no
+  help text and the new field had 247 characters of it — a bare number beside a wall of prose, with
+  nothing saying they are different *kinds* of limit. Fixed by giving `maximum_capacity` a one-line
+  explanation and cutting the new field's text to 113 characters (168 with the measured-intake
+  sentence) by dropping the half that restated its own label. Every other help text on the page is
+  59–97 characters, so the pair now differs by about a line instead of four.
+  [Surfacing](#surfacing--extend-the-honest-load-line) updated to the shipped copy.
+
+  A second, unrelated grouping bug on the same page was fixed in its own commit and is recorded here
+  only because it was found by this work: `stale_nudge_days` and `auto_unassign_days` are one
+  escalation ladder with a cross-field rule (`Y > X`) but sat in different sections, so the
+  validation error landed on a field whose partner was off screen. The obvious repair — moving
+  auto-unassign under Notifications — would have been wrong: `needs_auto_unassign` is computed with
+  no reference to the reviewer's `notifications_enabled` (only the global enforcement flag gates
+  it), so filing it there would tell reviewers that switching notifications off stops them being
+  unassigned. It does not. The pair fits neither section, which is why it got split, so it now has
+  its own "Stale PRs" section and each half's help text names the switch that governs it. Nothing to
+  do with 054's mechanism.
+- **2026-08-28 (deployed)** — shipped to production. No settings change was required: the one new
+  setting (`ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS`) defaults to 7 and there is no feature flag, so
+  the deploy is a schema change plus inert code. The migration rides Heroku's release phase
+  (`Procfile`), which is the one genuine deploy hazard worth naming — `build_reviewer_catalog`
+  selects the new column, so an unapplied `core.0008` would take the nightly assignment run, the
+  console, `assigned-prs` and `suggest-prs` down together rather than degrading quietly. A failed
+  release phase aborts the deploy, so this is self-guarding.
+
+  Behavior with every limit still `NULL` is unchanged in the ways that matter — the engine gate
+  short-circuits, `format_load_line` returns its previous string byte-for-byte, the persisted trace
+  drops the empty `at_rate_limit` key, and the `reviewer-topics.json` export omits an unset limit.
+  Two things did change for everyone: the preferences page looks different (new field, new "Stale
+  PRs" section, new help text), and `build_reviewer_catalog` now runs one extra grouped count query
+  per call whether or not anyone has a limit — negligible against an 859-row table, but not zero.
+
+  Next: set a low limit on a pilot reviewer, confirm the gate binds and the load line explains it,
+  then re-measure §8 now that `053` has real usage before deciding Open Question 4.
