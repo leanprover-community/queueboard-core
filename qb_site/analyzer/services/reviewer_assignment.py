@@ -18,6 +18,7 @@ from analyzer.models import (
     ReviewerAssignmentSnapshot,
     ReviewerOptOut,
 )
+from analyzer.services.assignment_rate_limit import assignment_rate_window_days, recent_assignment_counts
 from analyzer.services.queue_rules import default_rule_set_for_repo, rules_for_rule_set
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from analyzer.services.reviewer_assignment_engine import (
@@ -237,10 +238,24 @@ class AssignmentStatistics:
 
 
 def build_reviewer_catalog(repository: Repository, *, now: datetime | None = None) -> list[ReviewerProfile]:
-    """Hydrate reviewer profiles from ReviewerPreference rows."""
+    """Hydrate reviewer profiles from ReviewerPreference rows.
+
+    Carries both capacity gates: the concurrent ``maximum_capacity`` (stock) and the rolling-window
+    ``max_new_assignments_per_week`` with its trailing intake count (flow, design doc 054). The
+    count is fetched here, in one grouped query for the whole catalog, so that *every* consumer of a
+    catalog — the nightly builder, the diagnostic trace, on-demand suggestions, and the reviewer-
+    facing load line — sees the same figure. A reviewer whose push goes quiet then reads the number
+    that silenced it, and the gate and the surfacing cannot drift apart.
+    """
     current_time = now or datetime.now(timezone.utc)
+    prefs = list(ReviewerPreference.objects.filter(repository=repository).select_related("user").order_by("user__github_login"))
+    recent_counts = recent_assignment_counts(
+        repository,
+        [getattr(pref.user, "github_login", "") or "" for pref in prefs],
+        window_days=assignment_rate_window_days(),
+        now=current_time,
+    )
     profiles: list[ReviewerProfile] = []
-    prefs = ReviewerPreference.objects.filter(repository=repository).select_related("user").order_by("user__github_login")
     for pref in prefs:
         login = getattr(pref.user, "github_login", None)
         if not login:
@@ -248,6 +263,7 @@ def build_reviewer_catalog(repository: Repository, *, now: datetime | None = Non
         temporary_break = bool(pref.away_until and pref.away_until > current_time)
         preferred_labels = list(pref.preferred_labels or [])
         conflicts = list(pref.conflict_of_interest or [])
+        weekly_limit = pref.max_new_assignments_per_week
         profile = ReviewerProfile(
             github_login=login,
             maximum_capacity=pref.maximum_capacity,
@@ -258,6 +274,11 @@ def build_reviewer_catalog(repository: Repository, *, now: datetime | None = Non
             free_form=pref.free_form or "",
             conflict_of_interest=conflicts,
             conflict_of_interest_lower={c.lower() for c in conflicts},
+            weekly_limit=None if weekly_limit is None else int(weekly_limit),
+            # Keyed by normalized login: the history column stores whatever casing the writing
+            # caller used, so an unnormalized lookup here would read 0 for every reviewer whose
+            # GitHub login is capitalized and quietly disable their limit (design doc 054).
+            recent_assignment_count=recent_counts.get(_normalize_login(login), 0),
         )
         profiles.append(profile)
     return profiles
