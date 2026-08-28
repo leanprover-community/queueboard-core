@@ -1,10 +1,13 @@
 # Reviewer Assignment Rate Limit (Rolling Weekly Intake Cap)
 
-> Status: **Draft / Proposed** (2026-08-28) — design only, no implementation yet. The measurement
-> probe has been run against production; see [Measured Baseline](#measured-baseline-2026-08-28),
-> which confirms the premise and re-sizes several claims. Written to be reviewed before code lands. Origin: a Zulip thread (Christian Merten, with
-> Yaël Dillies' earlier proposal and Bryan Gin-ge Chen) on making reviewer capacity limits
-> actually bind.
+> Status: **Implemented, not yet enabled for anyone** (2026-08-28). Chunks 1–8 of the
+> [Implementation Plan](#implementation-plan-chunks) have landed; the code is inert until a reviewer
+> sets `max_new_assignments_per_week`, which is also the whole rollout mechanism (no feature flag,
+> Open Question 5). Still to do: a pilot cohort, and the engine simulation Open Question 3 asks for
+> before any global default. The measurement probe was run against production first; see
+> [Measured Baseline](#measured-baseline-2026-08-28), which confirms the premise and re-sized
+> several claims. Origin: a Zulip thread (Christian Merten, with Yaël Dillies' earlier proposal and
+> Bryan Gin-ge Chen) on making reviewer capacity limits actually bind.
 
 ## Context
 
@@ -421,30 +424,29 @@ status unpiped).
 0. **Probe (no code, no deploy) — run 2026-08-28,**
    `heroku pg:psql -a queueboard-backend -f scripts/probe_054_rate_limit.sql`; see
    [Measured Baseline](#measured-baseline-2026-08-28). Re-run before the pilot picks numbers.
-1. **Model + migration.** `ReviewerPreference.max_new_assignments_per_week` (nullable) + generated
-   migration (on host). No backup-policy change (existing table). Admin `list_display` +
-   `reviewer-topics.json` import/export coverage.
-2. **Count service.** `analyzer/services/` — `recent_assignment_counts(...)` over
-   `ReviewerAssignmentApplication`. Pure unit tests: distinct-PR counting, window boundary,
-   normalization, empty result.
-3. **Settings.** `ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS` (7) through `settings/base.py` **and**
-   `.env.example` in the same commit (root AGENTS.md rule — the most-forgotten step; a phantom
-   `getattr(settings, ...)` with no `os.getenv` line is the antipattern to avoid).
-4. **Engine.** Extend `ReviewerProfile` (`weekly_limit`, `recent_assignment_count`); add the weekly
-   condition to `_reviewer_candidate_state`; track `simulated_this_run` in `run_assignment_simulation`.
-   Pure-engine tests (reuse `037`'s ranking/scarcity/iterative-rescore seams): limit blocks at the
-   ceiling; a single run cannot overrun the weekly cap; `None` limit is a no-op; composition with the
-   concurrent gate.
-5. **Integration.** Inject counts + limits in `prepare_assignment_inputs`
-   (`reviewer_assignment.py:413-468`) via `build_reviewer_catalog`; thread `now`. Service test that a
-   rate-limited reviewer is withheld end-to-end on a fixture snapshot.
-6. **`053` override.** Set `weekly_limit=None` in the `053` override profile; surface the weekly figure
-   in `053`'s load line. Test that a rate-limited reviewer is still suggested on demand (Invariant:
-   pull ignores the limit) while the load line reports it honestly.
-7. **Surfacing.** Extend `reviewer_load` / `format_load_line` with the weekly figure; render it in
-   `assigned-prs`, the attention DM, and the console. View/command tests.
-8. **Docs.** Finalize this doc; update `qb_site/analyzer/AGENTS.md` (service list) and
-   `qb_site/core/` preference-field references.
+1. **Model + migration.** ✅ `ReviewerPreference.max_new_assignments_per_week` (nullable) +
+   `core/migrations/0008_…` (generated on host). No backup-policy change (existing table). Admin
+   `list_display`, `reviewer-topics.json` import/export, and the console preferences form/template.
+2. **Count service.** ✅ `analyzer/services/assignment_rate_limit.py` —
+   `recent_assignment_counts(...)` over `ReviewerAssignmentApplication`, plus
+   `assignment_rate_window_days()` so no caller hardcodes 7. Unit tests: distinct-PR counting,
+   window boundary, status filter, case normalization, repo scoping, empty/disabled window.
+3. **Settings.** ✅ `ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS` (7) in `settings/base.py` **and**
+   `.env.example`.
+4. **Engine.** ✅ `ReviewerProfile` gained `weekly_limit` / `recent_assignment_count` /
+   `simulated_this_run` (all safe-defaulted); `_within_rate_limit` is the new condition in
+   `_reviewer_candidate_state`; `run_assignment_simulation` folds each pick back into the picked
+   reviewer's profile beside the existing weight bump. Trace records `at_rate_limit`.
+5. **Integration.** ✅ Counts and limits are injected in `build_reviewer_catalog` rather than at
+   `prepare_assignment_inputs` — one grouped query per catalog build, which means the nightly
+   builder, the trace, `053`, *and* the load line all read the identical figure by construction.
+6. **`053` override.** ✅ `weekly_limit=None` joins the override profile; the weekly figure rides
+   `053`'s existing load line. Tested: a reviewer at their limit gets nothing from the push and the
+   full list on demand.
+7. **Surfacing.** ✅ `ReviewerLoad` carries `weekly_count` / `weekly_limit` / `at_weekly_limit` and
+   `format_load_line` appends `· last 7 days: N / M` (`⚠ weekly limit reached` when spent), so
+   `assigned-prs`, the attention DM, the console and `053` all render it from the one place.
+8. **Docs.** ✅ This doc; `qb_site/analyzer/AGENTS.md` service list.
 
 ## Pre-Implementation Notes (sharp edges)
 
@@ -706,3 +708,32 @@ that run, and have not yet been run against production.
   headroom among the 19 reviewers a 5/week cap would not touch), but only in aggregate — topic
   matching remains an engine-simulation question. Open Question 3 updated with both figures and the
   direction of the difference.
+- **2026-08-28 (implemented)** — chunks 1–8 landed; the feature is inert until a reviewer sets a
+  limit. Three places where the implementation is sharper than this doc had it, recorded because
+  each was a real choice:
+  - **The count is fetched in `build_reviewer_catalog`, not `prepare_assignment_inputs`.** The plan
+    said the latter *via* the former; putting the query in the catalog builder means the load line
+    gets the figure for free (it builds a catalog too), which turns "the gate and the surfacing must
+    agree" from a discipline into a structural property. One grouped query per catalog build.
+  - **`simulated_this_run` is a `ReviewerProfile` field, not a parallel dict.** A dict alongside
+    `assignment_stats` would have matched the existing `_current_weight` pattern but had to be
+    threaded through five signatures plus the `PRAssignmentPriorityScorer` type. Instead
+    `run_assignment_simulation` keeps a local reviewer list and `replace()`s the picked reviewer's
+    profile beside the existing weight bump — same spot, no signature churn, and the `recent` /
+    `simulated` split the doc specifies stays visible in the data.
+  - **The reviewer-facing copy says "last 7 days", not "this week"** (the Surfacing section's own
+    example), following the Pre-Implementation note: the window is rolling, and the calendar reading
+    is exactly the confusion that note predicted. The form label and help text derive the number
+    from `ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS`, so the copy cannot drift from the mechanism.
+
+  Two small decisions the doc did not cover: a limit of **0 is rejected** by the form (that is
+  `auto_assign` off, which says so on every surface, rather than a rate only the engine gate could
+  explain), and a **non-positive window counts nothing** rather than degenerating into "all of
+  history", which would block every limited reviewer at once.
+
+  Verified: the new suite (24 tests) plus `analyzer`, `console`, `core`, `zulip_bot` and `api`
+  (935 + 152) all pass, along with `manage.py check`, `makemigrations --check`, backup-policy
+  validation and GraphQL validation. `scripts/repo_check_compose.sh` was not run end-to-end; its
+  steps were reproduced individually against the dockerized Postgres. The three
+  `syncer.tests.tasks.test_commit_history_tasks` errors are the documented bare-host `GH_TOKEN`
+  absence, unrelated to this change.
