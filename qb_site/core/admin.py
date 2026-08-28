@@ -844,6 +844,7 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
         "repository",
         "user",
         "maximum_capacity",
+        "max_new_assignments_per_week",
         "auto_assign",
         "assignment_acceptance",
         "notifications_enabled",

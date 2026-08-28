@@ -96,6 +96,9 @@ def import_reviewer_topics(
     - ``top_level``: maps to ``preferred_labels`` (replace or merge based on ``replace_labels``).
     - ``free_form``: copied to the ``free_form`` text field.
     - ``maximum_capacity``: copied when present; otherwise existing/default is kept.
+    - ``max_new_assignments_per_week``: copied when present (design doc 054); ``null`` clears the
+      limit. Absent leaves the existing value alone, so a file written before 054 never silently
+      un-limits a reviewer.
     - ``conflict_of_interest``: copied to ``conflict_of_interest`` (deduped, case-insensitive).
     - ``zulip_handle`` and any other extra fields are ignored (not stored).
     """
@@ -187,6 +190,13 @@ def import_reviewer_topics(
                 changes["maximum_capacity"] = (pref.maximum_capacity, new_cap)
                 pref.maximum_capacity = new_cap
 
+        if "max_new_assignments_per_week" in entry:
+            raw_rate = entry["max_new_assignments_per_week"]
+            new_rate = None if raw_rate is None else int(raw_rate)  # type: ignore[arg-type]
+            if pref.max_new_assignments_per_week != new_rate:
+                changes["max_new_assignments_per_week"] = (pref.max_new_assignments_per_week, new_rate)
+                pref.max_new_assignments_per_week = new_rate
+
         if bool(entry.get("temporary_break")):
             if pref.auto_assign:
                 changes["auto_assign"] = (pref.auto_assign, False)
@@ -277,6 +287,8 @@ def export_reviewer_topics(
     - Emits ``top_level`` from ``preferred_labels``.
     - Emits ``free_form`` and ``auto_assign``.
     - Emits ``maximum_capacity`` only when it differs from the model default (to mirror legacy files).
+    - Emits ``max_new_assignments_per_week`` only when a limit is set (``None`` is the default and
+      means unlimited, so omitting it round-trips as "no limit").
     - Emits ``conflict_of_interest`` when present.
     - Does not emit ``zulip_handle`` or other non-model fields.
     """
@@ -299,6 +311,8 @@ def export_reviewer_topics(
         }
         if pref.maximum_capacity != ReviewerPreference._meta.get_field("maximum_capacity").default:
             entry["maximum_capacity"] = pref.maximum_capacity
+        if pref.max_new_assignments_per_week is not None:
+            entry["max_new_assignments_per_week"] = pref.max_new_assignments_per_week
         if pref.conflict_of_interest:
             entry["conflict_of_interest"] = list(pref.conflict_of_interest)
         entries.append(entry)

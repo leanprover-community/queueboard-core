@@ -471,6 +471,12 @@ ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS = int(
 # Acceptance window: a proposal expires this many days after creation unless accepted. The
 # per-reviewer override in ReviewerPreference.notification_settings is clamped to >= 7.
 ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", "7"))
+# Reviewer assignment rate limit (design doc 054): the rolling window the per-reviewer
+# ReviewerPreference.max_new_assignments_per_week cap is measured over. This setting *defines* what
+# "per week" means for every reviewer's number, so changing it silently changes the meaning of each
+# one — an operational tuning knob, not something to move lightly. There is deliberately no enable
+# flag: the limit is null (unlimited) by default, so the opt-in default is the off switch.
+ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS", "7"))
 # On-queue-exit policy read inside the proposal_validity predicate: "invalidate" (default) marks a
 # pending proposal superseded when its PR leaves the review queue; "retain" lets it ride.
 ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT = os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT", "invalidate").strip().lower()
