@@ -92,17 +92,21 @@ def _rate_limit_window_days() -> int:
 def _rate_limit_help_text(*, recent_intake: int | None) -> str:
     """Help text for the rolling-window assignment cap (design doc 054).
 
-    Two jobs. First, name the window as *rolling* — the field is stored as "per week" but enforced
-    over a trailing N days, and "per week" alone invites the calendar-week reading. Second, show the
-    reviewer their own recent intake: measured median intake is ~2/week against a median *worst*
-    week of 5, so a reviewer picking a number without those figures is guessing, and guessing badly
-    in either direction (a limit above their peak does nothing; one far below it silences the push).
+    Carries only what the label cannot. The label already says "per N days", so this does not
+    restate the cap; it adds the three things a reviewer cannot infer from a number:
+
+    1. the window is *rolling*, not a calendar week — the "why am I blocked, it's Monday" case;
+    2. blank means unlimited, which is the opt-in default;
+    3. the limit throttles the push only, never PRs they request themselves (design doc 053).
+
+    Then their own trailing intake, because measured median intake is ~2/week against a median
+    *worst* week of 5 — a reviewer picking a number without that figure is guessing, and guessing
+    badly in either direction (a limit above their peak does nothing; one far below it goes quiet).
     """
     days = _rate_limit_window_days()
     text = (
-        f"Cap on how many new PRs auto-assignment may give you in any {days}-day period. "
-        "Leave blank for no limit. This is a rolling window, not a calendar week, and it does not "
-        "limit PRs you ask for yourself."
+        f"Counted over a rolling {days} days, not a calendar week. "
+        "Leave blank for no limit; PRs you request yourself never count."
     )
     if recent_intake is not None:
         text += f" You have been assigned {recent_intake} new PR{'' if recent_intake == 1 else 's'} in the last {days} days."
@@ -212,6 +216,13 @@ class ReviewerPreferenceForm(forms.ModelForm):
         )
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
+        # The two capacity gates sit side by side in the grid and are easy to confuse, so each says
+        # which kind of limit it is: this one bounds the PRs held at once (stock), the next bounds
+        # how fast new ones arrive (flow). Without this, `maximum_capacity` renders as a bare
+        # unexplained number beside a fully-annotated neighbour.
+        self.fields[
+            "maximum_capacity"
+        ].help_text = "How many assigned PRs you can hold at once. Auto-assignment pauses while you are at this number."
         # Label and help text both name the window from the setting that defines it, so the copy
         # cannot drift from the mechanism — and both say "N days" rather than "per week", because
         # the window is rolling (design doc 054).

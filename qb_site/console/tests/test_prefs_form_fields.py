@@ -240,8 +240,8 @@ class ConsolePrefsFormFieldTests(TestCase):
     def test_rate_limit_help_text_names_the_rolling_window_and_recent_intake(self) -> None:
         """A reviewer cannot pick a number they cannot see (design doc 054).
 
-        Also pins the "7-day period" wording over "this week": the window is rolling, and the
-        calendar reading produces a "why am I blocked, it's Monday" bug report.
+        Also pins the rolling-window wording over "this week": the calendar reading produces a
+        "why am I blocked, it's Monday" bug report.
         """
         for pr_number in (1, 2, 3):
             ReviewerAssignmentApplication.objects.create(
@@ -255,8 +255,18 @@ class ConsolePrefsFormFieldTests(TestCase):
 
         response = self.client.get(self.url)
 
-        self.assertContains(response, "7-day period")
+        self.assertContains(response, "rolling 7 days, not a calendar week")
         self.assertContains(response, "assigned 3 new PRs in the last 7 days")
+        # The label carries the period, so the help text must not restate the cap.
+        self.assertNotContains(response, "Cap on how many new PRs")
+
+    def test_both_capacity_gates_explain_which_kind_of_limit_they_are(self) -> None:
+        """`maximum_capacity` and the rate limit sit side by side; a bare number beside an
+        annotated one reads as an oversight, and nothing would distinguish stock from flow."""
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "How many assigned PRs you can hold at once")
+        self.assertContains(response, "Max new assignments per 7 days")
 
     def test_post_invalid_notification_threshold_order_shows_validation_error(self) -> None:
         data, index_by_id = self._post_data()
