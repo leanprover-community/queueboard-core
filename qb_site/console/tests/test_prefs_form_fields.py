@@ -102,6 +102,7 @@ class ConsolePrefsFormFieldTests(TestCase):
         self.assertEqual(response.status_code, 200)
         # Stable semantics (sections + field names), not exact help-text wording.
         self.assertContains(response, "Auto-Assignment")
+        self.assertContains(response, "Stale PRs")
         self.assertContains(response, "Notifications")
         self.assertContains(response, "Interests")
         for field in (
@@ -118,6 +119,28 @@ class ConsolePrefsFormFieldTests(TestCase):
         ):
             self.assertIn(f'name="form-0-{field}"', body)
         self.assertLess(body.index("Free form"), body.index("Conflict of interest"))
+
+    def test_escalation_thresholds_render_in_one_section(self) -> None:
+        """`stale_nudge_days` and `auto_unassign_days` are one ladder with a cross-field rule.
+
+        They used to sit in different sections, so "Auto-unassign days must be greater than stale
+        nudge days" rendered on a field whose partner was off screen. Assert no section boundary
+        falls between them.
+        """
+        body = self.client.get(self.url).content.decode("utf-8")
+
+        start = body.index('name="form-0-stale_nudge_days"')
+        end = body.index('name="form-0-auto_unassign_days"')
+        self.assertLess(start, end)
+        self.assertNotIn("prefs-section", body[start:end])
+
+    def test_escalation_help_names_each_half_s_switch(self) -> None:
+        # The nudge honours the notifications toggle; the auto-unassign does not. A reviewer who
+        # turns notifications off would otherwise expect to stop being unassigned too.
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "Only sent when notifications are on")
+        self.assertContains(response, "whether or not notifications are on")
 
     @override_settings(ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True)
     def test_get_shows_assignment_acceptance_when_proposals_enabled(self) -> None:

@@ -235,10 +235,18 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.fields["free_form"].help_text = format_html(
             "A free form description of your reviewing interests. {}", community_team_page_warning
         )
-        self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
+        # One escalation ladder (nudge at X days, unassign at Y > X), but the two halves answer to
+        # different switches, which is exactly what the old split-across-sections layout hid: the
+        # nudge is a notification and honours the toggle below, while the auto-unassign is an
+        # assignment action that runs regardless of it. Each says which, because a reviewer who
+        # turns notifications off would otherwise reasonably expect to stop being unassigned too.
         self.fields[
-            "auto_unassign_days"
-        ].help_text = f"Automatically unassign after this many consecutive queue days (maximum {MAX_AUTO_UNASSIGN_DAYS})."
+            "stale_nudge_days"
+        ].help_text = "Nudge you when a PR has stayed on queue this many consecutive days. Only sent when notifications are on."
+        self.fields["auto_unassign_days"].help_text = (
+            f"Unassign you after this many consecutive queue days (maximum {MAX_AUTO_UNASSIGN_DAYS}). "
+            "Must be greater than the nudge threshold, and happens whether or not notifications are on."
+        )
 
         policy = parse_notification_policy(self.instance.notification_settings)
         self.initial["stale_nudge_days"] = policy.stale_nudge_days
