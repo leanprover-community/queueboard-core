@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone as dt_timezone
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from analyzer.models import AssignmentProposal, QueueRuleSet, QueueSnapshot
 from analyzer.services.reviewer_assignment_engine import ReviewerProfile
@@ -19,7 +19,13 @@ from analyzer.services.reviewer_load import (
 from core.models import Repository, ReviewerPreference, User
 
 
-def _profile(login: str, capacity: int) -> ReviewerProfile:
+def _profile(
+    login: str,
+    capacity: int,
+    *,
+    weekly_limit: int | None = None,
+    recent: int = 0,
+) -> ReviewerProfile:
     return ReviewerProfile(
         github_login=login,
         maximum_capacity=capacity,
@@ -30,6 +36,8 @@ def _profile(login: str, capacity: int) -> ReviewerProfile:
         free_form="",
         conflict_of_interest=[],
         conflict_of_interest_lower=set(),
+        weekly_limit=weekly_limit,
+        recent_assignment_count=recent,
     )
 
 
@@ -257,3 +265,65 @@ class TestFormatLoadContribution(TestCase):
         self.assertEqual(format_load_contribution(1.0), "+1")
         self.assertEqual(format_load_contribution(0.1), "+0.1")
         self.assertEqual(format_load_contribution(0.0), "+0")
+
+
+class TestRateLimitSurfacing(TestCase):
+    """The rolling-window figure on the load line (design doc 054).
+
+    Surfacing ships with enforcement, not after: a reviewer whose push goes quiet because they hit
+    their weekly limit has to be able to see that from the same line that shows their capacity, or
+    the feature is indistinguishable from the pipeline being broken.
+    """
+
+    def test_no_limit_leaves_the_load_line_byte_for_byte_unchanged(self) -> None:
+        loads = compute_reviewer_loads(
+            repository_id=1,
+            assignments={"alice": ([1, 2, 3], 3.0, 3)},
+            reviewers=[_profile("alice", 10, weekly_limit=None, recent=4)],
+        )
+        load = loads["alice"]
+        self.assertEqual(load.weekly_count, 4)
+        self.assertIsNone(load.weekly_limit)
+        self.assertFalse(load.at_weekly_limit)
+        self.assertEqual(format_load_line(load), "Load: 3 / 10 (7 free)")
+
+    def test_limit_appends_the_rolling_window_segment(self) -> None:
+        loads = compute_reviewer_loads(
+            repository_id=1,
+            assignments={"alice": ([1, 2, 3], 3.0, 3)},
+            reviewers=[_profile("alice", 10, weekly_limit=5, recent=4)],
+        )
+        load = loads["alice"]
+        self.assertFalse(load.at_weekly_limit)
+        self.assertEqual(format_load_line(load), "Load: 3 / 10 (7 free) · last 7 days: 4 / 5")
+
+    def test_spent_budget_is_flagged_even_with_free_capacity(self) -> None:
+        # The state the feature exists to create, and the one that most needs explaining: plenty of
+        # concurrent room, no new work arriving.
+        loads = compute_reviewer_loads(
+            repository_id=1,
+            assignments={},
+            reviewers=[_profile("alice", 10, weekly_limit=5, recent=5)],
+        )
+        load = loads["alice"]
+        self.assertTrue(load.at_weekly_limit)
+        self.assertFalse(load.at_capacity)
+        self.assertEqual(format_load_line(load), "Load: 0 / 10 (10 free) · last 7 days: 5 / 5 ⚠ weekly limit reached")
+
+    def test_segment_follows_the_configured_window(self) -> None:
+        loads = compute_reviewer_loads(
+            repository_id=1,
+            assignments={},
+            reviewers=[_profile("alice", 10, weekly_limit=5, recent=1)],
+        )
+        with override_settings(ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS=14):
+            self.assertIn("last 14 days: 1 / 5", format_load_line(loads["alice"]))
+
+    def test_digest_variant_keeps_both_suffixes(self) -> None:
+        loads = compute_reviewer_loads(
+            repository_id=1,
+            assignments={"alice": ([1], 1.0, 1)},
+            reviewers=[_profile("alice", 10, weekly_limit=3, recent=2)],
+        )
+        line = format_load_line(loads["alice"], include_assigned_count=True)
+        self.assertEqual(line, "Load: 1 / 10 (9 free) · 1 assigned · last 7 days: 2 / 3")

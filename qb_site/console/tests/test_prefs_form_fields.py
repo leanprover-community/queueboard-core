@@ -8,8 +8,13 @@ through the surface that now owns it — `/console/preferences/`.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
+
+from analyzer.models import ReviewerAssignmentApplication
 
 from console.session import SESSION_USER_KEY
 from core.models import Repository, ReviewerPreference, User
@@ -74,6 +79,9 @@ class ConsolePrefsFormFieldTests(TestCase):
             policy = pref.notification_settings or {}
             data[f"form-{idx}-id"] = str(pref.id)
             data[f"form-{idx}-maximum_capacity"] = str(pref.maximum_capacity)
+            data[f"form-{idx}-max_new_assignments_per_week"] = (
+                "" if pref.max_new_assignments_per_week is None else str(pref.max_new_assignments_per_week)
+            )
             data[f"form-{idx}-auto_assign"] = "on" if pref.auto_assign else ""
             data[f"form-{idx}-assignment_acceptance"] = pref.assignment_acceptance
             data[f"form-{idx}-notifications_enabled"] = "on" if pref.notifications_enabled else ""
@@ -101,6 +109,7 @@ class ConsolePrefsFormFieldTests(TestCase):
             "auto_unassign_days",
             "away_until",
             "maximum_capacity",
+            "max_new_assignments_per_week",
             "notifications_enabled",
             "stale_nudge_days",
             "preferred_labels",
@@ -196,6 +205,58 @@ class ConsolePrefsFormFieldTests(TestCase):
         self.assertContains(response, "Ensure this value is greater than or equal to 1")
         self.pref1.refresh_from_db()
         self.assertEqual(self.pref1.maximum_capacity, 10)
+
+    # ---- rolling-window rate limit (design doc 054) ---------------------
+
+    def test_post_sets_and_clears_the_rate_limit(self) -> None:
+        data, index_by_id = self._post_data()
+        i = index_by_id[self.pref1.id]
+
+        data[f"form-{i}-max_new_assignments_per_week"] = "5"
+        self.assertEqual(self.client.post(self.url, data=data).status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.max_new_assignments_per_week, 5)
+
+        # Blank is the opt-out, and it is also the default: clearing the field restores unlimited
+        # intake rather than leaving the last number in force.
+        data[f"form-{i}-max_new_assignments_per_week"] = ""
+        self.assertEqual(self.client.post(self.url, data=data).status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertIsNone(self.pref1.max_new_assignments_per_week)
+
+    def test_post_rejects_a_zero_rate_limit(self) -> None:
+        # "Never assign me anything" is `auto_assign` off, which says so on every surface; a rate of
+        # zero would be the same thing spelled in a way only the engine gate could explain.
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-max_new_assignments_per_week"] = "0"
+
+        response = self.client.post(self.url, data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Ensure this value is greater than or equal to 1")
+        self.pref1.refresh_from_db()
+        self.assertIsNone(self.pref1.max_new_assignments_per_week)
+
+    def test_rate_limit_help_text_names_the_rolling_window_and_recent_intake(self) -> None:
+        """A reviewer cannot pick a number they cannot see (design doc 054).
+
+        Also pins the "7-day period" wording over "this week": the window is rolling, and the
+        calendar reading produces a "why am I blocked, it's Monday" bug report.
+        """
+        for pr_number in (1, 2, 3):
+            ReviewerAssignmentApplication.objects.create(
+                run_date=timezone.now().date(),
+                repository=self.repo1,
+                pr_number=pr_number,
+                reviewer_login="REVIEWER",  # stored casing differs from the lookup on purpose
+                status=ReviewerAssignmentApplication.STATUS_APPLIED,
+                applied_at=timezone.now() - timedelta(days=1),
+            )
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "7-day period")
+        self.assertContains(response, "assigned 3 new PRs in the last 7 days")
 
     def test_post_invalid_notification_threshold_order_shows_validation_error(self) -> None:
         data, index_by_id = self._post_data()
