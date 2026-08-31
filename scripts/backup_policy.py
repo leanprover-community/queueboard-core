@@ -5,6 +5,10 @@ from __future__ import annotations
 # Tables expected to exist in backups and managed by this policy.
 # We include implicit Django auth M2M tables and django_migrations explicitly.
 BACKUP_TABLES: tuple[str, ...] = (
+    "site_analytics_analyticspageview",
+    "site_analytics_analyticsdailymetric",
+    "site_analytics_analyticsmonthlymetric",
+    "site_analytics_siteanalyticssalt",
     "analyzer_analyzerconvergencesnapshot",
     "analyzer_areastatssnapshot",
     "analyzer_assignmentproposal",
@@ -100,10 +104,16 @@ TRUNCATE_TABLES: tuple[str, ...] = (
     "syncer_githubwebhookdelivery",
     # Archive backfill importer worklist (design doc 043) — operational state.
     "syncer_archiveimportitem",
+    # Raw analytics pageviews — contain visitor hashes; exclude from public backup
+    "site_analytics_analyticspageview",
+    # Live salt is a secret; must never appear in sanitized backups
+    "site_analytics_siteanalyticssalt",
 )
 
 # Tables retained in sanitized dump.
 RETAIN_TABLES: tuple[str, ...] = (
+    "site_analytics_analyticsdailymetric",
+    "site_analytics_analyticsmonthlymetric",
     "core_repository",
     "core_user",
     "syncer_pullrequest",

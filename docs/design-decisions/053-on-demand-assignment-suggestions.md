@@ -545,7 +545,7 @@ Console view tests (existing `console/tests/test_views.py` patterns, session see
 Zulip tests: registry dispatch, the 5-item limit, footer contents (assign hint, snapshot timestamp,
 console link carrying the requested labels), and the empty-result tally rendering.
 
-Canonical full run stays `bash scripts/repo_check_compose.sh` (console is step `[12/12]`).
+Canonical full run stays `bash scripts/repo_check_compose.sh` (console is step `[12/13]`).
 
 ## Operational Notes
 

@@ -439,17 +439,20 @@ def write_dashboard(
 
     if extra_settings is None:
         extra_settings = ExtraColumnSettings.default()
-    return _inner(prs[kind], kind, aggregate_info, extra_settings, header)
+    return _inner(prs.get(kind, []), kind, aggregate_info, extra_settings, header)
 
 
 # Specific code for writing the actual webpage files.
 
-HTML_HEADER = """
-<!DOCTYPE html>
+
+def _make_html_header(analytics_host: str = "") -> str:
+    """Return the HTML header, optionally widening the CSP to allow analytics beacons."""
+    connect_src = f" connect-src 'self' {analytics_host};" if analytics_host else ""
+    return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.datatables.net; style-src 'self' 'unsafe-inline' https://cdn.datatables.net; form-action 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self';{connect_src} script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.datatables.net; style-src 'self' 'unsafe-inline' https://cdn.datatables.net; form-action 'none'; base-uri 'none'">
 <title>Mathlib review and triage dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"
     integrity="sha512-bLT0Qm9VnAYZDflyKcBaQ2gg0hSYNQrJ8RilYldYQ1FxQYoCLtUjuuRuZo+fjqhx/qtq/1itJ0C2ejDxltZVFg=="
@@ -461,12 +464,49 @@ HTML_HEADER = """
 <link rel='stylesheet' href='style.css'>
 <base target="_blank">
 </head>
-<body>
-""".strip()
+<body>"""
+
+
+def _js_string(value: str) -> str:
+    """Return |value| as a JavaScript string literal, safe to embed in an inline <script>.
+
+    json.dumps handles quote/backslash escaping and (via ensure_ascii) the U+2028/U+2029
+    line terminators that are legal in JSON but not in JS string literals. The angle
+    brackets and ampersand are escaped on top of that so a value containing "</script>"
+    cannot terminate the surrounding tag early.
+    """
+    literal = json.dumps(value)
+    return literal.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def _make_analytics_snippet(host: str, site: str) -> str:
+    """Return the privacy notice paragraph and pageview tracking <script> block for injection before </body>."""
+    endpoint = f"{host.rstrip('/')}/api/v1/analytics/collect"
+    notice = '<p class="analytics-notice">This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored).</p>'
+    script = (
+        "<script>\n"
+        "(function () {\n"
+        f"  var endpoint = {_js_string(endpoint)};\n"
+        "  var payload = JSON.stringify({\n"
+        f"    site: {_js_string(site)},\n"
+        "    path: window.location.pathname,\n"
+        "    referrer: document.referrer || ''\n"
+        "  });\n"
+        "  if (navigator.sendBeacon) {\n"
+        "    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'application/json' }));\n"
+        "  } else {\n"
+        "    fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(function () {});\n"
+        "  }\n"
+        "})();\n"
+        "</script>"
+    )
+    return f"{notice}\n{script}"
 
 
 GH_PAGES_DIR = "gh-pages"
 API_DIR = "api"
+ANALYTICS_HOST: str = ""  # set by main() when --analytics-site is provided
+ANALYTICS_SNIPPET: str = ""  # pre-rendered snippet injected before </body>
 
 
 # Write a webpage with body out a file called 'outfile'.
@@ -478,8 +518,9 @@ def write_webpage(body: str, outfile: str, use_tables: bool = True, standard: bo
             if use_tables
             else ""
         )
-        footer = f"{script}</body>\n</html>"
-        print(f"{HTML_HEADER}\n{body}\n{footer}", file=fi)
+        analytics = f"\n{ANALYTICS_SNIPPET}" if ANALYTICS_SNIPPET else ""
+        footer = f"{script}{analytics}</body>\n</html>"
+        print(f"{_make_html_header(ANALYTICS_HOST)}\n{body}\n{footer}", file=fi)
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
@@ -528,6 +569,14 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         "--refresh",
         action="store_true",
         help="Ask the server to refresh cached payloads before serving (API fetch only).",
+    )
+    parser.add_argument(
+        "--analytics-site",
+        default=os.environ.get("QUEUEBOARD_ANALYTICS_SITE"),
+        help=(
+            "Site slug for pageview analytics (must be in SITE_ANALYTICS_ALLOWED_SITES on the server). "
+            "Requires --api-base-url. When set, a tracking snippet is injected into every generated page."
+        ),
     )
     # Legacy positional arguments remain accepted for compatibility.
     parser.add_argument("legacy_gh_pages_dir", nargs="?", help="Legacy gh-pages directory positional argument.")
@@ -1133,8 +1182,15 @@ def main() -> None:
     args = _parse_args(sys.argv[1:])
     global GH_PAGES_DIR
     global API_DIR
+    global ANALYTICS_HOST
+    global ANALYTICS_SNIPPET
     GH_PAGES_DIR = args.gh_pages_dir or args.legacy_gh_pages_dir or GH_PAGES_DIR  # "gh-pages" by default
     API_DIR = args.api_dir or args.legacy_api_dir or API_DIR  # "api" by default
+    if args.analytics_site and args.api_base_url:
+        ANALYTICS_HOST = args.api_base_url.rstrip("/")
+        ANALYTICS_SNIPPET = _make_analytics_snippet(ANALYTICS_HOST, args.analytics_site)
+    elif args.analytics_site:
+        print("Warning: --analytics-site requires --api-base-url; analytics snippet will be omitted.", file=sys.stderr)
 
     if args.api:
         _fetch_api_payloads(args, API_DIR)
@@ -1187,6 +1243,14 @@ def main() -> None:
     # copy files in static/ to GH_PAGES_DIR
     with as_file(files("queueboard").joinpath("static")) as tmp:
         shutil.copytree(tmp, GH_PAGES_DIR, dirs_exist_ok=True)
+
+    # Inject analytics snippet into the static HTML pages (which bypass write_webpage).
+    if ANALYTICS_SNIPPET:
+        for static_html in ("area_stats.html", "dependency_dashboard.html"):
+            dest = path.join(GH_PAGES_DIR, static_html)
+            if path.exists(dest):
+                content = open(dest).read()
+                open(dest, "w").write(content.replace("</body>", f"{ANALYTICS_SNIPPET}\n</body>", 1))
 
 
 if __name__ == "__main__":

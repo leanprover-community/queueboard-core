@@ -126,7 +126,7 @@ Run these **inside the sandbox** — that is the environment the problem appears
 
 ```bash
 echo '{"ServerURL":"https://index.docker.io/v1/"}' | docker-credential-desktop get   # no [F] line
-bash scripts/repo_check_compose.sh                                                   # exit 0, [0/12]..[12/12]
+bash scripts/repo_check_compose.sh                                                   # exit 0, [0/13]..[13/13]
 ```
 
 Run the script **unpiped** — `… | tail` reports `tail`'s status, not the script's, so a failure

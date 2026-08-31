@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `src/queueboard/` contains the legacy Python data pipeline: GraphQL queries under `queries/`, HTML assets in `static/`, and scripts like `dashboard.py`, `process.py`, and `suggest_reviewer.py`.
-- `qb_site/` hosts the Django codebase; apps live in `qb_site/{core,syncer,analyzer,api,zulip_bot}/` and share settings from `qb_site/qb_site/settings/`.
+- `qb_site/` hosts the Django codebase; apps live in `qb_site/{core,syncer,analyzer,api,zulip_bot,site_analytics}/` and share settings from `qb_site/qb_site/settings/`.
 - `scripts/` provides operational helpers; `test/` stores fixture JSON for dashboard regression checks; `docs/` captures architecture plans/decisions.
 
 ## Build, Test, and Development Commands
@@ -43,7 +43,7 @@ Notes
   `set -o pipefail` / `${PIPESTATUS[0]}`, and confirm the status before trusting the output. The
   same trap applies to `docker compose run ... | tail`.
 - If a check "passes", confirm it actually ran. A build that dies before any test executes can
-  still print a plausible tail; scan for the step markers (`[1/12]` … `[12/12]`) or a test count,
+  still print a plausible tail; scan for the step markers (`[1/13]` … `[13/13]`) or a test count,
   not just the absence of a traceback.
 - Exercise dashboard generation with the provided fixtures via `uv run python -m queueboard.dashboard ...`; capture `before/` and `after/` HTML snapshots when comparing layout changes.
 - Keep unit tests colocated (`test_*.py`); expand `src/queueboard/test_state_evolution.py` or add pytest modules under the relevant Django app (`qb_site/<app>/tests/`).
@@ -58,9 +58,9 @@ Notes
   | 4 | `python scripts/validate_backup_policy.py` |
   | 5 | `python qb_site/manage.py check` |
   | 6 | `python qb_site/manage.py makemigrations --dry-run --check` |
-  | 7–12 | `env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test <app>` for `core`, `syncer`, `analyzer`, `api`, `zulip_bot`, `console` |
+  | 7–13 | `env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test <app>` for `core`, `syncer`, `analyzer`, `api`, `zulip_bot`, `console`, `site_analytics` |
 
-  Steps 4–12 run under `docker compose run --rm --no-deps -T web …` against cached images. Report
+  Steps 4–13 run under `docker compose run --rm --no-deps -T web …` against cached images. Report
   which steps ran, by number.
 - Document any manual data validation or backfill steps in your PR description so reviewers can reproduce the checks.
 
@@ -96,7 +96,7 @@ Notes
 ## Keeping AGENTS.md Files Updated
 - Every directory with significant logic has its own `AGENTS.md` (mirrored as `CLAUDE.md`).
   Current locations: root, `qb_site/`, `qb_site/syncer/`, `qb_site/analyzer/`,
-  `qb_site/zulip_bot/`, `qb_site/console/`, `src/queueboard/`.
+  `qb_site/zulip_bot/`, `qb_site/console/`, `qb_site/site_analytics/`, `src/queueboard/`.
 - When you add, rename, or remove management commands, Celery tasks, key services, or
   directory structure, update the relevant `AGENTS.md` in the same commit/PR.
 - When you add a new app or significant sub-directory, create a matching `AGENTS.md`

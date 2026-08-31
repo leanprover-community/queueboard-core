@@ -1,6 +1,32 @@
-Here is the main workflow in the `queueboard` repo, which queries data and generates the dashboard using the code in this repo (`queueboard-core`). For the planned v2 ingestion that replaces these ad‑hoc scripts with a database‑backed syncer, see docs/syncer_ingestion_plan.md.
-Note that in the `queueboard` repo, the JSON files in `data/` and `processed-data/` are persisted from run to run by git pushes in this workflow.
-This is also true of a few auxiliary text files: `closed_prs_to_backfill.txt`, `missing_prs.txt`, `redownload.txt`, `stubborn_prs.txt`.
+This document describes the main GitHub Actions workflow used in the sibling
+[`queueboard`](https://github.com/leanprover-community/queueboard) repo.
+The workflow runs every 8 minutes, fetches fresh PR metadata from a deployed
+instance of `qb_site/` (the Django backend in this repo), generates static
+dashboard HTML, and publishes it to GitHub Pages.
+
+## How it works
+
+1. **Checkout** — checks out `queueboard-core` (this repo) to get scripts,
+   GraphQL query templates, and the `queueboard` Python package.
+2. **Fetch + generate** — calls `python -m queueboard.dashboard --api` three
+   times, once per rule set (different queue-classification rules for
+   experimentation). Each run downloads JSON payloads from the backend API and
+   renders a set of HTML dashboard pages into `gh-pages/<rule-set-dir>/`.
+3. **Deploy** — uploads the `gh-pages/` tree as a Pages artifact and deploys
+   it if the run is on the `master` branch and all three generation steps
+   succeeded.
+
+## Required repository secrets
+
+| Secret | Purpose |
+|---|---|
+| `QUEUEBOARD_API_BASE_URL` | Base URL of the deployed `qb_site` instance (e.g. `https://queueboard.example.com`). Used both to fetch API payloads and as the analytics endpoint host. |
+| `QUEUEBOARD_ANALYTICS_SITE` | Site slug registered in `SITE_ANALYTICS_ALLOWED_SITES` on the server (e.g. `queueboard`). When set, a privacy-preserving analytics snippet is injected into every generated page. Omit to disable analytics. |
+
+If `QUEUEBOARD_ANALYTICS_SITE` is absent (secret not configured), the snippet
+is silently omitted and all other workflow behaviour is unchanged.
+
+## Workflow YAML
 
 ```yaml
 name: Update PR metadata
@@ -55,6 +81,7 @@ jobs:
       id: generate-dashboard-api-rs1
       env:
         QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+        QUEUEBOARD_ANALYTICS_SITE: ${{ secrets.QUEUEBOARD_ANALYTICS_SITE }}
       run: |
         uv run python -m queueboard.dashboard \
           --api \
@@ -66,6 +93,7 @@ jobs:
       id: generate-dashboard-api-rs2
       env:
         QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+        QUEUEBOARD_ANALYTICS_SITE: ${{ secrets.QUEUEBOARD_ANALYTICS_SITE }}
       run: |
         uv run python -m queueboard.dashboard \
           --api \
@@ -77,6 +105,7 @@ jobs:
       id: generate-dashboard-api-rs3
       env:
         QUEUEBOARD_API_BASE_URL: ${{ secrets.QUEUEBOARD_API_BASE_URL }}
+        QUEUEBOARD_ANALYTICS_SITE: ${{ secrets.QUEUEBOARD_ANALYTICS_SITE }}
       run: |
         uv run python -m queueboard.dashboard \
           --api \

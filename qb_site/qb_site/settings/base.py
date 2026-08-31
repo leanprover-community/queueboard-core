@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "api",
     "zulip_bot",
     "console",
+    "site_analytics",
 ]
 
 MIDDLEWARE = [
@@ -560,6 +561,24 @@ ARCHIVE_RESYNC_PER_TICK = int(os.getenv("ARCHIVE_RESYNC_PER_TICK", 0))
 ARCHIVE_RESYNC_TICK_SECONDS = int(os.getenv("ARCHIVE_RESYNC_TICK_SECONDS", 600))
 ARCHIVE_RESYNC_MIN_RATE_REMAINING = int(os.getenv("ARCHIVE_RESYNC_MIN_RATE_REMAINING", 2500))
 
+# Site analytics settings
+# Fallback salt used until the first rotate_salt task runs and writes a DB salt.
+# Required in production on first deploy; thereafter the DB salt takes precedence.
+SITE_ANALYTICS_HASH_SALT = os.getenv("SITE_ANALYTICS_HASH_SALT", "")
+SITE_ANALYTICS_ALLOWED_SITES: list[str] = [
+    s.strip() for s in os.getenv("SITE_ANALYTICS_ALLOWED_SITES", "").split(",") if s.strip()
+]
+SITE_ANALYTICS_RETENTION_DAYS = int(os.getenv("SITE_ANALYTICS_RETENTION_DAYS", 540))
+# Number of reverse proxies in front of this app. X-Forwarded-For is client-controlled,
+# so only this many entries from the right of the chain are trustworthy (Heroku's router
+# appends one). Set to 0 when the app is exposed directly, to ignore the header entirely.
+SITE_ANALYTICS_TRUSTED_PROXY_COUNT = int(os.getenv("SITE_ANALYTICS_TRUSTED_PROXY_COUNT", 1))
+SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS", 3600))
+SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS", 86400))
+SITE_ANALYTICS_PRUNE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_PRUNE_PERIOD_SECONDS", 86400))
+# Reject requests with an empty User-Agent header (stricter bot hardening).
+SITE_ANALYTICS_REJECT_EMPTY_UA = env_bool(os.getenv("SITE_ANALYTICS_REJECT_EMPTY_UA"), False)
+
 # CI filter (opt-in allowlist mode)
 # Set mode to 'allowlist' to enable filtering by the following substrings; otherwise all contexts are ingested.
 SYNCER_CI_FILTER_MODE = os.getenv("SYNCER_CI_FILTER_MODE", "all").lower()
@@ -795,3 +814,24 @@ if ANALYZER_AREA_STATS_PERIOD_SECONDS > 0:
             "fanout": True,
         },
     }
+if SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["site_analytics_aggregate_daily"] = {
+        "task": "site_analytics.aggregate_daily_metrics",
+        "schedule": SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS,
+    }
+if SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["site_analytics_aggregate_monthly"] = {
+        "task": "site_analytics.aggregate_monthly_metrics",
+        "schedule": SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS,
+    }
+if SITE_ANALYTICS_PRUNE_PERIOD_SECONDS > 0:
+    CELERY_BEAT_SCHEDULE["site_analytics_prune_pageviews"] = {
+        "task": "site_analytics.prune_old_pageviews",
+        "schedule": SITE_ANALYTICS_PRUNE_PERIOD_SECONDS,
+        "kwargs": {"retention_days": SITE_ANALYTICS_RETENTION_DAYS},
+    }
+# Rotate the visitor-hash salt at midnight UTC on the 1st of each month.
+CELERY_BEAT_SCHEDULE["site_analytics_rotate_salt"] = {
+    "task": "site_analytics.rotate_salt",
+    "schedule": crontab(minute=0, hour=0, day_of_month=1),
+}
