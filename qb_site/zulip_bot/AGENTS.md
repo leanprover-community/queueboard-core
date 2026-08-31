@@ -12,20 +12,40 @@ docker compose exec -T web env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python
 # Policy inspection helper
 docker compose exec -T web python qb_site/manage.py zulip_policy
 
-# Frontend tests (prefs form)
+# Frontend tests (expiry helpers here + the console's prefs JS; one vitest project covers both)
 cd qb_site/zulip_bot/frontend && npm test
 ```
 
 ## Command Architecture Notes
-- Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `pr-info`, `prefs`, `console`, `help`, `echo`, `register_test`, `close-pr`, `label-pr`.
+- Commands live in `commands/`: `assign`, `unassign`, `assigned-prs`, `suggest-prs` (aliases
+  `next-pr`, `suggest-pr`), `pr-info`, `prefs`, `console`, `help`, `echo`, `register-test`,
+  `close-pr`, `label-pr`.
+- **Command names are normalized** by `commands.normalize_command_name` (trim, lowercase, `_`→`-`) at
+  registration, at parse time, and for `ZULIP_COMMAND_POLICY` keys — including in
+  `manage.py zulip_policy` (`validate` accepts a legacy underscore key and rejects two spellings of one
+  command; `sync` canonicalizes keys in place). Register hyphenated names; a name outside that space
+  used to be silently undispatchable (`register_test` was, for exactly this reason).
 - `console`: replies in place with the stable, token-less reviewer console URL (`build_site_url(reverse("console:home"))`, design doc 050) where a reviewer accepts/declines assignment proposals. The link is non-secret and identical for everyone (the console self-authenticates via GitHub OAuth), so it is an in-place reply, not a proactive DM.
+- `suggest-prs [<owner/repo>] [<label> ...]`: on-demand assignment suggestions (design doc 053) —
+  "what should I review?". Renders `analyzer.services.assignment_suggestions.suggest_prs_for_reviewer`
+  (never re-derives eligibility): the honest load line, up to
+  `ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT` one-line PR entries, and a footer with the
+  `assign #NNN` hint, the snapshot timestamp (the reply is a permanent channel message; the console
+  page is live), and a token-less console link carrying `?repo=&labels=` so "more suggestions" means
+  more of the same question. Label tokens *replace* the sender's stored `preferred_labels` for the
+  request; unknown/non-topic labels are reported back, as are labels refused by the `MAX_LABELS`
+  cap. **In-place reply by design** (like `console`):
+  nothing is sensitive and the follow-up `assign` is in-place too. Gated by
+  `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED`; needs no mutation flag of its own (read-only — claiming
+  reuses `assign`, which keeps its `ZULIP_ASSIGNMENT_MUTATIONS_ENABLED` + `ZULIP_COMMAND_POLICY`
+  gating; scope `suggest-prs` itself via `ZULIP_COMMAND_POLICY` like any other command if desired).
 - `pr-info`: parses GitHub PR links from Zulip `rendered_content`, reacts with 👀, then sends one message per PR (up to 10) with queue info sourced from `analyzer.services.pr_info`. Replies in the same conversation as the triggering message. Renders the acceptance-gate "Proposed to X (awaiting acceptance, expires …)" state (design doc 050) on its own line, distinct from Assignees.
 - Assignment command flow (all under `services/`) is split for clarity:
   - parse: `assignment_command_parser.py`,
   - validate: `assignment_validation.py`,
   - preflight/mutation orchestration: `assignment_execution.py` + `assignment_preflight.py`.
-- `close-pr` command: checks GitHub permission at command time, then issues a short-lived private link to a confirmation form. Services: `close_pr_links.py` (token), `close_pr_execution.py` (permission check + `close_pull_request` + `add_pr_labels` + `post_pr_comment`). Feature flag: `ZULIP_CLOSE_PR_MUTATIONS_ENABLED`. Uses operation `close_pr` via the GitHub App token system. The confirmation form includes an optional add-only label picker (checkboxes from `LabelDef` DB, none pre-checked); selected labels are POSTed to GitHub before closing and mentioned in the DM/log.
-- `label-pr` command: same secure-link pattern as `close-pr`. Accepts both `/pull/NNN` and `/issues/NNN` URLs. Requires write/admin collaborator access (no author exception). Services: `label_pr_links.py` (token), `label_pr_execution.py` (permission check + `PUT /issues/{number}/labels`). Feature flag: `ZULIP_LABEL_PR_MUTATIONS_ENABLED`. Uses operation `label_pr` (mapped to `queueboard-assignment`). The picker catalog comes from `LabelDef` in DB; current-label pre-selection comes from the live `GET /issues/{number}` response (because `PUT /labels` replaces the full set, a stale source would silently drop labels). Live labels not in the catalog are appended as extra pre-checked rows; if the live fetch fails, the form refuses to render the picker. URL parsing for both PR and issue URLs is in `assignment_command_parser._parse_single_issue_or_pr_ref`.
+- `close-pr` command: checks GitHub permission at command time, then issues a short-lived private link to a confirmation form. Services: `pr_action_links.py` (token, shared with `label-pr`), `close_pr_execution.py` (permission check + `close_pull_request` + `add_pr_labels` + `post_pr_comment`). Feature flag: `ZULIP_CLOSE_PR_MUTATIONS_ENABLED`. Uses operation `close_pr` via the GitHub App token system. The confirmation form includes an optional add-only label picker (checkboxes from `LabelDef` DB, none pre-checked); selected labels are POSTed to GitHub before closing and mentioned in the DM/log.
+- `label-pr` command: same secure-link pattern as `close-pr`. Accepts both `/pull/NNN` and `/issues/NNN` URLs. Requires write/admin collaborator access (no author exception). Services: `pr_action_links.py` (token, shared with `close-pr`), `label_pr_execution.py` (permission check + `PUT /issues/{number}/labels`). Feature flag: `ZULIP_LABEL_PR_MUTATIONS_ENABLED`. Uses operation `label_pr` (mapped to `queueboard-assignment`). The picker catalog comes from `LabelDef` in DB; current-label pre-selection comes from the live `GET /issues/{number}` response (because `PUT /labels` replaces the full set, a stale source would silently drop labels). Live labels not in the catalog are appended as extra pre-checked rows; if the live fetch fails, the form refuses to render the picker. URL parsing for both PR and issue URLs is in `assignment_command_parser._parse_single_issue_or_pr_ref`.
 - Keep user-facing command responses explicit and safe for partial failures.
 - Prefer private failure responses for sensitive mutation/policy errors.
 
@@ -41,7 +61,11 @@ This has a critical implication: **never return sensitive content (token links, 
 
 **Proactive DM** (commands that send private links): call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip does not deliver the webhook response at all; the DM goes to the user regardless of where the command was invoked. Use this whenever the reply contains a private token link or other content that must not appear in a stream.
 
-Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register_test`, `assigned-prs`.
+Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register-test`, `assigned-prs`.
+`prefs` DMs the stable `/console/preferences/` URL. That URL is *not* secret (the page
+self-authenticates) — the reason it is a DM is noise: an accidental mention in a public stream must not
+post a reply there. `console` is the deliberate exception, an in-place reply by design (doc 050).
+`prefs`'s registration-link branch is a DM for the stronger reason — *that* link is a bearer secret.
 
 ### Adding new commands
 
@@ -65,13 +89,51 @@ Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `pref
   - `registration_oauth_state.py`,
   - `registration_linking.py`,
   - `registration_bootstrap.py` (initial bootstrap helpers),
-  - `prefs_links.py` (preference deep-link generation),
-  - `close_pr_links.py` (close-PR confirmation link generation),
-  - `label_pr_links.py` (label-PR confirmation link generation).
-- Zulip prefs form/UI behavior spans Django forms/views and `frontend/` tests; keep behavior parity across backend validation and frontend affordances.
+  - `pr_action_links.py` (the `close-pr` **and** `label-pr` confirmation links — one module, two
+    `PRAction` constants. The claims and validation are identical; only secret, salt, TTL and URL path
+    differ per action, and they stay per-action so a `label-pr` token can never validate as a
+    `close-pr` one. Commands read the DM's quoted expiry from its `ttl_seconds()` rather than
+    re-reading the setting, so the promise and the real `exp` cannot drift),
+  - `user_timezone.py` (the timezone a reviewer's local times are interpreted in: Zulip's reported
+    zone → `core.User.timezone` → Django default). Shared with the console prefs page so a naive
+    `away_until` means the same thing on both; it lives here because the authoritative source is
+    Zulip's user record, and `core` carries no app dependencies.
+- **This app does not own the preferences form.** It lives in the reviewer console
+  (`/console/preferences/`, design doc 022): `core.forms.ReviewerPreferenceForm` owns the editable
+  fields and validation, `core.services.reviewer_prefs` the formset assembly, and
+  `templates/shared/_reviewer_prefs_fields.html` the markup. The expiring `prefs` token page here was
+  retired; this app's remaining role is the `prefs` command (which DMs the console URL) and the
+  timezone resolver above.
+- `views.register_github_callback` **opens the console session** (`console.session.set_reviewer`) when
+  the new reviewer has rows to edit, so the "Edit Preferences Now" link lands signed in instead of
+  bouncing through OAuth again. That promotion is strictly stronger than a console sign-in:
+  registration proves Zulip identity (the registration token) *and* GitHub identity (OAuth). Success
+  path only — a link conflict returns before it.
+- `static/zulip_bot/expiry.js` holds the countdown helpers (`getExpiryState`, `formatRemaining`) for
+  the token pages that remain (`close_pr_form.js`, `label_pr_form.js`). They import it as a **sibling**
+  and must stay colocated: a relative ES import has to resolve against the *served* static path in the
+  browser and the *on-disk* path under vitest, and only colocation satisfies both. The console's prefs
+  JS is separate and has no countdown at all.
+- Registration tokens and their OAuth state share `ZULIP_LINK_TOKEN_SECRET` (formerly
+  `ZULIP_PREFS_TOKEN_SECRET`, whose env name `base.py` still honors so existing deployments keep the
+  same key).
+- **All four opaque strings this app issues** — the registration token, its OAuth state, and the two
+  PR-action tokens — are built on the one Fernet primitive in `core.services.signed_payloads`
+  (`issue_signed_payload` / `read_signed_payload`: encryption + integrity + TTL over a JSON dict).
+  Do not hand-roll another. Each consumer supplies its own secret/salt and owns its claims dataclass
+  and exception types; the primitive answers only "is it ours, intact, and unexpired". Expiry is
+  checked *before* claims, so an expired-and-malformed value reports as expired.
+- Both `issue_*` and `validate_*` take an optional `now: int | None` so tests pin a clock by argument
+  instead of patching `time` in whichever module happens to read it (patching broke when the primitive
+  moved; the argument will not).
 
 ## Testing Expectations
 - Canonical full validation for repo changes is `bash scripts/repo_check_compose.sh`.
+- `tests/test_command_registry.py::TestRegisteredCommandsAreDispatchable` iterates the **live**
+  registry and asserts every registered name and alias survives `parse_command` → `get_command`, and
+  that each canonical name is already normalized (it is what `help` prints). Adding a command with an
+  unreachable name fails there without anyone writing a per-command test. Verified to fail on the
+  reintroduced `register_test` bug, not just to pass today.
 - In sandboxed environments where Docker is blocked:
   - run app-level tests that are still feasible,
   - run frontend unit tests independently when possible,

@@ -8,6 +8,8 @@ from typing import Any
 from django.conf import settings
 from django.http import HttpRequest
 
+from zulip_bot.commands import normalize_command_name
+
 MENTION_PREFIX_RE = re.compile(r"^@\*\*(?P<name>.+?)\*\*(?:[:,]\s*|\s+|$)")
 
 
@@ -102,7 +104,7 @@ def parse_command(message_content: str) -> ParsedCommand | None:
         content = content[1:]
 
     parts = content.split(maxsplit=1)
-    name = parts[0].lower().replace("_", "-")
+    name = normalize_command_name(parts[0])
     args = parts[1] if len(parts) > 1 else ""
     return ParsedCommand(name=name, args=args)
 

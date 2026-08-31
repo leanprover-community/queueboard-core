@@ -18,6 +18,7 @@ from analyzer.models import (
     ReviewerAssignmentSnapshot,
     ReviewerOptOut,
 )
+from analyzer.services.assignment_rate_limit import assignment_rate_window_days, recent_assignment_counts
 from analyzer.services.queue_rules import default_rule_set_for_repo, rules_for_rule_set
 from analyzer.services.queueboard_snapshot import QueueboardSnapshotBuilder
 from analyzer.services.reviewer_assignment_engine import (
@@ -237,10 +238,24 @@ class AssignmentStatistics:
 
 
 def build_reviewer_catalog(repository: Repository, *, now: datetime | None = None) -> list[ReviewerProfile]:
-    """Hydrate reviewer profiles from ReviewerPreference rows."""
+    """Hydrate reviewer profiles from ReviewerPreference rows.
+
+    Carries both capacity gates: the concurrent ``maximum_capacity`` (stock) and the rolling-window
+    ``max_new_assignments_per_week`` with its trailing intake count (flow, design doc 054). The
+    count is fetched here, in one grouped query for the whole catalog, so that *every* consumer of a
+    catalog — the nightly builder, the diagnostic trace, on-demand suggestions, and the reviewer-
+    facing load line — sees the same figure. A reviewer whose push goes quiet then reads the number
+    that silenced it, and the gate and the surfacing cannot drift apart.
+    """
     current_time = now or datetime.now(timezone.utc)
+    prefs = list(ReviewerPreference.objects.filter(repository=repository).select_related("user").order_by("user__github_login"))
+    recent_counts = recent_assignment_counts(
+        repository,
+        [getattr(pref.user, "github_login", "") or "" for pref in prefs],
+        window_days=assignment_rate_window_days(),
+        now=current_time,
+    )
     profiles: list[ReviewerProfile] = []
-    prefs = ReviewerPreference.objects.filter(repository=repository).select_related("user").order_by("user__github_login")
     for pref in prefs:
         login = getattr(pref.user, "github_login", None)
         if not login:
@@ -248,6 +263,7 @@ def build_reviewer_catalog(repository: Repository, *, now: datetime | None = Non
         temporary_break = bool(pref.away_until and pref.away_until > current_time)
         preferred_labels = list(pref.preferred_labels or [])
         conflicts = list(pref.conflict_of_interest or [])
+        weekly_limit = pref.max_new_assignments_per_week
         profile = ReviewerProfile(
             github_login=login,
             maximum_capacity=pref.maximum_capacity,
@@ -258,6 +274,11 @@ def build_reviewer_catalog(repository: Repository, *, now: datetime | None = Non
             free_form=pref.free_form or "",
             conflict_of_interest=conflicts,
             conflict_of_interest_lower={c.lower() for c in conflicts},
+            weekly_limit=None if weekly_limit is None else int(weekly_limit),
+            # Keyed by normalized login: the history column stores whatever casing the writing
+            # caller used, so an unnormalized lookup here would read 0 for every reviewer whose
+            # GitHub login is capitalized and quietly disable their limit (design doc 054).
+            recent_assignment_count=recent_counts.get(_normalize_login(login), 0),
         )
         profiles.append(profile)
     return profiles
@@ -400,8 +421,8 @@ def suggest_reviewers_many_with_trace(
 
 
 @dataclass
-class _AssignmentInputs:
-    """Proposal-aware candidate/load inputs shared by the builder and the trace."""
+class AssignmentInputs:
+    """Proposal-aware candidate/load inputs shared by the builder, the trace, and suggestions."""
 
     reviewers: list[ReviewerProfile]
     assignments: Dict[str, tuple[list[int], float, int]]
@@ -410,13 +431,13 @@ class _AssignmentInputs:
     excluded_by_pr: dict[int, set[str]]
 
 
-def _prepare_assignment_inputs(
+def prepare_assignment_inputs(
     repository: Repository,
     *,
     payload: dict,
     now: datetime,
     rule_set: QueueRuleSet | None,
-) -> _AssignmentInputs:
+) -> AssignmentInputs:
     """Assemble the candidate pool, reviewer load, and exclusions for a build.
 
     Beyond the legacy filters (active-assignee / assignment-forbidden labels / opt-outs) this
@@ -425,6 +446,10 @@ def _prepare_assignment_inputs(
     proposal are withheld from re-proposal, and reviewers with a recently expired proposal for a
     PR are excluded for it (soft cooldown, merged into the per-PR exclusion set alongside
     opt-outs).
+
+    Public because on-demand assignment suggestions (design doc 053, Invariant 5) must share
+    this exact pool: any candidate filter added elsewhere would let suggestions offer PRs the
+    nightly builder refuses. New exclusion rules belong here, not at a call site.
     """
     reviewers = build_reviewer_catalog(repository, now=now)
     assignment_stats = collect_assignment_statistics(payload)
@@ -455,7 +480,7 @@ def _prepare_assignment_inputs(
         _opt_outs_for_prs(repository, assignable_queue_prs),
         _proposal_cooldowns_for_prs(repository, assignable_queue_prs, now=now, cooldown_days=cooldown_days),
     )
-    return _AssignmentInputs(
+    return AssignmentInputs(
         reviewers=reviewers,
         assignments=assignments,
         queue_prs=queue_prs,
@@ -474,7 +499,7 @@ def build_reviewer_assignment_trace(
     current_time = now or datetime.now(timezone.utc)
     payload = queue_snapshot.payload
     topic_label_matcher = topic_label_matcher_for_repo(repository)
-    inputs = _prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=None)
+    inputs = prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=None)
     queue_prs = inputs.queue_prs
     assignable_queue_prs = inputs.assignable_queue_prs
 
@@ -616,7 +641,7 @@ class ReviewerAssignmentBuilder:
         queue_obj = queue_snapshot or self._get_or_build_queue_snapshot(repository, cache_key=cache_key, rule_set=rule_set)
         payload = queue_obj.payload
 
-        inputs = _prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=rule_set)
+        inputs = prepare_assignment_inputs(repository, payload=payload, now=current_time, rule_set=rule_set)
 
         automatic_assignments = suggest_reviewers_many(
             reviewers=inputs.reviewers,
@@ -779,6 +804,7 @@ class AreaStatsBuilder:
 
 
 __all__ = [
+    "AssignmentInputs",
     "AssignmentStatistics",
     "AreaStatsBuilder",
     "PRAssignmentPriority",
@@ -792,6 +818,7 @@ __all__ = [
     "collect_assignment_statistics",
     "compute_area_stats",
     "pending_proposal_load_for_repo",
+    "prepare_assignment_inputs",
     "rank_prs_for_assignment",
     "suggest_reviewer_for_pr",
     "suggest_reviewers_many",

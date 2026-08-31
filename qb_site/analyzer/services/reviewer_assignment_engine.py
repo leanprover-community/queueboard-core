@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 import re
 from typing import Callable, Dict, Iterable, Sequence
@@ -11,6 +11,14 @@ from core.services.topic_labels import TopicLabelMatcher, default_topic_label_ma
 
 @dataclass(frozen=True)
 class ReviewerProfile:
+    """One reviewer's assignability inputs, as plain data (no ORM) — see design doc 037.
+
+    The last three fields carry the rolling-window rate limit (design doc 054) and all default to a
+    no-op, deliberately: ``_reviewer_candidate_state`` is shared code, called by the nightly builder
+    *and* by on-demand suggestions, so every construction site that predates 054 (tests included)
+    must keep today's behavior without naming them.
+    """
+
     github_login: str
     maximum_capacity: int
     auto_assign: bool
@@ -20,6 +28,15 @@ class ReviewerProfile:
     free_form: str
     conflict_of_interest: list[str]
     conflict_of_interest_lower: set[str]
+    # ``ReviewerPreference.max_new_assignments_per_week``; None = unlimited (no weekly gate).
+    weekly_limit: int | None = None
+    # Distinct PRs newly assigned to them inside the rolling window, from the durable
+    # ReviewerAssignmentApplication history (analyzer.services.assignment_rate_limit).
+    recent_assignment_count: int = 0
+    # Picks this reviewer has already been handed *in this simulation run*, which are not in the
+    # window count yet. Without it a single nightly run could overrun the weekly cap. Maintained by
+    # ``run_assignment_simulation``; a correctness guard, not an intra-week pacing knob.
+    simulated_this_run: int = 0
 
 
 @dataclass
@@ -93,6 +110,19 @@ def _title_priority(title: str | None) -> int:
 def _current_weight(login: str, assignments: Dict[str, tuple[list[int], float, int]]) -> float:
     data = assignments.get(login)
     return float(data[1]) if data else 0.0
+
+
+def _within_rate_limit(reviewer: ReviewerProfile) -> bool:
+    """Whether the reviewer is still under their rolling-window intake cap (design doc 054).
+
+    Note the strict ``<``: "max 5 per week" means at most 5, not at most 4, so a reviewer with four
+    PRs in the window is still available and receives a fifth — the *sixth* is what this blocks.
+    ``weekly_limit is None`` short-circuits to today's behavior, which is what keeps the feature
+    inert until a reviewer opts in.
+    """
+    if reviewer.weekly_limit is None:
+        return True
+    return reviewer.recent_assignment_count + reviewer.simulated_this_run < int(reviewer.weekly_limit)
 
 
 def add_pending_proposal_load(
@@ -172,7 +202,9 @@ def _reviewer_candidate_state(
             continue
         current_weight = _current_weight(reviewer.github_login, assignment_stats)
         remaining = reviewer.maximum_capacity - current_weight
-        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break:
+        # Two orthogonal capacity gates: stock (`remaining`, maximum_capacity) and flow
+        # (`_within_rate_limit`, max_new_assignments_per_week). A reviewer must pass both.
+        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break and _within_rate_limit(reviewer):
             available.append(reviewer.github_login)
             available_weights.append(remaining)
 
@@ -314,6 +346,11 @@ def _pr_trace_base(
         "labels": _topic_labels(pr_entry, topic_label_matcher),
         "author": pr_entry.get("author") or "",
         "opt_outs": sorted(login for login in excluded_logins if login),
+        # Default so that `potential` is always present, including on the early-return paths
+        # (missing-topic-label / no-match / no-matching-labels) that never reach the candidate
+        # contest. Readers such as the 053 skip classifier key off membership in this list, and a
+        # missing key there is indistinguishable from "was contested and lost".
+        "potential": [],
     }
 
 
@@ -352,6 +389,10 @@ def suggest_reviewer_for_pr_with_trace(
         "temporary_break": [],
         "auto_assign_disabled": [],
         "at_capacity": [],
+        # Design doc 054: filtered by the rolling-window intake cap rather than the concurrent one.
+        # Recorded separately so the persisted nightly trace (and the admin reading it) can explain
+        # a reviewer who went quiet while visibly holding free capacity.
+        "at_rate_limit": [],
     }
 
     matching: list[tuple[ReviewerProfile, list[str]]] = []
@@ -419,14 +460,18 @@ def suggest_reviewer_for_pr_with_trace(
         current_weight = _current_weight(reviewer_login, assignment_stats)
         remaining = reviewer.maximum_capacity - current_weight
 
+        within_rate_limit = _within_rate_limit(reviewer)
+
         if remaining <= 0:
             filtered["at_capacity"].append(reviewer_login)
         if not reviewer.auto_assign:
             filtered["auto_assign_disabled"].append(reviewer_login)
         if reviewer.temporary_break:
             filtered["temporary_break"].append(reviewer_login)
+        if not within_rate_limit:
+            filtered["at_rate_limit"].append(reviewer_login)
 
-        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break:
+        if remaining > 0 and reviewer.auto_assign and not reviewer.temporary_break and within_rate_limit:
             available.append(reviewer_login)
             weights[reviewer_login] = {
                 "current_weight": float(current_weight),
@@ -494,6 +539,11 @@ def run_assignment_simulation(
     }
     suggestions: dict[int, str] = {}
     remaining_prs = list(inputs.prs_to_assign)
+    # Local copy so this run's picks can be folded back into the profiles the gate reads. The
+    # window count in `recent_assignment_count` is a durable-history figure that cannot yet include
+    # anything decided here, so without `simulated_this_run` a single run could hand a reviewer more
+    # than their whole weekly budget in one night (design doc 054).
+    reviewers = list(inputs.reviewers)
 
     per_pr: dict[str, dict]
     if include_trace:
@@ -506,7 +556,7 @@ def run_assignment_simulation(
         ordered_prs, ranking_trace = rank_prs_for_assignment(
             prs_to_assign=remaining_prs,
             all_prs=inputs.all_prs,
-            reviewers=inputs.reviewers,
+            reviewers=reviewers,
             assignment_stats=stats_copy,
             excluded_by_pr=inputs.excluded_by_pr,
             priority_scorer=priority_scorer,
@@ -528,6 +578,7 @@ def run_assignment_simulation(
                         "author": "",
                         "opt_outs": [],
                         "candidate_counts": {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0},
+                        "potential": [],
                         "available": [],
                         "picked": None,
                         "reason": "missing-pr",
@@ -541,7 +592,7 @@ def run_assignment_simulation(
         if include_trace:
             result, trace = suggest_reviewer_for_pr_with_trace(
                 pr_entry=pr_entry,
-                reviewers=inputs.reviewers,
+                reviewers=reviewers,
                 assignment_stats=stats_copy,
                 rng=rng,
                 excluded_logins=excluded_logins,
@@ -552,7 +603,7 @@ def run_assignment_simulation(
             result = suggest_reviewer_for_pr(
                 pr_number=pr_number,
                 pr_entry=pr_entry,
-                reviewers=inputs.reviewers,
+                reviewers=reviewers,
                 assignment_stats=stats_copy,
                 rng=rng,
                 excluded_logins=excluded_logins,
@@ -569,6 +620,15 @@ def run_assignment_simulation(
         open_list = list(open_list)
         open_list.append(pr_number)
         stats_copy[result.suggested] = (open_list, weight + 1, total + 1)
+        # Same spot, the flow counterpart of the weight bump above: charge this pick against the
+        # picked reviewer's rolling-window budget for the rest of the run.
+        picked_norm = _normalize_login(result.suggested)
+        reviewers = [
+            replace(reviewer, simulated_this_run=reviewer.simulated_this_run + 1)
+            if _normalize_login(reviewer.github_login) == picked_norm
+            else reviewer
+            for reviewer in reviewers
+        ]
 
         remaining_prs.remove(pr_number)
         round_index += 1

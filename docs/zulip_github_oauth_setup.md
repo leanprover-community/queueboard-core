@@ -47,11 +47,15 @@ Set these in your Queueboard environment (`.env` or deployment secrets):
   - `GITHUB_OAUTH_CLIENT_ID`
   - `GITHUB_OAUTH_CLIENT_SECRET`
   - `QUEUEBOARD_BASE_URL` — canonical site base (`https://<your-host>`, no trailing path). Every
-    deep-link is built from this: both OAuth callbacks (registration and console), the console link
-    in reviewer DMs, and the Zulip prefs/registration links. **Must be set for the
+    deep-link is built from this: both OAuth callbacks (registration and console), the console and
+    preferences links in reviewer DMs, and the Zulip registration links. **Must be set for the
     console/notification rollout** and for OAuth to produce an absolute `redirect_uri`.
 - Optional:
   - `CONSOLE_OAUTH_STATE_TTL_SECONDS` (default 600) — console OAuth state round-trip TTL.
+  - `ZULIP_LINK_TOKEN_SECRET` — dedicated signing secret for the remaining Zulip link tokens
+    (registration + its OAuth state); falls back to `DJANGO_SECRET_KEY`. Replaces
+    `ZULIP_PREFS_TOKEN_SECRET`, which is still read as a legacy alias, so a deployment that set it
+    keeps the same key.
 
 Optional overrides (defaults shown):
 - `GITHUB_OAUTH_AUTHORIZE_URL=https://github.com/login/oauth/authorize`
@@ -82,8 +86,9 @@ If your team shares a deployed app, prefer separate local vs production OAuth ap
 ## 4) Quick Verification Checklist
 
 0. Add a command policy entry for live testing, for example:
-   - `register_test`: allow your admin/test Zulip group in `dm`.
-1. Send `register_test` to the bot in a DM.
+   - `register-test`: allow your admin/test Zulip group in `dm`. (An existing `register_test` key
+     still works — policy keys and typed names share one normalized name space, see design doc 021.)
+1. Send `register-test` to the bot in a DM (`register_test` works too).
    - Bot should return a fresh registration link regardless of whether a Queueboard user row already exists.
 2. Open registration link:
    - Page should show `Continue with GitHub` when OAuth is configured.
@@ -100,7 +105,7 @@ Example policy snippet:
 
 ```json
 {
-  "register_test": {
+  "register-test": {
     "allowed_groups": [1234],
     "allowed_user_ids": [101],
     "allowed_contexts": ["dm"]
@@ -119,7 +124,13 @@ Example policy snippet:
   - Expired or tampered OAuth `state` token.
   - Registration token expired before callback completed.
 - Link expired
-  - User waited past token TTL; ask user to run `prefs` again.
+  - User waited past the token TTL of a `close-pr` / `label-pr` / registration link; ask them to run the
+    command again. Reviewer *preferences* have no link TTL — `/console/preferences/` is stable and
+    bounded only by the console session (design doc 022).
+- "This console is only for registered reviewers" (403)
+  - The GitHub account signed in is known to us but has no `ReviewerPreference` row (and no pending
+    proposal) — e.g. someone the syncer ingested as a PR author. Expected; they must register with the
+    Zulip bot first.
 
 ## 6) Security Guidance
 

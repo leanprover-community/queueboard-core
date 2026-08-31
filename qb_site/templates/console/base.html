@@ -7,6 +7,7 @@
   <title>{% block title %}Reviewer console{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'shared/shared_pages.css' %}">
   <link rel="stylesheet" href="{% static 'console/console.css' %}">
+  {% block extra_css %}{% endblock %}
 </head>
 <body>
   <main class="page">
@@ -28,5 +29,6 @@
       });
     })();
   </script>
+  {% block extra_js %}{% endblock %}
 </body>
 </html>

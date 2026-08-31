@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from django.conf import settings
 from django.utils import timezone
 
 from core.models import User
@@ -12,7 +11,7 @@ from zulip_bot.commands import CommandContext, CommandResult, register_command
 from zulip_bot.services.assignment_command_parser import AssignmentCommandParseError, _parse_single_issue_or_pr_ref
 from zulip_bot.services.close_pr_execution import PermissionOutcome
 from zulip_bot.services.label_pr_execution import check_label_pr_permission
-from zulip_bot.services.label_pr_links import LabelPRLinkClaims, build_label_pr_link
+from zulip_bot.services.pr_action_links import LABEL_PR, PRActionLinkClaims, build_pr_action_link, ttl_seconds
 from zulip_bot.services.zulip_client import ZulipApiError, ZulipClient
 
 logger = logging.getLogger(__name__)
@@ -84,17 +83,17 @@ def label_pr_command(context: CommandContext, args: str) -> CommandResult:
     # acknowledge the original message with a reaction. See close_pr.py for the
     # rationale: the link must be delivered via send_direct_message because Zulip
     # webhook responses always go back to the triggering conversation.
-    link = build_label_pr_link(
-        claims=LabelPRLinkClaims(
+    link = build_pr_action_link(
+        action=LABEL_PR,
+        claims=PRActionLinkClaims(
             zulip_user_id=context.sender_id,
             github_login=github_login,
             pr_owner=ref.owner,
             pr_repo=ref.repo,
             pr_number=ref.number,
-        )
+        ),
     )
-    ttl_seconds = int(getattr(settings, "ZULIP_LABEL_PR_TOKEN_TTL_SECONDS", 1800))
-    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+    expires_at = timezone.now() + timedelta(seconds=ttl_seconds(LABEL_PR))
     ref_str = f"`{ref.owner}/{ref.repo}#{ref.number}`"
     title_suffix = f' ("{result.pr_title}")' if result.pr_title else ""
     dm_content = (

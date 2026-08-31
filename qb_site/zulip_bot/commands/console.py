@@ -18,7 +18,8 @@ def console_command(context: CommandContext, args: str) -> CommandResult:
     console_url = build_site_url(reverse("console:home"))
     return CommandResult(
         content=(
-            f"Open the [reviewer console]({console_url}) to accept or decline the assignment "
-            "proposals made to you. Sign in with GitHub — the link is stable and bookmarkable."
+            f"Open the [reviewer console]({console_url}) to accept or decline the assignment proposals "
+            "made to you, and edit your reviewer preferences. Sign in with GitHub — the link is stable "
+            "and bookmarkable."
         )
     )

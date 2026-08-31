@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 from django.conf import settings
 
-from core.services.oauth_state import (
-    SignedStateExpired,
-    SignedStateInvalid,
-    issue_signed_state,
-    read_signed_state,
+from core.services.signed_payloads import (
+    SignedPayloadExpired,
+    SignedPayloadInvalid,
+    issue_signed_payload,
+    read_signed_payload,
 )
 
 
@@ -32,8 +32,8 @@ class RegistrationOAuthStateInvalid(RegistrationOAuthStateError):
     pass
 
 
-def issue_registration_oauth_state(*, claims: RegistrationOAuthStateClaims) -> str:
-    return issue_signed_state(
+def issue_registration_oauth_state(*, claims: RegistrationOAuthStateClaims, now: int | None = None) -> str:
+    return issue_signed_payload(
         {
             "registration_token": claims.registration_token,
             "registration_nonce": claims.registration_nonce,
@@ -41,15 +41,16 @@ def issue_registration_oauth_state(*, claims: RegistrationOAuthStateClaims) -> s
         secret=_token_secret(),
         salt=_token_salt(),
         ttl_seconds=_state_ttl_seconds(),
+        now=now,
     )
 
 
-def validate_registration_oauth_state(state: str) -> RegistrationOAuthStateClaims:
+def validate_registration_oauth_state(state: str, *, now: int | None = None) -> RegistrationOAuthStateClaims:
     try:
-        payload = read_signed_state(state, secret=_token_secret(), salt=_token_salt())
-    except SignedStateExpired as exc:
+        payload = read_signed_payload(state, secret=_token_secret(), salt=_token_salt(), now=now)
+    except SignedPayloadExpired as exc:
         raise RegistrationOAuthStateExpired("state expired") from exc
-    except SignedStateInvalid as exc:
+    except SignedPayloadInvalid as exc:
         raise RegistrationOAuthStateInvalid("invalid state") from exc
     registration_token = payload.get("registration_token")
     registration_nonce = payload.get("registration_nonce")
@@ -69,9 +70,11 @@ def validate_registration_oauth_state(state: str) -> RegistrationOAuthStateClaim
 
 
 def _token_secret() -> str:
-    prefs_secret = getattr(settings, "ZULIP_PREFS_TOKEN_SECRET", "").strip()
-    if prefs_secret:
-        return prefs_secret
+    # Shared with the registration OAuth state; see ZULIP_LINK_TOKEN_SECRET in settings/base.py, which
+    # also honors the legacy ZULIP_PREFS_TOKEN_SECRET env name.
+    custom = getattr(settings, "ZULIP_LINK_TOKEN_SECRET", "").strip()
+    if custom:
+        return custom
     return settings.SECRET_KEY
 
 

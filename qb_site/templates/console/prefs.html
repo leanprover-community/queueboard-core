@@ -1,0 +1,62 @@
+{% extends "console/base.html" %}
+{% load static %}
+{% block title %}Reviewer preferences — Reviewer console{% endblock %}
+
+{% comment %}
+The form's own stylesheet must load after console.css so its form-control rules win on this page.
+{% endcomment %}
+{% block extra_css %}<link rel="stylesheet" href="{% static 'console/prefs_form.css' %}">{% endblock %}
+
+{% block body %}
+  <section class="hero">
+    <h1>Reviewer preferences</h1>
+    <div class="meta signin-row">
+      <span>Signed in as {{ reviewer.github_login }}.</span>
+      <a href="{% url 'console:home' %}">Back to the console</a>
+      <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
+    </div>
+  </section>
+
+  {% if saved %}
+    <div class="status status-ok" role="status">
+      Preferences saved{% if saved_at %} at {{ saved_at|date:"Y-m-d H:i" }} ({{ user_timezone_name }}){% endif %}.
+    </div>
+  {% endif %}
+
+  {% if formset %}
+    {% if formset.non_form_errors %}
+      <div class="status status-error" role="alert">{{ formset.non_form_errors|join:", " }}</div>
+    {% endif %}
+
+    {% comment %}
+    `prefs-root` and `prefs-form` are the ids console/prefs_form.js mounts on. No countdown: the
+    session bounds this page, not a link TTL. Note Django only strips {# #} comments on a single line
+    — anything multi-line must use {% comment %} or it renders as page text.
+    {% endcomment %}
+    <div id="prefs-root">
+      {# `.meta` is hero-only (pale text for the dark gradient); this strip is the light-background idiom. #}
+      <section class="form-context">
+        <span>Times are entered and shown in <strong>{{ user_timezone_name }}</strong></span>
+      </section>
+      <form method="post" id="prefs-form">
+        {% csrf_token %}
+        {% include "shared/_reviewer_prefs_fields.html" %}
+
+        <div class="btn-row">
+          <button type="submit" id="submit-button">Save preferences</button>
+          <span class="help" id="submit-hint">Changes apply as soon as you save.</span>
+        </div>
+      </form>
+    </div>
+  {% else %}
+    <section class="card">
+      <p>You have no reviewer preferences on this server yet, so there is nothing to edit here.</p>
+      <p class="help">
+        Reviewer preferences are created when you register with the Zulip bot. Send it the
+        <code>prefs</code> command to start, then come back to this page.
+      </p>
+    </section>
+  {% endif %}
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'console/prefs_form.js' %}"></script>{% endblock %}

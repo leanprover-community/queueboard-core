@@ -3,12 +3,18 @@
 ## Module Focus & Layout
 - `qb_site/` is the Django project; settings are layered in `qb_site/qb_site/settings/{base,local,ci,production}.py`.
 - Main apps:
-  - `core`: shared models/services/admin plumbing.
+  - `core`: shared models/services/admin plumbing, plus forms over its own models
+    (`core.forms.ReviewerPreferenceForm` + `core.services.reviewer_prefs`, shared by the console and
+    Zulip prefs surfaces). `core.services.signed_payloads` is the **only** Fernet
+    encrypt+integrity+TTL primitive in the repo — every opaque string we hand out (OAuth `state`, the
+    registration link, the `close-pr`/`label-pr` action links) is built on it. Add a consumer, not a
+    second primitive; each supplies its own secret/salt and owns its claims and exception types.
   - `syncer`: GitHub ingestion, cursors/backfills, Celery sync tasks.
   - `analyzer`: derived queue/revision/dependency state and snapshots.
   - `api`: DRF views/serializers for queueboard surfaces.
   - `zulip_bot`: Zulip webhook/command integration and policies.
-  - `console`: GitHub-OAuth reviewer console for accepting/declining assignment proposals (design doc 050).
+  - `console`: GitHub-OAuth reviewer console — accept/decline assignment proposals (design doc 050)
+    and edit reviewer preferences at `/console/preferences/` (design doc 022 amendment).
   - `site_analytics`: privacy-preserving pageview ingestion and aggregation for static/funder-facing sites.
 - Keep new modules inside the owning app (`models/`, `services/`, `tasks/`, `management/commands/`, `tests/`).
 - App-specific guidance:
@@ -66,11 +72,38 @@ uv run python qb_site/manage.py test zulip_bot
     Compose, which loads `.env` via `env_file`).
   - This is for quick iteration only; `scripts/repo_check_compose.sh` stays canonical
     (it also runs migrations via the `migrate` service and backup-policy validation).
+- If a build fails with `failed to solve: error getting credentials`, preceded by a
+  `docker-credential-desktop` stack trace about `mkdir <HOME>/Library/Containers`, that is a
+  sandboxed environment blocking the credential helper's writes — not a Docker or repo problem, and
+  not something to work around by hand. See **`docs/sandboxed_docker_setup.md`**: one-command
+  diagnosis, the two env vars that fix it, and why read-only access does not. With that setup the
+  canonical script runs green in the sandbox, all 12 steps including the image build.
 - If Docker/Compose is unavailable:
   - run non-DB checks (`ruff`, GraphQL validation, pure-Python tests where applicable),
   - run targeted tests that do not require the DB,
   - or ask the user to run `scripts/repo_check_compose.sh` and share results.
 - When reporting verification, explicitly state what was and was not runnable.
+
+## Test Isolation: Shared Redis
+
+`syncer.services.task_dedupe` and `syncer.services.rate_budget` write short-TTL keys to the
+Celery broker's Redis. Dedupe keys are `(repo_id, pr_number)`-scoped and the test database is
+recreated on every run, so ids restart from 1 and a run collides with the *previous* run's
+leftovers — `sync_pr` returns `runtime_deduped` / `recently_processed` and any test expecting real
+work fails.
+
+Two guards, both in place:
+- `TEST_RUNNER` (`qb_site.test_runner.IsolatedRedisDiscoverRunner`, set in `base.py`) clears the
+  app's Redis namespaces before the suite starts. Scan-and-delete over the prefixes in
+  `SHARED_REDIS_KEY_PATTERNS`, never `FLUSHDB`.
+- `ci.py` repoints the broker at its own Redis database index (`CI_REDIS_DB_INDEX`, default 15) so
+  a test run cannot write into the keyspace a `docker compose up` dev stack is using.
+
+**If you add a Redis key prefix to those modules, add a matching entry to
+`SHARED_REDIS_KEY_PATTERNS`.** `syncer/tests/test_redis_isolation.py` scans both modules for key
+literals and fails if one is not covered. Symptoms of the leak returning are misleading — failures
+land in unrelated suites (backfill), only after several consecutive runs, and each failing test
+passes in isolation — so trust the guard test over the appearance of flakiness.
 
 ## Concurrent Writers and Unique Keys
 Celery workers overlap: per-PR tasks (`syncer.sync_pr`, `analyzer.process_pr`), periodic

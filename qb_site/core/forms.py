@@ -1,3 +1,12 @@
+"""Forms over ``core`` models.
+
+``ReviewerPreferenceForm`` is the single definition of "what a reviewer may edit about themselves",
+rendered by the reviewer console at ``/console/preferences/`` — see
+`docs/design-decisions/022-zulip-prefs-form-design.md`. Keep it auth-agnostic: callers supply the
+already-authorized rows and the resolved timezone; nothing here decides *who* may edit *what*. The
+paired assembly lives in ``core.services.reviewer_prefs``.
+"""
+
 from __future__ import annotations
 
 import re
@@ -16,6 +25,7 @@ from core.services.topic_labels import make_topic_label_matcher
 
 REVIEWER_PREFERENCE_EDITABLE_FIELDS: tuple[str, ...] = (
     "maximum_capacity",
+    "max_new_assignments_per_week",
     "auto_assign",
     "assignment_acceptance",
     "notifications_enabled",
@@ -69,6 +79,40 @@ class DelimitedListField(forms.CharField):
         return str(value or "")
 
 
+def _rate_limit_window_days() -> int:
+    """The configured rolling window in days, for the rate-limit field's label and help text.
+
+    Read from settings rather than hardcoded so the reviewer-facing copy always describes the window
+    actually being enforced (``analyzer.services.assignment_rate_limit`` reads the same setting for
+    the count itself; this module stays free of an ``analyzer`` import).
+    """
+    return int(settings.ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS)
+
+
+def _rate_limit_help_text(*, recent_intake: int | None) -> str:
+    """Help text for the rolling-window assignment cap (design doc 054).
+
+    Carries only what the label cannot. The label already says "per N days", so this does not
+    restate the cap; it adds the three things a reviewer cannot infer from a number:
+
+    1. the window is *rolling*, not a calendar week — the "why am I blocked, it's Monday" case;
+    2. blank means unlimited, which is the opt-in default;
+    3. the limit throttles the push only, never PRs they request themselves (design doc 053).
+
+    Then their own trailing intake, because measured median intake is ~2/week against a median
+    *worst* week of 5 — a reviewer picking a number without that figure is guessing, and guessing
+    badly in either direction (a limit above their peak does nothing; one far below it goes quiet).
+    """
+    days = _rate_limit_window_days()
+    text = (
+        f"Counted over a rolling {days} days, not a calendar week. "
+        "Leave blank for no limit; PRs you request yourself never count."
+    )
+    if recent_intake is not None:
+        text += f" You have been assigned {recent_intake} new PR{'' if recent_intake == 1 else 's'} in the last {days} days."
+    return text
+
+
 class ReviewerPreferenceForm(forms.ModelForm):
     # Acceptance-gate mode (design doc 050). Exposed as a two-option radio; the values are the
     # model's own choices ("auto"/"confirm") so the ModelForm persists it without any conversion.
@@ -118,6 +162,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         fields = REVIEWER_PREFERENCE_EDITABLE_FIELDS
         widgets = {
             "maximum_capacity": forms.NumberInput(attrs={"min": 1, "step": 1}),
+            "max_new_assignments_per_week": forms.NumberInput(attrs={"min": 1, "step": 1, "placeholder": "no limit"}),
             "free_form": forms.Textarea(attrs={"rows": 4}),
         }
 
@@ -127,6 +172,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
         user_timezone: tzinfo | None = None,
         label_catalog_by_repo: Mapping[int, list[str]] | None = None,
         topic_label_pattern_by_repo: Mapping[int, str] | None = None,
+        recent_intake_by_repo: Mapping[int, int] | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -170,14 +216,37 @@ class ReviewerPreferenceForm(forms.ModelForm):
         )
         self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
+        # The two capacity gates sit side by side in the grid and are easy to confuse, so each says
+        # which kind of limit it is: this one bounds the PRs held at once (stock), the next bounds
+        # how fast new ones arrive (flow). Without this, `maximum_capacity` renders as a bare
+        # unexplained number beside a fully-annotated neighbour.
+        self.fields[
+            "maximum_capacity"
+        ].help_text = "How many assigned PRs you can hold at once. Auto-assignment pauses while you are at this number."
+        # Label and help text both name the window from the setting that defines it, so the copy
+        # cannot drift from the mechanism — and both say "N days" rather than "per week", because
+        # the window is rolling (design doc 054).
+        rate_window_days = _rate_limit_window_days()
+        self.fields["max_new_assignments_per_week"].label = f"Max new assignments per {rate_window_days} days"
+        self.fields["max_new_assignments_per_week"].help_text = _rate_limit_help_text(
+            recent_intake=(recent_intake_by_repo or {}).get(int(repo_id)) if repo_id is not None else None
+        )
         self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
         self.fields["free_form"].help_text = format_html(
             "A free form description of your reviewing interests. {}", community_team_page_warning
         )
-        self.fields["stale_nudge_days"].help_text = "Send a nudge when a PR has stayed on queue this many consecutive days."
+        # One escalation ladder (nudge at X days, unassign at Y > X), but the two halves answer to
+        # different switches, which is exactly what the old split-across-sections layout hid: the
+        # nudge is a notification and honours the toggle below, while the auto-unassign is an
+        # assignment action that runs regardless of it. Each says which, because a reviewer who
+        # turns notifications off would otherwise reasonably expect to stop being unassigned too.
         self.fields[
-            "auto_unassign_days"
-        ].help_text = f"Automatically unassign after this many consecutive queue days (maximum {MAX_AUTO_UNASSIGN_DAYS})."
+            "stale_nudge_days"
+        ].help_text = "Nudge you when a PR has stayed on queue this many consecutive days. Only sent when notifications are on."
+        self.fields["auto_unassign_days"].help_text = (
+            f"Unassign you after this many consecutive queue days (maximum {MAX_AUTO_UNASSIGN_DAYS}). "
+            "Must be greater than the nudge threshold, and happens whether or not notifications are on."
+        )
 
         policy = parse_notification_policy(self.instance.notification_settings)
         self.initial["stale_nudge_days"] = policy.stale_nudge_days
@@ -203,6 +272,21 @@ class ReviewerPreferenceForm(forms.ModelForm):
         value = int(self.cleaned_data["maximum_capacity"])
         if value < 1:
             raise forms.ValidationError("Ensure this value is greater than or equal to 1.")
+        return value
+
+    def clean_max_new_assignments_per_week(self) -> int | None:
+        """Blank clears the limit; a set value must be at least 1.
+
+        ``0`` is rejected rather than accepted as "block everything": a reviewer who wants no
+        auto-assignment at all turns off ``auto_assign``, which says so plainly on every surface,
+        instead of encoding it as a rate of zero that only the engine gate would explain.
+        """
+        value = self.cleaned_data.get("max_new_assignments_per_week")
+        if value in (None, ""):
+            return None
+        value = int(value)
+        if value < 1:
+            raise forms.ValidationError("Ensure this value is greater than or equal to 1, or leave it blank for no limit.")
         return value
 
     def clean_preferred_labels(self) -> list[str]:

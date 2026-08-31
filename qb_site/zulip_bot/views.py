@@ -3,22 +3,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import datetime, timezone as dt_timezone
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
-from django.db.models import Case, IntegerField, When
-from django.forms import modelformset_factory
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.urls import reverse
 from django.template.response import TemplateResponse
-from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from core.models import ReviewerPreference, User
-from core.utils.zulip_time import format_global_time
-from syncer.models import LabelDef
+from console import session as console_session
+from core.models import ReviewerPreference
 from zulip_bot.commands import CommandResult, get_command
 from zulip_bot.commands import assign as _assign  # noqa: F401
 from zulip_bot.commands import assigned_prs as _assigned_prs  # noqa: F401
@@ -29,12 +24,12 @@ from zulip_bot.commands import help as _help  # noqa: F401
 from zulip_bot.commands import label_pr as _label_pr  # noqa: F401
 from zulip_bot.commands import prefs as _prefs  # noqa: F401
 from zulip_bot.commands import register_test as _register_test  # noqa: F401
+from zulip_bot.commands import suggest_prs as _suggest_prs  # noqa: F401
 from zulip_bot.commands import pr_info as _pr_info  # noqa: F401
 from zulip_bot.commands import unassign as _unassign  # noqa: F401
-from zulip_bot.forms import ReviewerPreferenceForm
 from zulip_bot.services.registration_bootstrap import ensure_default_preferences_for_user
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
-from core.services.site_urls import resolve_site_base_url
+from core.services.site_urls import build_site_url, resolve_site_base_url
 from zulip_bot.services.close_pr_execution import (
     add_pr_labels,
     ClosePRError,
@@ -43,28 +38,18 @@ from zulip_bot.services.close_pr_execution import (
     post_pr_comment,
 )
 from zulip_bot.services.close_pr_presets import load_close_pr_presets
-from zulip_bot.services.close_pr_links import (
-    ClosePRTokenExpired,
-    ClosePRTokenInvalid,
-    validate_close_pr_token,
-)
 from zulip_bot.services.label_pr_execution import (
     LabelPRError,
     fetch_issue_details_for_form,
     fetch_repo_labels_from_db,
     set_pr_labels,
 )
-from zulip_bot.services.label_pr_links import (
-    LabelPRTokenExpired,
-    LabelPRTokenInvalid,
-    validate_label_pr_token,
-)
-from zulip_bot.services.prefs_links import (
-    PrefsLinkClaims,
-    PrefsTokenExpired,
-    PrefsTokenInvalid,
-    build_prefs_link,
-    validate_prefs_token,
+from zulip_bot.services.pr_action_links import (
+    CLOSE_PR,
+    LABEL_PR,
+    PRActionTokenExpired,
+    PRActionTokenInvalid,
+    validate_pr_action_token,
 )
 from zulip_bot.services.registration_links import (
     RegistrationTokenExpired,
@@ -99,12 +84,6 @@ from zulip_bot.webhook.responses import (
 from zulip_bot.webhook.sender import SenderClassifier
 
 logger = logging.getLogger(__name__)
-ReviewerPreferenceFormSet = modelformset_factory(
-    ReviewerPreference,
-    form=ReviewerPreferenceForm,
-    extra=0,
-    can_delete=False,
-)
 
 
 @csrf_exempt
@@ -168,95 +147,6 @@ def webhook(request: HttpRequest) -> HttpResponse:
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.exception("zulip_command_unexpected_error")
         return zulip_response(_unexpected_error_response(exc))
-
-
-def prefs_form(request: HttpRequest, token: str) -> HttpResponse:
-    try:
-        claims = validate_prefs_token(token)
-    except PrefsTokenExpired:
-        return _prefs_invalid_response(request, reason="expired")
-    except PrefsTokenInvalid:
-        return _prefs_invalid_response(request, reason="invalid")
-
-    prefs = _load_authorized_preferences(claims.user_id, claims.zulip_user_id, claims.preference_ids)
-    if not prefs:
-        return _prefs_invalid_response(request, reason="invalid")
-
-    user = prefs[0].user
-    user_timezone_name = _resolve_user_timezone_name(user=user, zulip_user_id=claims.zulip_user_id)
-    user_timezone = ZoneInfo(user_timezone_name)
-    pref_ids = [pref.pk for pref in prefs]
-    ordering = Case(
-        *[When(pk=pref_id, then=pos) for pos, pref_id in enumerate(pref_ids)],
-        output_field=IntegerField(),
-    )
-    queryset = (
-        ReviewerPreference.objects.filter(
-            pk__in=pref_ids,
-            user_id=claims.user_id,
-        )
-        .select_related("repository", "user")
-        .order_by(ordering)
-    )
-    repo_ids = sorted({pref.repository_id for pref in prefs})
-    label_catalog_by_repo: dict[int, list[str]] = {}
-    label_rows = LabelDef.objects.filter(repository_id__in=repo_ids).values_list("repository_id", "name")
-    for repository_id, label_name in label_rows:
-        label_catalog_by_repo.setdefault(int(repository_id), []).append(str(label_name))
-    topic_label_pattern_by_repo: dict[int, str] = {
-        int(pref.repository_id): (pref.repository.assignment_topic_label_pattern or "") for pref in prefs
-    }
-
-    submitted = request.method == "GET" and request.GET.get("saved") == "1"
-    saved_at: datetime | None = None
-    with timezone.override(user_timezone):
-        if request.method == "POST":
-            formset = ReviewerPreferenceFormSet(
-                request.POST,
-                queryset=queryset,
-                form_kwargs={
-                    "user_timezone": user_timezone,
-                    "label_catalog_by_repo": label_catalog_by_repo,
-                    "topic_label_pattern_by_repo": topic_label_pattern_by_repo,
-                },
-            )
-            if formset.is_valid():
-                formset.save()
-                url = reverse("zulip-prefs-form", kwargs={"token": token})
-                return HttpResponseRedirect(f"{url}?saved=1")
-        else:
-            formset = ReviewerPreferenceFormSet(
-                queryset=queryset,
-                form_kwargs={
-                    "user_timezone": user_timezone,
-                    "label_catalog_by_repo": label_catalog_by_repo,
-                    "topic_label_pattern_by_repo": topic_label_pattern_by_repo,
-                },
-            )
-        if submitted:
-            saved_at = timezone.localtime(timezone.now(), user_timezone)
-
-    expires_at_unix = claims.exp
-    if expires_at_unix is None:
-        return _prefs_invalid_response(request, reason="invalid")
-    expires_at_utc = datetime.fromtimestamp(expires_at_unix, tz=dt_timezone.utc)
-
-    response = TemplateResponse(
-        request,
-        "zulip_bot/prefs_form.html",
-        {
-            "formset": formset,
-            "submitted": submitted,
-            "saved_at": saved_at,
-            "user": user,
-            "expires_at_unix": expires_at_unix,
-            "expires_at_iso": expires_at_utc.isoformat(),
-            "user_timezone_name": user_timezone_name,
-        },
-        status=200,
-    )
-    response["Cache-Control"] = "no-store"
-    return response
 
 
 def register_start(request: HttpRequest, token: str) -> HttpResponse:
@@ -357,15 +247,19 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
         logger.info("registration_link_conflict", extra={"reason": "link_conflict"})
         return _register_invalid_response(request, reason="link_conflict")
     bootstrap_result = ensure_default_preferences_for_user(user=link_result.user)
-    prefs_link, prefs_expires_unix, prefs_expires_iso = _build_prefs_link_for_user(
-        user=link_result.user,
-        zulip_user_id=registration_claims.zulip_user_id,
-    )
+    has_preferences = ReviewerPreference.objects.filter(user_id=link_result.user.id).exists()
+    prefs_link = build_site_url(reverse("console:prefs")) if has_preferences else None
+    # The reviewer just proved this GitHub identity in this browser, and registration additionally
+    # proves their Zulip identity (the registration token) — strictly more than a console sign-in
+    # establishes. So open the console session here and let the link on this page land signed in,
+    # instead of bouncing them straight back through OAuth (doc 022). Success path only: a link
+    # conflict returned above, before this point.
+    if has_preferences:
+        console_session.set_reviewer(request, link_result.user)
     dm_sent = _send_registration_success_dm(
         zulip_user_id=registration_claims.zulip_user_id,
         github_login=identity.github_login,
         prefs_link=prefs_link,
-        prefs_expires_unix=prefs_expires_unix,
     )
 
     response = TemplateResponse(
@@ -377,8 +271,6 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
             "link_result": link_result,
             "bootstrap_result": bootstrap_result,
             "prefs_link": prefs_link,
-            "prefs_expires_unix": prefs_expires_unix,
-            "prefs_expires_iso": prefs_expires_iso,
             "dm_sent": dm_sent,
         },
         status=200,
@@ -389,10 +281,10 @@ def register_github_callback(request: HttpRequest) -> HttpResponse:
 
 def close_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     try:
-        claims = validate_close_pr_token(token)
-    except ClosePRTokenExpired:
+        claims = validate_pr_action_token(token, action=CLOSE_PR)
+    except PRActionTokenExpired:
         return _close_pr_invalid_response(request, reason="expired")
-    except ClosePRTokenInvalid:
+    except PRActionTokenInvalid:
         return _close_pr_invalid_response(request, reason="invalid")
 
     from datetime import datetime, timezone as dt_timezone
@@ -636,10 +528,10 @@ def _resolve_repo_log_target(*, owner: str, repo: str) -> dict | None:
 
 def label_pr_form(request: HttpRequest, token: str) -> HttpResponse:
     try:
-        claims = validate_label_pr_token(token)
-    except LabelPRTokenExpired:
+        claims = validate_pr_action_token(token, action=LABEL_PR)
+    except PRActionTokenExpired:
         return _label_pr_invalid_response(request, reason="expired")
-    except LabelPRTokenInvalid:
+    except PRActionTokenInvalid:
         return _label_pr_invalid_response(request, reason="invalid")
 
     from datetime import datetime, timezone as dt_timezone
@@ -850,17 +742,6 @@ def _close_pr_invalid_response(request: HttpRequest, *, reason: str) -> HttpResp
     return response
 
 
-def _prefs_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
-    response = TemplateResponse(
-        request,
-        "zulip_bot/prefs_invalid.html",
-        {"reason": reason},
-        status=403,
-    )
-    response["Cache-Control"] = "no-store"
-    return response
-
-
 def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResponse:
     response = TemplateResponse(
         request,
@@ -872,40 +753,20 @@ def _register_invalid_response(request: HttpRequest, *, reason: str) -> HttpResp
     return response
 
 
-def _build_prefs_link_for_user(*, user: User, zulip_user_id: int) -> tuple[str | None, int | None, str | None]:
-    preference_ids = tuple(ReviewerPreference.objects.filter(user_id=user.id).values_list("id", flat=True).order_by("id"))
-    if not preference_ids:
-        return (None, None, None)
-    prefs_link = build_prefs_link(
-        claims=PrefsLinkClaims(
-            user_id=user.id,
-            zulip_user_id=zulip_user_id,
-            preference_ids=preference_ids,
-        )
-    )
-    ttl_seconds = int(getattr(settings, "ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
-    expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
-    expires_unix = int(expires_at.timestamp())
-    return (prefs_link, expires_unix, datetime.fromtimestamp(expires_unix, tz=dt_timezone.utc).isoformat())
-
-
 def _send_registration_success_dm(
     *,
     zulip_user_id: int,
     github_login: str,
     prefs_link: str | None,
-    prefs_expires_unix: int | None,
 ) -> bool:
-    if prefs_link and prefs_expires_unix:
-        content = (
-            f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
-            f"Next step: click this private link to [finalize your reviewer preferences]({prefs_link}). "
-            f"It expires at {format_global_time(prefs_expires_unix)}."
-        )
+    linked = f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
+    if prefs_link is None:
+        content = linked + "You do not currently have any reviewer preferences to edit."
     else:
-        content = (
-            f"Successfully linked your Zulip account with GitHub user `{github_login}`.\n\n"
-            "You do not currently have any reviewer preferences to edit."
+        content = linked + (
+            f"Next step: [set your reviewer preferences]({prefs_link}) in the reviewer console. "
+            "The link is stable, so bookmark it — you are already signed in on the browser you just "
+            "registered from."
         )
     try:
         ZulipClient().send_direct_message(to=[zulip_user_id], content=content)
@@ -928,59 +789,6 @@ def _github_oauth_redirect_uri(request: HttpRequest) -> str:
     path = reverse("zulip-register-github-callback")
     base = resolve_site_base_url()
     return f"{base}{path}" if base else request.build_absolute_uri(path)
-
-
-def _load_authorized_preferences(user_id: int, zulip_user_id: int, preference_ids: tuple[int, ...]) -> list[ReviewerPreference]:
-    pref_ids = tuple(dict.fromkeys(preference_ids))
-    if not pref_ids:
-        return []
-    prefs = list(ReviewerPreference.objects.filter(id__in=pref_ids).select_related("repository", "user"))
-    if len(prefs) != len(pref_ids):
-        return []
-    by_id = {pref.id: pref for pref in prefs}
-    ordered = [by_id[pref_id] for pref_id in pref_ids]
-    if any(pref.user_id != user_id for pref in ordered):
-        return []
-    if any(pref.user.zulip_user_id not in (None, zulip_user_id) for pref in ordered):
-        return []
-    return ordered
-
-
-def _resolve_user_timezone_name(*, user: User, zulip_user_id: int) -> str:
-    zulip_tz_name = _fetch_zulip_user_timezone_name(zulip_user_id)
-    if zulip_tz_name:
-        return zulip_tz_name
-    if user.timezone and _is_valid_timezone_name(user.timezone):
-        return user.timezone
-    return timezone.get_default_timezone_name()
-
-
-def _fetch_zulip_user_timezone_name(zulip_user_id: int) -> str | None:
-    base_url = getattr(settings, "ZULIP_BASE_URL", "").strip()
-    bot_email = getattr(settings, "ZULIP_BOT_EMAIL", "").strip()
-    bot_api_key = getattr(settings, "ZULIP_BOT_API_KEY", "").strip()
-    if not base_url or not bot_email or not bot_api_key:
-        return None
-    try:
-        payload = ZulipClient().get_user_by_id(zulip_user_id)
-    except ZulipApiError:
-        logger.exception("zulip_timezone_lookup_failed", extra={"zulip_user_id": zulip_user_id})
-        return None
-    user = payload.get("user")
-    if not isinstance(user, dict):
-        return None
-    timezone_name = user.get("timezone")
-    if isinstance(timezone_name, str) and _is_valid_timezone_name(timezone_name):
-        return timezone_name
-    return None
-
-
-def _is_valid_timezone_name(value: str) -> bool:
-    try:
-        ZoneInfo(value)
-    except ZoneInfoNotFoundError:
-        return False
-    return True
 
 
 def _unexpected_error_response(exc: Exception) -> CommandResult:

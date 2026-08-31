@@ -44,24 +44,38 @@ class CommandDefinition:
 _COMMANDS: dict[str, CommandDefinition] = {}
 
 
+def normalize_command_name(value: str) -> str:
+    """Canonical form of a command name: trimmed, lowercased, ``_`` folded to ``-``.
+
+    One name space, applied everywhere a name crosses a boundary — the webhook parser
+    (`webhook.payload.parse_command`), the policy loader (`webhook.policy`), and registration and
+    lookup here. Applying it at *registration* is what makes a command declared with an underscore
+    still reachable: `register_test` was registered verbatim while the parser hyphenated every
+    incoming name, so it could never be dispatched in either spelling.
+    """
+    return value.strip().lower().replace("_", "-")
+
+
 def register_command(*, name: str, description: str, aliases: tuple[str, ...] = ()) -> Callable[[CommandHandler], CommandHandler]:
     def decorator(handler: CommandHandler) -> CommandHandler:
+        canonical = normalize_command_name(name)
+        normalized_aliases = tuple(normalize_command_name(alias) for alias in aliases)
         definition = CommandDefinition(
-            name=name,
+            name=canonical,
             description=description,
             handler=handler,
-            aliases=aliases,
+            aliases=normalized_aliases,
         )
-        _COMMANDS[name] = definition
-        for alias in aliases:
-            _COMMANDS[alias] = definition
+        _COMMANDS[canonical] = definition
+        for alias in normalized_aliases:
+            _COMMANDS.setdefault(alias, definition)
         return handler
 
     return decorator
 
 
 def get_command(name: str) -> CommandDefinition | None:
-    return _COMMANDS.get(name)
+    return _COMMANDS.get(normalize_command_name(name))
 
 
 def list_commands() -> list[CommandDefinition]:

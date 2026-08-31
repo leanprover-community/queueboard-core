@@ -52,3 +52,4 @@ Celery task names (as registered via `@shared_task(name=…)`):
 uv run python qb_site/manage.py test site_analytics
 bash scripts/repo_check_compose.sh
 ```
+- This app is step `[13/13]` of `scripts/repo_check_compose.sh` — if you add an app, add its step.

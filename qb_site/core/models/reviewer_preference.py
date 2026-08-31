@@ -13,6 +13,10 @@ class ReviewerPreference(TimestampedModel):
     Fields
     - ``repository``/``user``: scope and identity; unique together.
     - ``maximum_capacity``: numeric cap for concurrently assigned PRs (legacy default is 10).
+    - ``max_new_assignments_per_week``: optional rolling-window cap on *new* assignments (design doc
+      054). ``None`` (the default) means unlimited. Orthogonal to ``maximum_capacity``: that one
+      bounds the stock a reviewer holds at once, this one bounds the flow they take on, so a
+      reviewer who clears PRs quickly is no longer refilled without limit.
     - ``auto_assign``: whether the reviewer participates in auto‑assignment.
     - ``away_until``: optional break end timestamp (timezone‑aware). Suggestions should skip the
       reviewer while ``now_utc < away_until``.
@@ -37,6 +41,10 @@ class ReviewerPreference(TimestampedModel):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="reviewer_preferences")
 
     maximum_capacity = models.PositiveIntegerField(default=10)
+    # Rolling-window cap on newly assigned PRs (design doc 054). ``None`` = unlimited, which is the
+    # opt-in default: the weekly gate is skipped entirely and behavior is unchanged. The window
+    # length is operational (``ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS``, 7 days), not per-reviewer.
+    max_new_assignments_per_week = models.PositiveIntegerField(null=True, blank=True)
     auto_assign = models.BooleanField(default=True)
     # Whether automatic assignment goes through the acceptance gate ("confirm") or assigns
     # directly like the legacy behavior ("auto"). New reviewers default to "confirm"; existing

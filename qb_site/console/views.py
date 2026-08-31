@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 import secrets
-from typing import Iterable
+from typing import Iterable, Sequence
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.db import transaction
@@ -21,7 +22,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.http import url_has_allowed_host_and_scheme
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from analyzer.models import AssignmentProposal, ReviewerAssignmentApplication, ReviewerOptOut
 from analyzer.services.assignment_proposal_validity import (
@@ -29,6 +30,18 @@ from analyzer.services.assignment_proposal_validity import (
     live_proposal_validity,
     queue_membership,
     resolve_on_queue_exit_policy,
+)
+from analyzer.services.assignment_rate_limit import (
+    assignment_rate_window_days,
+    normalize_login,
+    recent_assignment_counts,
+)
+from analyzer.services.assignment_suggestions import (
+    STATUS_NO_LABELS,
+    STATUS_NO_SNAPSHOT,
+    STATUS_NOT_A_REVIEWER,
+    format_skip_summary,
+    suggest_prs_for_reviewer,
 )
 from analyzer.services.reviewer_assignment import _opt_outs_for_prs
 from analyzer.services.reviewer_assignment_apply import assign_reviewer_and_record
@@ -45,23 +58,77 @@ from analyzer.services.reviewer_load import (
     reviewer_load_with_breakdown,
 )
 from console import session as console_session
-from core.models import Repository, ReviewerPreference
+from core.models import Repository, ReviewerPreference, User
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
 from core.services.github_identity import resolve_user_from_identity
 from core.services.github_oauth import GitHubOAuthClient, GitHubOAuthError
 from core.services.oauth_state import (
     ConsoleOAuthStateClaims,
-    SignedStateError,
     issue_console_oauth_state,
     validate_console_oauth_state,
 )
+from core.services.signed_payloads import SignedPayloadError
+from core.services.reviewer_prefs import build_preferences_formset, preferences_for_user
 from core.services.site_urls import build_site_url
 from syncer.models import PRLabel, PullRequest
 
+# The reviewer's timezone comes from Zulip's own user record, so the resolver lives in `zulip_bot`
+# (see `zulip_bot.services.user_timezone`). Console access itself stays independent of Zulip
+# reachability — an unlinked or unreachable Zulip only falls through to `core.User.timezone`, then the
+# project default.
+from zulip_bot.services.user_timezone import resolve_user_timezone_name
+
 log = logging.getLogger(__name__)
+
+# Shown to a GitHub account we cannot let in: unknown to us, a recycled login, or known but not a
+# reviewer here. One message for all three — the distinction is not the visitor's business.
+NOT_A_REVIEWER_MESSAGE = (
+    "This console is only for registered reviewers. If you review for a tracked "
+    "repository, register with the Zulip bot first, then sign in here."
+)
 
 
 # --- auth --------------------------------------------------------------------
+
+
+def _is_reviewer(user: User) -> bool:
+    """Whether ``user`` may hold a console session.
+
+    Resolve-only identity is not enough: `syncer` upserts a `core.User` for every PR author, so a
+    "known GitHub account" is usually just a contributor. Reviewer-ness is exactly what the
+    assignment engine reads — a `ReviewerPreference` row — plus a pending-proposal escape hatch, so a
+    reviewer whose row is removed while a proposal is open can still answer it (design doc 022,
+    invariant 2; the hourly expiry sweep retires the proposal otherwise).
+    """
+    if ReviewerPreference.objects.filter(user=user).exists():
+        return True
+    login = _normalize_login(user.github_login or "")
+    if not login:
+        return False
+    return AssignmentProposal.objects.filter(
+        reviewer_login__iexact=login,
+        state=AssignmentProposal.STATE_PROPOSED,
+    ).exists()
+
+
+def _not_a_reviewer_response(request: HttpRequest) -> HttpResponse:
+    return render(request, "console/error.html", {"message": NOT_A_REVIEWER_MESSAGE}, status=403)
+
+
+def _reviewer_from_session(request: HttpRequest) -> tuple[User | None, HttpResponse | None]:
+    """Resolve the session reviewer, applying the admission gate.
+
+    Returns ``(reviewer, None)`` when signed in as a reviewer, ``(None, None)`` when not signed in
+    (the caller decides between a sign-in page and a redirect), and ``(None, response)`` when the
+    session belongs to someone who is not a reviewer here — normally unreachable, since sign-in
+    refuses them, but reachable if their last preference row is removed mid-session.
+    """
+    reviewer = console_session.get_reviewer(request)
+    if reviewer is None:
+        return None, None
+    if not _is_reviewer(reviewer):
+        return None, _not_a_reviewer_response(request)
+    return reviewer, None
 
 
 def _safe_next(request: HttpRequest, raw: str | None) -> str:
@@ -101,7 +168,7 @@ def oauth_callback(request: HttpRequest) -> HttpResponse:
         return render(request, "console/error.html", {"message": "Sign-in was cancelled or failed."}, status=400)
     try:
         claims = validate_console_oauth_state(state)
-    except SignedStateError:
+    except SignedPayloadError:
         return render(request, "console/error.html", {"message": "Sign-in link expired or was invalid. Try again."}, status=400)
     # CSRF: the state's nonce must match the one we stored in this browser's session.
     if not expected_nonce or not secrets.compare_digest(expected_nonce, claims.nonce):
@@ -122,17 +189,12 @@ def oauth_callback(request: HttpRequest) -> HttpResponse:
     user = resolve_user_from_identity(identity)
     if user is None:
         log.info("console.oauth_callback: unknown GitHub login %r denied", identity.github_login)
-        return render(
-            request,
-            "console/error.html",
-            {
-                "message": (
-                    "This console is only for registered reviewers. If you review for a tracked "
-                    "repository, register with the Zulip bot first, then sign in here."
-                )
-            },
-            status=403,
-        )
+        return _not_a_reviewer_response(request)
+    # Resolve-only is not reviewer-only: refuse a session to a known-but-not-reviewer account rather
+    # than handing it an empty console (design doc 022, invariant 2).
+    if not _is_reviewer(user):
+        log.info("console.oauth_callback: non-reviewer GitHub login %r denied", identity.github_login)
+        return _not_a_reviewer_response(request)
     console_session.set_reviewer(request, user)
     return redirect(_safe_next(request, claims.next))
 
@@ -152,7 +214,9 @@ def _login_url(next_path: str) -> str:
 
 @require_GET
 def home(request: HttpRequest) -> HttpResponse:
-    reviewer = console_session.get_reviewer(request)
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
     if reviewer is None:
         return render(request, "console/login.html", {"login_url": _login_url(reverse("console:home"))})
 
@@ -256,6 +320,11 @@ def _build_home_context(reviewer) -> dict:
         "repo_groups": repo_groups,
         "logout_url": reverse("console:logout"),
         "unassign_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)),
+        "prefs_url": reverse("console:prefs"),
+        # On-demand suggestions entry point (design doc 053) — shown in the header row and, because
+        # the empty state used to be a dead end, in the empty state too.
+        "suggestions_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED", False)),
+        "suggestions_url": reverse("console:suggestions"),
     }
 
 
@@ -314,12 +383,101 @@ def _batch_labels(prs: Iterable[PullRequest]) -> dict[int, list[str]]:
     return out
 
 
+# --- preferences -------------------------------------------------------------
+
+
+def _recent_intake_by_repo(preferences: Sequence[ReviewerPreference]) -> dict[int, int]:
+    """``repository_id -> new PRs assigned to this reviewer in the rolling window`` (design doc 054).
+
+    Shown next to the rate-limit field so the number a reviewer types is informed by their own
+    history. Computed here rather than in ``core.services.reviewer_prefs`` because the count is an
+    ``analyzer`` concern and ``core`` must not import ``analyzer``. One small indexed query per
+    repository the reviewer has a preference row in — typically one.
+    """
+    window_days = assignment_rate_window_days()
+    now = timezone.now()
+    intake: dict[int, int] = {}
+    for pref in preferences:
+        login = getattr(pref.user, "github_login", "") or ""
+        if not login:
+            continue
+        counts = recent_assignment_counts(pref.repository, [login], window_days=window_days, now=now)
+        intake[int(pref.repository_id)] = counts.get(normalize_login(login), 0)
+    return intake
+
+
+@require_http_methods(["GET", "POST"])
+def prefs(request: HttpRequest) -> HttpResponse:
+    """Reviewer preferences at a stable, token-less URL (design doc 022).
+
+    The only place reviewers edit their preferences. Rows are the reviewer's *current* ones, and the
+    shared builder scopes the queryset to their owner on GET and POST alike, so a posted
+    `form-<n>-id` cannot reach anyone else's row. This page never creates preference rows: a
+    `ReviewerPreference` row *is* assignment-pool membership, so bootstrapping stays in the Zulip
+    registration flow (invariant 1).
+    """
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:prefs")))
+
+    preferences = preferences_for_user(reviewer)
+    user_timezone_name = resolve_user_timezone_name(user=reviewer)
+    user_timezone = ZoneInfo(user_timezone_name)
+
+    saved = request.method == "GET" and request.GET.get("saved") == "1"
+    saved_at = None
+    formset = None
+    with timezone.override(user_timezone):
+        if preferences:
+            formset = build_preferences_formset(
+                preferences=preferences,
+                user_timezone=user_timezone,
+                data=request.POST if request.method == "POST" else None,
+                recent_intake_by_repo=_recent_intake_by_repo(preferences),
+            )
+            if request.method == "POST" and formset.is_valid():
+                formset.save()
+                return redirect(f"{reverse('console:prefs')}?saved=1")
+        if saved:
+            saved_at = timezone.localtime(timezone.now(), user_timezone)
+
+    response = render(
+        request,
+        "console/prefs.html",
+        {
+            "reviewer": reviewer,
+            "formset": formset,
+            "saved": saved,
+            "saved_at": saved_at,
+            "user_timezone_name": user_timezone_name,
+            "logout_url": reverse("console:logout"),
+        },
+    )
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 # --- accept / decline --------------------------------------------------------
 
 
 def _pr_url(repository, number: int) -> str:
     """GitHub PR page URL for ``repository`` #``number``."""
     return f"https://github.com/{repository.owner}/{repository.name}/pull/{int(number)}"
+
+
+def _repo_from_post(request: HttpRequest):
+    """``Repository`` named by the POSTed ``repo_id``, or ``None``.
+
+    The digit check is load-bearing, not defensive dressing: an ``id=`` lookup against a
+    non-numeric string raises ``ValueError`` inside the ORM, so a hand-rolled POST would 500
+    rather than reach the caller's not-found branch.
+    """
+    raw = str(request.POST.get("repo_id") or "").strip()
+    if not raw.isdigit():
+        return None
+    return Repository.objects.filter(id=int(raw)).only("id", "owner", "name").first()
 
 
 def _live_pr_for(proposal: AssignmentProposal) -> PullRequest | None:
@@ -430,7 +588,9 @@ def _retire(proposal: AssignmentProposal, validity: ProposalValidity, *, now) ->
 
 def _load_actionable_proposal(request: HttpRequest, proposal_id: int):
     """Return (reviewer, proposal) or an ``HttpResponse`` to short-circuit with."""
-    reviewer = console_session.get_reviewer(request)
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
     if reviewer is None:
         return redirect(_login_url(reverse("console:home")))
     proposal = AssignmentProposal.objects.select_related("repository", "snapshot").filter(id=int(proposal_id)).first()
@@ -676,14 +836,16 @@ def unassign(request: HttpRequest) -> HttpResponse:
     the *authenticated reviewer's own* — never taken from the request — so this surface can only ever
     unassign the person operating it. Each success enqueues a per-PR sync so state converges.
     """
-    reviewer = console_session.get_reviewer(request)
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
     if reviewer is None:
         return redirect(_login_url(reverse("console:home")))
 
     if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED", False)):
         return render(request, "console/unavailable.html", {"message": "Unassigning isn’t enabled yet — please try again later."})
 
-    repo = Repository.objects.filter(id=request.POST.get("repo_id") or 0).only("id", "owner", "name").first()
+    repo = _repo_from_post(request)
     if repo is None:
         return render(request, "console/unavailable.html", {"message": "That repository was not found."}, status=404)
 
@@ -731,5 +893,197 @@ def unassign(request: HttpRequest) -> HttpResponse:
             "repo_label": f"{repo.owner}/{repo.name}",
             "unassigned": [{"number": n, "url": _pr_url(repo, n)} for n in unassigned],
             "failed": [{"number": n, "url": _pr_url(repo, n)} for n in failed],
+        },
+    )
+
+
+# --- on-demand suggestions (design doc 053) ------------------------------------
+
+# The claim re-check verifies *eligibility*, not membership in the rendered top-N: a PR the page
+# showed may drift past rank N by claim time and must still be claimable, so the re-run walks with
+# an effectively unbounded limit (the service walks the whole pool either way).
+_CLAIM_RECHECK_LIMIT = 100_000
+
+
+def _parse_labels_csv(raw: str | None) -> list[str]:
+    """Comma-separated label tokens from a query string or form field (service validates them)."""
+    if not raw:
+        return []
+    return [token.strip() for token in str(raw).split(",") if token.strip()]
+
+
+def _suggestion_group(repo, reviewer, *, labels: list[str]) -> dict:
+    """One repo's ``SuggestionResult`` flattened into template-ready display fields."""
+    result = suggest_prs_for_reviewer(repo, reviewer.github_login or "", labels=labels or None)
+    rows = []
+    for pr in result.suggestions:
+        matched = {label.lower() for label in pr.matched_labels}
+        rows.append(
+            {
+                "pr_number": pr.pr_number,
+                "title": pr.title,
+                "url": pr.url,
+                "author_login": pr.author_login,
+                "labels": [{"name": label, "matched": label.lower() in matched} for label in pr.topic_labels],
+                "queue_age": (format_compact_duration(int(pr.queue_age_seconds)) if pr.queue_age_seconds is not None else None),
+                "available_reviewer_count": pr.available_reviewer_count,
+                "load_weight": format_load_contribution(pr.load_weight),
+            }
+        )
+    return {
+        "repo_id": int(repo.id),
+        "repo_label": f"{repo.owner}/{repo.name}",
+        "result": result,
+        "rows": rows,
+        "load_line": format_load_line(result.load) if result.load is not None else None,
+        "skip_summary": format_skip_summary(result.skipped),
+        "no_snapshot": result.status == STATUS_NO_SNAPSHOT,
+        "no_labels": result.status == STATUS_NO_LABELS,
+        "not_a_reviewer": result.status == STATUS_NOT_A_REVIEWER,
+        "snapshot_generated_at": result.snapshot_generated_at,
+    }
+
+
+@require_GET
+def suggestions(request: HttpRequest) -> HttpResponse:
+    """Find PRs to review: render on-demand suggestions per repo (design doc 053).
+
+    Read-only. ``?repo=`` and ``?labels=`` pre-fill the request (the Zulip footer link carries
+    them) but are validated, never trusted: the repo must be one the reviewer has a preference in,
+    and the label set goes through the service's MAX_LABELS cap and unknown-label reporting. The
+    reviewer whose suggestions are computed is always the session reviewer.
+    """
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:suggestions")))
+
+    if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED", False)):
+        return render(
+            request, "console/unavailable.html", {"message": "Suggestions aren’t enabled yet — please check back later."}
+        )
+
+    repos = [
+        pref.repository
+        for pref in ReviewerPreference.objects.filter(user=reviewer)
+        .select_related("repository")
+        .order_by("repository__owner", "repository__name")
+    ]
+    repo_param = str(request.GET.get("repo") or "")
+    selected = next((r for r in repos if repo_param.isdigit() and int(r.id) == int(repo_param)), None)
+    labels = _parse_labels_csv(request.GET.get("labels"))
+
+    groups = [_suggestion_group(repo, reviewer, labels=labels) for repo in ([selected] if selected else repos)]
+    return render(
+        request,
+        "console/suggestions.html",
+        {
+            "reviewer": reviewer,
+            "groups": groups,
+            "labels_value": ", ".join(labels),
+            "filtered_repo": selected,
+            "claim_enabled": bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED", False)),
+            "home_url": reverse("console:home"),
+            "logout_url": reverse("console:logout"),
+            "suggestions_url": reverse("console:suggestions"),
+        },
+    )
+
+
+@require_POST
+def claim(request: HttpRequest) -> HttpResponse:
+    """Assign the signed-in reviewer to one or more suggested PRs (design doc 053).
+
+    Posts ``repo_id`` + ``pr_numbers`` (+ the ``labels`` override the offer was made under). Each
+    number is re-verified against a fresh suggestion run before any GitHub write (Invariant 6) —
+    without the re-check this endpoint degrades into a general self-assign API that bypasses
+    conflict-of-interest and opt-out rules — and the login assigned is always the session
+    reviewer's own, never taken from the request. Assignment goes through the 046 mutation path
+    (``assign_reviewer_and_record``: GitHub assign + audit row + per-PR sync). Partial failures
+    are contained and rendered as an assigned/failed split. There is no hold (Invariant 8): a
+    concurrent claim by someone else legally yields two assignees, so co-assignees are surfaced
+    rather than implying exclusivity.
+    """
+    reviewer, denied = _reviewer_from_session(request)
+    if denied is not None:
+        return denied
+    if reviewer is None:
+        return redirect(_login_url(reverse("console:suggestions")))
+
+    if not bool(getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED", False)) or not bool(
+        getattr(settings, "ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED", False)
+    ):
+        return render(request, "console/unavailable.html", {"message": "Claiming isn’t enabled yet — please try again later."})
+
+    repo = _repo_from_post(request)
+    if repo is None:
+        return render(request, "console/unavailable.html", {"message": "That repository was not found."}, status=404)
+
+    numbers: set[int] = set()
+    for raw in request.POST.getlist("pr_numbers"):
+        try:
+            numbers.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not numbers:
+        return redirect(reverse("console:suggestions"))
+
+    # Invariant 6: a fresh eligibility run over the same inputs — the only things that can make it
+    # disagree with the offer are real state changes (someone claimed it, an opt-out landed, ...).
+    labels = _parse_labels_csv(request.POST.get("labels"))
+    recheck = suggest_prs_for_reviewer(repo, reviewer.github_login or "", labels=labels or None, limit=_CLAIM_RECHECK_LIMIT)
+    eligible = {int(pr.pr_number) for pr in recheck.suggestions}
+
+    from core.services.github_operation_tokens import resolve_github_app_operation_token
+
+    token = resolve_github_app_operation_token(operation="assign_pr", owner=repo.owner, repo=repo.name)
+    if not token:
+        return render(request, "console/unavailable.html", {"message": "Assignment is temporarily unavailable. Try again later."})
+
+    now = timezone.now()
+    assigned: list[dict] = []
+    failed: list[dict] = []
+    for number in sorted(numbers):
+        if number not in eligible:
+            failed.append({"number": number, "url": _pr_url(repo, number), "reason": "no longer eligible"})
+            continue
+        outcome, _client, record = assign_reviewer_and_record(
+            repository=repo,
+            pr_number=number,
+            login=reviewer.github_login,
+            snapshot=None,  # an on-demand claim is not anchored to a nightly assignment snapshot
+            run_date=now.date(),
+            token=token,
+        )
+        # Same "did it actually land?" semantics as the accept handler (see _github_assign_self).
+        landed = outcome == "applied" or (
+            outcome == "already_recorded" and record is not None and record.status == ReviewerAssignmentApplication.STATUS_APPLIED
+        )
+        if landed:
+            assigned.append({"number": number, "url": _pr_url(repo, number), "co_assignees": []})
+        else:
+            failed.append({"number": number, "url": _pr_url(repo, number), "reason": "GitHub didn’t confirm the assignment"})
+
+    # Surface co-assignees on the claimed PRs (Invariant 8: no hold, no pretence of one). Best
+    # effort from our own PR rows; the enqueued sync converges them shortly after the claim.
+    if assigned:
+        assignees_by_number = {
+            int(pr.number): [str(login) for login in (pr.assignees or []) if login]
+            for pr in PullRequest.objects.filter(repository=repo, number__in=[row["number"] for row in assigned]).only(
+                "number", "assignees"
+            )
+        }
+        me = _normalize_login(reviewer.github_login)
+        for row in assigned:
+            row["co_assignees"] = [login for login in assignees_by_number.get(row["number"], []) if _normalize_login(login) != me]
+
+    return render(
+        request,
+        "console/claimed.html",
+        {
+            "repo_label": f"{repo.owner}/{repo.name}",
+            "assigned": assigned,
+            "failed": failed,
         },
     )

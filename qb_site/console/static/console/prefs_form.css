@@ -1,4 +1,7 @@
-.countdown {
+/* Context strip above the form. `.countdown` is the token page's expiry variant; `.form-context` is
+   the same chrome without a countdown, used by the session-authenticated console page (doc 022). */
+.countdown,
+.form-context {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 14px;
@@ -12,7 +15,8 @@
   font-size: 0.95rem;
 }
 
-.countdown strong {
+.countdown strong,
+.form-context strong {
   color: var(--ink);
 }
 

@@ -23,6 +23,17 @@
 
 ## Policy Format
 - `ZULIP_COMMAND_POLICY` is a dictionary keyed by command name.
+- **Command names live in one normalized name space**: trimmed, lowercased, `_` folded to `-`
+  (`zulip_bot.commands.normalize_command_name`). It is applied to the name a user types, to the name a
+  command registers under, and to policy keys — so `register_test`, `register-test` and `REGISTER_TEST`
+  are all the same command, and an existing policy key spelled with an underscore keeps working.
+  Canonical (hyphenated) spelling is what `help` lists. Registering a name outside that space used to
+  make a command silently undispatchable; normalizing at registration is what prevents it.
+- Two spellings of one command in the same policy collapse into a single rule, with the last one
+  winning. `manage.py zulip_policy validate` refuses that outright; the runtime loader, which cannot
+  refuse its own config, logs `zulip_command_policy_duplicate_entry`. `zulip_policy sync` rewrites
+  keys in canonical form (rules preserved), so it never appends a second spelling of a command that
+  is already present.
 - Each command rule currently supports:
   - `allowed_groups`: list of Zulip user-group IDs.
   - `allowed_user_ids`: list of Zulip user IDs.

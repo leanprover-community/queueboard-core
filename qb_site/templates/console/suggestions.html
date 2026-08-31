@@ -1,0 +1,91 @@
+{% extends "console/base.html" %}
+{% block title %}Find PRs to review — Reviewer console{% endblock %}
+{% block body %}
+  <section class="hero">
+    <h1>Find PRs to review</h1>
+    <div class="meta signin-row">
+      <span>Signed in as {{ reviewer.github_login }}.</span>
+      <a href="{{ home_url }}">Console home</a>
+      <form class="inline" method="post" action="{{ logout_url }}">{% csrf_token %}<button class="linklike" type="submit">Sign out</button></form>
+    </div>
+  </section>
+
+  {% if filtered_repo %}
+    <p class="help suggestions-scope">Showing {{ filtered_repo.owner }}/{{ filtered_repo.name }} only — <a href="{{ suggestions_url }}{% if labels_value %}?labels={{ labels_value|urlencode }}{% endif %}">show all repositories</a>.</p>
+  {% endif %}
+
+  {% for group in groups %}
+    <section class="card repo-card">
+      <h2 class="repo-name">{{ group.repo_label }}</h2>
+      {% if group.load_line %}
+        <details class="load-toggle">
+          <summary class="load-summary{% if group.result.load.at_capacity %} at-capacity{% endif %}">{{ group.load_line }}</summary>
+          {% include "console/_load_legend.html" %}
+        </details>
+      {% endif %}
+
+      <form class="label-override" method="get" action="{{ suggestions_url }}">
+        <input type="hidden" name="repo" value="{{ group.repo_id }}">
+        <label for="labels-{{ group.repo_id }}">Search other areas (comma-separated labels; replaces your stored areas for this search)</label>
+        <div class="label-override-row">
+          <input id="labels-{{ group.repo_id }}" type="text" name="labels" value="{{ labels_value }}" placeholder="e.g. t-algebra, t-topology">
+          <button class="cta cta-quiet" type="submit">Search</button>
+        </div>
+      </form>
+      {% if group.result.unknown_labels %}
+        <p class="help">Not topic labels in this repository (ignored):
+          {% for label in group.result.unknown_labels %}<span class="pr-label">{{ label }}</span>{% endfor %}
+        </p>
+      {% endif %}
+      {% if group.result.dropped_labels %}
+        <p class="help">Too many labels — these were not used:
+          {% for label in group.result.dropped_labels %}<span class="pr-label">{{ label }}</span>{% endfor %}
+        </p>
+      {% endif %}
+
+      {% if group.no_snapshot %}
+        <p class="empty">No queue snapshot is available for this repository right now — try again in a few minutes.</p>
+      {% elif group.not_a_reviewer %}
+        <p class="empty">You are not registered as a reviewer for this repository.</p>
+      {% elif group.no_labels %}
+        <p class="empty">You have no preferred labels here — enter labels above to search an area.</p>
+      {% elif group.rows %}
+        {% if claim_enabled %}
+          <form method="post" action="{% url 'console:claim' %}"
+                onsubmit="return confirm('Assign yourself to the selected PR(s)?');">
+            {% csrf_token %}
+            <input type="hidden" name="repo_id" value="{{ group.repo_id }}">
+            <input type="hidden" name="labels" value="{{ labels_value }}">
+        {% endif %}
+        <ul class="assigned suggestions">
+          {% for row in group.rows %}
+            <li class="assigned-row">
+              {% if claim_enabled %}<input class="assigned-check" type="checkbox" name="pr_numbers" value="{{ row.pr_number }}" aria-label="Select #{{ row.pr_number }}">{% endif %}
+              <a href="{{ row.url }}">#{{ row.pr_number }}</a> {{ row.title }}
+              <span class="pr-labels">{% for label in row.labels %}<span class="pr-label{% if label.matched %} matched{% endif %}">{{ label.name }}</span>{% endfor %}</span>
+              <span class="status">{% if row.queue_age %}on queue {{ row.queue_age }} · {% endif %}{{ row.available_reviewer_count }} available reviewer{{ row.available_reviewer_count|pluralize }}</span>
+              <span class="load-contrib" title="Load if claimed">{{ row.load_weight }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+        {% if claim_enabled %}
+            <div class="actions"><button class="btn-accept" type="submit">Assign me to selected</button></div>
+          </form>
+        {% else %}
+          <p class="help">Claiming from the console isn’t enabled yet — use <code>assign #NNN</code> in Zulip to take one.</p>
+        {% endif %}
+        {% if group.skip_summary %}<p class="help">Also considered and skipped: {{ group.skip_summary }}.</p>{% endif %}
+      {% else %}
+        <p class="empty">No eligible PRs right now{% if group.skip_summary %} — skipped: {{ group.skip_summary }}{% endif %}.</p>
+      {% endif %}
+
+      {% if group.snapshot_generated_at %}
+        <p class="help">From the queue snapshot of <time datetime="{{ group.snapshot_generated_at.isoformat }}">{{ group.snapshot_generated_at|date:"Y-m-d H:i" }} UTC</time>; the list refreshes as the snapshot does.</p>
+      {% endif %}
+    </section>
+  {% empty %}
+    <section class="card">
+      <p class="empty">You have no reviewer preferences configured, so there is nothing to suggest from. Register with the Zulip bot first.</p>
+    </section>
+  {% endfor %}
+{% endblock %}

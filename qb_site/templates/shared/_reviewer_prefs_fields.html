@@ -1,0 +1,165 @@
+{% comment %}
+Reviewer-preference fields, included by `console/prefs.html` (the `/console/preferences/` page — see
+design doc 022). Expects `formset`, built by
+`core.services.reviewer_prefs.build_preferences_formset`, in context; the enclosing `<form>`, its CSRF
+token and its submit row belong to the including page.
+
+Kept as a partial in `shared/` rather than inlined: it pairs with the `core`-owned form and formset
+builder, so what a reviewer may edit is defined in one place per layer. A second surface (the retired
+Zulip token page) used to include it too.
+{% endcomment %}
+    {{ formset.management_form }}
+
+    {% for form in formset %}
+      <section class="form-card">
+        {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
+        <h2>{{ form.instance.repository.owner }}/{{ form.instance.repository.name }}</h2>
+
+        {% if form.non_field_errors %}
+          <ul class="errors">
+            {% for error in form.non_field_errors %}
+              <li>{{ error }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+
+        <div class="prefs-section">
+          <h3>Auto-Assignment</h3>
+          <div class="field-grid">
+            <div class="field field-wide checkbox">
+              {{ form.auto_assign }}
+              <label for="{{ form.auto_assign.id_for_label }}">{{ form.auto_assign.label }}</label>
+              {% if form.auto_assign.help_text %}<span class="help">{{ form.auto_assign.help_text }}</span>{% endif %}
+              {% if form.auto_assign.errors %}<ul class="errors">{% for error in form.auto_assign.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.away_until.id_for_label }}">{{ form.away_until.label }}</label>
+              <div class="away-row">
+                {{ form.away_until }}
+                <button
+                  type="button"
+                  class="btn-secondary js-clear-away"
+                  data-target="{{ form.away_until.id_for_label }}"
+                >
+                  Clear away time
+                </button>
+              </div>
+              {% if form.away_until.help_text %}<span class="help">{{ form.away_until.help_text }}</span>{% endif %}
+              {% if form.away_until.errors %}<ul class="errors">{% for error in form.away_until.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field">
+              <label for="{{ form.maximum_capacity.id_for_label }}">{{ form.maximum_capacity.label }}</label>
+              {{ form.maximum_capacity }}
+              {% if form.maximum_capacity.help_text %}<span class="help">{{ form.maximum_capacity.help_text }}</span>{% endif %}
+              {% if form.maximum_capacity.errors %}<ul class="errors">{% for error in form.maximum_capacity.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field">
+              <label for="{{ form.max_new_assignments_per_week.id_for_label }}">{{ form.max_new_assignments_per_week.label }}</label>
+              {{ form.max_new_assignments_per_week }}
+              {% if form.max_new_assignments_per_week.help_text %}<span class="help">{{ form.max_new_assignments_per_week.help_text }}</span>{% endif %}
+              {% if form.max_new_assignments_per_week.errors %}<ul class="errors">{% for error in form.max_new_assignments_per_week.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            {% if "assignment_acceptance" in form.fields %}
+            <div class="field field-wide">
+              <label>{{ form.assignment_acceptance.label }}</label>
+              <div class="acceptance-selector">
+                {% for option in form.assignment_acceptance %}
+                  <label class="acceptance-option" for="{{ option.id_for_label }}">
+                    {{ option.tag }}
+                    <span>{{ option.choice_label }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+              {% if form.assignment_acceptance.help_text %}<span class="help">{{ form.assignment_acceptance.help_text }}</span>{% endif %}
+              {% if form.assignment_acceptance.errors %}<ul class="errors">{% for error in form.assignment_acceptance.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </div>
+
+        {% comment %}
+        The nudge/unassign pair is one escalation ladder — nudge at X consecutive queue days,
+        unassign at Y, and the form enforces Y > X. It gets its own section because it fits neither
+        neighbour: the nudge is delivered as a notification (so the Notifications toggle governs it)
+        while the auto-unassign is an assignment action that runs regardless of that toggle. Split
+        across the two sections, the cross-field error landed on a field whose partner was off
+        screen. Keep them adjacent.
+        {% endcomment %}
+        <div class="prefs-section">
+          <h3>Stale PRs</h3>
+          <div class="field-grid">
+            <div class="field">
+              <label for="{{ form.stale_nudge_days.id_for_label }}">{{ form.stale_nudge_days.label }}</label>
+              {{ form.stale_nudge_days }}
+              {% if form.stale_nudge_days.help_text %}<span class="help">{{ form.stale_nudge_days.help_text }}</span>{% endif %}
+              {% if form.stale_nudge_days.errors %}<ul class="errors">{% for error in form.stale_nudge_days.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field">
+              <label for="{{ form.auto_unassign_days.id_for_label }}">{{ form.auto_unassign_days.label }}</label>
+              {{ form.auto_unassign_days }}
+              {% if form.auto_unassign_days.help_text %}<span class="help">{{ form.auto_unassign_days.help_text }}</span>{% endif %}
+              {% if form.auto_unassign_days.errors %}<ul class="errors">{% for error in form.auto_unassign_days.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="prefs-section">
+          <h3>Notifications</h3>
+          <div class="field-grid">
+            <div class="field field-wide checkbox">
+              {{ form.notifications_enabled }}
+              <label for="{{ form.notifications_enabled.id_for_label }}">{{ form.notifications_enabled.label }}</label>
+              {% if form.notifications_enabled.help_text %}<span class="help">{{ form.notifications_enabled.help_text }}</span>{% endif %}
+              {% if form.notifications_enabled.errors %}<ul class="errors">{% for error in form.notifications_enabled.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+          </div>
+        </div>
+
+        <div class="prefs-section">
+          <h3>Interests</h3>
+          <div class="field-grid">
+            <div class="field field-wide">
+              <label for="{{ form.preferred_labels.id_for_label }}">{{ form.preferred_labels.label }}</label>
+              <div class="topic-label-selector">
+                {% for option in form.preferred_labels %}
+                  <label class="topic-label-option" for="{{ option.id_for_label }}">
+                    {{ option.tag }}
+                    <span>{{ option.choice_label }}</span>
+                  </label>
+                {% empty %}
+                  <span class="help">No topic label options available for this repository.</span>
+                {% endfor %}
+              </div>
+              {% if form.legacy_preferred_labels %}
+                <span class="help warning">
+                  Legacy labels currently selected: {{ form.legacy_preferred_labels|join:", " }}.
+                </span>
+              {% endif %}
+              {% if form.preferred_labels.help_text %}<span class="help">{{ form.preferred_labels.help_text }}</span>{% endif %}
+              {% if form.preferred_labels.errors %}<ul class="errors">{% for error in form.preferred_labels.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.free_form.id_for_label }}">{{ form.free_form.label }}</label>
+              {{ form.free_form }}
+              {% if form.free_form.help_text %}<span class="help">{{ form.free_form.help_text }}</span>{% endif %}
+              {% if form.free_form.errors %}<ul class="errors">{% for error in form.free_form.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+
+            <div class="field field-wide">
+              <label for="{{ form.conflict_of_interest.id_for_label }}">{{ form.conflict_of_interest.label }}</label>
+              {{ form.conflict_of_interest }}
+              {% if form.conflict_of_interest.help_text %}<span class="help">{{ form.conflict_of_interest.help_text }}</span>{% endif %}
+              {% if form.conflict_of_interest.errors %}<ul class="errors">{% for error in form.conflict_of_interest.errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+            </div>
+          </div>
+        </div>
+      </section>
+    {% endfor %}
+

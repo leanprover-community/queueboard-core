@@ -18,7 +18,35 @@
     review-load (weighted, matching the assignment engine's capacity gate, **incl. pending assignment proposals**
     per design doc 050) as of the latest cached queue snapshot, plus `format_load_line`. Single authority shared by
     the `assigned-prs` command, the daily reviewer-attention digest, and the reviewer console; read-only (never
-    builds a snapshot), returns `{}`/`None` when no snapshot exists.
+    builds a snapshot), returns `{}`/`None` when no snapshot exists. `ReviewerLoad` also carries the *flow* gate
+    (`weekly_count` / `weekly_limit` / `at_weekly_limit`, design doc 054), read off the same `ReviewerProfile` the
+    engine gate uses, and `format_load_line` appends `· last 7 days: 4 / 5` for a reviewer who has opted into a
+    limit (nothing at all for one who has not).
+  - `assignment_rate_limit.py` — `recent_assignment_counts(repository, logins, *, window_days, now)`: distinct
+    **newly assigned** PRs per reviewer in the trailing `ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS`, from the
+    `ReviewerAssignmentApplication` history (design doc 054). The *flow* half of reviewer capacity, next to
+    `maximum_capacity`'s *stock*. One grouped query, `lower()` on both sides — the history column stores login
+    casing verbatim, so a case-sensitive count silently reads **zero** for a capitalized reviewer and their limit
+    never fires. Consumed via `build_reviewer_catalog`, which puts the count and the reviewer's
+    `max_new_assignments_per_week` on every profile so the engine gate and the load line cannot disagree.
+    Also exports `assignment_rate_window_days()` — read the window through it, never hardcode 7.
+  - `assignment_suggestions.py` — `suggest_prs_for_reviewer(repository, login, *, labels, limit)`:
+    on-demand "what should I review?" (design doc 053). Single authority for which open PRs a
+    reviewer could take right now and why not the rest; the Zulip `suggest-prs` command and the
+    console suggestions page both render its output and never re-derive eligibility. Shares the
+    nightly builder's candidate pool via `reviewer_assignment.prepare_assignment_inputs` (new pool
+    exclusions belong there, not at call sites), overrides only the requester's push throttles
+    (`away_until`, `auto_assign`, `maximum_capacity`, and the 054 rate limit) via a profile
+    substitution — the engine is unmodified and correctness rules (authorship, conflicts, opt-outs,
+    cooldowns) stay in force —
+    and reads only the trace's `available`/`potential` membership, never the random `picked`, so
+    results are deterministic per snapshot. Read-only: never builds a snapshot, persists nothing.
+    Refuses a snapshot older than `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS`
+    (0 disables) so the no-active-rule-set `cache_key="default"` fallback cannot serve a long-dead
+    row as live. Label overrides report back both `unknown_labels` (not topic labels here) and
+    `dropped_labels` (refused by the `MAX_LABELS` cap) — neither is ever silently discarded.
+    Also exports `format_skip_summary` (the shared "why not more?" line) and the STATUS_*/SKIP_*
+    constants.
   - `pr_info.py` — `get_pr_queue_info(owner, repo, pr_number)`: returns `PRQueueInfo` for a single PR; prefers the default `QueueSnapshot`, falls back to direct DB queries for merged/closed PRs. Also exposes the acceptance-gate `proposed_to`/`proposal_expires_at` (design doc 050), read live from the single active `AssignmentProposal`, distinct from `assignee_logins`.
   - `ci_evaluation.py` — single-PR CI status evaluation against a ruleset's `required_ci_contexts`; use `ci_status_for_pr(pr, rules, repository)` instead of re-implementing context-matching logic.
 

@@ -7,38 +7,13 @@ from core.services.github_identity import resolve_user_from_identity
 from core.services.github_oauth import GitHubUserIdentity
 from core.services.oauth_state import (
     ConsoleOAuthStateClaims,
-    SignedStateExpired,
-    SignedStateInvalid,
     issue_console_oauth_state,
-    issue_signed_state,
-    read_signed_state,
     validate_console_oauth_state,
 )
 from core.services.site_urls import build_site_url, resolve_site_base_url
 
 
-class SignedStateTests(SimpleTestCase):
-    def test_round_trip(self) -> None:
-        state = issue_signed_state({"k": "v"}, secret="s", salt="salt", ttl_seconds=600, now=1000)
-        payload = read_signed_state(state, secret="s", salt="salt", now=1100)
-        self.assertEqual(payload["k"], "v")
-        self.assertEqual(payload["iat"], 1000)
-        self.assertEqual(payload["exp"], 1600)
-
-    def test_expired(self) -> None:
-        state = issue_signed_state({"k": "v"}, secret="s", salt="salt", ttl_seconds=600, now=1000)
-        with self.assertRaises(SignedStateExpired):
-            read_signed_state(state, secret="s", salt="salt", now=1601)
-
-    def test_wrong_secret_is_invalid(self) -> None:
-        state = issue_signed_state({"k": "v"}, secret="s", salt="salt", ttl_seconds=600, now=1000)
-        with self.assertRaises(SignedStateInvalid):
-            read_signed_state(state, secret="other", salt="salt", now=1100)
-
-    def test_tampered_is_invalid(self) -> None:
-        with self.assertRaises(SignedStateInvalid):
-            read_signed_state("not-a-real-token", secret="s", salt="salt", now=1100)
-
+class ConsoleOAuthStateTests(SimpleTestCase):
     def test_console_state_carries_nonce_and_next(self) -> None:
         state = issue_console_oauth_state(claims=ConsoleOAuthStateClaims(nonce="abc", next="/console/"), now=1000)
         claims = validate_console_oauth_state(state, now=1100)

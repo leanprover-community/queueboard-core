@@ -5,6 +5,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
+from console.session import SESSION_USER_KEY
 from core.models import Repository, ReviewerPreference, User
 from core.services.github_oauth import GitHubUserIdentity
 from zulip_bot.services.registration_links import RegistrationLinkClaims, issue_registration_token
@@ -60,9 +61,7 @@ class TestRegistrationCallbackLinking(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Link outcome")
-        self.assertContains(response, "finalize your reviewer preferences")
         self.assertContains(response, "Edit Preferences Now")
-        self.assertContains(response, "/api/zulip/prefs/")
         self.assertContains(response, "Sent a confirmation DM")
         user = User.objects.get(github_node_id="U_node_1")
         self.assertEqual(user.zulip_user_id, 101)
@@ -71,8 +70,51 @@ class TestRegistrationCallbackLinking(TestCase):
         dm_kwargs = mock_zulip_client_cls.return_value.send_direct_message.call_args.kwargs
         self.assertEqual(dm_kwargs["to"], [101])
         self.assertIn("Successfully linked your Zulip account with GitHub user `reviewer`", dm_kwargs["content"])
-        self.assertIn("[finalize your reviewer preferences](", dm_kwargs["content"])
-        self.assertIn("<time:", dm_kwargs["content"])
+        self.assertIn("[set your reviewer preferences](", dm_kwargs["content"])
+
+    def test_callback_hands_off_to_the_console_and_opens_a_session(self) -> None:
+        # Registration advertises the stable console URL and promotes the console session: the reviewer
+        # just proved this GitHub identity in this browser, and the registration token proved their
+        # Zulip identity (design doc 022).
+        Repository.objects.create(owner="leanprover-community", name="mathlib4", default_branch="master", is_active=True)
+        _token, state = self._token_and_state(zulip_user_id=101)
+        with (
+            patch("zulip_bot.views.GitHubOAuthClient.exchange_code_for_access_token", return_value="access-token"),
+            patch("zulip_bot.views.GitHubOAuthClient.fetch_user_identity", return_value=self._identity()),
+            patch("zulip_bot.views.ZulipClient") as mock_zulip_client_cls,
+        ):
+            response = self.client.get(
+                reverse("zulip-register-github-callback"),
+                data={"state": state, "code": "oauth-code"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "/console/preferences/")
+        self.assertContains(response, "signed in on this browser")
+
+        user = User.objects.get(github_node_id="U_node_1")
+        self.assertEqual(self.client.session.get(SESSION_USER_KEY), user.id)
+
+        dm_content = mock_zulip_client_cls.return_value.send_direct_message.call_args.kwargs["content"]
+        self.assertIn("https://queueboard.example/console/preferences/", dm_content)
+        self.assertNotIn("expires at", dm_content)  # nothing expires any more
+
+    def test_callback_opens_no_session_when_there_is_nothing_to_edit(self) -> None:
+        # No active repositories -> no preference rows -> the console would refuse them anyway.
+        _token, state = self._token_and_state(zulip_user_id=101)
+        with (
+            patch("zulip_bot.views.GitHubOAuthClient.exchange_code_for_access_token", return_value="access-token"),
+            patch("zulip_bot.views.GitHubOAuthClient.fetch_user_identity", return_value=self._identity()),
+            patch("zulip_bot.views.ZulipClient"),
+        ):
+            response = self.client.get(
+                reverse("zulip-register-github-callback"),
+                data={"state": state, "code": "oauth-code"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No preferences are available to edit yet")
+        self.assertIsNone(self.client.session.get(SESSION_USER_KEY))
 
     def test_callback_returns_conflict_page_for_existing_other_zulip_link(self) -> None:
         User.objects.create(github_node_id="U_node_1", github_login="reviewer", zulip_user_id=202)

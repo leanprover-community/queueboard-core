@@ -26,3 +26,8 @@ class TestConsoleCommand(SimpleTestCase):
         # In-place reply (non-sensitive link), not a proactive DM.
         self.assertFalse(result.response_not_required)
         self.assertIn("[reviewer console](https://queue.example.org/console/)", result.content)
+
+    @override_settings(QUEUEBOARD_BASE_URL="https://queue.example.org")
+    def test_mentions_preferences(self) -> None:
+        result = console_command(self._context(), "")
+        self.assertIn("reviewer preferences", result.content)

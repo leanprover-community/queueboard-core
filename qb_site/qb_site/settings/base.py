@@ -46,6 +46,11 @@ ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").
 
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if origin.strip()]
 
+# The reviewer console's session is what bounds a signed-in reviewer's editing window (there is no
+# link TTL any more — design doc 022). Re-save the session on each request so activity slides the
+# default two-week SESSION_COOKIE_AGE instead of expiring mid-edit and losing a POST.
+SESSION_SAVE_EVERY_REQUEST = True
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -167,9 +172,11 @@ ZULIP_BOT_EMAIL = os.getenv("ZULIP_BOT_EMAIL", "")
 ZULIP_BOT_API_KEY = os.getenv("ZULIP_BOT_API_KEY", "")
 ZULIP_USER_EMAIL = os.getenv("ZULIP_USER_EMAIL", "")
 ZULIP_USER_API_KEY = os.getenv("ZULIP_USER_API_KEY", "")
-ZULIP_PREFS_TOKEN_SECRET = os.getenv("ZULIP_PREFS_TOKEN_SECRET", "")
-ZULIP_PREFS_TOKEN_SALT = os.getenv("ZULIP_PREFS_TOKEN_SALT", "zulip_bot.prefs")
-ZULIP_PREFS_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_PREFS_TOKEN_TTL_SECONDS", 1800))
+# Shared signing secret for the Zulip *link* tokens that remain (registration + its OAuth state);
+# falls back to SECRET_KEY when unset. Formerly ZULIP_PREFS_TOKEN_SECRET, which the retired prefs
+# links owned (design doc 022); that env name is still read here so existing deployments keep the
+# same key and their in-flight registration links stay valid.
+ZULIP_LINK_TOKEN_SECRET = os.getenv("ZULIP_LINK_TOKEN_SECRET", os.getenv("ZULIP_PREFS_TOKEN_SECRET", ""))
 ZULIP_REGISTRATION_TOKEN_SALT = os.getenv("ZULIP_REGISTRATION_TOKEN_SALT", "zulip_bot.registration")
 ZULIP_REGISTRATION_TOKEN_TTL_SECONDS = int(os.getenv("ZULIP_REGISTRATION_TOKEN_TTL_SECONDS", 1800))
 ZULIP_REGISTRATION_OAUTH_STATE_SALT = os.getenv("ZULIP_REGISTRATION_OAUTH_STATE_SALT", "zulip_bot.registration.oauth_state")
@@ -222,6 +229,10 @@ CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0")
 # Use django-celery-results when explicitly configured via env; fallback to broker
 # so existing environments continue to work until .env is updated.
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+# Test-only: clears the Redis namespaces the suite shares with a running dev stack before the
+# suite starts. Lives in base rather than ci so a host run picks it up too — the run-to-run dedupe
+# leak it prevents does not care which settings module you used. Inert outside `manage.py test`.
+TEST_RUNNER = "qb_site.test_runner.IsolatedRedisDiscoverRunner"
 CELERY_RESULT_EXTENDED = env_bool(os.getenv("CELERY_RESULT_EXTENDED"), True)
 CELERY_TASK_TRACK_STARTED = env_bool(os.getenv("CELERY_TASK_TRACK_STARTED"), True)
 CELERY_TIMEZONE = TIME_ZONE
@@ -435,9 +446,38 @@ ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN = env_bool(os.getenv("ANALYZER_ASSIGNMENT_
 ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED = env_bool(
     os.getenv("ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED"), False
 )
+# On-demand assignment suggestions (design doc 053): a reviewer asks "what should I review?"
+# from Zulip (`suggest-prs`) or the console suggestions page. Read-only compute; staged rollout
+# like 046/050 — everything defaults off.
+#   ENABLED               master switch for the read path on both surfaces.
+#   CONSOLE_CLAIM_ENABLED the console claim endpoint's GitHub write (assign via the 046 path).
+#   LIMIT                 service default suggestion count; what the console renders.
+#   ZULIP_LIMIT           surface override for the in-channel reply (console link carries the rest).
+#   MAX_LABELS            cap on the per-request label override set (form and query string alike).
+ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED"), False)
+ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED = env_bool(
+    os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED"), False
+)
+ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT", "10"))
+ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT", "5"))
+ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS = int(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS", "5"))
+#   MAX_SNAPSHOT_AGE_SECONDS  refuse to answer from a snapshot older than this (0 disables). Guards
+#                             the `cache_key="default"` fallback taken when a repo has no active
+#                             rule set, where a long-dead snapshot row can otherwise be served as
+#                             live. Default 24h — far above the 5-minute refresh cadence, so a
+#                             normal snapshot outage does not take the feature down.
+ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS = int(
+    os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS", "86400")
+)
 # Acceptance window: a proposal expires this many days after creation unless accepted. The
 # per-reviewer override in ReviewerPreference.notification_settings is clamped to >= 7.
 ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_WINDOW_DAYS", "7"))
+# Reviewer assignment rate limit (design doc 054): the rolling window the per-reviewer
+# ReviewerPreference.max_new_assignments_per_week cap is measured over. This setting *defines* what
+# "per week" means for every reviewer's number, so changing it silently changes the meaning of each
+# one — an operational tuning knob, not something to move lightly. There is deliberately no enable
+# flag: the limit is null (unlimited) by default, so the opt-in default is the off switch.
+ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS = int(os.getenv("ANALYZER_ASSIGNMENT_RATE_WINDOW_DAYS", "7"))
 # On-queue-exit policy read inside the proposal_validity predicate: "invalidate" (default) marks a
 # pending proposal superseded when its PR leaves the review queue; "retain" lets it ride.
 ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT = os.getenv("ANALYZER_ASSIGNMENT_PROPOSAL_ON_QUEUE_EXIT", "invalidate").strip().lower()

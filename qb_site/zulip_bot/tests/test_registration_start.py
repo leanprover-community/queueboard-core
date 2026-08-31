@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -12,13 +13,14 @@ from zulip_bot.services.registration_links import RegistrationLinkClaims, issue_
 
 
 class TestRegistrationStart(TestCase):
-    def _token(self) -> str:
+    def _token(self, *, now: int | None = None) -> str:
         return issue_registration_token(
             claims=RegistrationLinkClaims(
                 zulip_user_id=101,
                 sender_email="reviewer@example.com",
                 sender_full_name="Reviewer User",
-            )
+            ),
+            now=now,
         )
 
     @override_settings(GITHUB_OAUTH_CLIENT_ID="client-id", GITHUB_OAUTH_CLIENT_SECRET="client-secret")
@@ -39,10 +41,9 @@ class TestRegistrationStart(TestCase):
         self.assertContains(response, "invalid", status_code=403)
 
     def test_expired_token_returns_forbidden(self) -> None:
-        with patch("zulip_bot.services.registration_links.time.time", return_value=1_700_000_000):
-            token = self._token()
-        with patch("zulip_bot.services.registration_links.time.time", return_value=1_700_000_000 + 1_900):
-            response = self.client.get(reverse("zulip-register-start", kwargs={"token": token}))
+        # Issue against a clock 1900s in the past (TTL 1800s) so the view's real-clock read sees it expired.
+        token = self._token(now=int(time.time()) - 1_900)
+        response = self.client.get(reverse("zulip-register-start", kwargs={"token": token}))
 
         self.assertEqual(response.status_code, 403)
         self.assertContains(response, "expired", status_code=403)

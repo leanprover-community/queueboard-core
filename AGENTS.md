@@ -35,9 +35,33 @@ Notes
 
 ## Testing Guidelines
 - Use `bash scripts/repo_check_compose.sh` as the primary end-to-end test/check entrypoint.
+- **Never read the exit status of a check script you piped into `head`/`tail`/`grep`.** A shell
+  pipeline reports the *last* command's status, so `bash scripts/repo_check_compose.sh | tail -60`
+  returns `tail`'s `0` and a failed run reads as green. This has already produced a confident wrong
+  diagnosis — that the script swallows failures. It does not (`set -euo pipefail`, plus an explicit
+  `exit 1` on migrate failure); the invocation was at fault. Run it unpiped, or use
+  `set -o pipefail` / `${PIPESTATUS[0]}`, and confirm the status before trusting the output. The
+  same trap applies to `docker compose run ... | tail`.
+- If a check "passes", confirm it actually ran. A build that dies before any test executes can
+  still print a plausible tail; scan for the step markers (`[1/13]` … `[13/13]`) or a test count,
+  not just the absence of a traceback.
 - Exercise dashboard generation with the provided fixtures via `uv run python -m queueboard.dashboard ...`; capture `before/` and `after/` HTML snapshots when comparing layout changes.
 - Keep unit tests colocated (`test_*.py`); expand `src/queueboard/test_state_evolution.py` or add pytest modules under the relevant Django app (`qb_site/<app>/tests/`).
 - If Compose/Postgres is unavailable, run focused non-DB tests where possible and clearly call out coverage gaps.
+- If `repo_check_compose.sh` itself cannot run but Docker can, reproduce its coverage step by step
+  rather than settling for "ran the tests" — steps 2 and 4–6 are cheap and catch things the suites
+  do not (an unmigrated model change, a table missing from the backup policy):
+
+  | step | command |
+  | --- | --- |
+  | 2 | `uv run python scripts/validate_github_graphql.py` (host; writes a gitignored schema) |
+  | 4 | `python scripts/validate_backup_policy.py` |
+  | 5 | `python qb_site/manage.py check` |
+  | 6 | `python qb_site/manage.py makemigrations --dry-run --check` |
+  | 7–13 | `env DJANGO_SETTINGS_MODULE=qb_site.settings.ci python qb_site/manage.py test <app>` for `core`, `syncer`, `analyzer`, `api`, `zulip_bot`, `console`, `site_analytics` |
+
+  Steps 4–13 run under `docker compose run --rm --no-deps -T web …` against cached images. Report
+  which steps ran, by number.
 - Document any manual data validation or backfill steps in your PR description so reviewers can reproduce the checks.
 
 ## Commit & Pull Request Guidelines
@@ -49,6 +73,10 @@ Notes
 - Copy `.env.example` to `.env` for local Django work; supply database credentials, GitHub tokens, and task runner settings as described in `docs/django_backend_plan.md`.
 - Run the stack through `docker compose` against PostgreSQL; we no longer support SQLite fallbacks for quick tests.
 - Keep secrets out of version control—store them in the `.env` file or your chosen secret manager.
+- Running the Docker checks from a **sandboxed** shell (an agent harness restricting filesystem
+  writes) needs `DOCKER_CONFIG` / `DOCKER_HOST` set, because Docker Desktop's credential helper
+  cannot start under the sandbox and takes every image pull down with it. Setup, verification and
+  undo are in `docs/sandboxed_docker_setup.md`. A normal terminal needs none of it.
 - **Every configurable setting MUST be wired through `base.py` AND documented in `.env.example` — no exceptions.** This is forgotten often; treat it as part of "done" for any setting change:
   1. Define it in `qb_site/qb_site/settings/base.py` as `FOO = os.getenv("FOO", <default>)` (with a short comment).
   2. Add `FOO=<default-or-blank>` to `.env.example` with a comment explaining it.
