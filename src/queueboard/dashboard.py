@@ -479,10 +479,21 @@ def _js_string(value: str) -> str:
     return literal.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
+# Privacy policy of the entity operating the analytics backend (i.e. the data controller for
+# the collected pageviews). Linked from the notice so visitors can find the full disclosure
+# rather than only the one-line summary; see docs/design-decisions/031-analytics-ingestion-design.md.
+PRIVACY_POLICY_URL = "https://mathlib-initiative.org/privacy/"
+
+
 def _make_analytics_snippet(host: str, site: str) -> str:
     """Return the privacy notice paragraph and pageview tracking <script> block for injection before </body>."""
     endpoint = f"{host.rstrip('/')}/api/v1/analytics/collect"
-    notice = '<p class="analytics-notice">This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored).</p>'
+    # The page header sets <base target="_blank">, so the policy link opens in a new tab.
+    notice = (
+        '<p class="analytics-notice">This page collects anonymous visit counts for usage reporting '
+        "(no cookies, no IP addresses stored). See the "
+        f'<a href="{PRIVACY_POLICY_URL}">Mathlib Initiative privacy policy</a>.</p>'
+    )
     script = (
         "<script>\n"
         "(function () {\n"
