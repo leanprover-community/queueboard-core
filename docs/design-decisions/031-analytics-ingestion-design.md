@@ -88,7 +88,7 @@
 1. Add the site slug to `SITE_ANALYTICS_ALLOWED_SITES` (comma-separated, no spaces).
 2. Deploy/restart the web dyno so the new slug is live.
 3. Add the tracking snippet to the site (see below).
-4. Add a visible privacy notice to the site informing visitors that anonymous visit counts are collected (no cookies, no IP addresses stored). See disclosure notes below.
+4. Add a visible privacy notice to the site informing visitors that anonymous visit counts are collected (no cookies, no IP addresses stored), linking the operating entity's privacy policy. See disclosure notes below.
 5. Verify events appear in the Django admin under `AnalyticsPageView`.
 6. After one aggregation cycle, check `AnalyticsDailyMetric` for counts.
 
@@ -137,7 +137,7 @@ This system is designed to minimise regulatory obligations, but the picture is n
 
 **[CNIL guidance](https://www.cnil.fr/fr/cookies-solutions-pour-les-outils-de-mesure-daudience) (France)** — the CNIL's framework for consent-exempt analytics covers tools that use short-lived identifiers with immediate IP anonymisation, provided the data is used solely for audience measurement, does not enable cross-site tracking, and is retained for no more than 25 months. This system satisfies those conditions. The CNIL still expects users to be informed of the tracking (e.g., via the site's privacy policy), even for consent-exempt tools.
 
-**Practical position:** No consent banner is required. As a matter of good practice — and to satisfy GDPR Art. 13 under the cautious reading that the hash is personal data — sites using this snippet should make a brief privacy notice accessible to visitors. The recommended notice text is: *"This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored)."* The queueboard dashboard injects this notice automatically alongside the snippet; other sites should add equivalent wording to their footer or privacy statement.
+**Practical position:** No consent banner is required. As a matter of good practice — and to satisfy GDPR Art. 13 under the cautious reading that the hash is personal data — sites using this snippet should make a brief privacy notice accessible to visitors. The recommended notice text is: *"This page collects anonymous visit counts for usage reporting (no cookies, no IP addresses stored)."* The queueboard dashboard injects this notice automatically alongside the snippet, followed by a link to the data controller's full privacy policy (`PRIVACY_POLICY_URL` in `src/queueboard/dashboard.py`, currently <https://mathlib-initiative.org/privacy/>); other sites should add equivalent wording to their footer or privacy statement, linking their own controller's policy.
 
 ### Migrations
 - `0001_initial` — `AnalyticsPageView`
