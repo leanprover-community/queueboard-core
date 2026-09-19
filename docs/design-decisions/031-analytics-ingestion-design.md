@@ -126,6 +126,10 @@ Replace `YOUR_QUEUEBOARD_HOST` and `YOUR_SITE_SLUG` before deploying.
 - `sendBeacon` is preferred: it survives page unload and does not block navigation.
 - No cookies, no persistent identifiers, no third-party scripts.
 - The endpoint returns `204` for all non-error outcomes (success, bot drop, unknown UA) so the response body is never read.
+- If the page sets a `Content-Security-Policy` (meta tag or header), `connect-src` must cover the endpoint. CSP matches a
+  source expression's path **exactly** unless it ends in `/`, so `https://YOUR_QUEUEBOARD_HOST/api` blocks the POST to
+  `/api/v1/analytics/collect`; use `https://YOUR_QUEUEBOARD_HOST/api/` (or the bare origin) instead. The blocked request never
+  reaches the server, so this failure is invisible in backend logs — it shows up only in the browser console.
 
 ### Disclosure and privacy regulations
 

@@ -445,9 +445,9 @@ def write_dashboard(
 # Specific code for writing the actual webpage files.
 
 
-def _make_html_header(analytics_host: str = "") -> str:
+def _make_html_header(analytics_connect_src: str = "") -> str:
     """Return the HTML header, optionally widening the CSP to allow analytics beacons."""
-    connect_src = f" connect-src 'self' {analytics_host};" if analytics_host else ""
+    connect_src = f" connect-src 'self' {analytics_connect_src};" if analytics_connect_src else ""
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -485,9 +485,29 @@ def _js_string(value: str) -> str:
 PRIVACY_POLICY_URL = "https://mathlib-initiative.org/privacy/"
 
 
-def _make_analytics_snippet(host: str, site: str) -> str:
+def _analytics_endpoint(api_base_url: str) -> str:
+    """Return the beacon target URL for |api_base_url|.
+
+    |api_base_url| is the same base the dashboard fetches payloads from (see _api_get),
+    so it already carries the server's /api prefix. The collection endpoint is just
+    another path below it, exactly like v1/queueboard/snapshot.
+    """
+    return f"{api_base_url.rstrip('/')}/v1/analytics/collect"
+
+
+def _analytics_connect_src(api_base_url: str) -> str:
+    """Return the CSP connect-src source expression permitting beacons to |api_base_url|.
+
+    The trailing slash is load-bearing: a source expression whose path does not end in
+    "/" matches that exact path and nothing below it, so ".../api" blocks a POST to
+    ".../api/v1/analytics/collect". With the slash the path becomes a prefix match.
+    """
+    return f"{api_base_url.rstrip('/')}/"
+
+
+def _make_analytics_snippet(api_base_url: str, site: str) -> str:
     """Return the privacy notice paragraph and pageview tracking <script> block for injection before </body>."""
-    endpoint = f"{host.rstrip('/')}/api/v1/analytics/collect"
+    endpoint = _analytics_endpoint(api_base_url)
     # The page header sets <base target="_blank">, so the policy link opens in a new tab.
     notice = (
         '<p class="analytics-notice">This page collects anonymous visit counts for usage reporting '
@@ -516,7 +536,7 @@ def _make_analytics_snippet(host: str, site: str) -> str:
 
 GH_PAGES_DIR = "gh-pages"
 API_DIR = "api"
-ANALYTICS_HOST: str = ""  # set by main() when --analytics-site is provided
+ANALYTICS_CONNECT_SRC: str = ""  # CSP source expression; set by main() when --analytics-site is provided
 ANALYTICS_SNIPPET: str = ""  # pre-rendered snippet injected before </body>
 
 
@@ -531,7 +551,7 @@ def write_webpage(body: str, outfile: str, use_tables: bool = True, standard: bo
         )
         analytics = f"\n{ANALYTICS_SNIPPET}" if ANALYTICS_SNIPPET else ""
         footer = f"{script}{analytics}</body>\n</html>"
-        print(f"{_make_html_header(ANALYTICS_HOST)}\n{body}\n{footer}", file=fi)
+        print(f"{_make_html_header(ANALYTICS_CONNECT_SRC)}\n{body}\n{footer}", file=fi)
 
 
 def _parse_args(argv: List[str]) -> argparse.Namespace:
@@ -554,7 +574,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument(
         "--api-base-url",
         default=os.environ.get("QUEUEBOARD_API_BASE_URL"),
-        help="Base URL for queueboard API calls (e.g. https://queueboard.example.com).",
+        help="Base URL for queueboard API calls, including the /api prefix (e.g. https://queueboard.example.com/api).",
     )
     parser.add_argument(
         "--api-token",
@@ -1193,13 +1213,13 @@ def main() -> None:
     args = _parse_args(sys.argv[1:])
     global GH_PAGES_DIR
     global API_DIR
-    global ANALYTICS_HOST
+    global ANALYTICS_CONNECT_SRC
     global ANALYTICS_SNIPPET
     GH_PAGES_DIR = args.gh_pages_dir or args.legacy_gh_pages_dir or GH_PAGES_DIR  # "gh-pages" by default
     API_DIR = args.api_dir or args.legacy_api_dir or API_DIR  # "api" by default
     if args.analytics_site and args.api_base_url:
-        ANALYTICS_HOST = args.api_base_url.rstrip("/")
-        ANALYTICS_SNIPPET = _make_analytics_snippet(ANALYTICS_HOST, args.analytics_site)
+        ANALYTICS_CONNECT_SRC = _analytics_connect_src(args.api_base_url)
+        ANALYTICS_SNIPPET = _make_analytics_snippet(args.api_base_url, args.analytics_site)
     elif args.analytics_site:
         print("Warning: --analytics-site requires --api-base-url; analytics snippet will be omitted.", file=sys.stderr)
 
