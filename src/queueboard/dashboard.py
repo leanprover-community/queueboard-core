@@ -514,10 +514,15 @@ def _make_analytics_snippet(api_base_url: str, site: str) -> str:
         "(no cookies, no IP addresses stored). See the "
         f'<a href="{PRIVACY_POLICY_URL}">Mathlib Initiative privacy policy</a>.</p>'
     )
-    # The body is JSON, but it is sent as text/plain: that content type is CORS-safelisted,
-    # so the beacon stays a simple request. An application/json beacon needs a preflight,
-    # which Firefox does not perform for sendBeacon — the send fails before it leaves the
-    # browser. The collection endpoint parses either content type.
+    # Delivered with fetch(keepalive), deliberately not navigator.sendBeacon. keepalive gives
+    # the same survive-page-unload guarantee, and beacons are widely discarded: content
+    # blockers and privacy settings filter on request *type*, so a beacon is dropped while an
+    # identical fetch to the same URL is delivered. sendBeacon reports success either way — it
+    # returns true once the request is queued, not once it is sent — so the loss is invisible
+    # from the page and leaves no trace in server logs.
+    #
+    # The body is JSON sent as text/plain, which is CORS-safelisted and so needs no preflight.
+    # The collection endpoint parses either content type.
     script = (
         "<script>\n"
         "(function () {\n"
@@ -527,13 +532,9 @@ def _make_analytics_snippet(api_base_url: str, site: str) -> str:
         "    path: window.location.pathname,\n"
         "    referrer: document.referrer || ''\n"
         "  });\n"
-        "  // text/plain avoids a CORS preflight, which sendBeacon cannot perform in Firefox.\n"
-        "  if (navigator.sendBeacon) {\n"
-        "    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'text/plain' }));\n"
-        "  } else {\n"
-        "    fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: payload, keepalive: true })\n"
-        "      .catch(function () {});\n"
-        "  }\n"
+        "  // keepalive survives page unload; text/plain avoids a CORS preflight.\n"
+        "  fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: payload, keepalive: true })\n"
+        "    .catch(function () {});\n"
         "})();\n"
         "</script>"
     )

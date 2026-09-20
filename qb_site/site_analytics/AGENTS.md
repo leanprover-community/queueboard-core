@@ -15,9 +15,10 @@
 - `tasks/` — periodic Celery tasks for aggregation, pruning, and salt rotation.
 - `tests/` — unit and integration tests.
 - API ingestion view: `qb_site/api/views/analytics_collect.py` (added in A2).
-  - Accepts a JSON body as `application/json` *or* `text/plain` (`BeaconJSONParser`). The beacon must use
-    `text/plain`: `application/json` is not CORS-safelisted, and Firefox does not preflight `sendBeacon`, so such a
-    beacon fails before it leaves the browser and leaves no trace in server logs.
+  - Accepts a JSON body as `application/json` *or* `text/plain` (`BeaconJSONParser`). Client snippets must send
+    `text/plain`: `application/json` is not CORS-safelisted, so it forces a preflight for no benefit.
+  - Client snippets must use `fetch(..., { keepalive: true })`, never `navigator.sendBeacon` — beacons are silently
+    discarded by blockers and privacy settings that filter on request type, and `sendBeacon` reports success anyway.
 
 ## Key Settings (all env-overridable)
 - `SITE_ANALYTICS_HASH_SALT` — fallback salt used until the first `rotate_salt` task runs and writes a DB salt. Required on first deploy; thereafter the `SiteAnalyticsSalt` DB row takes precedence.
