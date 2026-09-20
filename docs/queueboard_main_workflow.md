@@ -20,7 +20,7 @@ dashboard HTML, and publishes it to GitHub Pages.
 
 | Secret | Purpose |
 |---|---|
-| `QUEUEBOARD_API_BASE_URL` | Base URL of the deployed `qb_site` instance (e.g. `https://queueboard.example.com`). Used both to fetch API payloads and as the analytics endpoint host. |
+| `QUEUEBOARD_API_BASE_URL` | Base URL for API calls against the deployed `qb_site` instance, **including the `/api` prefix** (e.g. `https://queueboard.example.com/api`). Used both to fetch API payloads and to build the analytics endpoint and its CSP entry. |
 | `QUEUEBOARD_ANALYTICS_SITE` | Site slug registered in `SITE_ANALYTICS_ALLOWED_SITES` on the server (e.g. `queueboard`). When set, a privacy-preserving analytics snippet is injected into every generated page. Omit to disable analytics. |
 
 If `QUEUEBOARD_ANALYTICS_SITE` is absent (secret not configured), the snippet
