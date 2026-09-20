@@ -107,25 +107,25 @@ Replace `YOUR_QUEUEBOARD_HOST` and `YOUR_SITE_SLUG` before deploying.
     path: window.location.pathname,
     referrer: document.referrer || ''
   });
-  // sendBeacon fires even during page unload; fetch is the fallback.
-  // The body is JSON, but it is sent as text/plain so the request stays CORS-simple.
-  if (navigator.sendBeacon) {
-    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'text/plain' }));
-  } else {
-    fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: payload,
-      keepalive: true
-    }).catch(function () {});
-  }
+  // keepalive lets the request outlive the page; text/plain keeps it CORS-simple.
+  fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: payload,
+    keepalive: true
+  }).catch(function () {});
 })();
 </script>
 ```
 
 **Notes:**
 - The snippet is fire-and-forget; errors are silently swallowed so a tracking failure never affects page load.
-- `sendBeacon` is preferred: it survives page unload and does not block navigation.
+- **Do not use `navigator.sendBeacon` here, despite it being the textbook choice.** Content blockers and browser
+  privacy settings filter on request *type*, so a `beacon` is discarded while an identical `fetch` to the same URL is
+  delivered — and the loss is silent in both directions. `sendBeacon` returns `true` once the request is *queued*, not
+  once it is sent, so the page sees success, the console shows nothing, and no request reaches the server. This was
+  observed in the field: a `sendBeacon` and a `fetch` issued back-to-back to the same URL produced exactly one entry in
+  the server log. `fetch(..., { keepalive: true })` gives the same survive-page-unload guarantee and is delivered.
 - **The `text/plain` content type is deliberate, not sloppiness.** `application/json` is not on the CORS safelist, so
   the browser must preflight the request — and Firefox does not perform a preflight for `sendBeacon`, so the beacon
   fails before it leaves the browser (console: *CORS request did not succeed*, `Status code: (null)`; nothing appears

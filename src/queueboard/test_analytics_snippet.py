@@ -43,12 +43,19 @@ def test_snippet_embeds_endpoint_and_site() -> None:
 
 
 def test_snippet_stays_a_cors_simple_request() -> None:
-    # An application/json beacon requires a CORS preflight, which Firefox does not perform
-    # for sendBeacon: the request fails before it leaves the browser. text/plain is on the
-    # CORS safelist, so no preflight is needed.
+    # application/json is not CORS-safelisted, so it would force a preflight. text/plain is.
     snippet = _make_analytics_snippet(API_BASE, "queueboard")
     assert "application/json" not in snippet
-    assert snippet.count("'text/plain'") == 2  # the sendBeacon Blob and the fetch fallback
+    assert "'Content-Type': 'text/plain'" in snippet
+
+
+def test_snippet_does_not_use_sendbeacon() -> None:
+    # Beacons are discarded by blockers and privacy settings that filter on request type,
+    # silently: sendBeacon returns true once the request is queued, not once it is sent.
+    # fetch(keepalive) survives page unload just as well and is actually delivered.
+    snippet = _make_analytics_snippet(API_BASE, "queueboard")
+    assert "sendBeacon" not in snippet
+    assert "keepalive: true" in snippet
 
 
 if __name__ == "__main__":
@@ -57,3 +64,4 @@ if __name__ == "__main__":
     test_header_csp_allows_the_endpoint()
     test_snippet_embeds_endpoint_and_site()
     test_snippet_stays_a_cors_simple_request()
+    test_snippet_does_not_use_sendbeacon()
