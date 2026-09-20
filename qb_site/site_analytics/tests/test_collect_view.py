@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -161,6 +163,42 @@ class AnalyticsCollectViewTests(TestCase):
         resp = self._post({"site": "test-site", "path": "/"}, HTTP_USER_AGENT="Mozilla/5.0")
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(AnalyticsPageView.objects.count(), 1)
+
+    # --- content types ---
+
+    def test_text_plain_body_is_parsed_as_json(self):
+        # The beacon sends JSON as text/plain to stay a CORS-simple request: an
+        # application/json beacon requires a preflight, which Firefox does not perform
+        # for sendBeacon, so the request never leaves the browser.
+        resp = self.client.post(
+            URL,
+            json.dumps({"site": "test-site", "path": "/beacon"}),
+            content_type="text/plain",
+            HTTP_USER_AGENT="Mozilla/5.0",
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.get().path, "/beacon")
+
+    def test_text_plain_with_charset_is_parsed_as_json(self):
+        # Browsers may append a charset to the Blob's type; the parser must still match.
+        resp = self.client.post(
+            URL,
+            json.dumps({"site": "test-site", "path": "/charset"}),
+            content_type="text/plain;charset=UTF-8",
+            HTTP_USER_AGENT="Mozilla/5.0",
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.get().path, "/charset")
+
+    def test_application_json_still_accepted(self):
+        resp = self.client.post(
+            URL,
+            json.dumps({"site": "test-site", "path": "/json"}),
+            content_type="application/json",
+            HTTP_USER_AGENT="Mozilla/5.0",
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(AnalyticsPageView.objects.get().path, "/json")
 
     # --- CORS ---
 

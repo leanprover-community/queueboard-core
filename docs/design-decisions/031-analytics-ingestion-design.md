@@ -27,6 +27,7 @@
 
 ### Ingestion endpoint
 - `POST /api/v1/analytics/collect` — view in `api/views/analytics_collect.py`.
+- Accepts a JSON body as either `application/json` or `text/plain` (see the snippet notes for why the beacon uses the latter).
 - Required fields: `site` (must be in `SITE_ANALYTICS_ALLOWED_SITES`), `path`.
 - Optional field: `referrer`.
 - `User-Agent` read from HTTP header (not payload).
@@ -107,12 +108,13 @@ Replace `YOUR_QUEUEBOARD_HOST` and `YOUR_SITE_SLUG` before deploying.
     referrer: document.referrer || ''
   });
   // sendBeacon fires even during page unload; fetch is the fallback.
+  // The body is JSON, but it is sent as text/plain so the request stays CORS-simple.
   if (navigator.sendBeacon) {
-    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'application/json' }));
+    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'text/plain' }));
   } else {
     fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain' },
       body: payload,
       keepalive: true
     }).catch(function () {});
@@ -124,6 +126,11 @@ Replace `YOUR_QUEUEBOARD_HOST` and `YOUR_SITE_SLUG` before deploying.
 **Notes:**
 - The snippet is fire-and-forget; errors are silently swallowed so a tracking failure never affects page load.
 - `sendBeacon` is preferred: it survives page unload and does not block navigation.
+- **The `text/plain` content type is deliberate, not sloppiness.** `application/json` is not on the CORS safelist, so
+  the browser must preflight the request — and Firefox does not perform a preflight for `sendBeacon`, so the beacon
+  fails before it leaves the browser (console: *CORS request did not succeed*, `Status code: (null)`; nothing appears
+  in server logs). `text/plain` keeps it a simple request and also removes the extra preflight round trip. The endpoint
+  parses either content type, so `application/json` callers (curl, other backends) keep working.
 - No cookies, no persistent identifiers, no third-party scripts.
 - The endpoint returns `204` for all non-error outcomes (success, bot drop, unknown UA) so the response body is never read.
 - If the page sets a `Content-Security-Policy` (meta tag or header), `connect-src` must cover the endpoint. CSP matches a

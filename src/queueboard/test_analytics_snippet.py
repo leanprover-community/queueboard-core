@@ -42,8 +42,18 @@ def test_snippet_embeds_endpoint_and_site() -> None:
     assert 'site: "queueboard"' in snippet
 
 
+def test_snippet_stays_a_cors_simple_request() -> None:
+    # An application/json beacon requires a CORS preflight, which Firefox does not perform
+    # for sendBeacon: the request fails before it leaves the browser. text/plain is on the
+    # CORS safelist, so no preflight is needed.
+    snippet = _make_analytics_snippet(API_BASE, "queueboard")
+    assert "application/json" not in snippet
+    assert snippet.count("'text/plain'") == 2  # the sendBeacon Blob and the fetch fallback
+
+
 if __name__ == "__main__":
     test_analytics_endpoint()
     test_analytics_connect_src_covers_the_endpoint()
     test_header_csp_allows_the_endpoint()
     test_snippet_embeds_endpoint_and_site()
+    test_snippet_stays_a_cors_simple_request()

@@ -7,6 +7,7 @@ import logging
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import status
+from rest_framework.parsers import JSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -32,6 +33,18 @@ _CORS_HEADERS = {
 }
 
 
+class BeaconJSONParser(JSONParser):
+    """Parse a JSON body delivered with a ``text/plain`` content type.
+
+    ``navigator.sendBeacon`` with an ``application/json`` Blob is not a CORS-simple
+    request, so the browser must preflight it — and Firefox does not preflight beacons,
+    so the send fails outright and nothing reaches the server. ``text/plain`` is on the
+    CORS-safelist, which keeps the beacon a simple request; the body is still JSON.
+    """
+
+    media_type = "text/plain"
+
+
 def _cors(response: Response) -> Response:
     for key, value in _CORS_HEADERS.items():
         response[key] = value
@@ -50,6 +63,8 @@ class AnalyticsCollectView(APIView):
 
     authentication_classes: list = []
     permission_classes: list = []
+    # application/json is still accepted so existing pages and non-browser callers keep working.
+    parser_classes: list = [JSONParser, BeaconJSONParser]
 
     def options(self, request: Request, *args: object, **kwargs: object) -> Response:
         """Handle CORS preflight requests."""
