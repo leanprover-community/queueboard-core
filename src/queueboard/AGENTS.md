@@ -6,6 +6,28 @@
 - `queries/` contains GraphQL payload templates used by the sync scripts in the sibling `queueboard` repo; adjust these alongside processing logic.
 - `static/` bundles CSS/JS referenced by the generated HTML; keep asset naming stable because workflows copy these directly to GitHub Pages.
 
+## static/dependency_dashboard.html
+A self-contained page — markup, CSS and ~1300 lines of inline JS in one file — with d3 from an
+SRI-pinned CDN and its data from `dependency_graph.json`, which `dashboard.py` copies out of
+`api/`. `dashboard.py` copies the page itself verbatim into `gh-pages/`, so there is no build
+step; editing the file is the whole change. Four conventions it is easy to break:
+- **Colours come only from CSS custom properties**, resolved once per theme by `readPalette()`;
+  `NODE_CATEGORIES` names the token for each bucket, so the nodes and the legend cannot drift
+  apart. Never hardcode a colour in the JS.
+- **Light is the default and the OS preference is not consulted**, because the rest of the
+  frontend is light-only (see `qb_site/console/AGENTS.md`). Dark is opt-in through the toggle and
+  stored per browser in `localStorage` under `queueboard-dependency-theme`, applied by a `<head>`
+  script before the first paint. Rationale in `docs/design-decisions/055-dependency-graph-queue-status-colouring.md`.
+- **Anything sized for the reader is constant in *screen* pixels**, which in user space means
+  dividing by the zoom `k`. `applyZoomAwareStyling` is the single place node radii, ring widths,
+  link widths and the PR-number labels are resized; put new marks there rather than giving them a
+  fixed user-space size, which silently changes meaning with zoom. A mark that is inflated when
+  zoomed out needs *every* part of it inflated — the "blocked" ring thinned away with distance
+  because the node grew and the ring did not.
+- **d3 writes styles inline, and an inline style beats a stylesheet.** A rule in the `<style>`
+  block that targets a property some `.style(...)` call also sets will never apply; that is how
+  `.adjacent circle.body`'s hover emphasis sat dead. Set a property in one place, not both.
+
 ## Daily Commands
 ```bash
 uv run python -m queueboard.dashboard test/all-open-PRs-1.json test/all-open-PRs-2.json  # regenerate all dashboards from fixtures
