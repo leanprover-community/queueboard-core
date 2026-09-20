@@ -96,6 +96,9 @@
   queue" the review dashboard uses.
 - `labels` changed from `list[str]` to `list[object]`. The frontend accepts both so a stale
   `dependency_graph.json` still renders, but any other consumer needs the same tolerance.
+- The ring claims the node-outline channel for one meaning. Any later node-level state needs a
+  different channel, or it reads as a variant of "blocked": the hover emphasis marks the edges
+  incident to the hovered PR rather than outlining its neighbours, for exactly this reason.
 - Grouping loses detail the tooltip has to make up for: it shows the bucket, the raw
   `pr_status` beside it, and a note when a queued PR is labelled `maintainer-merge`. Regrouping
   is an edit to `NODE_CATEGORIES` plus `nodeCategory`, with no other code change.

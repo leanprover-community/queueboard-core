@@ -25,8 +25,15 @@ step; editing the file is the whole change. Four conventions it is easy to break
   zoomed out needs *every* part of it inflated — the "blocked" ring thinned away with distance
   because the node grew and the ring did not.
 - **d3 writes styles inline, and an inline style beats a stylesheet.** A rule in the `<style>`
-  block that targets a property some `.style(...)` call also sets will never apply; that is how
-  `.adjacent circle.body`'s hover emphasis sat dead. Set a property in one place, not both.
+  block that targets a property some `.style(...)` call also sets will never apply — it simply
+  does nothing, which is easy to miss in review. Where a property must be both zoom-compensated
+  and switchable by class, write the computed value into a CSS custom property on the container
+  and let the stylesheet substitute it; that is what `--link-width` / `--link-width-strong` do
+  for `.link` and `.link.incident`. Do the arithmetic in JS rather than a CSS `calc()`, so the
+  stylesheet only ever substitutes a plain value.
+- **An outline on a node means "blocked by an open PR" and nothing else.** Other node-level
+  states need a different channel, or they read as a variant of that one — which is why the
+  hover emphasis marks the incident *edges* rather than the neighbouring nodes.
 
 ## Daily Commands
 ```bash

@@ -308,14 +308,26 @@
         .link {
             stroke: var(--edge);
             stroke-opacity: var(--edge-opacity);
-            stroke-width: 1.5px;
+            stroke-width: var(--link-width, 1.5px);
             fill: none;
         }
 
-        /* Hover focus: everything outside the hovered PR's component recedes, and its direct
-           neighbours thicken, so a single chain is readable inside a dense component grid. */
+        /* Hover focus: everything outside the hovered PR's component recedes, and the links
+           touching the PR itself are drawn in full-strength ink, so a single chain is readable
+           inside a dense component grid.
+
+           Adjacency is marked on the edges rather than on the neighbouring nodes. A node cannot
+           carry it: an outline around a node already means "blocked by an open PR", and a second
+           outline in a different colour reads as a variant of that rather than as a different
+           fact. The edges are an unused channel, and they are what adjacency is a property of.
+           The arrowhead scales with the line (markerUnits defaults to strokeWidth), so direction
+           sharpens along with it for free. */
         .dimmed { opacity: 0.1; }
-        .adjacent circle.body { stroke: var(--ink); stroke-width: 2px; }
+        .link.incident {
+            stroke: var(--ink);
+            stroke-opacity: 1;
+            stroke-width: var(--link-width-strong, 3.3px);
+        }
 
         .legend {
             position: absolute;
@@ -491,9 +503,8 @@
         let lastTapTs = 0;
         let currentFilter = { search: '', showSingletons: false, layout: 'columns', labels: null, authors: null, focus: null };
 
-        // Per-render lookup tables for the hover highlight, rebuilt by createVisualization.
+        // Per-render lookup table for the hover highlight, rebuilt by createVisualization.
         let componentOfNode = new Map();
-        let neighboursOfNode = new Map();
         let allLabelNames = [];
         let allAuthorNames = [];
 
@@ -866,8 +877,14 @@
                 .style("stroke-width", `${LABEL_HALO_PX / k}px`)
                 .style("display", k >= LABEL_ZOOM_THRESHOLD ? null : "none");
 
-            g.selectAll("path.link")
-                .style("stroke-width", 1.5 * linkCompensation);
+            // Two custom properties on the container rather than an inline width on each of ~700
+            // links: the cascade then stays free for .link.incident, which an inline width would
+            // beat, and it is two writes per zoom instead of one per link. The emphasised width is
+            // multiplied out here rather than in a CSS calc(), so the stylesheet only ever has to
+            // substitute a plain value.
+            const linkWidth = 1.5 * linkCompensation;
+            g.style("--link-width", `${linkWidth}px`);
+            g.style("--link-width-strong", `${linkWidth * 2.2}px`);
         }
 
         function fitGraphToViewport(duration = 350) {
@@ -1085,18 +1102,17 @@
         function highlightRelated(node) {
             if (!g) return;
             const component = componentOfNode.get(node.id);
-            const neighbours = neighboursOfNode.get(node.id) || new Set();
             g.selectAll("g.node")
-                .classed("dimmed", d => componentOfNode.get(d.id) !== component)
-                .classed("adjacent", d => d.id === node.id || neighbours.has(d.id));
+                .classed("dimmed", d => componentOfNode.get(d.id) !== component);
             g.selectAll("path.link")
-                .classed("dimmed", d => componentOfNode.get(linkEndpointId(d.source)) !== component);
+                .classed("dimmed", d => componentOfNode.get(linkEndpointId(d.source)) !== component)
+                .classed("incident", d => linkEndpointId(d.source) === node.id || linkEndpointId(d.target) === node.id);
         }
 
         function clearHighlight() {
             if (!g) return;
-            g.selectAll("g.node").classed("dimmed", false).classed("adjacent", false);
-            g.selectAll("path.link").classed("dimmed", false);
+            g.selectAll("g.node").classed("dimmed", false);
+            g.selectAll("path.link").classed("dimmed", false).classed("incident", false);
         }
 
         function linkEndpointId(endpoint) {
@@ -1303,8 +1319,7 @@
                 target_state: link.target_state
             }));
 
-            // Lookup tables for the hover highlight, over the *rendered* graph.
-            neighboursOfNode = buildAdjacency(filteredData.nodes, cleanLinks);
+            // Lookup table for the hover highlight, over the *rendered* graph.
             componentOfNode = new Map();
             connectedComponents(filteredData.nodes, cleanLinks).forEach((ids, index) => {
                 ids.forEach(id => componentOfNode.set(id, index));
