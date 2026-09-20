@@ -514,6 +514,10 @@ def _make_analytics_snippet(api_base_url: str, site: str) -> str:
         "(no cookies, no IP addresses stored). See the "
         f'<a href="{PRIVACY_POLICY_URL}">Mathlib Initiative privacy policy</a>.</p>'
     )
+    # The body is JSON, but it is sent as text/plain: that content type is CORS-safelisted,
+    # so the beacon stays a simple request. An application/json beacon needs a preflight,
+    # which Firefox does not perform for sendBeacon — the send fails before it leaves the
+    # browser. The collection endpoint parses either content type.
     script = (
         "<script>\n"
         "(function () {\n"
@@ -523,10 +527,12 @@ def _make_analytics_snippet(api_base_url: str, site: str) -> str:
         "    path: window.location.pathname,\n"
         "    referrer: document.referrer || ''\n"
         "  });\n"
+        "  // text/plain avoids a CORS preflight, which sendBeacon cannot perform in Firefox.\n"
         "  if (navigator.sendBeacon) {\n"
-        "    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'application/json' }));\n"
+        "    navigator.sendBeacon(endpoint, new Blob([payload], { type: 'text/plain' }));\n"
         "  } else {\n"
-        "    fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(function () {});\n"
+        "    fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: payload, keepalive: true })\n"
+        "      .catch(function () {});\n"
         "  }\n"
         "})();\n"
         "</script>"
