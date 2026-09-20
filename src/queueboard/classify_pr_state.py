@@ -200,6 +200,28 @@ def label_to_prstatus(label: LabelKind) -> PRStatus:
     }[label]
 
 
+def determine_PR_status_ignoring_fork(
+    date: datetime,
+    label_names: List[str],
+    ci: CIStatus,
+    is_draft: bool,
+    ci_gating_mode: str | None = None,
+) -> PRStatus:
+    """Classify a PR as ``determine_PR_status`` would, but never short-circuit on fork-ness.
+
+    ``NotFromFork`` is returned before any label or CI is inspected, so for a repository where
+    contributors push branches to the repository itself (as most mathlib contributors do) it
+    hides the PR's actual state from anything that wants to *display* that state. Callers that
+    need "what would this PR's status be, setting the fork question aside" use this; callers
+    reporting the PR's status proper keep using ``determine_PR_status``.
+
+    Takes raw label names rather than a ``PRState`` so consumers holding only serialised data
+    (the dependency graph builders) need not rebuild the enum mapping themselves.
+    """
+    kinds = [label_categorisation_rules[name] for name in label_names if name in label_categorisation_rules]
+    return determine_PR_status(date, PRState(kinds, ci, is_draft, True), ci_gating_mode)
+
+
 def determine_PR_status(date: datetime, state: PRState, ci_gating_mode: str | None = None) -> PRStatus:
     """Determine a PR's status from its state.
 

@@ -6,11 +6,12 @@ Currently, this contains the following
 - a function to parse JSON files with PR info (with error handling),
 - a helper for comparing lists of PR numbers (with detailed information about the differences)
 - a function to format a |relativedelta|
+- a helper computing transitive PR dependency counts
 """
 
 import json
 import sys
-from typing import List
+from typing import List, NamedTuple
 from dateutil import relativedelta
 from datetime import timedelta
 
@@ -117,3 +118,52 @@ def relativedelta_tryParse(value: str) -> relativedelta.relativedelta | None:
         (attr, val) = part.split("=")
         attrs[attr] = int(val)
     return relativedelta.relativedelta(**attrs)
+
+
+# The number of PRs a given PR is transitively related to, in either direction.
+class DependencyCounts(NamedTuple):
+    """How many other PRs a given PR transitively depends on, and how many depend on it."""
+
+    upstream: int
+    """Number of distinct PRs this one (transitively) depends on: they must all land first."""
+    downstream: int
+    """Number of distinct PRs which (transitively) depend on this one: merging it unblocks them."""
+
+
+def transitive_dependency_counts(direct: dict[int, List[int]]) -> dict[int, DependencyCounts]:
+    """Compute transitive dependency counts for every PR in |direct|.
+
+    |direct| maps each PR number to the PRs it *directly* depends on; dependencies on PRs
+    absent from |direct| are ignored, so callers should pre-filter to the PRs they care about
+    (e.g. the open ones). A PR never counts itself, even when it lies on a dependency cycle:
+    PR descriptions are free text, so cycles do occur and must not hang or double-count.
+    """
+    # Both directions are the same reachability computation, just on opposite edge sets.
+    forward: dict[int, set[int]] = {pr: set() for pr in direct}
+    backward: dict[int, set[int]] = {pr: set() for pr in direct}
+    for pr, deps in direct.items():
+        for dep in deps:
+            if dep in forward:
+                forward[pr].add(dep)
+                backward[dep].add(pr)
+
+    def reachable_counts(adjacency: dict[int, set[int]]) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for start in adjacency:
+            # Plain BFS per node: the graphs here have a few thousand nodes and very few edges,
+            # so this is cheap and much easier to get right (around cycles) than memoising
+            # reachability sets, which would have to merge sets across strongly connected components.
+            seen = {start}
+            queue = [start]
+            while queue:
+                current = queue.pop()
+                for neighbour in adjacency[current]:
+                    if neighbour not in seen:
+                        seen.add(neighbour)
+                        queue.append(neighbour)
+            counts[start] = len(seen) - 1  # do not count the PR itself
+        return counts
+
+    upstream = reachable_counts(forward)
+    downstream = reachable_counts(backward)
+    return {pr: DependencyCounts(upstream[pr], downstream[pr]) for pr in direct}

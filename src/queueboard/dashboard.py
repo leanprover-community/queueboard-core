@@ -32,11 +32,25 @@ from queueboard.compute_dashboard_prs import (
     gather_pr_statistics,
 )
 from queueboard.mathlib_dashboards import Dashboard, short_description, long_description, getIdTitle, getTableId
-from queueboard.util import format_delta
+from queueboard.util import format_delta, transitive_dependency_counts
 from queueboard.snapshot import load_snapshot
 
 QUEUE_DATA_STATUS: dict[int, str] = {}
 CI_GATING_MODE: str | None = None
+
+
+# How many PRs a given PR blocks, and is blocked by: directly, and following the chains.
+class DependencyColumnInfo(NamedTuple):
+    upstream: int
+    downstream: int
+    direct_upstream: int
+    direct_downstream: int
+
+
+# Dependency counts per PR number, computed once in main() from the aggregate data. Held
+# module-level (like QUEUE_DATA_STATUS above) so the "unblocks" column does not have to be
+# threaded through every write_dashboard call site.
+DEPENDENCY_COUNTS: dict[int, DependencyColumnInfo] = {}
 
 
 def _ci_blocks_queue(ci_status: CIStatus, ci_gating_mode: str | None) -> bool:
@@ -160,6 +174,58 @@ def label_link(label: Label, page: str, id: str) -> str:
     bgcolor = label.color
     fgcolor = "000000" if isLight(int(bgcolor[:2], 16), int(bgcolor[2:4], 16), int(bgcolor[4:], 16)) else "FFFFFF"
     return f"<a href='{url}'><span class='label' style='color: #{fgcolor}; background: #{bgcolor}'>{label.name}</span></a>"
+
+
+# Compute, for every PR in |aggregate_info|, how many other PRs it transitively depends on
+# and how many transitively depend on it (plus the direct counts, for the tooltip).
+# Dependencies on PRs absent from this dashboard's data (closed, or in another repository)
+# are ignored, matching what the dependency graph itself shows.
+def compute_dependency_counts(aggregate_info: dict) -> dict[int, DependencyColumnInfo]:
+    direct: dict[int, List[int]] = {}
+    for key, info in aggregate_info.items():
+        direct[int(key)] = [int(dep) for dep in (info.direct_dependencies or [])]
+    # Only dependencies on PRs we know about count, in both directions.
+    direct = {number: [dep for dep in deps if dep in direct] for number, deps in direct.items()}
+    direct_dependents: dict[int, int] = {number: 0 for number in direct}
+    for deps in direct.values():
+        for dep in deps:
+            direct_dependents[dep] += 1
+
+    transitive = transitive_dependency_counts(direct)
+    return {
+        number: DependencyColumnInfo(
+            upstream=counts.upstream,
+            downstream=counts.downstream,
+            direct_upstream=len(direct[number]),
+            direct_downstream=direct_dependents[number],
+        )
+        for number, counts in transitive.items()
+    }
+
+
+def _pr_plural(count: int) -> str:
+    return "1 PR" if count == 1 else f"{count} PRs"
+
+
+# The "unblocks" column: how many PRs are (transitively) waiting on this one, linking to this
+# PR's neighbourhood in the dependency graph. PRs in no dependency relation at all get a bare
+# "0", so the column stays quiet for the majority of PRs. The cell text is the number alone
+# (the link icon lives in the column header), so DataTables still detects the column as numeric
+# and sorting by it answers "which reviews unblock the most work?".
+def dependency_link(pr_number: int) -> str:
+    counts = DEPENDENCY_COUNTS.get(pr_number)
+    if counts is None or (counts.upstream == 0 and counts.downstream == 0):
+        return "0"
+    if counts.downstream == 0:
+        unblocks = "unblocks nothing"
+    else:
+        unblocks = f"unblocks {_pr_plural(counts.downstream)} ({counts.direct_downstream} directly)"
+    if counts.upstream == 0:
+        blocked = "not blocked by any PR"
+    else:
+        blocked = f"blocked by {_pr_plural(counts.upstream)} ({counts.direct_upstream} directly)"
+    title = f"{unblocks}; {blocked}. Click to see this PR in the dependency graph."
+    return f"<a href='dependency_dashboard.html?focus={pr_number}' title='{title}'>{counts.downstream}</a>"
 
 
 # Auxiliary function, used for sorting the "total time in review".
@@ -360,6 +426,7 @@ def _compute_pr_entries(
                     total_time += '<a title="caution: this data is likely incomplete">*</a>'
         entries.append(real_update)
         entries.append(total_time)
+        entries.append(dependency_link(pr.number))
         result += _write_table_row(entries, "    ")
     return result
 
@@ -430,6 +497,10 @@ def write_dashboard(
             '<a title="The last time this PR\'s status changed from e.g. review to merge conflict, awaiting-author">Last status change</a>'
         )
         headings.append("total time in review")
+        headings.append(
+            '<a title="how many PRs are waiting on this one, directly or transitively; '
+            'click a number to see that PR in the dependency graph">unblocks</a>'
+        )
         head = _write_table_header(headings, "    ")
         body = _compute_pr_entries(
             page_name, custom_subpage or getIdTitle(kind)[0], prs, aggregate_info, extra_settings, potential_reviewers
@@ -741,7 +812,7 @@ TIPS_AND_TRICKS = f"""  <h2 id="tips-and-tricks"><a href="#tips-and-tricks">Tips
   <details><summary>Reference-level explanation of search syntax</summary>
   The <code>search</code> parameter filters all tables on a page by default.
   The <code>sort</code> parameter changes the initial sorting of all dashboards; if the parameter is given several times, this configures a multi-column sort (sorting by the first parameter first). A valid value is of the form <code>idxOrAlias-direction</code>, where <code>direction</code> is either <code>asc</code> or <code>desc</code> (for ascending or descending order), and <code>idxOrAlias</code> describes the column to sort.
-  All columns have human-readable names: these are <code>number</code>, <code>author</code>, <code>title</code>, <code>labels</code>, <code>diff</code>, <code>numberChangedFiles</code>, <code>numberComments</code>, <code>assignee</code>, <code>approvals</code>, <code>lastUpdate</code>, <code>lastStatusChange</code> and <code>totalTimeReview</code>, respectively &mdash; mapping to the obvious column.
+  All columns have human-readable names: these are <code>number</code>, <code>author</code>, <code>title</code>, <code>labels</code>, <code>diff</code>, <code>numberChangedFiles</code>, <code>numberComments</code>, <code>assignee</code>, <code>approvals</code>, <code>lastUpdate</code>, <code>lastStatusChange</code>, <code>totalTimeReview</code> and <code>unblocks</code>, respectively &mdash; mapping to the obvious column.
   Alternatively (deprecated), you can pass in the (0-based) index of the column you want to sort. (You have to account for hidden columns, and there are no stability guarantees. This option is only kept for backwards compatibility.)
   </details>
   </li>
@@ -1258,6 +1329,9 @@ def main() -> None:
         all_pr_status = load_from_json_file(path.join(API_DIR, "all_pr_status.json"))
         base_branch = load_from_json_file(path.join(API_DIR, "base_branch.json"))
         prs_to_list = load_from_json_file(path.join(API_DIR, "prs_to_list.json"))
+
+    global DEPENDENCY_COUNTS
+    DEPENDENCY_COUNTS = compute_dependency_counts(aggregate_info)
 
     makedirs(GH_PAGES_DIR, exist_ok=True)
     # copy JSON files from API_DIR into place

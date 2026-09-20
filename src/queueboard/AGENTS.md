@@ -28,6 +28,7 @@ bash scripts/repo_check_compose.sh                                              
   - `uv run python src/queueboard/test_state_evolution.py`
   - `uv run python src/queueboard/test_snapshot.py`
   - `uv run python src/queueboard/test_process.py`
+  - `uv run python src/queueboard/test_util.py`
   - `uv run python src/queueboard/test_reviewer_topics.py`
   - other non-DB checks.
 - If Compose checks cannot run, clearly report that gap and request user-run results when needed.
