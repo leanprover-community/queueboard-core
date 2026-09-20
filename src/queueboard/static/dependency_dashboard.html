@@ -6,11 +6,26 @@
     <meta name="referrer" content="no-referrer">
     <title>PR Dependency Graph Dashboard</title>
     <script src="https://d3js.org/d3.v7.min.js" integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i" crossorigin="anonymous"></script>
+    <script>
+        // Runs before the body is parsed so an opted-in browser never flashes the light theme.
+        try {
+            if (localStorage.getItem("queueboard-dependency-theme") === "dark") {
+                document.documentElement.dataset.theme = "dark";
+            }
+        } catch (error) {
+            // Storage can be unavailable (private windows, blocked site data); light is the default anyway.
+        }
+    </script>
     <style>
         /* Colours live in custom properties so the palette resolves once per theme, and so the
-           legend and the nodes can never drift apart: both read the same tokens. */
+           legend and the nodes can never drift apart: both read the same tokens.
+
+           Light is the default whether or not this browser has a stored preference, and the OS
+           setting is deliberately not consulted: no other queueboard page has a dark mode, so
+           someone arriving from index.html should not find this one inverted. Dark is opt-in,
+           through the toggle in the controls row, and selected by the data-theme attribute. */
         :root {
-            color-scheme: light dark;
+            color-scheme: light;
 
             --page-bg: #f5f5f5;
             --panel-bg: #ffffff;
@@ -21,6 +36,7 @@
             --control-bg: #ffffff;
             --shadow: rgba(0, 0, 0, 0.1);
             --edge: #8c959f;
+            --edge-opacity: 0.7;
             --highlight-bg: #fff3a3;
 
             /* Node fills, by queue status. Keep in sync with NODE_CATEGORIES in the script. */
@@ -32,26 +48,27 @@
             --cat-other: #6e7781;
         }
 
-        @media (prefers-color-scheme: dark) {
-            :root {
-                --page-bg: #0d1117;
-                --panel-bg: #161b22;
-                --panel-bg-alpha: rgba(22, 27, 34, 0.95);
-                --ink: #e6edf3;
-                --ink-muted: #9198a1;
-                --rule: #30363d;
-                --control-bg: #0d1117;
-                --shadow: rgba(0, 0, 0, 0.5);
-                --edge: #6e7681;
-                --highlight-bg: #9e6a03;
+        :root[data-theme="dark"] {
+            color-scheme: dark;
 
-                --cat-queue: #3fb950;
-                --cat-author: #d29922;
-                --cat-blocked: #f85149;
-                --cat-notready: #8b949e;
-                --cat-merging: #a371f7;
-                --cat-other: #7d8590;
-            }
+            --page-bg: #0d1117;
+            --panel-bg: #161b22;
+            --panel-bg-alpha: rgba(22, 27, 34, 0.95);
+            --ink: #e6edf3;
+            --ink-muted: #9198a1;
+            --rule: #30363d;
+            --control-bg: #0d1117;
+            --shadow: rgba(0, 0, 0, 0.5);
+            --edge: #9198a1;
+            --edge-opacity: 0.9;
+            --highlight-bg: #9e6a03;
+
+            --cat-queue: #3fb950;
+            --cat-author: #d29922;
+            --cat-blocked: #f85149;
+            --cat-notready: #8b949e;
+            --cat-merging: #a371f7;
+            --cat-other: #7d8590;
         }
 
         body {
@@ -271,24 +288,26 @@
 
         /* --- graph marks --- */
         .node { cursor: pointer; }
-        .node circle.body { stroke-width: 1px; }
-        .node circle.halo { fill: none; }
+        .node circle.body { stroke: none; }
+        .node circle.halo, .node circle.ring { fill: none; }
 
+        /* Size and halo are overwritten per zoom level by applyZoomAwareStyling; the values
+           here are only what the first paint uses, before any zoom event has fired. */
         .node text.num {
-            font-size: 7px;
+            font-size: 11px;
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-weight: 600;
             fill: var(--ink);
             text-anchor: middle;
-            pointer-events: none;
             paint-order: stroke;
             stroke: var(--panel-bg);
-            stroke-width: 2.5px;
+            stroke-width: 3px;
             stroke-linejoin: round;
         }
 
         .link {
             stroke: var(--edge);
-            stroke-opacity: 0.7;
+            stroke-opacity: var(--edge-opacity);
             stroke-width: 1.5px;
             fill: none;
         }
@@ -296,7 +315,7 @@
         /* Hover focus: everything outside the hovered PR's component recedes, and its direct
            neighbours thicken, so a single chain is readable inside a dense component grid. */
         .dimmed { opacity: 0.1; }
-        .adjacent circle.body { stroke-width: 3.5px; }
+        .adjacent circle.body { stroke: var(--ink); stroke-width: 2px; }
 
         .legend {
             position: absolute;
@@ -440,6 +459,7 @@
         </div>
         <button type="button" id="resetFiltersBtn">Reset Filters</button>
         <button type="button" id="resetZoomBtn">Reset Zoom</button>
+        <button type="button" id="themeToggle" title="Switch to the dark palette">Dark mode</button>
     </div>
 
     <div class="stats" id="stats">
@@ -479,6 +499,30 @@
 
         let graphWidth = window.innerWidth - 40;
         let graphHeight = window.innerHeight - 250;
+
+        // PR-number labels are drawn at a constant *screen* size, so the font, the halo and the
+        // gap above the node are all divided back out by the zoom. The threshold is the point
+        // where node inflation stops (see applyZoomAwareStyling): below it the view is far
+        // enough out that nodes are being drawn larger than life, and a number by each one is
+        // noise rather than information.
+        const LABEL_FONT_PX = 11;
+        const LABEL_HALO_PX = 3;
+        const LABEL_GAP_PX = 4;
+        const LABEL_ZOOM_THRESHOLD = 0.55;
+
+        // The ring marking "an open PR must land first". It is drawn *outside* the node rather
+        // than as a stroke on it, for two reasons: an inner stroke eats the category fill it is
+        // supposed to qualify, and it can only ever contrast with that fill -- around 2:1 for
+        // these palettes, which is what made it read as a faint outline. Outside, the ring sits
+        // against the page instead, where the same colour clears 10:1, and a blocked node is
+        // visibly larger as well as ringed. RING_CONTRAST is how far the ring is mixed from the
+        // fill towards the text colour: far enough to separate from the background in either
+        // theme, near enough to keep the category's hue.
+        const RING_WIDTH = 2.5;
+        const RING_CONTRAST = 0.7;
+
+        // Clearance for the search/focus halo, which has to stay outside the ring.
+        const HALO_GAP = 7;
 
         // Node fill colours, keyed by the category nodeCategory() assigns. Each entry names a CSS
         // custom property (so both themes resolve from one place), the legend text, and the
@@ -537,13 +581,57 @@
             }
         }
 
+        // --- theme ---
+        //
+        // Light unless this browser has opted in; the OS preference is not consulted, because
+        // every other queueboard page is light-only and a visitor following a link from one of
+        // them should not have the page invert under them. The choice is remembered per browser,
+        // which is all a display preference needs -- it is not worth a round trip to the API.
+        const THEME_STORAGE_KEY = "queueboard-dependency-theme";
+
+        function storedTheme() {
+            try {
+                return localStorage.getItem(THEME_STORAGE_KEY);
+            } catch (error) {
+                return null;
+            }
+        }
+
+        function currentTheme() {
+            return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+        }
+
+        // The palette lives in CSS custom properties, so switching themes means re-reading it and
+        // repainting both the nodes and the legend.
+        function applyTheme(theme, persist) {
+            const dark = theme === "dark";
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+
+            const button = document.getElementById("themeToggle");
+            button.textContent = dark ? "Light mode" : "Dark mode";
+            button.title = dark ? "Switch to the light palette" : "Switch to the dark palette";
+
+            if (persist) {
+                try {
+                    localStorage.setItem(THEME_STORAGE_KEY, dark ? "dark" : "light");
+                } catch (error) {
+                    // A browser that refuses storage still gets the switch, just not the memory.
+                }
+            }
+
+            readPalette();
+            renderLegend();
+            if (graphData) createVisualization(graphData);
+        }
+
         let palette = new Map();
 
         function readPalette() {
             const style = getComputedStyle(document.documentElement);
             palette = new Map(NODE_CATEGORIES.map(entry => {
                 const fill = (style.getPropertyValue(entry.token) || "").trim() || "#6e7781";
-                return [entry.key, { fill, ring: mixColours(fill, style.getPropertyValue("--ink").trim() || "#1f2328", 0.45) }];
+                const ink = style.getPropertyValue("--ink").trim() || "#1f2328";
+                return [entry.key, { fill, ring: mixColours(fill, ink, RING_CONTRAST) }];
             }));
         }
 
@@ -710,20 +798,24 @@
             tooltip.style.top = `${best.top}px`;
         }
 
+        // Which way a dependency points is the first thing to become unreadable as you zoom
+        // out, so the head is larger than the line warrants and fully opaque. markerUnits
+        // defaults to strokeWidth, so it grows with the link compensation for free; refX is in
+        // viewBox units, and 20 pulls the tip back far enough to clear a node wearing the
+        // "blocked" ring.
         function appendArrowMarker(target) {
             target.append("defs").append("marker")
                 .attr("id", "arrowhead")
                 .attr("viewBox", "0 -5 10 10")
                 .attr("refX", 20)
                 .attr("refY", 0)
-                .attr("markerWidth", 6)
-                .attr("markerHeight", 6)
+                .attr("markerWidth", 8)
+                .attr("markerHeight", 8)
                 .attr("orient", "auto")
                 .append("path")
-                .attr("d", "M0,-5L10,0L0,5")
+                .attr("d", "M0,-3.5L10,0L0,3.5")
                 .attr("class", "arrowhead")
-                .style("fill", "var(--edge)")
-                .style("fill-opacity", 0.7);
+                .style("fill", "var(--edge)");
         }
 
         function initializeSVG() {
@@ -754,17 +846,25 @@
             g.selectAll("circle.body")
                 .attr("r", d => getNodeRadius(d) * nodeCompensation);
 
+            // The ring has to grow with the node it surrounds, or zooming out thins it away --
+            // which is most of why it looked faint from a distance.
+            g.selectAll("circle.ring")
+                .attr("r", d => getRingRadius(d) * nodeCompensation)
+                .style("stroke-width", RING_WIDTH * nodeCompensation);
+
             g.selectAll("circle.halo")
-                .attr("r", d => (getNodeRadius(d) + 4) * nodeCompensation)
+                .attr("r", d => (getNodeRadius(d) + HALO_GAP) * nodeCompensation)
                 .style("stroke-width", `${3 * nodeCompensation}px`);
 
-            // PR numbers only appear once they can be read without colliding; their stroke halo
-            // and font size are in user space, so both must be divided back out by the zoom.
+            // PR numbers only appear once they can be read without colliding; their halo, font
+            // size and offset are in user space, so all three divide the zoom back out. Keeping
+            // the gap constant on screen matters: a fixed user-space offset drifts away from the
+            // node as you zoom in and collides with it as you zoom out.
             g.selectAll("text.num")
-                .attr("y", -(getNodeRadius(null) + 3) * nodeCompensation)
-                .style("font-size", `${7 / k}px`)
-                .style("stroke-width", `${2.5 / k}px`)
-                .style("display", k >= 1.3 ? null : "none");
+                .attr("y", d => -(getRingRadius(d) * nodeCompensation + LABEL_GAP_PX / k))
+                .style("font-size", `${LABEL_FONT_PX / k}px`)
+                .style("stroke-width", `${LABEL_HALO_PX / k}px`)
+                .style("display", k >= LABEL_ZOOM_THRESHOLD ? null : "none");
 
             g.selectAll("path.link")
                 .style("stroke-width", 1.5 * linkCompensation);
@@ -856,13 +956,13 @@
             return node.dependency_count > 0;
         }
 
-        function getNodeStroke(node) {
-            if (!hasBlockingDependency(node)) return "transparent";
+        function getRingColor(node) {
             return (palette.get(nodeCategory(node)) || { ring: "#1f2328" }).ring;
         }
 
-        function getNodeStrokeWidth(node) {
-            return hasBlockingDependency(node) ? 2.5 : 1;
+        // Centred on the node's edge + half the width, so the ring lies wholly outside the fill.
+        function getRingRadius(node) {
+            return getNodeRadius(node) + RING_WIDTH / 2;
         }
 
         function getNodeRadius() {
@@ -883,7 +983,7 @@
                 ${swatches}
                 <hr>
                 <div class="legend-item">
-                    <div class="legend-color" style="background: ${ringFill}; box-shadow: 0 0 0 2.5px ${ringStroke}"></div>
+                    <div class="legend-color" style="background: ${ringFill}; box-shadow: 0 0 0 ${RING_WIDTH}px ${ringStroke}"></div>
                     Blocked by an open PR
                 </div>
                 <div class="legend-item">
@@ -923,17 +1023,22 @@
             nodeSelection.filter(d => d.isSearchMatch || d.isFocused)
                 .append("circle")
                 .attr("class", "halo")
-                .attr("r", d => getNodeRadius(d) + 4)
+                .attr("r", d => getNodeRadius(d) + HALO_GAP)
                 .style("stroke", d => d.isFocused ? "var(--ink)" : "var(--ink-muted)")
                 .style("stroke-width", "3px")
                 .style("stroke-dasharray", d => d.isFocused ? null : "3 2");
 
+            nodeSelection.filter(hasBlockingDependency)
+                .append("circle")
+                .attr("class", "ring")
+                .attr("r", getRingRadius)
+                .style("stroke", getRingColor)
+                .style("stroke-width", RING_WIDTH);
+
             nodeSelection.append("circle")
                 .attr("class", "body")
                 .attr("r", getNodeRadius)
-                .style("fill", getNodeColor)
-                .style("stroke", getNodeStroke)
-                .style("stroke-width", getNodeStrokeWidth);
+                .style("fill", getNodeColor);
 
             nodeSelection.append("text")
                 .attr("class", "num")
@@ -942,8 +1047,8 @@
                 .text(d => d.id);
 
             nodeSelection
-                .on("mouseover", (event, d) => { highlightRelated(d); showTooltip(event, d); })
-                .on("mouseout", () => { clearHighlight(); hideTooltip(); })
+                .on("mouseenter", (event, d) => { highlightRelated(d); showTooltip(event, d); })
+                .on("mouseleave", () => { clearHighlight(); hideTooltip(); })
                 .on("click", (event, d) => {
                     event.stopPropagation();
                     if (!isCoarsePointerDevice()) {
@@ -1657,7 +1762,12 @@
             button.addEventListener("click", () => setFacetSelection(button.dataset.facet, button.dataset.action === "all"));
         });
 
+        document.getElementById("themeToggle").addEventListener("click", () => {
+            applyTheme(currentTheme() === "dark" ? "light" : "dark", true);
+        });
+
         loadFiltersFromURL();
+        applyTheme(storedTheme() === "dark" ? "dark" : "light", false);
         initializeSVG();
         loadData();
 
@@ -1679,14 +1789,6 @@
                 document.querySelectorAll("details.facet[open]").forEach(facet => { facet.open = false; });
                 closeTooltip();
             }
-        });
-
-        // The palette lives in CSS custom properties, so a theme change means re-reading it and
-        // repainting both the nodes and the legend.
-        window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-            readPalette();
-            renderLegend();
-            if (graphData) createVisualization(graphData);
         });
 
         window.addEventListener('resize', () => {

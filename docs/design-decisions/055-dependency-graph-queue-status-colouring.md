@@ -28,7 +28,9 @@
 ## Decision
 
 - **Fill encodes queue status; a ring encodes blockedness.** The node's fill comes from
-  `nodeCategory(node)`; a separate, darker ring marks `dependency_count > 0`. Two questions,
+  `nodeCategory(node)`; a separate ring *outside* the node, not a stroke on it, marks
+  `dependency_count > 0` — an inner stroke eats the fill it qualifies and can only contrast
+  with that fill (~2:1), where the same colour clears 10:1 against the page. Two questions,
   two channels, both readable at once.
 - **Buckets answer "who has the ball?", they do not mirror `PRStatus` one-for-one.** Nine hues
   are more than colour carries at a glance, and several `PRStatus` values differ only in ways
@@ -71,7 +73,16 @@
   bucket is named for what it means to a reader rather than after either function.
 - The palette lives in one table, `NODE_CATEGORIES`, whose entries name CSS custom properties.
   Nodes and legend both read it, so they cannot drift, and each token is redefined under
-  `prefers-color-scheme: dark`.
+  `:root[data-theme="dark"]`.
+- **Dark mode is opt-in, not driven by `prefers-color-scheme`.** The page first followed the OS
+  setting, which made it the only dark surface in the queueboard: a reader following the link
+  from `index.html` on a dark-mode machine watched the site invert under them. The dark palette
+  is kept, but reached through a toggle in the controls row and remembered in `localStorage`
+  under `queueboard-dependency-theme`; with nothing stored the page is light, like every other
+  page. A tiny script in `<head>` applies the stored choice before the first paint. This matches
+  the standing rule for the Django reviewer pages (`qb_site/console/AGENTS.md`: the shared style
+  system is "intentionally light-only"). When the frontend gains a dark mode generally, the
+  default should move back to the OS preference and the storage key should become site-wide.
 - The graph payload gains `pr_status`, `pr_status_ignoring_fork`, `ci_status`, `on_queue`,
   `awaiting_maintainer_merge`, `upstream_count`, `downstream_count`, and full
   `{name, color, url}` label objects. Both producers
