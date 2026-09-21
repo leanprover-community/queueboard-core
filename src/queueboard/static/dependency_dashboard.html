@@ -1031,9 +1031,15 @@
         }
 
         // The force layout resolves link endpoints to node objects in place; the columns layout
-        // keeps ids and carries the nodes alongside.
+        // keeps ids and carries the nodes alongside -- and falls back to the raw id, which is a
+        // number, when a link points at a node that was not rendered. Hence the coordinate
+        // check below rather than a truthiness test.
         function linkEndpointNodes(d) {
             return [d.sourceNode || d.source, d.targetNode || d.target];
+        }
+
+        function hasPosition(endpoint) {
+            return Boolean(endpoint) && typeof endpoint.x === "number" && typeof endpoint.y === "number";
         }
 
         function updateLinkPaths(linkSelection, scaleK) {
@@ -1041,7 +1047,9 @@
             const compensation = nodeCompensationFor(k);
             linkSelection.attr("d", d => {
                 const [source, target] = linkEndpointNodes(d);
-                if (!source || !target) return null;
+                // Draw nothing at all rather than a path full of "undefined", which is what a
+                // link to an unrendered node used to produce.
+                if (!hasPosition(source) || !hasPosition(target)) return null;
                 return linkPathFor(source, target, compensation, k);
             });
         }
@@ -1653,16 +1661,9 @@
                 availableNodes.forEach(node => connectedComponentNodes.add(node.id));
             }
 
-            const filteredNodes = data.nodes.filter(node =>
-                connectedComponentNodes.has(node.id)
-            ).map(node => ({
-                ...node,
-                isSearchMatch: isSeeded && !hasFocus && matchingNodes.has(node.id),
-                isFocused: hasFocus && node.id === focusId
-            }));
-
             // A ?focus= pointing at a PR this snapshot no longer contains (merged, closed)
             // would otherwise render a blank page; fall back to the unfiltered graph and say so.
+            // This has to happen before the node list is built from the set, not after it.
             const focusMissing = hasFocus && matchingNodes.size === 0;
             if (focusMissing) {
                 availableNodes.forEach(node => {
@@ -1671,6 +1672,14 @@
                     }
                 });
             }
+
+            const filteredNodes = data.nodes.filter(node =>
+                connectedComponentNodes.has(node.id)
+            ).map(node => ({
+                ...node,
+                isSearchMatch: isSeeded && !hasFocus && matchingNodes.has(node.id),
+                isFocused: hasFocus && node.id === focusId
+            }));
 
             const filteredLinks = data.links.filter(link => {
                 const sourceId = linkEndpointId(link.source);
