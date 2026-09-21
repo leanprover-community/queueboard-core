@@ -344,8 +344,72 @@
             overflow-y: auto;
         }
 
-        .legend h4 { margin: 0 0 8px 0; }
+        .legend h4 { margin: 0 0 8px 0; display: flex; align-items: baseline; gap: 8px; }
+
+        /* Sits over the count column, so the numbers cannot be read as snapshot-wide totals. */
+        .legend-scope {
+            margin-left: auto;
+            font-weight: 400;
+            font-size: 0.85em;
+            color: var(--ink-muted);
+        }
         .legend hr { border: none; border-top: 1px solid var(--rule); margin: 8px 0; }
+
+        /* The category rows are the status facet. They are buttons so they can be reached from
+           the keyboard and announce their state; nothing below the rule is interactive.
+
+           Only the *selected* rows are marked. The unselected ones are left alone rather than
+           greyed or struck through, because selecting a status does not remove the others from
+           the graph -- it picks the chains to show, and those chains are still full of the
+           other colours. */
+        .legend-toggle {
+            width: 100%;
+            border: none;
+            background: none;
+            font: inherit;
+            color: inherit;
+            text-align: left;
+            padding: 3px 4px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .legend-toggle:hover { background: var(--page-bg); }
+
+        .legend-toggle[aria-pressed="true"] {
+            background: var(--page-bg);
+            box-shadow: inset 0 0 0 1px var(--rule);
+            font-weight: 600;
+        }
+
+        /* A tick rather than colour alone, so the selection survives a monochrome screen. */
+        .legend-toggle[aria-pressed="true"] .legend-text::after {
+            content: " \2713";
+            color: var(--ink-muted);
+        }
+
+        .legend-count {
+            margin-left: auto;
+            padding-left: 8px;
+            color: var(--ink-muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .legend-showall {
+            display: block;
+            width: 100%;
+            margin-top: 6px;
+            padding: 3px 6px;
+            border: 1px solid var(--rule);
+            border-radius: 4px;
+            background: var(--control-bg);
+            color: var(--ink);
+            font: inherit;
+            font-size: 0.92em;
+            cursor: pointer;
+        }
+
+        .legend-hint { margin-top: 6px; font-size: 0.92em; }
 
         .zoom-controls {
             position: absolute;
@@ -390,6 +454,7 @@
             height: 14px;
             border-radius: 50%;
             flex: none;
+            background: var(--swatch, transparent);
         }
 
         .legend-note { color: var(--ink-muted); line-height: 1.4; }
@@ -502,7 +567,22 @@
         let zoom = null;
         let lastTappedNodeId = null;
         let lastTapTs = 0;
-        let currentFilter = { search: '', showSingletons: false, layout: 'columns', labels: null, authors: null, focus: null };
+        // |statuses| is a facet like |labels| and |authors|, and works the same way: null means
+        // no restriction, and a non-empty set shows every component containing at least one PR
+        // in one of those buckets. It is deliberately *not* a switch that hides PRs. In this
+        // graph, "Blocked" occurs in 208 of 209 components -- being in a chain is close to what
+        // makes a PR blocked -- so dropping components that contain a bucket wipes the graph for
+        // the one bucket a reader would most want gone, and dropping components made *entirely*
+        // of a bucket moves 3 components at most. The direction that carries information is the
+        // positive one: "which chains have something reviewable in them" picks out 90 of the 209.
+        let currentFilter = {
+            search: '', showSingletons: false, layout: 'columns',
+            labels: null, authors: null, focus: null, statuses: null,
+        };
+
+        // The per-bucket totals behind the legend's counts, from the last filter pass. Kept so a
+        // theme switch can repaint the legend without recounting.
+        let lastCategoryCounts = null;
 
         // Per-render lookup tables for the hover highlight and for tooltip placement, rebuilt by
         // createVisualization.
@@ -1226,18 +1306,42 @@
             return 8;
         }
 
-        function renderLegend() {
+        // The legend doubles as the status facet. A selected row is marked; the unselected rows
+        // are left plain rather than struck through, because their PRs have not gone anywhere --
+        // selecting "On the review queue" shows the chains that contain one, blockers and all.
+        // The count beside each row is how many of the PRs now on screen are in that bucket, so
+        // after selecting you can read what the chains you asked for are actually made of.
+        function renderLegend(counts) {
+            if (counts) lastCategoryCounts = counts;
+            const shown = counts || lastCategoryCounts;
             const legend = document.getElementById("legend");
+            const selected = currentFilter.statuses;
+
             const swatches = NODE_CATEGORIES.map(entry => {
                 const fill = (palette.get(entry.key) || {}).fill;
-                return `<div class="legend-item" title="${escapeHtml(entry.detail)}">`
-                    + `<div class="legend-color" style="background: ${fill}"></div>${escapeHtml(entry.label)}</div>`;
+                const isSelected = selected !== null && selected.has(entry.key);
+                const count = shown ? shown.get(entry.key) || 0 : null;
+                const countText = count === null ? "" : `<span class="legend-count">${count}</span>`;
+                const title = isSelected && selected.size === 1
+                    ? `${entry.detail}. Click to go back to every chain.`
+                    : `${entry.detail}. Click to show only the chains containing one; shift-click to add it.`;
+                return `<button type="button" class="legend-item legend-toggle" data-key="${entry.key}"`
+                    + ` aria-pressed="${isSelected ? "true" : "false"}" title="${escapeHtml(title)}">`
+                    + `<span class="legend-color" style="--swatch: ${fill}"></span>`
+                    + `<span class="legend-text">${escapeHtml(entry.label)}</span>${countText}</button>`;
             }).join("");
+
+            const showAll = statusIsRestricting()
+                ? `<button type="button" class="legend-showall" id="legendShowAll">Show every chain</button>`
+                : `<div class="legend-note legend-hint">Click a status to show only the chains containing one</div>`;
+
             const ringFill = (palette.get("blocked") || {}).fill;
             const ringStroke = (palette.get("blocked") || {}).ring;
+            const scopeNote = shown ? `<span class="legend-scope">PRs shown</span>` : "";
             legend.innerHTML = `
-                <h4>Legend</h4>
+                <h4>Legend${scopeNote}</h4>
                 ${swatches}
+                ${showAll}
                 <hr>
                 <div class="legend-item">
                     <div class="legend-color" style="background: ${ringFill}; box-shadow: 0 0 0 ${RING_WIDTH}px ${ringStroke}"></div>
@@ -1251,6 +1355,54 @@
                     <div style="width: 12px; height: 2px; background: var(--edge); flex: none;"></div>
                     <span class="legend-note">A &rarr; B: A depends on B, so B merges first</span>
                 </div>`;
+
+            legend.querySelectorAll(".legend-toggle").forEach(button => {
+                button.addEventListener("click", event => selectStatus(button.dataset.key, event));
+            });
+            const showAllButton = document.getElementById("legendShowAll");
+            if (showAllButton) showAllButton.addEventListener("click", showAllStatuses);
+        }
+
+        // A plain click picks one bucket, rather than removing one. With six buckets, removing
+        // one leaves a component out only when every PR in it is in that bucket, which happens
+        // to 3 components out of 209 -- five clicks in six would look like nothing happened.
+        // Picking one is also how the label dropdown is really used.
+        function selectStatus(key, event) {
+            if (!CATEGORY_BY_KEY.has(key)) return;
+            const selected = currentFilter.statuses;
+            const adding = Boolean(event && (event.shiftKey || event.metaKey || event.ctrlKey));
+
+            if (selected === null) {
+                // Nothing to add to yet, so shift behaves like a plain click.
+                currentFilter.statuses = new Set([key]);
+            } else if (!selected.has(key)) {
+                currentFilter.statuses = adding ? new Set([...selected, key]) : new Set([key]);
+            } else if (!adding && selected.size > 1) {
+                currentFilter.statuses = new Set([key]);
+            } else {
+                const rest = new Set([...selected].filter(value => value !== key));
+                // Deselecting the last one means "no restriction", not "match nothing".
+                currentFilter.statuses = rest.size > 0 ? rest : null;
+            }
+
+            const fromKeyboard = document.activeElement && document.activeElement.classList.contains("legend-toggle");
+            if (graphData) applyFilters(); else renderLegend();
+            // The legend is rebuilt wholesale, so a keyboard user would otherwise be dropped
+            // back to the top of the document on every click.
+            if (fromKeyboard) restoreLegendFocus(`.legend-toggle[data-key="${key}"]`);
+        }
+
+        function showAllStatuses() {
+            const fromKeyboard = document.activeElement && document.activeElement.id === "legendShowAll";
+            currentFilter.statuses = null;
+            if (graphData) applyFilters(); else renderLegend();
+            // The button itself is gone once nothing is selected; the first status takes its place.
+            if (fromKeyboard) restoreLegendFocus(".legend-toggle");
+        }
+
+        function restoreLegendFocus(selector) {
+            const target = document.querySelector(selector);
+            if (target) target.focus();
         }
 
         function createNodeAndLinkElements(filteredNodes, cleanLinks, draggable) {
@@ -1544,6 +1696,9 @@
             g = svg.append("g");
 
             const filteredData = filterData(data);
+            // Before the layout: fitGraphToViewport reserves room by measuring the legend, and
+            // the counts change its width.
+            renderLegend(filteredData.categoryCounts);
 
             // Ensure clean link data with ID references
             const cleanLinks = filteredData.links.map(link => ({
@@ -1601,16 +1756,30 @@
             return selected !== null && selected.size > 0;
         }
 
+        function statusIsRestricting() {
+            return currentFilter.statuses !== null && currentFilter.statuses.size > 0;
+        }
+
+        function statusSelects(node) {
+            if (!statusIsRestricting()) return true;
+            return currentFilter.statuses.has(nodeCategory(node));
+        }
+
         function filterData(data) {
             let matchingNodes = new Set();
             let connectedComponentNodes = new Set();
 
             const searchTerm = (currentFilter.search || "").trim().toLowerCase();
             const hasSearchTerm = searchTerm.length > 0;
-            const hasFacet = facetIsRestricting("labels") || facetIsRestricting("authors");
+            // The status facet seeds components like the others, but does not mark its matches:
+            // a node's fill already says which bucket it is in, so a halo on top of it would
+            // repeat what the colour says. Labels and authors are not visible on the graph, so
+            // for those the halo is the only way to see why a component is on screen.
+            const hasMarkingFacet = facetIsRestricting("labels") || facetIsRestricting("authors");
+            const hasStatusFacet = statusIsRestricting();
             const focusId = currentFilter.focus;
             const hasFocus = focusId !== null;
-            const isSeeded = hasSearchTerm || hasFacet || hasFocus;
+            const isSeeded = hasSearchTerm || hasMarkingFacet || hasStatusFacet || hasFocus;
 
             let availableNodes;
             if (currentFilter.showSingletons || hasFocus) {
@@ -1633,6 +1802,7 @@
                 const names = labelNames(node);
                 if (!facetSelects("labels", names)) return;
                 if (!facetSelects("authors", [node.author || "unknown"])) return;
+                if (!statusSelects(node)) return;
 
                 if (hasSearchTerm) {
                     const searchableText = [
@@ -1677,9 +1847,17 @@
                 connectedComponentNodes.has(node.id)
             ).map(node => ({
                 ...node,
-                isSearchMatch: isSeeded && !hasFocus && matchingNodes.has(node.id),
+                isSearchMatch: (hasSearchTerm || hasMarkingFacet) && !hasFocus && matchingNodes.has(node.id),
                 isFocused: hasFocus && node.id === focusId
             }));
+
+            // Counted over everything the other filters let through, so the legend keeps
+            // reporting what a hidden bucket would bring back.
+            const categoryCounts = new Map(NODE_CATEGORIES.map(entry => [entry.key, 0]));
+            filteredNodes.forEach(node => {
+                const key = nodeCategory(node);
+                categoryCounts.set(key, (categoryCounts.get(key) || 0) + 1);
+            });
 
             const filteredLinks = data.links.filter(link => {
                 const sourceId = linkEndpointId(link.source);
@@ -1687,13 +1865,23 @@
                 return connectedComponentNodes.has(sourceId) && connectedComponentNodes.has(targetId);
             });
 
-            return { nodes: filteredNodes, links: filteredLinks, focusMissing };
+            return { nodes: filteredNodes, links: filteredLinks, focusMissing, categoryCounts };
+        }
+
+        // Two clauses, each saying what it is counting: the snapshot as a whole, then the view.
+        // The view's composition is left to the legend, which breaks it down by bucket for
+        // exactly these PRs. It used to be summarised here as "N on the queue" as well, counting
+        // raw queue membership, which disagreed with the legend's "On the review queue" row --
+        // that bucket excludes the handful of queued PRs already labelled maintainer-merge (5 of
+        // 122 in a recent snapshot). Two numbers under one name, differing by a rule the reader
+        // cannot see, so the duplicate is gone rather than annotated.
+        function plural(count, singular, plural_) {
+            return `${count} ${count === 1 ? singular : plural_}`;
         }
 
         function updateFilteredStats(metadata, filteredData) {
             const onQueue = metadata.prs_on_queue;
-            const queuePart = typeof onQueue === "number" ? ` | On the review queue: ${onQueue}` : "";
-            const shownOnQueue = filteredData.nodes.filter(node => node.on_queue).length;
+            const queuePart = typeof onQueue === "number" ? `, ${onQueue} on the review queue` : "";
             let focusPart = "";
             if (currentFilter.focus !== null) {
                 focusPart = filteredData.focusMissing
@@ -1701,12 +1889,21 @@
                     : ` | Focused on PR #${currentFilter.focus}`;
             }
 
+            let statusPart = "";
+            if (statusIsRestricting()) {
+                // Named exactly as the legend names them, since that is what was clicked.
+                const chosen = NODE_CATEGORIES
+                    .filter(entry => currentFilter.statuses.has(entry.key))
+                    .map(entry => `<b>${escapeHtml(entry.label)}</b>`);
+                statusPart = ` | Chains containing a PR marked ${chosen.join(" or ")}`;
+            }
+
             document.getElementById("stats").innerHTML = `
-                Total PRs: ${metadata.total_prs} |
-                PRs with dependencies: ${metadata.prs_with_dependencies} |
-                PRs that are dependencies: ${metadata.prs_that_are_dependencies} |
-                Dependency links: ${metadata.dependency_links}${queuePart} |
-                Showing: ${filteredData.nodes.length} PRs, ${filteredData.links.length} dependencies, ${shownOnQueue} on the queue${focusPart}
+                In this snapshot: ${metadata.total_prs} PRs,
+                ${metadata.prs_with_dependencies} with dependencies,
+                ${metadata.prs_that_are_dependencies} that others depend on,
+                ${metadata.dependency_links} dependency links${queuePart} |
+                Showing: ${plural(filteredData.nodes.length, "PR", "PRs")}, ${plural(filteredData.links.length, "dependency", "dependencies")}${statusPart}${focusPart}
             `;
         }
 
@@ -1939,6 +2136,12 @@
             setOrDelete('labels', encodeFacet("labels"));
             setOrDelete('authors', encodeFacet("authors"));
             setOrDelete('focus', currentFilter.focus !== null ? String(currentFilter.focus) : '');
+            // The selected buckets, in the table's own order so the link is stable. Same
+            // convention as ?labels= and ?authors=: what is listed is what is being asked for.
+            const statusKeys = statusIsRestricting()
+                ? NODE_CATEGORIES.filter(entry => currentFilter.statuses.has(entry.key)).map(entry => entry.key)
+                : [];
+            setOrDelete('status', statusKeys.join(','));
 
             window.history.replaceState({}, '', url);
         }
@@ -1950,6 +2153,7 @@
             currentFilter.labels = null;
             currentFilter.authors = null;
             currentFilter.focus = null;
+            currentFilter.statuses = null;
             syncFacetCheckboxes();
             updateFacetSummaries();
             updateFilters(true);
@@ -1990,6 +2194,13 @@
                     if (values.length > 0) currentFilter[kind] = new Set(values);
                 }
             });
+
+            const statusParam = url.searchParams.get("status");
+            if (statusParam) {
+                const keys = statusParam.split(',').map(value => value.trim()).filter(value => CATEGORY_BY_KEY.has(value));
+                // An unrecognised bucket name leaves no restriction rather than an empty graph.
+                if (keys.length > 0) currentFilter.statuses = new Set(keys);
+            }
 
             // ?focus=<number> is how the queueboard's "unblocks" column links into this page:
             // show just that PR's connected component, with the PR itself ringed.

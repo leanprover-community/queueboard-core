@@ -31,6 +31,13 @@ step; editing the file is the whole change. Conventions it is easy to break:
   and let the stylesheet substitute it; that is what `--link-width` / `--link-width-strong` do
   for `.link` and `.link.incident`. Do the arithmetic in JS rather than a CSS `calc()`, so the
   stylesheet only ever substitutes a plain value.
+- **The legend is the status facet, and it picks whole chains rather than hiding PRs.** A
+  selected bucket seeds components exactly as `labels`/`authors` do, so selecting "On the review
+  queue" still shows the blocked PRs in those chains — which is why only the *selected* rows are
+  marked and the others are left alone. Clicking selects instead of removing because removing
+  one of six buckets changes 3 components out of 209; the measurements are in
+  `docs/design-decisions/056-dependency-graph-status-facet.md`. A new bucket in
+  `NODE_CATEGORIES` gets a row, a count and a URL key for free.
 - **A link stops short of its target node; the arrowhead is not pulled back by `refX`.** `refX`
   is measured in stroke widths, so anything positioned with it moves when the line thickens --
   the emphasised link is 2.2x thicker and its head used to retreat 2.2x further, reading as the
