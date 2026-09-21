@@ -31,6 +31,10 @@ step; editing the file is the whole change. Four conventions it is easy to break
   and let the stylesheet substitute it; that is what `--link-width` / `--link-width-strong` do
   for `.link` and `.link.incident`. Do the arithmetic in JS rather than a CSS `calc()`, so the
   stylesheet only ever substitutes a plain value.
+- **The tooltip is placed around the highlight, not just around the cursor**: `positionTooltip`
+  scores candidate rectangles against the hovered PR's whole component plus the fixed overlays,
+  preferring one that covers nothing and, among those, the nearest. A new pinned panel has to be
+  registered in `overlayScreenBoxes()` or the tooltip will happily sit on it.
 - **An outline on a node means "blocked by an open PR" and nothing else.** Other node-level
   states need a different channel, or they read as a variant of that one — which is why the
   hover emphasis marks the incident *edges* rather than the neighbouring nodes.

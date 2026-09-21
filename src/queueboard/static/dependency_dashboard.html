@@ -503,8 +503,11 @@
         let lastTapTs = 0;
         let currentFilter = { search: '', showSingletons: false, layout: 'columns', labels: null, authors: null, focus: null };
 
-        // Per-render lookup table for the hover highlight, rebuilt by createVisualization.
+        // Per-render lookup tables for the hover highlight and for tooltip placement, rebuilt by
+        // createVisualization.
         let componentOfNode = new Map();
+        let componentMembers = [];
+        let nodesById = new Map();
         let allLabelNames = [];
         let allAuthorNames = [];
 
@@ -732,6 +735,61 @@
             return `<div class="labels">${chips}</div>`;
         }
 
+        // The page-space boxes of the marks the hover is picking out: the hovered PR's whole
+        // component, which is what stays lit while everything else dims. Nodes live in SVG user
+        // space, so the zoom transform, the node inflation and the svg's own page offset all have
+        // to be applied to get somewhere a tooltip rectangle can be compared against.
+        function highlightedScreenBoxes(d) {
+            const svgElement = document.getElementById("graph");
+            if (!svgElement || !g) return [];
+
+            const members = componentMembers[componentOfNode.get(d.id)];
+            if (!members) return [];
+
+            const rect = svgElement.getBoundingClientRect();
+            const originX = rect.left + window.scrollX;
+            const originY = rect.top + window.scrollY;
+            const transform = d3.zoomTransform(svgElement);
+            const compensation = nodeCompensationFor(transform.k);
+            // The PR number sits above the node once it is showing, and is part of the mark.
+            const labelHeight = transform.k >= LABEL_ZOOM_THRESHOLD ? LABEL_FONT_PX + LABEL_GAP_PX : 0;
+
+            const boxes = [];
+            for (const id of members) {
+                const node = nodesById.get(id);
+                if (!node || typeof node.x !== "number" || typeof node.y !== "number") continue;
+                const [x, y] = transform.apply([node.x, node.y]);
+                const radius = getRingRadius(node) * compensation * transform.k;
+                boxes.push({
+                    left: originX + x - radius,
+                    right: originX + x + radius,
+                    top: originY + y - radius - labelHeight,
+                    bottom: originY + y + radius,
+                });
+            }
+            return boxes;
+        }
+
+        // The page furniture the tooltip should also stay off. Both sit in corners, which is
+        // exactly where the placement search falls back to when a component leaves no room beside
+        // the cursor -- and the legend in particular explains the colours being read.
+        function overlayScreenBoxes() {
+            const boxes = [];
+            for (const selector of [".legend", ".zoom-controls"]) {
+                const element = document.querySelector(selector);
+                if (!element) continue;
+                const rect = element.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                boxes.push({
+                    left: rect.left + window.scrollX,
+                    right: rect.right + window.scrollX,
+                    top: rect.top + window.scrollY,
+                    bottom: rect.bottom + window.scrollY,
+                });
+            }
+            return boxes;
+        }
+
         function positionTooltip(event, d) {
             const tooltip = document.getElementById("tooltip");
             let anchorX;
@@ -766,22 +824,66 @@
                 return xOverlap * yOverlap;
             }
 
-            const anchorBox = {
+            const avoid = highlightedScreenBoxes(d).concat(overlayScreenBoxes());
+            // Kept separate from the highlight, and scored separately: `gap` is smaller than
+            // `exclusion`, so every placement beside the cursor clips this box a little. Counted
+            // alongside the nodes it would make "far from the cursor" always win.
+            const cursorBox = {
                 left: anchorX - exclusion,
                 right: anchorX + exclusion,
                 top: anchorY - exclusion,
                 bottom: anchorY + exclusion,
             };
 
-            const candidates = [
-                { left: anchorX + gap, top: anchorY - tooltipHeight / 2 }, // right
-                { left: anchorX - tooltipWidth - gap, top: anchorY - tooltipHeight / 2 }, // left
-                { left: anchorX - tooltipWidth / 2, top: anchorY + gap }, // below
-                { left: anchorX - tooltipWidth / 2, top: anchorY - tooltipHeight - gap }, // above
-            ];
+            // Each side of the cursor, tried centred first and then slid along that side, so a
+            // component running past the cursor can often still be cleared nearby. The viewport
+            // corners come last: far from the cursor, which reads worse, but a tooltip sitting on
+            // the very nodes the highlight is pointing at is worse still.
+            const alignments = [-0.5, 0, -1, 0.5, -1.5];
+            const candidates = [];
+            for (const along of alignments) {
+                candidates.push({ left: anchorX + gap, top: anchorY + along * tooltipHeight });
+            }
+            for (const along of alignments) {
+                candidates.push({ left: anchorX - tooltipWidth - gap, top: anchorY + along * tooltipHeight });
+            }
+            for (const along of alignments) {
+                candidates.push({ left: anchorX + along * tooltipWidth, top: anchorY + gap });
+            }
+            for (const along of alignments) {
+                candidates.push({ left: anchorX + along * tooltipWidth, top: anchorY - tooltipHeight - gap });
+            }
+            for (const [atRight, atBottom] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+                candidates.push({
+                    left: atRight ? viewportRight - tooltipWidth - margin : viewportLeft + margin,
+                    top: atBottom ? viewportBottom - tooltipHeight - margin : viewportTop + margin,
+                });
+            }
+
+            // Ranked on three keys in order: how many things it would cover, then how much of the
+            // cursor it would sit on, then how far it strays from the cursor. So a placement that
+            // covers nothing always beats one that covers something, and among those that cover
+            // nothing the nearest wins -- the corners only come into play when the component
+            // leaves no room beside the cursor at all.
+            function scoreOf(rect) {
+                let covered = 0;
+                for (const box of avoid) {
+                    if (overlapArea(rect, box) > 0) covered += 1;
+                }
+                const centreX = (rect.left + rect.right) / 2;
+                const centreY = (rect.top + rect.bottom) / 2;
+                return [covered, overlapArea(rect, cursorBox), Math.hypot(centreX - anchorX, centreY - anchorY)];
+            }
+
+            function isBetter(a, b) {
+                for (let i = 0; i < a.length; i += 1) {
+                    if (a[i] !== b[i]) return a[i] < b[i];
+                }
+                return false;
+            }
 
             let best = null;
-            let bestOverlap = Number.POSITIVE_INFINITY;
+            let bestScore = null;
 
             for (const candidate of candidates) {
                 const left = clamp(candidate.left, viewportLeft + margin, viewportRight - tooltipWidth - margin);
@@ -792,15 +894,10 @@
                     right: left + tooltipWidth,
                     bottom: top + tooltipHeight,
                 };
-                const overlap = overlapArea(rect, anchorBox);
+                const score = scoreOf(rect);
 
-                if (overlap === 0) {
-                    best = { left, top };
-                    break;
-                }
-
-                if (overlap < bestOverlap) {
-                    bestOverlap = overlap;
+                if (bestScore === null || isBetter(score, bestScore)) {
+                    bestScore = score;
                     best = { left, top };
                 }
             }
@@ -829,6 +926,13 @@
                 .style("fill", "var(--edge)");
         }
 
+        // Nodes are drawn larger than life when zoomed out so they stay visible, capped to avoid
+        // heavy overlap. Anything reasoning about a node's size on screen has to apply the same
+        // inflation, so it lives here rather than inline in applyZoomAwareStyling.
+        function nodeCompensationFor(scaleK) {
+            return Math.min(1.9, Math.max(1, 0.55 / Math.max(scaleK, 0.0001)));
+        }
+
         function initializeSVG() {
             zoom = d3.zoom()
                 .scaleExtent([0.05, 10])
@@ -850,8 +954,7 @@
             if (!g) return;
             const k = Math.max(scaleK, 0.0001);
 
-            // Keep nodes readable when zoomed out, but cap inflation to avoid heavy overlap.
-            const nodeCompensation = Math.min(1.9, Math.max(1, 0.55 / k));
+            const nodeCompensation = nodeCompensationFor(k);
             const linkCompensation = Math.min(2.2, Math.max(1, 0.5 / k));
 
             g.selectAll("circle.body")
@@ -1319,11 +1422,13 @@
                 target_state: link.target_state
             }));
 
-            // Lookup table for the hover highlight, over the *rendered* graph.
+            // Lookup tables for the hover highlight, over the *rendered* graph.
             componentOfNode = new Map();
-            connectedComponents(filteredData.nodes, cleanLinks).forEach((ids, index) => {
+            componentMembers = connectedComponents(filteredData.nodes, cleanLinks);
+            componentMembers.forEach((ids, index) => {
                 ids.forEach(id => componentOfNode.set(id, index));
             });
+            nodesById = new Map(filteredData.nodes.map(node => [node.id, node]));
 
             svg.attr("width", graphWidth).attr("height", graphHeight);
             if (currentFilter.layout === "force") {
