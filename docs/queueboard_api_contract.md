@@ -121,7 +121,7 @@ Notes:
 - A link points from the dependent PR to the PR it depends on: `source` must wait for `target`.
 - `dependency_count` / `dependent_count` are *direct* edges; `upstream_count` /
   `downstream_count` follow the chains (shared implementation:
-  `queueboard.util.transitive_dependency_counts`, also used by the queueboard's "unblocks"
+  `queueboard.util.transitive_dependency_counts`, also used by the queueboard's "blocks"
   column, so the two surfaces always report the same number). Dependency cycles are tolerated
   and a PR never counts itself.
 - `on_queue` comes from `snapshot.lists.dashboards.Queue`, *not* from `pr_status`: queue

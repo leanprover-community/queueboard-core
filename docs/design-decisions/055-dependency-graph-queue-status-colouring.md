@@ -111,13 +111,13 @@
   would become redundant rather than wrong.
 - Transitive counts are computed per graph build. `transitive_dependency_counts`
   (`src/queueboard/util.py`) is BFS-per-node, which is fine at mathlib's scale (~2k PRs, <1k
-  edges) and is shared with the queueboard's "unblocks" column so the two always agree.
+  edges) and is shared with the queueboard's "blocks" column so the two always agree.
 
 ## Operational Notes
 
 - No migration and no new setting.
 - `dependency_dashboard.html?focus=<pr>` renders one PR's connected component; the queueboard's
-  "unblocks" column links to it. A `focus` that is not in the snapshot falls back to the full
+  "blocks" column links to it. A `focus` that is not in the snapshot falls back to the full
   graph and says so in the stats line, rather than rendering blank.
 
 ## Alternatives

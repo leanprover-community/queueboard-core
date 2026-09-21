@@ -132,8 +132,8 @@ class DependencyGraphBuilderTests(TestCase):
         self.assertEqual(metadata["dependency_links"], 1)
 
     def test_transitive_counts_follow_a_chain(self):
-        # 3 depends on 2 depends on 1: merging 1 unblocks two PRs, which is what the
-        # queueboard's "unblocks" column and the graph tooltip both report.
+        # 3 depends on 2 depends on 1: 1 blocks two PRs, which is what the
+        # queueboard's "blocks" column and the graph tooltip both report.
         pr1 = self._make_pr(1)
         pr2 = self._make_pr(2)
         pr3 = self._make_pr(3)

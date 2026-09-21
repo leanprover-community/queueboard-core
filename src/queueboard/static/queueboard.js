@@ -75,7 +75,7 @@ if (STANDARD) {
         return 12 + offset;
       case "totalTimeReview":
         return 13 + offset;
-      case "unblocks":
+      case "blocks":
         return 14 + offset;
       default:
         return aliasOrIdx;
@@ -114,9 +114,9 @@ if (STANDARD) {
       case 13:
         if (show_approvals) { return "lastStatusChange"; } else { return "totalTimeReview"; }
       case 14:
-        if (show_approvals) { return "totalTimeReview"; } else { return "unblocks"; }
+        if (show_approvals) { return "totalTimeReview"; } else { return "blocks"; }
       case 15:
-        if (show_approvals) { return "unblocks"; } else { return idx; }
+        if (show_approvals) { return "blocks"; } else { return idx; }
       default:
         return idx;
     };
