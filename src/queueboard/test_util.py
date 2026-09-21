@@ -12,7 +12,7 @@ from queueboard.util import DependencyCounts, transitive_dependency_counts
 
 
 def _test_chain() -> None:
-    # 3 depends on 2 depends on 1: merging 1 unblocks both others.
+    # 3 depends on 2 depends on 1: 1 blocks both others.
     counts = transitive_dependency_counts({1: [], 2: [1], 3: [2]})
     assert counts[1] == DependencyCounts(upstream=0, downstream=2), counts[1]
     assert counts[2] == DependencyCounts(upstream=1, downstream=1), counts[2]

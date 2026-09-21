@@ -127,7 +127,7 @@ class DependencyCounts(NamedTuple):
     upstream: int
     """Number of distinct PRs this one (transitively) depends on: they must all land first."""
     downstream: int
-    """Number of distinct PRs which (transitively) depend on this one: merging it unblocks them."""
+    """Number of distinct PRs which (transitively) depend on this one: it blocks them all."""
 
 
 def transitive_dependency_counts(direct: dict[int, List[int]]) -> dict[int, DependencyCounts]:

@@ -2031,7 +2031,7 @@
 
             const downstream = d.downstream_count;
             const upstream = d.upstream_count;
-            const unblocksText = typeof downstream === "number"
+            const blocksText = typeof downstream === "number"
                 ? `${downstream} PR${downstream === 1 ? "" : "s"} (${d.dependent_count} directly)`
                 : `${d.dependent_count} directly`;
             const blockedText = typeof upstream === "number"
@@ -2059,7 +2059,7 @@
                 ${queueNote}
                 ${ciText}
                 <div class="pr-meta">Diff: ${diffText}</div>
-                <div class="pr-meta">Unblocks: <b>${unblocksText}</b></div>
+                <div class="pr-meta">Blocks: <b>${blocksText}</b></div>
                 <div class="pr-meta">Blocked by: <b>${blockedText}</b></div>
                 ${renderLabelChips(d, searchTerm)}
                 ${matchText}
@@ -2304,7 +2304,7 @@
                 if (keys.length > 0) currentFilter.statuses = new Set(keys);
             }
 
-            // ?focus=<number> is how the queueboard's "unblocks" column links into this page:
+            // ?focus=<number> is how the queueboard's "blocks" column links into this page:
             // show just that PR's connected component, with the PR itself ringed.
             if (focusParam && /^\d+$/.test(focusParam)) {
                 currentFilter.focus = Number.parseInt(focusParam, 10);

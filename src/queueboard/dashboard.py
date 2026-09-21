@@ -48,7 +48,7 @@ class DependencyColumnInfo(NamedTuple):
 
 
 # Dependency counts per PR number, computed once in main() from the aggregate data. Held
-# module-level (like QUEUE_DATA_STATUS above) so the "unblocks" column does not have to be
+# module-level (like QUEUE_DATA_STATUS above) so the "blocks" column does not have to be
 # threaded through every write_dashboard call site.
 DEPENDENCY_COUNTS: dict[int, DependencyColumnInfo] = {}
 
@@ -207,24 +207,26 @@ def _pr_plural(count: int) -> str:
     return "1 PR" if count == 1 else f"{count} PRs"
 
 
-# The "unblocks" column: how many PRs are (transitively) waiting on this one, linking to this
-# PR's neighbourhood in the dependency graph. PRs in no dependency relation at all get a bare
-# "0", so the column stays quiet for the majority of PRs. The cell text is the number alone
-# (the link icon lives in the column header), so DataTables still detects the column as numeric
-# and sorting by it answers "which reviews unblock the most work?".
+# The "blocks" column: how many PRs are (transitively) waiting on this one, linking to this
+# PR's neighbourhood in the dependency graph. Deliberately *not* called "unblocks": merging this
+# PR is necessary for the ones downstream of it, but not always sufficient, as they may be
+# waiting on further PRs too. PRs in no dependency relation at all get a bare "0", so the column
+# stays quiet for the majority of PRs. The cell text is the number alone (the link icon lives in
+# the column header), so DataTables still detects the column as numeric and sorting by it
+# answers "which reviews stand in front of the most work?".
 def dependency_link(pr_number: int) -> str:
     counts = DEPENDENCY_COUNTS.get(pr_number)
     if counts is None or (counts.upstream == 0 and counts.downstream == 0):
         return "0"
     if counts.downstream == 0:
-        unblocks = "unblocks nothing"
+        blocks = "blocks no PR"
     else:
-        unblocks = f"unblocks {_pr_plural(counts.downstream)} ({counts.direct_downstream} directly)"
+        blocks = f"blocks {_pr_plural(counts.downstream)} ({counts.direct_downstream} directly)"
     if counts.upstream == 0:
         blocked = "not blocked by any PR"
     else:
         blocked = f"blocked by {_pr_plural(counts.upstream)} ({counts.direct_upstream} directly)"
-    title = f"{unblocks}; {blocked}. Click to see this PR in the dependency graph."
+    title = f"{blocks}; {blocked}. Click to see this PR in the dependency graph."
     return f"<a href='dependency_dashboard.html?focus={pr_number}' title='{title}'>{counts.downstream}</a>"
 
 
@@ -498,8 +500,9 @@ def write_dashboard(
         )
         headings.append("total time in review")
         headings.append(
-            '<a title="how many PRs are waiting on this one, directly or transitively; '
-            'click a number to see that PR in the dependency graph">unblocks</a>'
+            '<a title="how many PRs this one blocks, directly or transitively: merging it is necessary '
+            "for them, but not always enough, as they may be waiting on further PRs too. "
+            'Click a number to see that PR in the dependency graph.">blocks</a>'
         )
         head = _write_table_header(headings, "    ")
         body = _compute_pr_entries(
@@ -812,7 +815,7 @@ TIPS_AND_TRICKS = f"""  <h2 id="tips-and-tricks"><a href="#tips-and-tricks">Tips
   <details><summary>Reference-level explanation of search syntax</summary>
   The <code>search</code> parameter filters all tables on a page by default.
   The <code>sort</code> parameter changes the initial sorting of all dashboards; if the parameter is given several times, this configures a multi-column sort (sorting by the first parameter first). A valid value is of the form <code>idxOrAlias-direction</code>, where <code>direction</code> is either <code>asc</code> or <code>desc</code> (for ascending or descending order), and <code>idxOrAlias</code> describes the column to sort.
-  All columns have human-readable names: these are <code>number</code>, <code>author</code>, <code>title</code>, <code>labels</code>, <code>diff</code>, <code>numberChangedFiles</code>, <code>numberComments</code>, <code>assignee</code>, <code>approvals</code>, <code>lastUpdate</code>, <code>lastStatusChange</code>, <code>totalTimeReview</code> and <code>unblocks</code>, respectively &mdash; mapping to the obvious column.
+  All columns have human-readable names: these are <code>number</code>, <code>author</code>, <code>title</code>, <code>labels</code>, <code>diff</code>, <code>numberChangedFiles</code>, <code>numberComments</code>, <code>assignee</code>, <code>approvals</code>, <code>lastUpdate</code>, <code>lastStatusChange</code>, <code>totalTimeReview</code> and <code>blocks</code>, respectively &mdash; mapping to the obvious column.
   Alternatively (deprecated), you can pass in the (0-based) index of the column you want to sort. (You have to account for hidden columns, and there are no stability guarantees. This option is only kept for backwards compatibility.)
   </details>
   </li>
