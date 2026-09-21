@@ -2,12 +2,15 @@
 # that are consumed by dashboard.py to create the frontend.
 
 import json
+from datetime import datetime, timezone
 from os import path, makedirs
 import sys
 from random import shuffle
 from typing import List, NamedTuple, Dict
 from queueboard.ci_status import CIStatus
+from queueboard.classify_pr_state import PRStatus, determine_PR_status_ignoring_fork
 from queueboard.mathlib_dashboards import Dashboard
+from queueboard.util import transitive_dependency_counts
 from queueboard.compute_dashboard_prs import (
     AggregatePRInfo,
     BasicPRInformation,
@@ -64,10 +67,27 @@ def read_json_files() -> JSONInputData:
 # TODO: this code is AI-generated and has not been fully reviewed yet.
 # TODO: move this analysis to process.py, and run it at data aggregation time?
 # Or will this become too slow, and it is better to only do so for all open PRs?
-def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dict:
+#
+# NB. The node and link shape produced here must match the one the Django analyzer produces in
+# `analyzer/services/dependency_graph.py`: both feed the same `dependency_dashboard.html`.
+def generate_dependency_graph(
+    aggregate_info: Dict[int, AggregatePRInfo],
+    all_pr_status: Dict[int, PRStatus],
+    prs_to_list: Dict[Dashboard, List[BasicPRInformation]],
+) -> Dict:
     """Generate dependency graph data in D3.js compatible format from aggregate PR information."""
     nodes = []
     links = []
+
+    # Which PRs are actually on the review queue. This is deliberately not
+    # "pr_status == AwaitingReview": queue membership also requires the right base branch,
+    # passing CI and no disqualifying labels, so the two can legitimately disagree.
+    on_queue = {pr.number for pr in prs_to_list.get(Dashboard.Queue, [])}
+    # Labelled maintainer-merge but not yet ready-to-merge: reviewed, and waiting on a
+    # maintainer. These stay on the review queue, but a reviewer can take no further action
+    # on them, so they must not look like PRs that still need reviewing.
+    awaiting_maintainer_merge = {pr.number for pr in prs_to_list.get(Dashboard.AllMaintainerMerge, [])}
+    now = datetime.now(timezone.utc)
 
     # Build dependency information for all PRs
     pr_dependencies = {}
@@ -87,12 +107,22 @@ def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dic
             if dep_pr in pr_dependents:
                 pr_dependents[dep_pr].append(pr_number)
 
+    transitive = transitive_dependency_counts(pr_dependencies)
+
     # Create nodes
     for pr_number, pr_info in aggregate_info.items():
         pr_url = f"https://github.com/leanprover-community/mathlib4/pull/{pr_number}"
 
         # Check for draft status in labels
         is_draft = pr_info.is_draft or any(label.name.lower() in ["wip", "draft"] for label in pr_info.labels)
+        pr_status = all_pr_status.get(pr_number)
+        # `pr_status` is NotFromFork for every PR opened from a branch of mathlib itself --- a
+        # large minority --- and that verdict is reached before labels or CI are looked at, so
+        # it cannot drive a status colour on its own. See determine_PR_status_ignoring_fork.
+        status_ignoring_fork = determine_PR_status_ignoring_fork(
+            now, [label.name for label in pr_info.labels], pr_info.CI_status, pr_info.is_draft
+        )
+        counts = transitive[pr_number]
 
         nodes.append(
             {
@@ -101,10 +131,17 @@ def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dic
                 "author": pr_info.author,
                 "state": pr_info.state.lower(),
                 "is_draft": is_draft,
-                "labels": [label.name for label in pr_info.labels],
+                "labels": [{"name": label.name, "color": label.color, "url": label.url} for label in pr_info.labels],
                 "url": pr_url,
+                "pr_status": pr_status.value if pr_status is not None else None,
+                "pr_status_ignoring_fork": status_ignoring_fork.value,
+                "ci_status": pr_info.CI_status.value,
+                "on_queue": pr_number in on_queue,
+                "awaiting_maintainer_merge": pr_number in awaiting_maintainer_merge,
                 "dependency_count": len(pr_dependencies.get(pr_number, [])),
                 "dependent_count": len(pr_dependents.get(pr_number, [])),
+                "upstream_count": counts.upstream,
+                "downstream_count": counts.downstream,
                 "additions": pr_info.additions,
                 "deletions": pr_info.deletions,
             }
@@ -131,6 +168,7 @@ def generate_dependency_graph(aggregate_info: Dict[int, AggregatePRInfo]) -> Dic
             "prs_with_dependencies": len([deps for deps in pr_dependencies.values() if deps]),
             "prs_that_are_dependencies": len([deps for deps in pr_dependents.values() if deps]),
             "dependency_links": len(links),
+            "prs_on_queue": len([number for number in aggregate_info if number in on_queue]),
         },
     }
 
@@ -219,7 +257,7 @@ def main() -> None:
         print(json.dumps(area_data, indent=4), file=fi)
 
     # Generate dependency graph for the dependency dashboard
-    dependency_graph_data = generate_dependency_graph(aggregate_info)
+    dependency_graph_data = generate_dependency_graph(aggregate_info, all_pr_status, prs_to_list)
     with open(path.join("api", "dependency_graph.json"), "w") as f:
         json.dump(dependency_graph_data, f, indent=2)
 

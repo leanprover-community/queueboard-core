@@ -76,10 +76,77 @@ Notes:
 
 Update cadence: ingest/upserts populate the raw fields; the snapshot builder computes `ci_status`, `pr_status`, dashboards, and uses precomputed timeline analytics when available (marking incomplete/missing via `DataStatus`). `ci_status` is rule-set aware: required CI contexts gate queue membership; missing required contexts yield `missing`; `fail-inessential` indicates the required contexts pass but the head rollup reports a failure. Queue eligibility follows `meta.ci_gating_mode`: strict mode (`all_required_success`) requires required-context pass; no-fail mode (`no_required_failures`) blocks only observed required-context failures.
 
+## Dependency graph (`dependency_graph.json`)
+
+Served by `GET /api/v1/queueboard/dependency-graph?repo=<owner/name>` and produced identically
+by the legacy `dashboard_data.generate_dependency_graph`. Consumed by
+`gh-pages/dependency_dashboard.html`. Shape:
+
+```json
+{
+  "nodes": [
+    {
+      "id": 12345,
+      "title": "feat: ...",
+      "author": "alice",
+      "state": "open",
+      "is_draft": false,
+      "labels": [{"name": "t-analysis", "color": "33DBEC", "url": "<github label url>"}],
+      "url": "https://github.com/owner/name/pull/12345",
+      "pr_status": "AwaitingReview",
+      "pr_status_ignoring_fork": "AwaitingReview",
+      "ci_status": "pass",
+      "on_queue": true,
+      "awaiting_maintainer_merge": false,
+      "dependency_count": 1,
+      "dependent_count": 3,
+      "upstream_count": 2,
+      "downstream_count": 7,
+      "additions": 10,
+      "deletions": 5
+    }
+  ],
+  "links": [{"source": 12345, "target": 12000, "source_state": "open", "target_state": "open"}],
+  "metadata": {
+    "total_prs": 2101,
+    "prs_with_dependencies": 410,
+    "prs_that_are_dependencies": 435,
+    "dependency_links": 673,
+    "prs_on_queue": 403
+  }
+}
+```
+
+Notes:
+- A link points from the dependent PR to the PR it depends on: `source` must wait for `target`.
+- `dependency_count` / `dependent_count` are *direct* edges; `upstream_count` /
+  `downstream_count` follow the chains (shared implementation:
+  `queueboard.util.transitive_dependency_counts`, also used by the queueboard's "unblocks"
+  column, so the two surfaces always report the same number). Dependency cycles are tolerated
+  and a PR never counts itself.
+- `on_queue` comes from `snapshot.lists.dashboards.Queue`, *not* from `pr_status`: queue
+  membership additionally applies the base-branch check, the rule set's required/forbidden
+  labels and CI gating, so `pr_status == "AwaitingReview"` and `on_queue == false` is a normal
+  combination. See `docs/design-decisions/055-dependency-graph-queue-status-colouring.md`.
+- `awaiting_maintainer_merge` comes from `snapshot.lists.dashboards.AllMaintainerMerge`
+  (labelled `maintainer-merge`, not yet `ready-to-merge`). Such a PR is normally *also*
+  `on_queue`, but a reviewer can take no further action on it.
+- `pr_status_ignoring_fork` is `determine_PR_status` re-run with `from_fork=True`
+  (`classify_pr_state.determine_PR_status_ignoring_fork`), recomputed by each producer from
+  the labels, CI status and draft flag. `pr_status` is `NotFromFork` for any PR opened from a
+  branch of the repository itself — ~40% of open mathlib PRs — and that verdict is reached
+  before labels or CI are examined, so it cannot drive a display. `pr_status` remains the
+  authoritative status; this field exists so a consumer can show *why* a PR is not on the
+  queue. The two agree for every PR that really is from a fork.
+- `labels` used to be a list of bare name strings. Consumers should tolerate both; the
+  frontend does. A label from an older payload has `color: null`.
+- Payloads without `lists` (snapshots predating it) still build: every node gets
+  `on_queue: false`.
+
 ## Current filesystem artifacts (post-refactor)
 - Snapshot is the normalized contract; everything else is compatibility scaffolding for the legacy renderer.
 - `aggregate_info.json`, `draft_PRs.json`, `nondraft_PRs.json`, `CI_status.json`, `all_pr_status.json`, and `prs_to_list.json` are still written for CLI consumers using `CustomJSONEncoder` wrappers (`__type__`, `__module__`, `__data__`). The API should avoid emitting this encoding; any adapter can regenerate these shapes from the snapshot.
-- `automatic_assignments.json`, `area_stats.json`, and `dependency_graph.json` are copied verbatim into `gh-pages/` and will need server-side equivalents (or to be derived from the snapshot payloads).
+- `automatic_assignments.json`, `area_stats.json`, and `dependency_graph.json` are copied verbatim into `gh-pages/`; the dependency graph has a server-side equivalent (see above), the other two still need one.
 - `queue.json` from GitHub search is now optional and used only for comparison during development; queue membership comes from label/CI/draft classification.
 - Parity notes (server vs. documented shape):
   - Queue timing fields (`first_on_queue`, `total_queue_time`, `last_status_change` / `last_queue_status_change`) are currently emitted as objects, e.g. `{"status": "valid", "date": "..."}` (and `current_status` values `"OnQueue"/"OffQueue"`), while the contract shows the legacy list form (`["valid", "..."]`) with `current_status` as `PRStatus`. Clients expecting the list form need a compatibility layer; prefer server-side normalization or update the contract and keep tolerant parsing.

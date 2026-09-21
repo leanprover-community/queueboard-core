@@ -6,13 +6,80 @@
     <meta name="referrer" content="no-referrer">
     <title>PR Dependency Graph Dashboard</title>
     <script src="https://d3js.org/d3.v7.min.js" integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i" crossorigin="anonymous"></script>
+    <script>
+        // Runs before the body is parsed so an opted-in browser never flashes the light theme.
+        try {
+            if (localStorage.getItem("queueboard-dependency-theme") === "dark") {
+                document.documentElement.dataset.theme = "dark";
+            }
+        } catch (error) {
+            // Storage can be unavailable (private windows, blocked site data); light is the default anyway.
+        }
+    </script>
     <style>
+        /* Colours live in custom properties so the palette resolves once per theme, and so the
+           legend and the nodes can never drift apart: both read the same tokens.
+
+           Light is the default whether or not this browser has a stored preference, and the OS
+           setting is deliberately not consulted: no other queueboard page has a dark mode, so
+           someone arriving from index.html should not find this one inverted. Dark is opt-in,
+           through the toggle in the controls row, and selected by the data-theme attribute. */
+        :root {
+            color-scheme: light;
+
+            --page-bg: #f5f5f5;
+            --panel-bg: #ffffff;
+            --panel-bg-alpha: rgba(255, 255, 255, 0.95);
+            --ink: #1f2328;
+            --ink-muted: #59636e;
+            --rule: #d8dee4;
+            --control-bg: #ffffff;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --edge: #8c959f;
+            --edge-opacity: 0.7;
+            --highlight-bg: #fff3a3;
+
+            /* Node fills, by queue status. Keep in sync with NODE_CATEGORIES in the script. */
+            --cat-queue: #2da44e;
+            --cat-author: #c2670a;
+            --cat-blocked: #cf222e;
+            --cat-notready: #8c959f;
+            --cat-merging: #8250df;
+            --cat-other: #6e7781;
+        }
+
+        :root[data-theme="dark"] {
+            color-scheme: dark;
+
+            --page-bg: #0d1117;
+            --panel-bg: #161b22;
+            --panel-bg-alpha: rgba(22, 27, 34, 0.95);
+            --ink: #e6edf3;
+            --ink-muted: #9198a1;
+            --rule: #30363d;
+            --control-bg: #0d1117;
+            --shadow: rgba(0, 0, 0, 0.5);
+            --edge: #9198a1;
+            --edge-opacity: 0.9;
+            --highlight-bg: #9e6a03;
+
+            --cat-queue: #3fb950;
+            --cat-author: #d29922;
+            --cat-blocked: #f85149;
+            --cat-notready: #8b949e;
+            --cat-merging: #a371f7;
+            --cat-other: #7d8590;
+        }
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
             padding: 20px;
-            background-color: #f5f5f5;
+            background-color: var(--page-bg);
+            color: var(--ink);
         }
+
+        a { color: inherit; }
 
         .header {
             text-align: center;
@@ -20,10 +87,10 @@
         }
 
         .controls {
-            background: white;
+            background: var(--panel-bg);
             padding: 15px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
             margin-bottom: 20px;
             display: flex;
             gap: 20px;
@@ -35,26 +102,101 @@
             font-weight: 500;
         }
 
-        .controls select, .controls input {
+        .controls select, .controls input[type="text"], .controls button {
             padding: 5px 10px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--rule);
             border-radius: 4px;
+            background: var(--control-bg);
+            color: var(--ink);
+            font: inherit;
+            font-size: 0.95em;
         }
 
+        .controls button { cursor: pointer; }
+
+        /* Checkbox facets: a <details> disclosure, so the long label list stays out of the way
+           until it is wanted. */
+        .facet {
+            position: relative;
+            display: inline-block;
+        }
+
+        .facet > summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 6px 11px;
+            border: 1px solid var(--rule);
+            border-radius: 4px;
+            background: var(--control-bg);
+            font-size: 0.95em;
+            user-select: none;
+        }
+
+        .facet > summary::-webkit-details-marker { display: none; }
+        .facet > summary::after { content: " \25be"; color: var(--ink-muted); }
+
+        .facet-panel {
+            position: absolute;
+            z-index: 20;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 230px;
+            max-height: 320px;
+            overflow-y: auto;
+            background: var(--panel-bg);
+            border: 1px solid var(--rule);
+            border-radius: 6px;
+            box-shadow: 0 4px 16px var(--shadow);
+            padding: 8px;
+        }
+
+        .facet-actions {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 6px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--rule);
+        }
+
+        .facet-actions button {
+            flex: 1;
+            font-size: 0.85em;
+            padding: 3px 6px;
+            border: 1px solid var(--rule);
+            border-radius: 4px;
+            background: var(--control-bg);
+            color: var(--ink);
+            cursor: pointer;
+        }
+
+        .controls .facet-option {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 3px 4px;
+            font-weight: 400;
+            font-size: 0.92em;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .controls .facet-option:hover { background: var(--page-bg); }
+        .controls .facet-option .count { margin-left: auto; color: var(--ink-muted); font-size: 0.9em; }
+
         .stats {
-            background: white;
+            background: var(--panel-bg);
             padding: 10px 15px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
             margin-bottom: 20px;
             font-size: 14px;
-            color: #666;
+            color: var(--ink-muted);
         }
 
         .graph-container {
-            background: white;
+            background: var(--panel-bg);
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
             position: relative;
             overflow: hidden;
         }
@@ -65,16 +207,18 @@
 
         .tooltip {
             position: absolute;
-            background: rgba(0, 0, 0, 0.9);
-            color: white;
-            padding: 10px;
+            background: var(--panel-bg);
+            color: var(--ink);
+            border: 1px solid var(--rule);
+            padding: 10px 12px;
             border-radius: 6px;
             pointer-events: none;
             visibility: hidden;
             font-size: 12px;
-            max-width: 300px;
+            max-width: 320px;
             z-index: 1000;
             opacity: 0;
+            box-shadow: 0 6px 24px var(--shadow);
             transition: opacity 0.2s;
         }
 
@@ -88,71 +232,184 @@
             position: absolute;
             top: 6px;
             right: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.35);
-            background: rgba(255, 255, 255, 0.15);
-            color: #fff;
+            border: 1px solid var(--rule);
+            background: var(--control-bg);
+            color: var(--ink);
             border-radius: 4px;
             font-size: 11px;
             line-height: 1;
-            padding: 2px 6px;
+            padding: 3px 7px;
             cursor: pointer;
         }
 
         .tooltip h4 {
             margin: 0 0 8px 0;
-            color: #fff;
+            padding-right: 44px;
+            font-size: 13px;
         }
 
         .tooltip .pr-meta {
             margin: 4px 0;
             font-size: 11px;
-            opacity: 0.8;
+            color: var(--ink-muted);
         }
 
-        .node {
-            cursor: pointer;
-            stroke-width: 2px;
+        .tooltip .pr-meta b { color: var(--ink); font-weight: 600; }
+
+        /* Label chips, matching the main queueboard's span.label (see static/style.css):
+           github's own label colour as the background, black or white text by luminance. */
+        .tooltip .labels {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 8px;
         }
 
-        .node.open {
-            stroke: #28a745;
+        span.label {
+            border-radius: 5px;
+            border: 1px solid transparent;
+            display: inline-block;
+            padding: 3px 7px;
+            font-size: 11px;
+            line-height: 1.3;
         }
 
-        .node.closed {
-            stroke: #6c757d;
+        span.label.uncoloured {
+            border-color: var(--rule);
+            color: var(--ink);
         }
 
-        .node.draft {
-            stroke: #ffc107;
+        mark {
+            background-color: var(--highlight-bg);
+            color: inherit;
+            padding: 1px 2px;
+            border-radius: 2px;
         }
 
-        .node.search-match {
-            filter: brightness(1.3);
-            stroke-width: 4px;
+        /* --- graph marks --- */
+        .node { cursor: pointer; }
+        .node circle.body { stroke: none; }
+        .node circle.halo, .node circle.ring { fill: none; }
+
+        /* Size and halo are overwritten per zoom level by applyZoomAwareStyling; the values
+           here are only what the first paint uses, before any zoom event has fired. */
+        .node text.num {
+            font-size: 11px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-weight: 600;
+            fill: var(--ink);
+            text-anchor: middle;
+            paint-order: stroke;
+            stroke: var(--panel-bg);
+            stroke-width: 3px;
+            stroke-linejoin: round;
         }
 
         .link {
-            stroke: #999;
-            stroke-opacity: 0.6;
-            stroke-width: 1.5px;
+            stroke: var(--edge);
+            stroke-opacity: var(--edge-opacity);
+            stroke-width: var(--link-width, 1.5px);
             fill: none;
         }
 
-        .link.dependency {
-            marker-end: url(#arrowhead);
+        /* Hover focus: everything outside the hovered PR's component recedes, and the links
+           touching the PR itself are drawn in full-strength ink, so a single chain is readable
+           inside a dense component grid.
+
+           Adjacency is marked on the edges rather than on the neighbouring nodes. A node cannot
+           carry it: an outline around a node already means "blocked by an open PR", and a second
+           outline in a different colour reads as a variant of that rather than as a different
+           fact. The edges are an unused channel, and they are what adjacency is a property of.
+           The arrowhead scales with the line (markerUnits defaults to strokeWidth), so direction
+           sharpens along with it for free -- but its *position* must not, which is why the line
+           stops short of the node instead of the marker being pulled back by refX. */
+        .dimmed { opacity: 0.1; }
+        .link.incident {
+            stroke: var(--ink);
+            stroke-opacity: 1;
+            stroke-width: var(--link-width-strong, 3.3px);
         }
 
         .legend {
             position: absolute;
             top: 10px;
             right: 10px;
-            background: rgba(255, 255, 255, 0.95);
-            padding: 10px;
+            background: var(--panel-bg-alpha);
+            padding: 10px 12px;
             border-radius: 6px;
             font-size: 12px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
             user-select: none;
+            max-height: calc(100% - 20px);
+            overflow-y: auto;
         }
+
+        .legend h4 { margin: 0 0 8px 0; display: flex; align-items: baseline; gap: 8px; }
+
+        /* Sits over the count column, so the numbers cannot be read as snapshot-wide totals. */
+        .legend-scope {
+            margin-left: auto;
+            font-weight: 400;
+            font-size: 0.85em;
+            color: var(--ink-muted);
+        }
+        .legend hr { border: none; border-top: 1px solid var(--rule); margin: 8px 0; }
+
+        /* The category rows are the status facet. They are buttons so they can be reached from
+           the keyboard and announce their state; nothing below the rule is interactive.
+
+           Only the *selected* rows are marked. The unselected ones are left alone rather than
+           greyed or struck through, because selecting a status does not remove the others from
+           the graph -- it picks the chains to show, and those chains are still full of the
+           other colours. */
+        .legend-toggle {
+            width: 100%;
+            border: none;
+            background: none;
+            font: inherit;
+            color: inherit;
+            text-align: left;
+            padding: 3px 4px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .legend-toggle:hover { background: var(--page-bg); }
+
+        .legend-toggle[aria-pressed="true"] {
+            background: var(--page-bg);
+            box-shadow: inset 0 0 0 1px var(--rule);
+            font-weight: 600;
+        }
+
+        /* A tick rather than colour alone, so the selection survives a monochrome screen. */
+        .legend-toggle[aria-pressed="true"] .legend-text::after {
+            content: " \2713";
+            color: var(--ink-muted);
+        }
+
+        .legend-count {
+            margin-left: auto;
+            padding-left: 8px;
+            color: var(--ink-muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .legend-showall {
+            display: block;
+            width: 100%;
+            margin-top: 6px;
+            padding: 3px 6px;
+            border: 1px solid var(--rule);
+            border-radius: 4px;
+            background: var(--control-bg);
+            color: var(--ink);
+            font: inherit;
+            font-size: 0.92em;
+            cursor: pointer;
+        }
+
+        .legend-hint { margin-top: 6px; font-size: 0.92em; }
 
         .zoom-controls {
             position: absolute;
@@ -161,10 +418,10 @@
             display: flex;
             flex-direction: column;
             gap: 6px;
-            background: rgba(255, 255, 255, 0.95);
+            background: var(--panel-bg-alpha);
             padding: 8px;
             border-radius: 6px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
             z-index: 10;
             user-select: none;
         }
@@ -173,36 +430,39 @@
             min-width: 56px;
             height: 32px;
             padding: 0 8px;
-            border: 1px solid #d0d0d0;
+            border: 1px solid var(--rule);
             border-radius: 4px;
-            background: #fff;
+            background: var(--control-bg);
+            color: var(--ink);
             font-size: 14px;
             line-height: 1;
             cursor: pointer;
         }
 
-        .zoom-controls button:hover {
-            background: #f2f2f2;
-        }
+        .zoom-controls button:hover { background: var(--page-bg); }
 
         .legend-item {
             display: flex;
             align-items: center;
             margin: 4px 0;
+            gap: 8px;
         }
 
         .legend-color {
-            width: 12px;
-            height: 12px;
+            box-sizing: border-box;
+            width: 14px;
+            height: 14px;
             border-radius: 50%;
-            margin-right: 8px;
-            border: 2px solid;
+            flex: none;
+            background: var(--swatch, transparent);
         }
+
+        .legend-note { color: var(--ink-muted); line-height: 1.4; }
 
         .loading {
             text-align: center;
             padding: 50px;
-            color: #666;
+            color: var(--ink-muted);
         }
 
         @media (max-width: 768px) {
@@ -235,14 +495,34 @@
     <div class="header">
         <h1>PR Dependency Graph Dashboard</h1>
         <p>Interactive visualization of pull request dependencies in mathlib4</p>
-        <p><a href="index.html">← Back to main dashboard</a> | Related: <a href="triage.html">Triage dashboard</a> | <a href="review_dashboard.html">Review queue</a></p>
+        <p><a href="index.html">&larr; Back to main dashboard</a> | Related: <a href="triage.html">Triage dashboard</a> | <a href="review_dashboard.html">Review queue</a></p>
     </div>
 
     <div class="controls">
         <div>
             <label for="searchFilter">Search:</label>
-            <input type="text" id="searchFilter" placeholder="Search authors, titles, labels..." style="width: 300px;">
+            <input type="text" id="searchFilter" placeholder="Search authors, titles, labels..." style="width: 260px;">
         </div>
+        <details class="facet" id="labelFacet">
+            <summary id="labelFacetSummary">Labels (all)</summary>
+            <div class="facet-panel">
+                <div class="facet-actions">
+                    <button type="button" data-facet="labels" data-action="all">Select all</button>
+                    <button type="button" data-facet="labels" data-action="none">Clear</button>
+                </div>
+                <div id="labelFacetOptions"></div>
+            </div>
+        </details>
+        <details class="facet" id="authorFacet">
+            <summary id="authorFacetSummary">Authors (all)</summary>
+            <div class="facet-panel">
+                <div class="facet-actions">
+                    <button type="button" data-facet="authors" data-action="all">Select all</button>
+                    <button type="button" data-facet="authors" data-action="none">Clear</button>
+                </div>
+                <div id="authorFacetOptions"></div>
+            </div>
+        </details>
         <div>
             <label for="showSingletons">
                 <input type="checkbox" id="showSingletons"> Show singletons
@@ -255,47 +535,34 @@
                 <option value="force">Force (dynamic)</option>
             </select>
         </div>
-        <button onclick="resetFilters()">Reset Filters</button>
-        <button onclick="resetZoom()">Reset Zoom</button>
+        <div>
+            <label for="clickAction">Clicking a PR:</label>
+            <select id="clickAction" title="Shift-click always does the other one">
+                <option value="open">Opens it on GitHub</option>
+                <option value="focus">Focuses on it here</option>
+            </select>
+        </div>
+        <button type="button" id="resetFiltersBtn">Reset Filters</button>
+        <button type="button" id="resetZoomBtn">Reset Zoom</button>
+        <button type="button" id="copyLinkBtn" title="Copy a link that reopens this exact view">Copy link</button>
+        <button type="button" id="themeToggle" title="Switch to the dark palette">Dark mode</button>
     </div>
 
     <div class="stats" id="stats">
         Loading dependency data...
     </div>
 
-    <div class="graph-container">
+    <div class="graph-container" id="graphContainer">
         <div class="loading" id="loading">Loading PR dependency graph...</div>
         <svg id="graph"></svg>
 
         <div class="zoom-controls" aria-label="Graph zoom controls">
-            <button type="button" onclick="zoomIn()" title="Zoom in" aria-label="Zoom in">+</button>
-            <button type="button" onclick="zoomOut()" title="Zoom out" aria-label="Zoom out">-</button>
-            <button type="button" onclick="resetZoom()" title="Reset zoom" aria-label="Reset zoom">Reset</button>
+            <button type="button" id="zoomInBtn" title="Zoom in" aria-label="Zoom in">+</button>
+            <button type="button" id="zoomOutBtn" title="Zoom out" aria-label="Zoom out">-</button>
+            <button type="button" id="zoomResetBtn" title="Reset zoom" aria-label="Reset zoom">Reset</button>
         </div>
-        
-        <div class="legend">
-            <h4 style="margin: 0 0 8px 0;">Legend</h4>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #28a745; border-color: #28a745;"></div>
-                Unblocked (no dependencies)
-            </div>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #007bff; border-color: #007bff;"></div>
-                Blocked (has dependencies)
-            </div>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #ffc107; border-color: #ffc107;"></div>
-                Draft/WIP
-            </div>
-            <div class="legend-item">
-                <div class="legend-color" style="background: #34ce57; border: 4px solid #1e7e34;"></div>
-                Search Match (brighter)
-            </div>
-            <div class="legend-item">
-                <div style="width: 12px; height: 2px; background: #999; margin-right: 8px; margin-left: 5px;"></div>
-                Dependency
-            </div>
-        </div>
+
+        <div class="legend" id="legend"></div>
     </div>
 
     <div class="tooltip" id="tooltip"></div>
@@ -308,10 +575,211 @@
         let zoom = null;
         let lastTappedNodeId = null;
         let lastTapTs = 0;
-        let currentFilter = { search: '', showSingletons: false, layout: 'columns' };
+        // |statuses| is a facet like |labels| and |authors|, and works the same way: null means
+        // no restriction, and a non-empty set shows every component containing at least one PR
+        // in one of those buckets. It is deliberately *not* a switch that hides PRs. In this
+        // graph, "Blocked" occurs in 208 of 209 components -- being in a chain is close to what
+        // makes a PR blocked -- so dropping components that contain a bucket wipes the graph for
+        // the one bucket a reader would most want gone, and dropping components made *entirely*
+        // of a bucket moves 3 components at most. The direction that carries information is the
+        // positive one: "which chains have something reviewable in them" picks out 90 of the 209.
+        let currentFilter = {
+            search: '', showSingletons: false, layout: 'columns',
+            labels: null, authors: null, focus: null, statuses: null,
+        };
+
+        // The per-bucket totals behind the legend's counts, from the last filter pass. Kept so a
+        // theme switch can repaint the legend without recounting.
+        let lastCategoryCounts = null;
+
+        // Per-render lookup tables for the hover highlight and for tooltip placement, rebuilt by
+        // createVisualization.
+        let componentOfNode = new Map();
+        let componentMembers = [];
+        let neighboursOfNode = new Map();
+        let nodesById = new Map();
+        let allLabelNames = [];
+        let allAuthorNames = [];
 
         let graphWidth = window.innerWidth - 40;
         let graphHeight = window.innerHeight - 250;
+
+        // PR-number labels are drawn at a constant *screen* size, so the font, the halo and the
+        // gap above the node are all divided back out by the zoom. The threshold is the point
+        // where node inflation stops (see applyZoomAwareStyling): below it the view is far
+        // enough out that nodes are being drawn larger than life, and a number by each one is
+        // noise rather than information.
+        const LABEL_FONT_PX = 11;
+        const LABEL_HALO_PX = 3;
+        const LABEL_GAP_PX = 4;
+        const LABEL_ZOOM_THRESHOLD = 0.55;
+
+        // The ring marking "an open PR must land first". It is drawn *outside* the node rather
+        // than as a stroke on it, for two reasons: an inner stroke eats the category fill it is
+        // supposed to qualify, and it can only ever contrast with that fill -- around 2:1 for
+        // these palettes, which is what made it read as a faint outline. Outside, the ring sits
+        // against the page instead, where the same colour clears 10:1, and a blocked node is
+        // visibly larger as well as ringed. RING_CONTRAST is how far the ring is mixed from the
+        // fill towards the text colour: far enough to separate from the background in either
+        // theme, near enough to keep the category's hue.
+        const RING_WIDTH = 2.5;
+        const RING_CONTRAST = 0.7;
+
+        // Clearance for the search/focus halo, which has to stay outside the ring.
+        const HALO_GAP = 7;
+
+        // How far the tooltip will travel to stop covering something, in pixels of extra distance
+        // from the cursor per unit of coverage. Coverage is measured as a fraction of each mark's
+        // own area, weighted by how much it matters, so this is what obscuring one neighbour
+        // outright is worth.
+        //
+        // Set high because the squared fraction above makes it safe to: median distance is 202px
+        // anywhere from 200 upwards, so this only moves the hard tail. Measured over 180 hovers
+        // across three zoom levels on a 697-PR graph, and again with the graph parked in each
+        // corner of the viewport, where the free space is one-sided and the choice is hardest.
+        // At 1400 nothing is buried in the centre or the bottom corners, a direct neighbour is
+        // never touched anywhere, and no placement lands further than 450px from the cursor.
+        const TOOLTIP_COVER_PENALTY = 1400;
+        const TOOLTIP_WEIGHT_NEIGHBOUR = 1;
+        const TOOLTIP_WEIGHT_COMPONENT = 0.35;
+        const TOOLTIP_WEIGHT_OVERLAY = 0.8;
+
+        // Node fill colours, keyed by the category nodeCategory() assigns. Each entry names a CSS
+        // custom property (so both themes resolve from one place), the legend text, and the
+        // detail shown on hovering the legend entry.
+        //
+        // Buckets answer "who has the ball?" rather than mirroring PRStatus one-for-one: nine
+        // hues are more than colour can carry at a glance, and several PRStatus values differ
+        // only in a way that does not change who acts next. Changing the grouping is a change to
+        // this table plus nodeCategory(), and nothing else.
+        const NODE_CATEGORIES = [
+            { key: "queue",    token: "--cat-queue",    label: "On the review queue",
+              detail: "Waiting for a reviewer" },
+            { key: "author",   token: "--cat-author",   label: "Waiting on the author",
+              detail: "awaiting-author, merge conflict, help-wanted or please-adopt" },
+            { key: "blocked",  token: "--cat-blocked",  label: "Blocked",
+              detail: "Blocked by another PR, or awaiting a Zulip decision" },
+            { key: "notready", token: "--cat-notready", label: "Not ready",
+              detail: "Draft, WIP, awaiting CI, or CI not passing" },
+            { key: "merging",  token: "--cat-merging",  label: "Approved, awaiting merge",
+              detail: "maintainer-merge, delegated, ready-to-merge or auto-merge-after-CI" },
+            { key: "other",    token: "--cat-other",    label: "Conflicting signals",
+              detail: "Signals that cannot all hold at once, most often ready-to-merge while CI is failing" },
+        ];
+
+        const CATEGORY_BY_KEY = new Map(NODE_CATEGORIES.map(entry => [entry.key, entry]));
+
+        // Which bucket a PR falls in.
+        //
+        // Order matters. A maintainer-merge PR is still on the review queue, but it has already
+        // been reviewed and a reviewer can take no further action on it, so it is checked first
+        // and must not read as "please review me". Queue membership comes next: it is the only
+        // field that has applied the base-branch, CI and rule-set checks, so a PR that is
+        // *actually* reviewable is always green. Everything else goes by the fork-blind status
+        // (pr_status itself is NotFromFork for a large minority of mathlib PRs, decided before
+        // labels or CI are examined, so it cannot colour anything on its own).
+        function nodeCategory(node) {
+            if (node.awaiting_maintainer_merge) return "merging";
+            if (node.on_queue) return "queue";
+            switch (node.pr_status_ignoring_fork || node.pr_status) {
+                case "AwaitingReview": return "queue";
+                case "AwaitingAuthor":
+                case "MergeConflict":
+                case "HelpWanted": return "author";
+                case "Blocked":
+                case "AwaitingDecision": return "blocked";
+                case "NotReady": return "notready";
+                case "Delegated":
+                case "AwaitingBors": return "merging";
+                case "Contradictory": return "other";
+                default:
+                    // Only reachable for a payload predating pr_status_ignoring_fork; guess from
+                    // what the node still carries rather than showing everything as one colour.
+                    if (isDraftLike(node)) return "notready";
+                    if (node.dependency_count > 0) return "blocked";
+                    return "other";
+            }
+        }
+
+        // --- theme ---
+        //
+        // Light unless this browser has opted in; the OS preference is not consulted, because
+        // every other queueboard page is light-only and a visitor following a link from one of
+        // them should not have the page invert under them. The choice is remembered per browser,
+        // which is all a display preference needs -- it is not worth a round trip to the API.
+        const THEME_STORAGE_KEY = "queueboard-dependency-theme";
+
+        function storedTheme() {
+            try {
+                return localStorage.getItem(THEME_STORAGE_KEY);
+            } catch (error) {
+                return null;
+            }
+        }
+
+        function currentTheme() {
+            return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+        }
+
+        // The palette lives in CSS custom properties, so switching themes means re-reading it and
+        // repainting both the nodes and the legend.
+        function applyTheme(theme, persist) {
+            const dark = theme === "dark";
+            document.documentElement.dataset.theme = dark ? "dark" : "light";
+
+            const button = document.getElementById("themeToggle");
+            button.textContent = dark ? "Light mode" : "Dark mode";
+            button.title = dark ? "Switch to the light palette" : "Switch to the dark palette";
+
+            if (persist) {
+                try {
+                    localStorage.setItem(THEME_STORAGE_KEY, dark ? "dark" : "light");
+                } catch (error) {
+                    // A browser that refuses storage still gets the switch, just not the memory.
+                }
+            }
+
+            readPalette();
+            renderLegend();
+            if (graphData) createVisualization(graphData);
+        }
+
+        let palette = new Map();
+
+        function readPalette() {
+            const style = getComputedStyle(document.documentElement);
+            palette = new Map(NODE_CATEGORIES.map(entry => {
+                const fill = (style.getPropertyValue(entry.token) || "").trim() || "#6e7781";
+                const ink = style.getPropertyValue("--ink").trim() || "#1f2328";
+                return [entry.key, { fill, ring: mixColours(fill, ink, RING_CONTRAST) }];
+            }));
+        }
+
+        function hexToRgb(hex) {
+            const cleaned = String(hex).replace("#", "").trim();
+            const full = cleaned.length === 3 ? cleaned.split("").map(c => c + c).join("") : cleaned;
+            if (full.length !== 6) return null;
+            const value = Number.parseInt(full, 16);
+            if (Number.isNaN(value)) return null;
+            return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+        }
+
+        function mixColours(from, to, weight) {
+            const a = hexToRgb(from);
+            const b = hexToRgb(to);
+            if (!a || !b) return from;
+            const mixed = a.map((value, i) => Math.round(value + (b[i] - value) * weight));
+            return "#" + mixed.map(value => value.toString(16).padStart(2, "0")).join("");
+        }
+
+        // Github's own rule for label text colour, as ported in dashboard.py's label_link:
+        // weight the channels by perceived luminance and pick black or white.
+        function isLightColour(hex) {
+            const rgb = hexToRgb(hex);
+            if (!rgb) return true;
+            const [r, gr, b] = rgb;
+            return 1 - (0.299 * r + 0.587 * gr + 0.114 * b) / 255 < 0.5;
+        }
 
         function isCoarsePointerDevice() {
             const coarsePrimaryPointer = window.matchMedia("(pointer: coarse)").matches;
@@ -340,11 +808,97 @@
             return chunks
                 .map(chunk => {
                     if (chunk.toLowerCase() === searchTerm.toLowerCase()) {
-                        return `<span style="background-color: #ffff99; padding: 1px 2px; border-radius: 2px;">${escapeHtml(chunk)}</span>`;
+                        return `<mark>${escapeHtml(chunk)}</mark>`;
                     }
                     return escapeHtml(chunk);
                 })
                 .join("");
+        }
+
+        // The payload carries labels as {name, color, url}; older payloads carried bare strings.
+        function labelObjects(node) {
+            return (node.labels || []).map(label => (
+                typeof label === "string" ? { name: label, color: null } : label
+            )).filter(label => label && label.name);
+        }
+
+        function labelNames(node) {
+            return labelObjects(node).map(label => label.name);
+        }
+
+        function renderLabelChips(node, searchTerm) {
+            const labels = labelObjects(node);
+            if (labels.length === 0) return "";
+            const chips = labels.map(label => {
+                const name = highlightMatchesSafe(label.name, searchTerm);
+                if (!label.color) {
+                    return `<span class="label uncoloured">${name}</span>`;
+                }
+                const background = `#${escapeHtml(label.color)}`;
+                const foreground = isLightColour(label.color) ? "#000000" : "#FFFFFF";
+                return `<span class="label" style="background: ${background}; color: ${foreground}">${name}</span>`;
+            }).join("");
+            return `<div class="labels">${chips}</div>`;
+        }
+
+        // The page-space boxes of the marks the hover is picking out: the hovered PR's whole
+        // component, which is what stays lit while everything else dims. Nodes live in SVG user
+        // space, so the zoom transform, the node inflation and the svg's own page offset all have
+        // to be applied to get somewhere a tooltip rectangle can be compared against.
+        function highlightedScreenBoxes(d) {
+            const svgElement = document.getElementById("graph");
+            if (!svgElement || !g) return [];
+
+            const members = componentMembers[componentOfNode.get(d.id)];
+            if (!members) return [];
+            const neighbours = neighboursOfNode.get(d.id) || new Set();
+
+            const rect = svgElement.getBoundingClientRect();
+            const originX = rect.left + window.scrollX;
+            const originY = rect.top + window.scrollY;
+            const transform = d3.zoomTransform(svgElement);
+            const compensation = nodeCompensationFor(transform.k);
+            // The PR number sits above the node once it is showing, and is part of the mark.
+            const labelHeight = transform.k >= LABEL_ZOOM_THRESHOLD ? LABEL_FONT_PX + LABEL_GAP_PX : 0;
+
+            const boxes = [];
+            for (const id of members) {
+                const node = nodesById.get(id);
+                if (!node || typeof node.x !== "number" || typeof node.y !== "number") continue;
+                const [x, y] = transform.apply([node.x, node.y]);
+                const radius = getRingRadius(node) * compensation * transform.k;
+                boxes.push({
+                    left: originX + x - radius,
+                    right: originX + x + radius,
+                    top: originY + y - radius - labelHeight,
+                    bottom: originY + y + radius,
+                    // The hovered PR and the PRs its incident links point at are what the reader
+                    // is looking at; the rest of the component is context and can be clipped.
+                    weight: id === d.id || neighbours.has(id) ? TOOLTIP_WEIGHT_NEIGHBOUR : TOOLTIP_WEIGHT_COMPONENT,
+                });
+            }
+            return boxes;
+        }
+
+        // The page furniture the tooltip should also stay off. Both sit in corners, which is
+        // exactly where the placement search falls back to when a component leaves no room beside
+        // the cursor -- and the legend in particular explains the colours being read.
+        function overlayScreenBoxes() {
+            const boxes = [];
+            for (const selector of [".legend", ".zoom-controls"]) {
+                const element = document.querySelector(selector);
+                if (!element) continue;
+                const rect = element.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                boxes.push({
+                    left: rect.left + window.scrollX,
+                    right: rect.right + window.scrollX,
+                    top: rect.top + window.scrollY,
+                    bottom: rect.bottom + window.scrollY,
+                    weight: TOOLTIP_WEIGHT_OVERLAY,
+                });
+            }
+            return boxes;
         }
 
         function positionTooltip(event, d) {
@@ -381,47 +935,223 @@
                 return xOverlap * yOverlap;
             }
 
-            const anchorBox = {
+            const avoid = highlightedScreenBoxes(d).concat(overlayScreenBoxes());
+
+            // Kept out of the cost and enforced as a hard constraint instead: a placement that
+            // sits under the pointer is not a cheaper placement, it is an unusable one.
+            const cursorBox = {
                 left: anchorX - exclusion,
                 right: anchorX + exclusion,
                 top: anchorY - exclusion,
                 bottom: anchorY + exclusion,
             };
 
-            const candidates = [
-                { left: anchorX + gap, top: anchorY - tooltipHeight / 2 }, // right
-                { left: anchorX - tooltipWidth - gap, top: anchorY - tooltipHeight / 2 }, // left
-                { left: anchorX - tooltipWidth / 2, top: anchorY + gap }, // below
-                { left: anchorX - tooltipWidth / 2, top: anchorY - tooltipHeight - gap }, // above
-            ];
+            // Candidates: the tooltip pushed away from the cursor along a ring of headings, at
+            // increasing distance, each placed to already clear the cursor's exclusion box on
+            // that heading -- so staying off the pointer is geometry rather than something the
+            // cost has to buy.
+            const headings = 16;
+            const steps = 6;
+            const stepPx = 70;
+            const candidates = [];
+            for (let index = 0; index < headings; index += 1) {
+                const angle = (2 * Math.PI * index) / headings;
+                const cos = Math.cos(angle);
+                const sin = Math.sin(angle);
+                // A rect centred this far out escapes the exclusion box as soon as it clears on
+                // either axis, so the smaller of the two requirements is the binding one.
+                const clearX = Math.abs(cos) > 1e-6 ? (tooltipWidth / 2 + exclusion) / Math.abs(cos) : Number.POSITIVE_INFINITY;
+                const clearY = Math.abs(sin) > 1e-6 ? (tooltipHeight / 2 + exclusion) / Math.abs(sin) : Number.POSITIVE_INFINITY;
+                const start = Math.min(clearX, clearY) + gap;
+                for (let step = 0; step < steps; step += 1) {
+                    const distance = start + step * stepPx;
+                    candidates.push({
+                        left: anchorX + cos * distance - tooltipWidth / 2,
+                        top: anchorY + sin * distance - tooltipHeight / 2,
+                    });
+                }
+            }
+            // Plus a grid over the whole placement area, corners included. Near a viewport edge
+            // the ring's outward candidates are clamped back inside, where they collapse onto one
+            // another and back towards the cursor -- so precisely where the graph is pushed into
+            // a corner, the search was running out of distinct places to try. The grid keeps a
+            // spread of well-separated positions available wherever the cursor sits, and since
+            // the cost already prefers the nearest clean spot, extra positions can only improve
+            // the choice.
+            const gridColumns = 12;
+            const gridRows = 9;
+            const minLeft = viewportLeft + margin;
+            const maxLeft = Math.max(minLeft, viewportRight - tooltipWidth - margin);
+            const minTop = viewportTop + margin;
+            const maxTop = Math.max(minTop, viewportBottom - tooltipHeight - margin);
+            for (let column = 0; column < gridColumns; column += 1) {
+                for (let row = 0; row < gridRows; row += 1) {
+                    candidates.push({
+                        left: minLeft + ((maxLeft - minLeft) * column) / (gridColumns - 1),
+                        top: minTop + ((maxTop - minTop) * row) / (gridRows - 1),
+                    });
+                }
+            }
+
+            // Distance from the cursor, in pixels, plus what it would obscure priced in the same
+            // unit. Coverage counts as a fraction of each mark's own area, so clipping the corner
+            // of a node is cheap and sitting squarely on it is not, and the tooltip gives up
+            // proximity only in proportion to what it would hide.
+            function costOf(rect) {
+                let coverage = 0;
+                for (const box of avoid) {
+                    const overlap = overlapArea(rect, box);
+                    if (overlap === 0) continue;
+                    const boxArea = Math.max(1, (box.right - box.left) * (box.bottom - box.top));
+                    const fraction = Math.min(1, overlap / boxArea);
+                    // Squared, because grazing a node's edge and hiding it are not the same thing
+                    // to a reader, and a cost linear in the fraction treats them as differing
+                    // only by degree. Squaring makes a slight clip nearly free while leaving full
+                    // burial at full price, so the penalty can be set high enough that the
+                    // tooltip never buries anything without it fleeing over every small overlap.
+                    coverage += box.weight * fraction * fraction;
+                }
+                const centreX = (rect.left + rect.right) / 2;
+                const centreY = (rect.top + rect.bottom) / 2;
+                const distance = Math.hypot(centreX - anchorX, centreY - anchorY);
+                return distance + TOOLTIP_COVER_PENALTY * coverage;
+            }
 
             let best = null;
-            let bestOverlap = Number.POSITIVE_INFINITY;
+            let bestCost = Number.POSITIVE_INFINITY;
+            let onCursor = null;
+            let onCursorCost = Number.POSITIVE_INFINITY;
 
             for (const candidate of candidates) {
-                const left = clamp(candidate.left, viewportLeft + margin, viewportRight - tooltipWidth - margin);
-                const top = clamp(candidate.top, viewportTop + margin, viewportBottom - tooltipHeight - margin);
+                const left = clamp(candidate.left, minLeft, maxLeft);
+                const top = clamp(candidate.top, minTop, maxTop);
                 const rect = {
                     left,
                     top,
                     right: left + tooltipWidth,
                     bottom: top + tooltipHeight,
                 };
-                const overlap = overlapArea(rect, anchorBox);
+                const cost = costOf(rect);
 
-                if (overlap === 0) {
-                    best = { left, top };
-                    break;
+                // Clamping can drag a ring candidate back over the pointer, and a grid position
+                // may start there. A tooltip under the cursor is dismissed by the next small
+                // movement, so these are held back and used only if nothing else fits at all.
+                if (overlapArea(rect, cursorBox) > 0) {
+                    if (cost < onCursorCost) {
+                        onCursorCost = cost;
+                        onCursor = { left, top };
+                    }
+                    continue;
                 }
 
-                if (overlap < bestOverlap) {
-                    bestOverlap = overlap;
+                if (cost < bestCost) {
+                    bestCost = cost;
                     best = { left, top };
                 }
             }
 
-            tooltip.style.left = `${best.left}px`;
-            tooltip.style.top = `${best.top}px`;
+            const chosen = best || onCursor;
+            tooltip.style.left = `${chosen.left}px`;
+            tooltip.style.top = `${chosen.top}px`;
+        }
+
+        // Which way a dependency points is the first thing to become unreadable as you zoom
+        // out, so the head is larger than the line warrants and fully opaque. markerUnits
+        // defaults to strokeWidth, so it grows with the link compensation for free.
+        //
+        // refX is the marker's own anchor, and it is measured in *stroke widths* -- so pulling
+        // the head back with it made the head's position depend on how thick the line was: the
+        // emphasised link is 2.2x thicker, and its arrow retreated 2.2x further from the node,
+        // which read as the arrowhead sliding off the head of the link towards its middle on
+        // hover. refX is therefore the tip of the marker path (x = 10 in viewBox units), so the
+        // head lands exactly where the path ends, and clearing the node is the job of the path,
+        // which stops short of it (see linkPathFor). The head then sits in the same place at
+        // every stroke width.
+        function appendArrowMarker(target) {
+            const head = target.append("defs").append("marker")
+                .attr("id", "arrowhead")
+                .attr("viewBox", "0 -5 10 10")
+                .attr("refX", 10)
+                .attr("refY", 0)
+                .attr("markerWidth", 8)
+                .attr("markerHeight", 8)
+                .attr("orient", "auto")
+                .append("path")
+                .attr("d", "M0,-3.5L10,0L0,3.5")
+                .attr("class", "arrowhead");
+
+            // One marker is shared by every link, so the only way a head can follow the colour
+            // of its own line -- ink while that link is emphasised, edge grey otherwise -- is
+            // context-stroke. A browser without it ignores the second assignment and keeps the
+            // first, which is the old behaviour rather than a black arrowhead.
+            head.style("fill", "var(--edge)");
+            head.style("fill", "context-stroke");
+        }
+
+        // How far short of the target node the line stops, in screen pixels, so that the
+        // arrowhead's tip sits just off the node's outermost mark rather than on it.
+        const ARROW_GAP_PX = 3;
+
+        // The radius of whatever the target node's outermost mark is, in user space before zoom
+        // compensation: the match halo if it has one, otherwise the "blocked" ring, otherwise
+        // the body. Each mark's stroke is centred on its radius, so half of it sits outside.
+        function outerMarkRadius(node) {
+            if (node.isSearchMatch || node.isFocused) return getNodeRadius(node) + HALO_GAP + 1.5;
+            if (hasBlockingDependency(node)) return getRingRadius(node) + RING_WIDTH / 2;
+            return getNodeRadius(node);
+        }
+
+        // A link ends where its arrowhead should point, so the head's position is geometry and
+        // not a function of the stroke width (which changes on hover). The clearance tracks the
+        // node's on-screen size: the node inflates when zoomed out, so a fixed user-space
+        // shortening would let an inflated node swallow the head.
+        function linkPathFor(source, target, compensation, k) {
+            const dx = target.x - source.x;
+            const dy = target.y - source.y;
+            const distance = Math.hypot(dx, dy);
+            if (!Number.isFinite(distance) || distance === 0) {
+                return `M${source.x},${source.y}L${target.x},${target.y}`;
+            }
+            // Never trim past the source: two nodes closer together than the clearance keep a
+            // short line pointing the right way rather than one pointing backwards.
+            const clearance = Math.min(outerMarkRadius(target) * compensation + ARROW_GAP_PX / k, distance * 0.9);
+            return `M${source.x},${source.y}L${target.x - (dx / distance) * clearance},${target.y - (dy / distance) * clearance}`;
+        }
+
+        // The force layout resolves link endpoints to node objects in place; the columns layout
+        // keeps ids and carries the nodes alongside -- and falls back to the raw id, which is a
+        // number, when a link points at a node that was not rendered. Hence the coordinate
+        // check below rather than a truthiness test.
+        function linkEndpointNodes(d) {
+            return [d.sourceNode || d.source, d.targetNode || d.target];
+        }
+
+        function hasPosition(endpoint) {
+            return Boolean(endpoint) && typeof endpoint.x === "number" && typeof endpoint.y === "number";
+        }
+
+        function updateLinkPaths(linkSelection, scaleK) {
+            const k = Math.max(scaleK, 0.0001);
+            const compensation = nodeCompensationFor(k);
+            linkSelection.attr("d", d => {
+                const [source, target] = linkEndpointNodes(d);
+                // Draw nothing at all rather than a path full of "undefined", which is what a
+                // link to an unrendered node used to produce.
+                if (!hasPosition(source) || !hasPosition(target)) return null;
+                return linkPathFor(source, target, compensation, k);
+            });
+        }
+
+        function currentZoomScale() {
+            const svgElement = document.getElementById("graph");
+            return svgElement ? d3.zoomTransform(svgElement).k : 1;
+        }
+
+        // Nodes are drawn larger than life when zoomed out so they stay visible, capped to avoid
+        // heavy overlap. Anything reasoning about a node's size on screen has to apply the same
+        // inflation, so it lives here rather than inline in applyZoomAwareStyling.
+        function nodeCompensationFor(scaleK) {
+            return Math.min(1.9, Math.max(1, 0.55 / Math.max(scaleK, 0.0001)));
         }
 
         function initializeSVG() {
@@ -437,19 +1167,7 @@
                 .attr("height", graphHeight)
                 .call(zoom);
 
-            svg.append("defs").append("marker")
-                .attr("id", "arrowhead")
-                .attr("viewBox", "0 -5 10 10")
-                .attr("refX", 20)
-                .attr("refY", 0)
-                .attr("markerWidth", 6)
-                .attr("markerHeight", 6)
-                .attr("orient", "auto")
-                .append("path")
-                .attr("d", "M0,-5L10,0L0,5")
-                .attr("class", "arrowhead")
-                .style("fill", "#999");
-
+            appendArrowMarker(svg);
             g = svg.append("g");
         }
 
@@ -457,16 +1175,44 @@
             if (!g) return;
             const k = Math.max(scaleK, 0.0001);
 
-            // Keep nodes readable when zoomed out, but cap inflation to avoid heavy overlap.
-            const nodeCompensation = Math.min(1.9, Math.max(1, 0.55 / k));
+            const nodeCompensation = nodeCompensationFor(k);
             const linkCompensation = Math.min(2.2, Math.max(1, 0.5 / k));
 
-            g.selectAll("circle.node")
-                .attr("r", d => getNodeRadius(d) * nodeCompensation)
-                .style("stroke-width", d => getNodeStrokeWidth(d) * nodeCompensation);
+            g.selectAll("circle.body")
+                .attr("r", d => getNodeRadius(d) * nodeCompensation);
 
-            g.selectAll("path.link")
-                .style("stroke-width", 1.5 * linkCompensation);
+            // The line stops short of the node by the node's *on-screen* size, so the trim has
+            // to be redone whenever that changes.
+            updateLinkPaths(g.selectAll("path.link"), k);
+
+            // The ring has to grow with the node it surrounds, or zooming out thins it away --
+            // which is most of why it looked faint from a distance.
+            g.selectAll("circle.ring")
+                .attr("r", d => getRingRadius(d) * nodeCompensation)
+                .style("stroke-width", RING_WIDTH * nodeCompensation);
+
+            g.selectAll("circle.halo")
+                .attr("r", d => (getNodeRadius(d) + HALO_GAP) * nodeCompensation)
+                .style("stroke-width", `${3 * nodeCompensation}px`);
+
+            // PR numbers only appear once they can be read without colliding; their halo, font
+            // size and offset are in user space, so all three divide the zoom back out. Keeping
+            // the gap constant on screen matters: a fixed user-space offset drifts away from the
+            // node as you zoom in and collides with it as you zoom out.
+            g.selectAll("text.num")
+                .attr("y", d => -(getRingRadius(d) * nodeCompensation + LABEL_GAP_PX / k))
+                .style("font-size", `${LABEL_FONT_PX / k}px`)
+                .style("stroke-width", `${LABEL_HALO_PX / k}px`)
+                .style("display", k >= LABEL_ZOOM_THRESHOLD ? null : "none");
+
+            // Two custom properties on the container rather than an inline width on each of ~700
+            // links: the cascade then stays free for .link.incident, which an inline width would
+            // beat, and it is two writes per zoom instead of one per link. The emphasised width is
+            // multiplied out here rather than in a CSS calc(), so the stylesheet only ever has to
+            // substitute a plain value.
+            const linkWidth = 1.5 * linkCompensation;
+            g.style("--link-width", `${linkWidth}px`);
+            g.style("--link-width-strong", `${linkWidth * 2.2}px`);
         }
 
         function fitGraphToViewport(duration = 350) {
@@ -481,9 +1227,11 @@
 
             const viewportWidth = graphWidth;
             const viewportHeight = graphHeight;
+            const legend = document.getElementById("legend");
+            const legendWidth = legend && window.innerWidth > 768 ? legend.offsetWidth + 24 : 20;
             const reservedLeft = 84;
             const reservedTop = 52;
-            const reservedRight = 20;
+            const reservedRight = legendWidth;
             const reservedBottom = 20;
             const availableWidth = Math.max(1, viewportWidth - reservedLeft - reservedRight);
             const availableHeight = Math.max(1, viewportHeight - reservedTop - reservedBottom);
@@ -522,62 +1270,147 @@
             try {
                 const data = await d3.json("dependency_graph.json");
                 graphData = data;
-                
-                updateStats(data.metadata);
+
+                collectFacetOptions(data);
+                renderFacet("labels", allLabelNames);
+                renderFacet("authors", allAuthorNames);
+                updateFacetSummaries();
+
+                readPalette();
+                renderLegend();
                 createVisualization(data);
                 document.getElementById("loading").style.display = "none";
             } catch (error) {
                 console.error("Error loading data:", error);
-                document.getElementById("loading").innerHTML = 
+                document.getElementById("loading").innerHTML =
                     "Error loading dependency data. Please ensure dependency_graph.json is available.";
             }
         }
 
-        function updateStats(metadata) {
-            const statsText = `
-                Total PRs: ${metadata.total_prs} | 
-                PRs with dependencies: ${metadata.prs_with_dependencies} | 
-                PRs that are dependencies: ${metadata.prs_that_are_dependencies} | 
-                Dependency links: ${metadata.dependency_links}
-            `;
-            document.getElementById("stats").innerHTML = statsText;
-        }
-
         function isDraftLike(node) {
-            return node.is_draft || node.labels.some(label => 
-                label.toLowerCase().includes('wip')
-            );
+            return node.is_draft || labelNames(node).some(label => label.toLowerCase().includes('wip'));
         }
 
         function getNodeColor(node) {
-            if (isDraftLike(node)) {
-                return "#ffc107"; // Yellow for draft/WIP
-            }
-            
-            if (node.dependency_count > 0) {
-                return "#007bff"; // Blue for blocked PRs (have dependencies)
-            }
-            
-            return "#28a745"; // Green for unblocked PRs (no dependencies)
+            return (palette.get(nodeCategory(node)) || { fill: "#6e7781" }).fill;
         }
 
-        function getNodeStroke(node) {
-            if (node.isSearchMatch) {
-                // Return a darker version of the node color for search matches
-                const baseColor = getNodeColor(node);
-                if (baseColor === "#28a745") return "#1e7e34"; // Darker green
-                if (baseColor === "#007bff") return "#0056b3"; // Darker blue  
-                if (baseColor === "#ffc107") return "#e0a800"; // Darker yellow
-            }
-            return getNodeColor(node); // Same color as fill for normal nodes
+        // A ring marks a PR that cannot merge yet because an open PR must land first. This is a
+        // separate channel from the fill, so "what state is it in" and "is it blocked" read at once.
+        function hasBlockingDependency(node) {
+            return node.dependency_count > 0;
         }
 
-        function getNodeStrokeWidth(node) {
-            return node.isSearchMatch ? 4 : 2;
+        function getRingColor(node) {
+            return (palette.get(nodeCategory(node)) || { ring: "#1f2328" }).ring;
         }
 
-        function getNodeRadius(node) {
+        // Centred on the node's edge + half the width, so the ring lies wholly outside the fill.
+        function getRingRadius(node) {
+            return getNodeRadius(node) + RING_WIDTH / 2;
+        }
+
+        function getNodeRadius() {
             return 8;
+        }
+
+        // The legend doubles as the status facet. A selected row is marked; the unselected rows
+        // are left plain rather than struck through, because their PRs have not gone anywhere --
+        // selecting "On the review queue" shows the chains that contain one, blockers and all.
+        // The count beside each row is how many of the PRs now on screen are in that bucket, so
+        // after selecting you can read what the chains you asked for are actually made of.
+        function renderLegend(counts) {
+            if (counts) lastCategoryCounts = counts;
+            const shown = counts || lastCategoryCounts;
+            const legend = document.getElementById("legend");
+            const selected = currentFilter.statuses;
+
+            const swatches = NODE_CATEGORIES.map(entry => {
+                const fill = (palette.get(entry.key) || {}).fill;
+                const isSelected = selected !== null && selected.has(entry.key);
+                const count = shown ? shown.get(entry.key) || 0 : null;
+                const countText = count === null ? "" : `<span class="legend-count">${count}</span>`;
+                const title = isSelected && selected.size === 1
+                    ? `${entry.detail}. Click to go back to every chain.`
+                    : `${entry.detail}. Click to show only the chains containing one; shift-click to add it.`;
+                return `<button type="button" class="legend-item legend-toggle" data-key="${entry.key}"`
+                    + ` aria-pressed="${isSelected ? "true" : "false"}" title="${escapeHtml(title)}">`
+                    + `<span class="legend-color" style="--swatch: ${fill}"></span>`
+                    + `<span class="legend-text">${escapeHtml(entry.label)}</span>${countText}</button>`;
+            }).join("");
+
+            const showAll = statusIsRestricting()
+                ? `<button type="button" class="legend-showall" id="legendShowAll">Show every chain</button>`
+                : `<div class="legend-note legend-hint">Click a status to show only the chains containing one</div>`;
+
+            const ringFill = (palette.get("blocked") || {}).fill;
+            const ringStroke = (palette.get("blocked") || {}).ring;
+            const scopeNote = shown ? `<span class="legend-scope">PRs shown</span>` : "";
+            legend.innerHTML = `
+                <h4>Legend${scopeNote}</h4>
+                ${swatches}
+                ${showAll}
+                <hr>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: ${ringFill}; box-shadow: 0 0 0 ${RING_WIDTH}px ${ringStroke}"></div>
+                    Blocked by an open PR
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: transparent; border: 2px dashed var(--ink-muted)"></div>
+                    Search / filter match
+                </div>
+                <div class="legend-item">
+                    <div style="width: 12px; height: 2px; background: var(--edge); flex: none;"></div>
+                    <span class="legend-note">A &rarr; B: A depends on B, so B merges first</span>
+                </div>`;
+
+            legend.querySelectorAll(".legend-toggle").forEach(button => {
+                button.addEventListener("click", event => selectStatus(button.dataset.key, event));
+            });
+            const showAllButton = document.getElementById("legendShowAll");
+            if (showAllButton) showAllButton.addEventListener("click", showAllStatuses);
+        }
+
+        // A plain click picks one bucket, rather than removing one. With six buckets, removing
+        // one leaves a component out only when every PR in it is in that bucket, which happens
+        // to 3 components out of 209 -- five clicks in six would look like nothing happened.
+        // Picking one is also how the label dropdown is really used.
+        function selectStatus(key, event) {
+            if (!CATEGORY_BY_KEY.has(key)) return;
+            const selected = currentFilter.statuses;
+            const adding = Boolean(event && (event.shiftKey || event.metaKey || event.ctrlKey));
+
+            if (selected === null) {
+                // Nothing to add to yet, so shift behaves like a plain click.
+                currentFilter.statuses = new Set([key]);
+            } else if (!selected.has(key)) {
+                currentFilter.statuses = adding ? new Set([...selected, key]) : new Set([key]);
+            } else if (!adding && selected.size > 1) {
+                currentFilter.statuses = new Set([key]);
+            } else {
+                const rest = new Set([...selected].filter(value => value !== key));
+                // Deselecting the last one means "no restriction", not "match nothing".
+                currentFilter.statuses = rest.size > 0 ? rest : null;
+            }
+
+            const fromKeyboard = document.activeElement && document.activeElement.classList.contains("legend-toggle");
+            if (graphData) applyFilters(); else renderLegend();
+            // The legend is rebuilt wholesale, so a keyboard user would otherwise be dropped
+            // back to the top of the document on every click.
+            if (fromKeyboard) restoreLegendFocus(`.legend-toggle[data-key="${key}"]`);
+        }
+
+        function showAllStatuses() {
+            const fromKeyboard = document.activeElement && document.activeElement.id === "legendShowAll";
+            currentFilter.statuses = null;
+            if (graphData) applyFilters(); else renderLegend();
+            // The button itself is gone once nothing is selected; the first status takes its place.
+            if (fromKeyboard) restoreLegendFocus(".legend-toggle");
+        }
+
+        function restoreLegendFocus(selector) {
+            const target = document.querySelector(selector);
+            if (target) target.focus();
         }
 
         function createNodeAndLinkElements(filteredNodes, cleanLinks, draggable) {
@@ -587,31 +1420,56 @@
                 .data(cleanLinks)
                 .enter().append("path")
                 .attr("class", "link dependency")
-                .style("stroke", "#999")
-                .style("stroke-width", 1.5);
+                .attr("marker-end", "url(#arrowhead)");
 
+            // A group per node, so the fill, the "blocked" ring, the match halo and the PR
+            // number are separate marks that cannot compete for the same attribute.
             const nodeSelection = g.append("g")
                 .attr("class", "nodes")
-                .selectAll("circle")
+                .selectAll("g")
                 .data(filteredNodes)
-                .enter().append("circle")
+                .enter().append("g")
                 .attr("class", d => {
                     let classes = `node ${d.state}`;
                     if (d.is_draft) classes += " draft";
                     if (d.isSearchMatch) classes += " search-match";
+                    if (d.isFocused) classes += " focused";
                     return classes;
-                })
+                });
+
+            nodeSelection.filter(d => d.isSearchMatch || d.isFocused)
+                .append("circle")
+                .attr("class", "halo")
+                .attr("r", d => getNodeRadius(d) + HALO_GAP)
+                .style("stroke", d => d.isFocused ? "var(--ink)" : "var(--ink-muted)")
+                .style("stroke-width", "3px")
+                .style("stroke-dasharray", d => d.isFocused ? null : "3 2");
+
+            nodeSelection.filter(hasBlockingDependency)
+                .append("circle")
+                .attr("class", "ring")
+                .attr("r", getRingRadius)
+                .style("stroke", getRingColor)
+                .style("stroke-width", RING_WIDTH);
+
+            nodeSelection.append("circle")
+                .attr("class", "body")
                 .attr("r", getNodeRadius)
-                .style("fill", getNodeColor)
-                .style("stroke", getNodeStroke)
-                .style("stroke-width", getNodeStrokeWidth)
-                .style("cursor", "pointer")
-                .on("mouseover", showTooltip)
-                .on("mouseout", hideTooltip)
+                .style("fill", getNodeColor);
+
+            nodeSelection.append("text")
+                .attr("class", "num")
+                .attr("y", -(getNodeRadius() + 3))
+                .style("display", "none")
+                .text(d => d.id);
+
+            nodeSelection
+                .on("mouseenter", (event, d) => { highlightRelated(d); showTooltip(event, d); })
+                .on("mouseleave", () => { clearHighlight(); hideTooltip(); })
                 .on("click", (event, d) => {
                     event.stopPropagation();
                     if (!isCoarsePointerDevice()) {
-                        window.open(d.url, "_blank");
+                        performNodeAction(clickActionFor(event), d);
                         return;
                     }
 
@@ -619,10 +1477,11 @@
                     const isSecondTap = lastTappedNodeId === d.id && now - lastTapTs < 1200;
 
                     if (isSecondTap) {
-                        window.open(d.url, "_blank");
+                        performNodeAction(clickActionFor(event), d);
                         return;
                     }
 
+                    highlightRelated(d);
                     showTooltip(event, d);
                     lastTappedNodeId = d.id;
                     lastTapTs = now;
@@ -640,6 +1499,108 @@
             return { link, nodeSelection };
         }
 
+        /* ---------- deep links ----------
+         *
+         * Every filter is already mirrored into the address bar by writeFiltersToURL, so the
+         * page has always been linkable; what was missing was a way to *make* a link without
+         * knowing that. Two halves: "Copy link" hands over the current URL, and the click
+         * action decides whether clicking a PR leaves the page for GitHub or focuses on it
+         * here -- focusing is what puts ?focus= in the URL, and is the interesting link to
+         * share. Shift always does the other one, so neither is more than a click away.
+         */
+        function clickActionFor(event) {
+            const mode = document.getElementById("clickAction").value;
+            const inverted = Boolean(event && event.shiftKey);
+            return (mode === "focus") !== inverted ? "focus" : "open";
+        }
+
+        function performNodeAction(action, d) {
+            if (action === "focus") {
+                closeTooltip();
+                currentFilter.focus = d.id;
+                applyFilters();
+                return;
+            }
+            window.open(d.url, "_blank", "noopener");
+        }
+
+        function flashButton(button, message) {
+            if (button.dataset.restoreText === undefined) {
+                button.dataset.restoreText = button.textContent;
+            }
+            button.textContent = message;
+            window.clearTimeout(Number(button.dataset.restoreTimer) || 0);
+            button.dataset.restoreTimer = String(window.setTimeout(() => {
+                button.textContent = button.dataset.restoreText;
+                delete button.dataset.restoreText;
+            }, 1800));
+        }
+
+        // The async clipboard is unavailable on an insecure origin and can be refused outright,
+        // so there is a selection-based fallback; if even that fails the URL is put in a prompt,
+        // which is ugly but always copyable.
+        function copyTextFallback(text) {
+            const holder = document.createElement("textarea");
+            holder.value = text;
+            holder.setAttribute("readonly", "");
+            holder.style.position = "fixed";
+            holder.style.top = "-1000px";
+            document.body.appendChild(holder);
+            holder.select();
+            let copied = false;
+            try {
+                copied = document.execCommand("copy");
+            } catch (error) {
+                copied = false;
+            }
+            holder.remove();
+            return copied;
+        }
+
+        async function copyDeepLink() {
+            const button = document.getElementById("copyLinkBtn");
+            // The address bar is kept current by applyFilters, but a view that has not been
+            // touched since load has never been through it.
+            writeFiltersToURL();
+            const url = window.location.href;
+
+            let copied = false;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                    copied = true;
+                }
+            } catch (error) {
+                copied = false;
+            }
+            if (!copied) copied = copyTextFallback(url);
+            if (!copied) {
+                window.prompt("Copy this link:", url);
+                copied = true;
+            }
+            flashButton(button, "Copied!");
+        }
+
+        function highlightRelated(node) {
+            if (!g) return;
+            const component = componentOfNode.get(node.id);
+            g.selectAll("g.node")
+                .classed("dimmed", d => componentOfNode.get(d.id) !== component);
+            g.selectAll("path.link")
+                .classed("dimmed", d => componentOfNode.get(linkEndpointId(d.source)) !== component)
+                .classed("incident", d => linkEndpointId(d.source) === node.id || linkEndpointId(d.target) === node.id);
+        }
+
+        function clearHighlight() {
+            if (!g) return;
+            g.selectAll("g.node").classed("dimmed", false);
+            g.selectAll("path.link").classed("dimmed", false).classed("incident", false);
+        }
+
+        function linkEndpointId(endpoint) {
+            return typeof endpoint === "object" && endpoint !== null ? endpoint.id : endpoint;
+        }
+
         function linkEndpointsById(cleanLinks, nodeMap) {
             return cleanLinks.map(link => ({
                 ...link,
@@ -648,18 +1609,19 @@
             }));
         }
 
-        function updateStaticLinks(linkSelection, linksWithNodes) {
-            linkSelection.attr("d", d => {
-                return `M${d.sourceNode.x},${d.sourceNode.y}L${d.targetNode.x},${d.targetNode.y}`;
+        function buildAdjacency(nodes, links) {
+            const adjacency = new Map(nodes.map(node => [node.id, new Set()]));
+            links.forEach(link => {
+                const source = linkEndpointId(link.source);
+                const target = linkEndpointId(link.target);
+                adjacency.get(source)?.add(target);
+                adjacency.get(target)?.add(source);
             });
+            return adjacency;
         }
 
         function connectedComponents(nodes, links) {
-            const adjacency = new Map(nodes.map(node => [node.id, new Set()]));
-            links.forEach(link => {
-                adjacency.get(link.source)?.add(link.target);
-                adjacency.get(link.target)?.add(link.source);
-            });
+            const adjacency = buildAdjacency(nodes, links);
 
             const visited = new Set();
             const components = [];
@@ -795,13 +1757,8 @@
             const { link, nodeSelection } = createNodeAndLinkElements(filteredNodes, cleanLinks, true);
 
             simulation.on("tick", () => {
-                link.attr("d", d => {
-                    return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
-                });
-
-                nodeSelection
-                    .attr("cx", d => d.x)
-                    .attr("cy", d => d.y);
+                updateLinkPaths(link, currentZoomScale());
+                nodeSelection.attr("transform", d => `translate(${d.x},${d.y})`);
             });
 
             simulation.alpha(1).restart();
@@ -811,10 +1768,8 @@
             const linksWithNodes = applyColumnsLayout(filteredNodes, cleanLinks);
             const { link, nodeSelection } = createNodeAndLinkElements(filteredNodes, linksWithNodes, false);
 
-            updateStaticLinks(link, linksWithNodes);
-            nodeSelection
-                .attr("cx", d => d.x)
-                .attr("cy", d => d.y);
+            updateLinkPaths(link, currentZoomScale());
+            nodeSelection.attr("transform", d => `translate(${d.x},${d.y})`);
         }
 
         function createVisualization(data) {
@@ -825,42 +1780,40 @@
                 simulation.stop();
                 simulation = null;
             }
-            
-            svg.selectAll("*").remove();
-            
-            svg.append("defs").append("marker")
-                .attr("id", "arrowhead")
-                .attr("viewBox", "0 -5 10 10")
-                .attr("refX", 20)
-                .attr("refY", 0)
-                .attr("markerWidth", 6)
-                .attr("markerHeight", 6)
-                .attr("orient", "auto")
-                .append("path")
-                .attr("d", "M0,-5L10,0L0,5")
-                .attr("class", "arrowhead")
-                .style("fill", "#999");
 
+            svg.selectAll("*").remove();
+            appendArrowMarker(svg);
             g = svg.append("g");
 
             const filteredData = filterData(data);
+            // Before the layout: fitGraphToViewport reserves room by measuring the legend, and
+            // the counts change its width.
+            renderLegend(filteredData.categoryCounts);
 
             // Ensure clean link data with ID references
             const cleanLinks = filteredData.links.map(link => ({
-                source: typeof link.source === 'object' ? link.source.id : link.source,
-                target: typeof link.target === 'object' ? link.target.id : link.target,
+                source: linkEndpointId(link.source),
+                target: linkEndpointId(link.target),
                 source_state: link.source_state,
                 target_state: link.target_state
             }));
 
+            // Lookup tables for the hover highlight, over the *rendered* graph.
+            componentOfNode = new Map();
+            componentMembers = connectedComponents(filteredData.nodes, cleanLinks);
+            componentMembers.forEach((ids, index) => {
+                ids.forEach(id => componentOfNode.set(id, index));
+            });
+            neighboursOfNode = buildAdjacency(filteredData.nodes, cleanLinks);
+            nodesById = new Map(filteredData.nodes.map(node => [node.id, node]));
+
+            svg.attr("width", graphWidth).attr("height", graphHeight);
             if (currentFilter.layout === "force") {
-                svg.attr("width", graphWidth).attr("height", graphHeight);
                 createForceLayout(filteredData.nodes, cleanLinks);
                 // Force layout is dynamic: fit after a short delay once positions settle a bit.
                 setTimeout(() => fitGraphToViewport(250), 200);
                 setTimeout(() => fitGraphToViewport(250), 900);
             } else {
-                svg.attr("width", graphWidth).attr("height", graphHeight);
                 createColumnsLayout(filteredData.nodes, cleanLinks);
                 fitGraphToViewport(250);
             }
@@ -868,159 +1821,253 @@
             updateFilteredStats(data.metadata, filteredData);
         }
 
-        // DFS to find all nodes in the same connected component
-        function findConnectedComponent(nodeId, allNodes, allLinks) {
-            const visited = new Set();
-            const component = new Set();
-            const stack = [nodeId];
-            
-            const adjacency = new Map();
-            allNodes.forEach(node => adjacency.set(node.id, new Set()));
-            
-            allLinks.forEach(link => {
-                const sourceId = link.source.id || link.source;
-                const targetId = link.target.id || link.target;
-                adjacency.get(sourceId)?.add(targetId);
-                adjacency.get(targetId)?.add(sourceId);
-            });
-            
-            while (stack.length > 0) {
-                const currentId = stack.pop();
-                if (visited.has(currentId)) continue;
-                
-                visited.add(currentId);
-                component.add(currentId);
-                
-                const neighbors = adjacency.get(currentId) || new Set();
-                neighbors.forEach(neighborId => {
-                    if (!visited.has(neighborId)) {
-                        stack.push(neighborId);
-                    }
-                });
-            }
-            
-            return component;
+        // Map every node to the component it belongs to, plus the members of each component.
+        // Computed once per filter pass: expanding each match to its component one DFS at a time
+        // re-walks the whole graph per match, which is the difference between instant and
+        // noticeable when a broad label filter matches a few hundred PRs.
+        function componentIndex(nodes, links) {
+            const components = connectedComponents(nodes, links);
+            const indexOf = new Map();
+            components.forEach((ids, index) => ids.forEach(id => indexOf.set(id, index)));
+            return { components, indexOf };
+        }
+
+        // A facet with everything selected (null) or nothing selected (an empty set, i.e. the
+        // user has just hit "Clear" and not yet picked anything) places no restriction: landing
+        // on an empty graph is never what was wanted.
+        function facetSelects(kind, values) {
+            const selected = currentFilter[kind];
+            if (selected === null || selected.size === 0) return true;
+            return values.some(value => selected.has(value));
+        }
+
+        function facetIsRestricting(kind) {
+            const selected = currentFilter[kind];
+            return selected !== null && selected.size > 0;
+        }
+
+        function statusIsRestricting() {
+            return currentFilter.statuses !== null && currentFilter.statuses.size > 0;
+        }
+
+        function statusSelects(node) {
+            if (!statusIsRestricting()) return true;
+            return currentFilter.statuses.has(nodeCategory(node));
         }
 
         function filterData(data) {
             let matchingNodes = new Set();
             let connectedComponentNodes = new Set();
-            
-            const hasSearchTerm = currentFilter.search && currentFilter.search.trim().length > 0;
-            
+
+            const searchTerm = (currentFilter.search || "").trim().toLowerCase();
+            const hasSearchTerm = searchTerm.length > 0;
+            // The status facet seeds components like the others, but does not mark its matches:
+            // a node's fill already says which bucket it is in, so a halo on top of it would
+            // repeat what the colour says. Labels and authors are not visible on the graph, so
+            // for those the halo is the only way to see why a component is on screen.
+            const hasMarkingFacet = facetIsRestricting("labels") || facetIsRestricting("authors");
+            const hasStatusFacet = statusIsRestricting();
+            const focusId = currentFilter.focus;
+            const hasFocus = focusId !== null;
+            const isSeeded = hasSearchTerm || hasMarkingFacet || hasStatusFacet || hasFocus;
+
             let availableNodes;
-            if (currentFilter.showSingletons) {
+            if (currentFilter.showSingletons || hasFocus) {
+                // A focused PR may well have no dependencies at all; hiding it would make the
+                // link from the queueboard land on an empty graph.
                 availableNodes = data.nodes;
             } else {
                 // Filter out singletons - nodes with no dependencies or dependents
-                availableNodes = data.nodes.filter(node => 
+                availableNodes = data.nodes.filter(node =>
                     node.dependency_count > 0 || node.dependent_count > 0
                 );
             }
-            
+
             availableNodes.forEach(node => {
-                let matches = true;
-                
-                let searchMatches = true;
+                if (hasFocus) {
+                    if (node.id === focusId) matchingNodes.add(node.id);
+                    return;
+                }
+
+                const names = labelNames(node);
+                if (!facetSelects("labels", names)) return;
+                if (!facetSelects("authors", [node.author || "unknown"])) return;
+                if (!statusSelects(node)) return;
+
                 if (hasSearchTerm) {
-                    const searchTerm = currentFilter.search.toLowerCase();
                     const searchableText = [
-                        node.author.toLowerCase(),
-                        node.title.toLowerCase(),
-                        node.id.toString(),
-                        ...node.labels.map(label => label.toLowerCase())
+                        String(node.author || "").toLowerCase(),
+                        String(node.title || "").toLowerCase(),
+                        String(node.id),
+                        ...names.map(label => label.toLowerCase())
                     ].join(' ');
-                    
-                    searchMatches = searchableText.includes(searchTerm);
+                    if (!searchableText.includes(searchTerm)) return;
                 }
-                
-                if (matches && searchMatches) {
-                    matchingNodes.add(node.id);
-                }
+
+                matchingNodes.add(node.id);
             });
-            
-            // Show connected components for search matches
-            if (matchingNodes.size > 0 && hasSearchTerm) {
+
+            // Show whole connected components around the matches, so a match's blockers are
+            // visible even when they do not match themselves.
+            if (matchingNodes.size > 0 && isSeeded) {
+                const { components, indexOf } = componentIndex(availableNodes, data.links);
+                const wanted = new Set();
                 matchingNodes.forEach(nodeId => {
-                    const component = findConnectedComponent(nodeId, availableNodes, data.links);
-                    component.forEach(id => connectedComponentNodes.add(id));
+                    const index = indexOf.get(nodeId);
+                    if (index !== undefined) wanted.add(index);
                 });
-            } else {
+                wanted.forEach(index => components[index].forEach(id => connectedComponentNodes.add(id)));
+            } else if (!isSeeded) {
                 availableNodes.forEach(node => connectedComponentNodes.add(node.id));
             }
-            
-            const filteredNodes = data.nodes.filter(node => 
+
+            // A ?focus= pointing at a PR this snapshot no longer contains (merged, closed)
+            // would otherwise render a blank page; fall back to the unfiltered graph and say so.
+            // This has to happen before the node list is built from the set, not after it.
+            const focusMissing = hasFocus && matchingNodes.size === 0;
+            if (focusMissing) {
+                availableNodes.forEach(node => {
+                    if (node.dependency_count > 0 || node.dependent_count > 0 || currentFilter.showSingletons) {
+                        connectedComponentNodes.add(node.id);
+                    }
+                });
+            }
+
+            const filteredNodes = data.nodes.filter(node =>
                 connectedComponentNodes.has(node.id)
             ).map(node => ({
                 ...node,
-                isSearchMatch: hasSearchTerm && matchingNodes.has(node.id)
+                isSearchMatch: (hasSearchTerm || hasMarkingFacet) && !hasFocus && matchingNodes.has(node.id),
+                isFocused: hasFocus && node.id === focusId
             }));
-            
+
+            // Counted over everything the other filters let through, so the legend keeps
+            // reporting what a hidden bucket would bring back.
+            const categoryCounts = new Map(NODE_CATEGORIES.map(entry => [entry.key, 0]));
+            filteredNodes.forEach(node => {
+                const key = nodeCategory(node);
+                categoryCounts.set(key, (categoryCounts.get(key) || 0) + 1);
+            });
+
             const filteredLinks = data.links.filter(link => {
-                const sourceId = link.source.id || link.source;
-                const targetId = link.target.id || link.target;
+                const sourceId = linkEndpointId(link.source);
+                const targetId = linkEndpointId(link.target);
                 return connectedComponentNodes.has(sourceId) && connectedComponentNodes.has(targetId);
             });
 
-            return { nodes: filteredNodes, links: filteredLinks };
+            return { nodes: filteredNodes, links: filteredLinks, focusMissing, categoryCounts };
+        }
+
+        // Two clauses, each saying what it is counting: the snapshot as a whole, then the view.
+        // The view's composition is left to the legend, which breaks it down by bucket for
+        // exactly these PRs. It used to be summarised here as "N on the queue" as well, counting
+        // raw queue membership, which disagreed with the legend's "On the review queue" row --
+        // that bucket excludes the handful of queued PRs already labelled maintainer-merge (5 of
+        // 122 in a recent snapshot). Two numbers under one name, differing by a rule the reader
+        // cannot see, so the duplicate is gone rather than annotated.
+        function plural(count, singular, plural_) {
+            return `${count} ${count === 1 ? singular : plural_}`;
         }
 
         function updateFilteredStats(metadata, filteredData) {
-            const baseStatsText = `
-                Total PRs: ${metadata.total_prs} | 
-                PRs with dependencies: ${metadata.prs_with_dependencies} | 
-                PRs that are dependencies: ${metadata.prs_that_are_dependencies} | 
-                Dependency links: ${metadata.dependency_links}
+            const onQueue = metadata.prs_on_queue;
+            const queuePart = typeof onQueue === "number" ? `, ${onQueue} on the review queue` : "";
+            let focusPart = "";
+            if (currentFilter.focus !== null) {
+                focusPart = filteredData.focusMissing
+                    ? ` | <b>PR #${currentFilter.focus} is not in this snapshot</b> (merged or closed?), showing everything`
+                    : ` | Focused on PR #${currentFilter.focus} (<a href="#" id="clearFocusLink">show everything</a>)`;
+            }
+
+            let statusPart = "";
+            if (statusIsRestricting()) {
+                // Named exactly as the legend names them, since that is what was clicked.
+                const chosen = NODE_CATEGORIES
+                    .filter(entry => currentFilter.statuses.has(entry.key))
+                    .map(entry => `<b>${escapeHtml(entry.label)}</b>`);
+                statusPart = ` | Chains containing a PR marked ${chosen.join(" or ")}`;
+            }
+
+            document.getElementById("stats").innerHTML = `
+                In this snapshot: ${metadata.total_prs} PRs,
+                ${metadata.prs_with_dependencies} with dependencies,
+                ${metadata.prs_that_are_dependencies} that others depend on,
+                ${metadata.dependency_links} dependency links${queuePart} |
+                Showing: ${plural(filteredData.nodes.length, "PR", "PRs")}, ${plural(filteredData.links.length, "dependency", "dependencies")}${statusPart}${focusPart}
             `;
-            
-            const filteredStatsText = `
-                Showing: ${filteredData.nodes.length} PRs, ${filteredData.links.length} dependencies
-            `;
-            
-            document.getElementById("stats").innerHTML = baseStatsText + " | " + filteredStatsText;
+
+            const clearFocus = document.getElementById("clearFocusLink");
+            if (clearFocus) {
+                clearFocus.addEventListener("click", event => {
+                    event.preventDefault();
+                    currentFilter.focus = null;
+                    applyFilters();
+                });
+            }
         }
 
         function showTooltip(event, d) {
             const tooltip = document.getElementById("tooltip");
-            const labels = d.labels.length > 0 ? d.labels.slice(0, 3).join(", ") + 
-                          (d.labels.length > 3 ? "..." : "") : "None";
-            
-            const totalChanges = d.additions + d.deletions;
-            const diffText = totalChanges > 0 ? 
-                `<span style="color: #28a745;">+${d.additions}</span>/<span style="color: #dc3545;">-${d.deletions}</span> (${totalChanges} lines)` : 
-                "No changes";
-            
             const searchTerm = currentFilter.search ? currentFilter.search.trim() : '';
-            
+
+            const additions = d.additions || 0;
+            const deletions = d.deletions || 0;
+            const totalChanges = additions + deletions;
+            const diffText = totalChanges > 0
+                ? `<span style="color: var(--cat-queue);">+${additions}</span>/<span style="color: var(--cat-blocked);">-${deletions}</span> (${totalChanges} lines)`
+                : "No changes";
+
             const highlightedTitle = highlightMatchesSafe(d.title, searchTerm);
-            const highlightedAuthor = highlightMatchesSafe(d.author, searchTerm);
-            const highlightedLabels = highlightMatchesSafe(labels, searchTerm);
-            const highlightedPrNumber = highlightMatchesSafe(d.id.toString(), searchTerm);
-            
-            const searchMatchText = d.isSearchMatch ? 
-                `<div class="pr-meta" style="color: #ff0066; font-weight: bold;">🎯 Search Match</div>` : '';
+            const highlightedAuthor = highlightMatchesSafe(d.author || "unknown", searchTerm);
+            const highlightedPrNumber = highlightMatchesSafe(String(d.id), searchTerm);
+
+            const category = CATEGORY_BY_KEY.get(nodeCategory(d));
+            const statusColour = getNodeColor(d);
+            const statusName = category ? category.label : "Unclassified";
+            const rawStatus = d.pr_status ? ` <span style="opacity: 0.7">(${escapeHtml(d.pr_status)})</span>` : "";
+            // Worth spelling out: these PRs sit on the review queue but are not a reviewer's job.
+            const queueNote = d.awaiting_maintainer_merge && d.on_queue
+                ? `<div class="pr-meta">On the review queue, but labelled <b>maintainer-merge</b></div>` : "";
+
+            const downstream = d.downstream_count;
+            const upstream = d.upstream_count;
+            const unblocksText = typeof downstream === "number"
+                ? `${downstream} PR${downstream === 1 ? "" : "s"} (${d.dependent_count} directly)`
+                : `${d.dependent_count} directly`;
+            const blockedText = typeof upstream === "number"
+                ? `${upstream} PR${upstream === 1 ? "" : "s"} (${d.dependency_count} directly)`
+                : `${d.dependency_count} directly`;
+
+            const ciText = d.ci_status ? `<div class="pr-meta">CI: ${escapeHtml(d.ci_status)}</div>` : "";
+            const matchText = d.isSearchMatch
+                ? `<div class="pr-meta"><b>Matches the current filter</b></div>` : '';
+            const focusMode = document.getElementById("clickAction").value === "focus";
+            const primary = focusMode ? "focus on this PR" : "open the PR";
+            const secondary = focusMode ? "open it on GitHub" : "focus on it here";
             const openHint = isCoarsePointerDevice()
-                ? `<div class="pr-meta">Tap same node again to open PR</div>`
-                : `<div class="pr-meta">Click to open PR</div>`;
+                ? `<div class="pr-meta">Tap same node again to ${primary}</div>`
+                : `<div class="pr-meta">Click to ${primary} &middot; shift-click to ${secondary}</div>`;
             const closeButton = isCoarsePointerDevice()
-                ? `<button class="tooltip-close" type="button" onclick="closeTooltip(event)" aria-label="Close details">Close</button>`
+                ? `<button class="tooltip-close" type="button" id="tooltipCloseBtn" aria-label="Close details">Close</button>`
                 : "";
-            
-            tooltip.style.background = "rgba(0, 0, 0, 0.9)";
-            tooltip.style.border = "none";
-            
+
             tooltip.innerHTML = `
                 ${closeButton}
                 <h4>PR #${highlightedPrNumber}: ${highlightedTitle}</h4>
-                <div class="pr-meta">Author: ${highlightedAuthor}</div>
-                <div class="pr-meta">Status: ${isDraftLike(d) ? "Draft/WIP" : "Open"}</div>
+                <div class="pr-meta">Author: <b>${highlightedAuthor}</b></div>
+                <div class="pr-meta">Status: <b style="color: ${statusColour}">${escapeHtml(statusName)}</b>${rawStatus}</div>
+                ${queueNote}
+                ${ciText}
                 <div class="pr-meta">Diff: ${diffText}</div>
-                <div class="pr-meta">Dependencies: ${d.dependency_count}</div>
-                <div class="pr-meta">Dependents: ${d.dependent_count}</div>
-                <div class="pr-meta">Labels: ${highlightedLabels}</div>
-                ${searchMatchText}
+                <div class="pr-meta">Unblocks: <b>${unblocksText}</b></div>
+                <div class="pr-meta">Blocked by: <b>${blockedText}</b></div>
+                ${renderLabelChips(d, searchTerm)}
+                ${matchText}
                 ${openHint}
             `;
+
+            const closeBtn = document.getElementById("tooltipCloseBtn");
+            if (closeBtn) closeBtn.addEventListener("click", closeTooltip);
 
             positionTooltip(event, d);
             tooltip.classList.add("visible");
@@ -1036,6 +2083,7 @@
             }
             lastTappedNodeId = null;
             lastTapTs = 0;
+            clearHighlight();
             hideTooltip();
         }
 
@@ -1056,48 +2104,161 @@
             d.fy = null;
         }
 
-        function updateFilters() {
-            currentFilter.search = document.getElementById("searchFilter").value;
-            currentFilter.showSingletons = document.getElementById("showSingletons").checked;
-            currentFilter.layout = document.getElementById("layoutMode").value;
-            
-            const url = new URL(window.location);
-            if (currentFilter.search.trim()) {
-                url.searchParams.set('search', currentFilter.search);
-            } else {
-                url.searchParams.delete('search');
-            }
-            
-            if (currentFilter.showSingletons) {
-                url.searchParams.set('singletons', 'true');
-            } else {
-                url.searchParams.delete('singletons');
-            }
+        /* ---------- label / author facets ---------- */
 
-            if (currentFilter.layout !== "columns") {
-                url.searchParams.set("layout", currentFilter.layout);
-            } else {
-                url.searchParams.delete("layout");
-            }
-            
-            window.history.replaceState({}, '', url);
-            
+        function collectFacetOptions(data) {
+            const labels = new Map();
+            const authors = new Map();
+            data.nodes.forEach(node => {
+                labelNames(node).forEach(name => labels.set(name, (labels.get(name) || 0) + 1));
+                const author = node.author || "unknown";
+                authors.set(author, (authors.get(author) || 0) + 1);
+            });
+            const byName = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base" });
+            allLabelNames = [...labels.keys()].sort(byName).map(name => [name, labels.get(name)]);
+            allAuthorNames = [...authors.keys()].sort(byName).map(name => [name, authors.get(name)]);
+
+            // Drop any URL-supplied selection that no longer matches a real value, so a stale
+            // bookmark cannot silently show an empty graph.
+            ["labels", "authors"].forEach(kind => {
+                const known = new Set((kind === "labels" ? allLabelNames : allAuthorNames).map(entry => entry[0]));
+                if (currentFilter[kind] === null) return;
+                const kept = new Set([...currentFilter[kind]].filter(value => known.has(value)));
+                currentFilter[kind] = kept.size === 0 || kept.size === known.size ? null : kept;
+            });
+        }
+
+        function renderFacet(kind, options) {
+            const container = document.getElementById(kind === "labels" ? "labelFacetOptions" : "authorFacetOptions");
+            container.innerHTML = "";
+            options.forEach(([value, count]) => {
+                const wrapper = document.createElement("label");
+                wrapper.className = "facet-option";
+
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.value = value;
+                checkbox.checked = currentFilter[kind] === null || currentFilter[kind].has(value);
+                checkbox.addEventListener("change", () => readFacetSelection(kind));
+
+                const text = document.createElement("span");
+                text.textContent = value;
+
+                const badge = document.createElement("span");
+                badge.className = "count";
+                badge.textContent = count;
+
+                wrapper.append(checkbox, text, badge);
+                container.appendChild(wrapper);
+            });
+        }
+
+        function facetCheckboxes(kind) {
+            const container = document.getElementById(kind === "labels" ? "labelFacetOptions" : "authorFacetOptions");
+            return [...container.querySelectorAll('input[type="checkbox"]')];
+        }
+
+        function readFacetSelection(kind) {
+            const boxes = facetCheckboxes(kind);
+            const checked = boxes.filter(box => box.checked).map(box => box.value);
+            // null means "all"; an empty set means the user cleared the list and is about to
+            // pick a few. Both show everything (see facetSelects), but they are different
+            // states of the checkboxes, so "Clear" must not silently re-tick them all.
+            currentFilter[kind] = checked.length === boxes.length ? null : new Set(checked);
+            updateFacetSummaries();
+            applyFilters();
+        }
+
+        function setFacetSelection(kind, allSelected) {
+            facetCheckboxes(kind).forEach(box => { box.checked = allSelected; });
+            readFacetSelection(kind);
+        }
+
+        function updateFacetSummaries() {
+            [["labels", "labelFacetSummary", "Labels", allLabelNames], ["authors", "authorFacetSummary", "Authors", allAuthorNames]]
+                .forEach(([kind, id, title, options]) => {
+                    const selected = currentFilter[kind];
+                    let text;
+                    if (selected === null) {
+                        text = "all";
+                    } else if (selected.size === 0) {
+                        text = "none picked, showing all";
+                    } else {
+                        text = `${selected.size}/${options.length}`;
+                    }
+                    document.getElementById(id).textContent = `${title} (${text})`;
+                });
+        }
+
+        /* ---------- filter plumbing ---------- */
+
+        function syncFacetCheckboxes() {
+            ["labels", "authors"].forEach(kind => {
+                const selected = currentFilter[kind];
+                facetCheckboxes(kind).forEach(box => {
+                    box.checked = selected === null || selected.has(box.value);
+                });
+            });
+        }
+
+        function applyFilters() {
+            writeFiltersToURL();
             if (graphData) {
                 createVisualization(graphData);
             }
+        }
+
+        // |clearFocus| is set by the controls that mean "I want a different set of PRs now"
+        // (typing a search, resetting); changing the layout or toggling singletons keeps the
+        // PR the queueboard linked to in view.
+        function updateFilters(clearFocus = false) {
+            currentFilter.search = document.getElementById("searchFilter").value;
+            currentFilter.showSingletons = document.getElementById("showSingletons").checked;
+            currentFilter.layout = document.getElementById("layoutMode").value;
+            if (clearFocus) currentFilter.focus = null;
+            applyFilters();
+        }
+
+        function writeFiltersToURL() {
+            const url = new URL(window.location);
+            const setOrDelete = (key, value) => {
+                if (value) {
+                    url.searchParams.set(key, value);
+                } else {
+                    url.searchParams.delete(key);
+                }
+            };
+
+            setOrDelete('search', currentFilter.search.trim());
+            setOrDelete('singletons', currentFilter.showSingletons ? 'true' : '');
+            setOrDelete('layout', currentFilter.layout !== "columns" ? currentFilter.layout : '');
+            // Values are percent-encoded individually: a label or handle containing a comma
+            // would otherwise split into two on the way back in.
+            const encodeFacet = kind => (facetIsRestricting(kind) ? [...currentFilter[kind]].map(encodeURIComponent).join(',') : '');
+            setOrDelete('labels', encodeFacet("labels"));
+            setOrDelete('authors', encodeFacet("authors"));
+            setOrDelete('focus', currentFilter.focus !== null ? String(currentFilter.focus) : '');
+            // The selected buckets, in the table's own order so the link is stable. Same
+            // convention as ?labels= and ?authors=: what is listed is what is being asked for.
+            const statusKeys = statusIsRestricting()
+                ? NODE_CATEGORIES.filter(entry => currentFilter.statuses.has(entry.key)).map(entry => entry.key)
+                : [];
+            setOrDelete('status', statusKeys.join(','));
+
+            window.history.replaceState({}, '', url);
         }
 
         function resetFilters() {
             document.getElementById("searchFilter").value = "";
             document.getElementById("showSingletons").checked = false;
             document.getElementById("layoutMode").value = "columns";
-            
-            const url = new URL(window.location);
-            url.searchParams.delete('search');
-            url.searchParams.delete('singletons');
-            window.history.replaceState({}, '', url);
-            
-            updateFilters();
+            currentFilter.labels = null;
+            currentFilter.authors = null;
+            currentFilter.focus = null;
+            currentFilter.statuses = null;
+            syncFacetCheckboxes();
+            updateFacetSummaries();
+            updateFilters(true);
         }
 
         function loadFiltersFromURL() {
@@ -1105,12 +2266,13 @@
             const searchParam = url.searchParams.get('search');
             const singletonsParam = url.searchParams.get('singletons');
             const layoutParam = url.searchParams.get("layout");
-            
+            const focusParam = url.searchParams.get("focus");
+
             if (searchParam) {
                 document.getElementById("searchFilter").value = searchParam;
                 currentFilter.search = searchParam;
             }
-            
+
             if (singletonsParam === 'true') {
                 document.getElementById("showSingletons").checked = true;
                 currentFilter.showSingletons = true;
@@ -1120,29 +2282,68 @@
                 document.getElementById("layoutMode").value = layoutParam;
                 currentFilter.layout = layoutParam;
             }
+
+            ["labels", "authors"].forEach(kind => {
+                const raw = url.searchParams.get(kind);
+                if (raw) {
+                    const values = raw.split(',').map(value => {
+                        try {
+                            return decodeURIComponent(value.trim());
+                        } catch (error) {
+                            return value.trim();
+                        }
+                    }).filter(Boolean);
+                    if (values.length > 0) currentFilter[kind] = new Set(values);
+                }
+            });
+
+            const statusParam = url.searchParams.get("status");
+            if (statusParam) {
+                const keys = statusParam.split(',').map(value => value.trim()).filter(value => CATEGORY_BY_KEY.has(value));
+                // An unrecognised bucket name leaves no restriction rather than an empty graph.
+                if (keys.length > 0) currentFilter.statuses = new Set(keys);
+            }
+
+            // ?focus=<number> is how the queueboard's "unblocks" column links into this page:
+            // show just that PR's connected component, with the PR itself ringed.
+            if (focusParam && /^\d+$/.test(focusParam)) {
+                currentFilter.focus = Number.parseInt(focusParam, 10);
+            }
         }
 
         function resetZoom() {
             fitGraphToViewport(350);
         }
 
-        function zoomIn() {
-            svg.transition().duration(250).call(zoom.scaleBy, 1.2);
-        }
+        document.getElementById("searchFilter").addEventListener("input", () => updateFilters(true));
+        document.getElementById("showSingletons").addEventListener("change", () => updateFilters());
+        document.getElementById("layoutMode").addEventListener("change", () => updateFilters());
+        document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
+        document.getElementById("copyLinkBtn").addEventListener("click", copyDeepLink);
+        document.getElementById("resetZoomBtn").addEventListener("click", resetZoom);
+        document.getElementById("zoomInBtn").addEventListener("click", () => svg.transition().duration(250).call(zoom.scaleBy, 1.2));
+        document.getElementById("zoomOutBtn").addEventListener("click", () => svg.transition().duration(250).call(zoom.scaleBy, 1 / 1.2));
+        document.getElementById("zoomResetBtn").addEventListener("click", resetZoom);
 
-        function zoomOut() {
-            svg.transition().duration(250).call(zoom.scaleBy, 1 / 1.2);
-        }
+        document.querySelectorAll(".facet-actions button").forEach(button => {
+            button.addEventListener("click", () => setFacetSelection(button.dataset.facet, button.dataset.action === "all"));
+        });
 
-        document.getElementById("searchFilter").addEventListener("input", updateFilters);
-        document.getElementById("showSingletons").addEventListener("change", updateFilters);
-        document.getElementById("layoutMode").addEventListener("change", updateFilters);
+        document.getElementById("themeToggle").addEventListener("click", () => {
+            applyTheme(currentTheme() === "dark" ? "light" : "dark", true);
+        });
 
         loadFiltersFromURL();
+        applyTheme(storedTheme() === "dark" ? "dark" : "light", false);
         initializeSVG();
         loadData();
 
         document.addEventListener("click", (event) => {
+            // Close an open facet dropdown when clicking outside it.
+            document.querySelectorAll("details.facet[open]").forEach(facet => {
+                if (!facet.contains(event.target)) facet.open = false;
+            });
+
             const tooltip = document.getElementById("tooltip");
             if (!tooltip.classList.contains("visible")) return;
             if (tooltip.contains(event.target)) return;
@@ -1152,6 +2353,7 @@
 
         document.addEventListener("keydown", (event) => {
             if (event.key === "Escape") {
+                document.querySelectorAll("details.facet[open]").forEach(facet => { facet.open = false; });
                 closeTooltip();
             }
         });
@@ -1159,9 +2361,9 @@
         window.addEventListener('resize', () => {
             graphWidth = window.innerWidth - 40;
             graphHeight = window.innerHeight - 250;
-            
+
             svg.attr("width", graphWidth).attr("height", graphHeight);
-            
+
             if (simulation) {
                 simulation.force("center", d3.forceCenter(graphWidth / 2, graphHeight / 2));
                 simulation.alpha(0.3).restart();
@@ -1171,4 +2373,4 @@
         });
     </script>
 </body>
-</html> 
+</html>

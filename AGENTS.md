@@ -62,6 +62,20 @@ Notes
 
   Steps 4–13 run under `docker compose run --rm --no-deps -T web …` against cached images. Report
   which steps ran, by number.
+- **From a sandboxed agent shell, no browser launches, so screenshots are not an available
+  verification path for frontend work.** Playwright's firefox dies with "Could not find profile
+  folder" (also invoked directly, with `HOME`/`TMPDIR` overridden, and with a repo-local
+  profile); its chromium and `chrome-headless-shell` segfault; the system Chrome aborts. Setting
+  `dangerouslyDisableSandbox` does not help, and `ps`/`lsof` are blocked too — so a stale preview
+  server cannot be found and killed, and the fix is to bind a different port. A normal terminal
+  was not tested. Do not imply a visual check happened: say it did not, and hand the user a
+  preview server (`python3 -m http.server` over a directory of the generated `gh-pages/` output)
+  to look at.
+- **jsdom is the fallback that does work for frontend behaviour.** It needs shims for `fetch` and
+  `matchMedia` (it implements neither) and for `SVGElement.getBBox`. Two traps: an exception
+  thrown inside an event listener does not propagate out of `dispatchEvent`, so a broken handler
+  looks like a silently missing effect unless a `window` error listener is attached; and d3's zoom
+  *transition* throws on `SVGAnimatedLength.baseVal`, which is a jsdom gap, not a page bug.
 - Document any manual data validation or backfill steps in your PR description so reviewers can reproduce the checks.
 
 ## Commit & Pull Request Guidelines

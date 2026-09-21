@@ -6,6 +6,58 @@
 - `queries/` contains GraphQL payload templates used by the sync scripts in the sibling `queueboard` repo; adjust these alongside processing logic.
 - `static/` bundles CSS/JS referenced by the generated HTML; keep asset naming stable because workflows copy these directly to GitHub Pages.
 
+## static/dependency_dashboard.html
+A self-contained page — markup, CSS and ~1300 lines of inline JS in one file — with d3 from an
+SRI-pinned CDN and its data from `dependency_graph.json`, which `dashboard.py` copies out of
+`api/`. `dashboard.py` copies the page itself verbatim into `gh-pages/`, so there is no build
+step; editing the file is the whole change. Conventions it is easy to break:
+- **Colours come only from CSS custom properties**, resolved once per theme by `readPalette()`;
+  `NODE_CATEGORIES` names the token for each bucket, so the nodes and the legend cannot drift
+  apart. Never hardcode a colour in the JS.
+- **Light is the default and the OS preference is not consulted**, because the rest of the
+  frontend is light-only (see `qb_site/console/AGENTS.md`). Dark is opt-in through the toggle and
+  stored per browser in `localStorage` under `queueboard-dependency-theme`, applied by a `<head>`
+  script before the first paint. Rationale in `docs/design-decisions/055-dependency-graph-queue-status-colouring.md`.
+- **Anything sized for the reader is constant in *screen* pixels**, which in user space means
+  dividing by the zoom `k`. `applyZoomAwareStyling` is the single place node radii, ring widths,
+  link widths and the PR-number labels are resized; put new marks there rather than giving them a
+  fixed user-space size, which silently changes meaning with zoom. A mark that is inflated when
+  zoomed out needs *every* part of it inflated — the "blocked" ring thinned away with distance
+  because the node grew and the ring did not.
+- **d3 writes styles inline, and an inline style beats a stylesheet.** A rule in the `<style>`
+  block that targets a property some `.style(...)` call also sets will never apply — it simply
+  does nothing, which is easy to miss in review. Where a property must be both zoom-compensated
+  and switchable by class, write the computed value into a CSS custom property on the container
+  and let the stylesheet substitute it; that is what `--link-width` / `--link-width-strong` do
+  for `.link` and `.link.incident`. Do the arithmetic in JS rather than a CSS `calc()`, so the
+  stylesheet only ever substitutes a plain value.
+- **The legend is the status facet, and it picks whole chains rather than hiding PRs.** A
+  selected bucket seeds components exactly as `labels`/`authors` do, so selecting "On the review
+  queue" still shows the blocked PRs in those chains — which is why only the *selected* rows are
+  marked and the others are left alone. Clicking selects instead of removing because removing
+  one of six buckets changes 3 components out of 209; the measurements are in
+  `docs/design-decisions/056-dependency-graph-status-facet.md`. A new bucket in
+  `NODE_CATEGORIES` gets a row, a count and a URL key for free.
+- **Every filter belongs in the URL, because the toolbar's "Copy link" hands that URL over.**
+  `writeFiltersToURL` is the single place state is serialised, and a filter that skips it is
+  silently unshareable. Clicking a PR opens it on GitHub or focuses on it here depending on the
+  "Clicking a PR" select, with shift inverting the choice; focusing is what puts `?focus=` in
+  the URL, so it is the half of the deep-link story a reader actually operates.
+- **A link stops short of its target node; the arrowhead is not pulled back by `refX`.** `refX`
+  is measured in stroke widths, so anything positioned with it moves when the line thickens --
+  the emphasised link is 2.2x thicker and its head used to retreat 2.2x further, reading as the
+  arrow sliding to the middle of the line on hover. The marker's reference point is now its own
+  tip, and `linkPathFor` ends the path a constant *screen* distance outside the target's
+  outermost mark, so a new node mark that sticks out further has to be accounted for in
+  `outerMarkRadius` or the head will sit on top of it.
+- **The tooltip is placed around the highlight, not just around the cursor**: `positionTooltip`
+  scores candidate rectangles against the hovered PR's whole component plus the fixed overlays,
+  preferring one that covers nothing and, among those, the nearest. A new pinned panel has to be
+  registered in `overlayScreenBoxes()` or the tooltip will happily sit on it.
+- **An outline on a node means "blocked by an open PR" and nothing else.** Other node-level
+  states need a different channel, or they read as a variant of that one — which is why the
+  hover emphasis marks the incident *edges* rather than the neighbouring nodes.
+
 ## Daily Commands
 ```bash
 uv run python -m queueboard.dashboard test/all-open-PRs-1.json test/all-open-PRs-2.json  # regenerate all dashboards from fixtures
@@ -28,6 +80,7 @@ bash scripts/repo_check_compose.sh                                              
   - `uv run python src/queueboard/test_state_evolution.py`
   - `uv run python src/queueboard/test_snapshot.py`
   - `uv run python src/queueboard/test_process.py`
+  - `uv run python src/queueboard/test_util.py`
   - `uv run python src/queueboard/test_reviewer_topics.py`
   - other non-DB checks.
 - If Compose checks cannot run, clearly report that gap and request user-run results when needed.
