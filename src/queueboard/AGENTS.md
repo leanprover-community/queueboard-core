@@ -10,7 +10,7 @@
 A self-contained page — markup, CSS and ~1300 lines of inline JS in one file — with d3 from an
 SRI-pinned CDN and its data from `dependency_graph.json`, which `dashboard.py` copies out of
 `api/`. `dashboard.py` copies the page itself verbatim into `gh-pages/`, so there is no build
-step; editing the file is the whole change. Four conventions it is easy to break:
+step; editing the file is the whole change. Conventions it is easy to break:
 - **Colours come only from CSS custom properties**, resolved once per theme by `readPalette()`;
   `NODE_CATEGORIES` names the token for each bucket, so the nodes and the legend cannot drift
   apart. Never hardcode a colour in the JS.
@@ -31,6 +31,13 @@ step; editing the file is the whole change. Four conventions it is easy to break
   and let the stylesheet substitute it; that is what `--link-width` / `--link-width-strong` do
   for `.link` and `.link.incident`. Do the arithmetic in JS rather than a CSS `calc()`, so the
   stylesheet only ever substitutes a plain value.
+- **A link stops short of its target node; the arrowhead is not pulled back by `refX`.** `refX`
+  is measured in stroke widths, so anything positioned with it moves when the line thickens --
+  the emphasised link is 2.2x thicker and its head used to retreat 2.2x further, reading as the
+  arrow sliding to the middle of the line on hover. The marker's reference point is now its own
+  tip, and `linkPathFor` ends the path a constant *screen* distance outside the target's
+  outermost mark, so a new node mark that sticks out further has to be accounted for in
+  `outerMarkRadius` or the head will sit on top of it.
 - **The tooltip is placed around the highlight, not just around the cursor**: `positionTooltip`
   scores candidate rectangles against the hovered PR's whole component plus the fixed overlays,
   preferring one that covers nothing and, among those, the nearest. A new pinned panel has to be

@@ -321,7 +321,8 @@
            outline in a different colour reads as a variant of that rather than as a different
            fact. The edges are an unused channel, and they are what adjacency is a property of.
            The arrowhead scales with the line (markerUnits defaults to strokeWidth), so direction
-           sharpens along with it for free. */
+           sharpens along with it for free -- but its *position* must not, which is why the line
+           stops short of the node instead of the marker being pulled back by refX. */
         .dimmed { opacity: 0.1; }
         .link.incident {
             stroke: var(--ink);
@@ -968,22 +969,86 @@
 
         // Which way a dependency points is the first thing to become unreadable as you zoom
         // out, so the head is larger than the line warrants and fully opaque. markerUnits
-        // defaults to strokeWidth, so it grows with the link compensation for free; refX is in
-        // viewBox units, and 20 pulls the tip back far enough to clear a node wearing the
-        // "blocked" ring.
+        // defaults to strokeWidth, so it grows with the link compensation for free.
+        //
+        // refX is the marker's own anchor, and it is measured in *stroke widths* -- so pulling
+        // the head back with it made the head's position depend on how thick the line was: the
+        // emphasised link is 2.2x thicker, and its arrow retreated 2.2x further from the node,
+        // which read as the arrowhead sliding off the head of the link towards its middle on
+        // hover. refX is therefore the tip of the marker path (x = 10 in viewBox units), so the
+        // head lands exactly where the path ends, and clearing the node is the job of the path,
+        // which stops short of it (see linkPathFor). The head then sits in the same place at
+        // every stroke width.
         function appendArrowMarker(target) {
-            target.append("defs").append("marker")
+            const head = target.append("defs").append("marker")
                 .attr("id", "arrowhead")
                 .attr("viewBox", "0 -5 10 10")
-                .attr("refX", 20)
+                .attr("refX", 10)
                 .attr("refY", 0)
                 .attr("markerWidth", 8)
                 .attr("markerHeight", 8)
                 .attr("orient", "auto")
                 .append("path")
                 .attr("d", "M0,-3.5L10,0L0,3.5")
-                .attr("class", "arrowhead")
-                .style("fill", "var(--edge)");
+                .attr("class", "arrowhead");
+
+            // One marker is shared by every link, so the only way a head can follow the colour
+            // of its own line -- ink while that link is emphasised, edge grey otherwise -- is
+            // context-stroke. A browser without it ignores the second assignment and keeps the
+            // first, which is the old behaviour rather than a black arrowhead.
+            head.style("fill", "var(--edge)");
+            head.style("fill", "context-stroke");
+        }
+
+        // How far short of the target node the line stops, in screen pixels, so that the
+        // arrowhead's tip sits just off the node's outermost mark rather than on it.
+        const ARROW_GAP_PX = 3;
+
+        // The radius of whatever the target node's outermost mark is, in user space before zoom
+        // compensation: the match halo if it has one, otherwise the "blocked" ring, otherwise
+        // the body. Each mark's stroke is centred on its radius, so half of it sits outside.
+        function outerMarkRadius(node) {
+            if (node.isSearchMatch || node.isFocused) return getNodeRadius(node) + HALO_GAP + 1.5;
+            if (hasBlockingDependency(node)) return getRingRadius(node) + RING_WIDTH / 2;
+            return getNodeRadius(node);
+        }
+
+        // A link ends where its arrowhead should point, so the head's position is geometry and
+        // not a function of the stroke width (which changes on hover). The clearance tracks the
+        // node's on-screen size: the node inflates when zoomed out, so a fixed user-space
+        // shortening would let an inflated node swallow the head.
+        function linkPathFor(source, target, compensation, k) {
+            const dx = target.x - source.x;
+            const dy = target.y - source.y;
+            const distance = Math.hypot(dx, dy);
+            if (!Number.isFinite(distance) || distance === 0) {
+                return `M${source.x},${source.y}L${target.x},${target.y}`;
+            }
+            // Never trim past the source: two nodes closer together than the clearance keep a
+            // short line pointing the right way rather than one pointing backwards.
+            const clearance = Math.min(outerMarkRadius(target) * compensation + ARROW_GAP_PX / k, distance * 0.9);
+            return `M${source.x},${source.y}L${target.x - (dx / distance) * clearance},${target.y - (dy / distance) * clearance}`;
+        }
+
+        // The force layout resolves link endpoints to node objects in place; the columns layout
+        // keeps ids and carries the nodes alongside.
+        function linkEndpointNodes(d) {
+            return [d.sourceNode || d.source, d.targetNode || d.target];
+        }
+
+        function updateLinkPaths(linkSelection, scaleK) {
+            const k = Math.max(scaleK, 0.0001);
+            const compensation = nodeCompensationFor(k);
+            linkSelection.attr("d", d => {
+                const [source, target] = linkEndpointNodes(d);
+                if (!source || !target) return null;
+                return linkPathFor(source, target, compensation, k);
+            });
+        }
+
+        function currentZoomScale() {
+            const svgElement = document.getElementById("graph");
+            return svgElement ? d3.zoomTransform(svgElement).k : 1;
         }
 
         // Nodes are drawn larger than life when zoomed out so they stay visible, capped to avoid
@@ -1019,6 +1084,10 @@
 
             g.selectAll("circle.body")
                 .attr("r", d => getNodeRadius(d) * nodeCompensation);
+
+            // The line stops short of the node by the node's *on-screen* size, so the trim has
+            // to be redone whenever that changes.
+            updateLinkPaths(g.selectAll("path.link"), k);
 
             // The ring has to grow with the node it surrounds, or zooming out thins it away --
             // which is most of why it looked faint from a distance.
@@ -1290,12 +1359,6 @@
             }));
         }
 
-        function updateStaticLinks(linkSelection) {
-            linkSelection.attr("d", d => {
-                return `M${d.sourceNode.x},${d.sourceNode.y}L${d.targetNode.x},${d.targetNode.y}`;
-            });
-        }
-
         function buildAdjacency(nodes, links) {
             const adjacency = new Map(nodes.map(node => [node.id, new Set()]));
             links.forEach(link => {
@@ -1444,7 +1507,7 @@
             const { link, nodeSelection } = createNodeAndLinkElements(filteredNodes, cleanLinks, true);
 
             simulation.on("tick", () => {
-                link.attr("d", d => `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`);
+                updateLinkPaths(link, currentZoomScale());
                 nodeSelection.attr("transform", d => `translate(${d.x},${d.y})`);
             });
 
@@ -1455,7 +1518,7 @@
             const linksWithNodes = applyColumnsLayout(filteredNodes, cleanLinks);
             const { link, nodeSelection } = createNodeAndLinkElements(filteredNodes, linksWithNodes, false);
 
-            updateStaticLinks(link);
+            updateLinkPaths(link, currentZoomScale());
             nodeSelection.attr("transform", d => `translate(${d.x},${d.y})`);
         }
 
