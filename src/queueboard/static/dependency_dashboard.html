@@ -535,8 +535,16 @@
                 <option value="force">Force (dynamic)</option>
             </select>
         </div>
+        <div>
+            <label for="clickAction">Clicking a PR:</label>
+            <select id="clickAction" title="Shift-click always does the other one">
+                <option value="open">Opens it on GitHub</option>
+                <option value="focus">Focuses on it here</option>
+            </select>
+        </div>
         <button type="button" id="resetFiltersBtn">Reset Filters</button>
         <button type="button" id="resetZoomBtn">Reset Zoom</button>
+        <button type="button" id="copyLinkBtn" title="Copy a link that reopens this exact view">Copy link</button>
         <button type="button" id="themeToggle" title="Switch to the dark palette">Dark mode</button>
     </div>
 
@@ -1461,7 +1469,7 @@
                 .on("click", (event, d) => {
                     event.stopPropagation();
                     if (!isCoarsePointerDevice()) {
-                        window.open(d.url, "_blank", "noopener");
+                        performNodeAction(clickActionFor(event), d);
                         return;
                     }
 
@@ -1469,7 +1477,7 @@
                     const isSecondTap = lastTappedNodeId === d.id && now - lastTapTs < 1200;
 
                     if (isSecondTap) {
-                        window.open(d.url, "_blank", "noopener");
+                        performNodeAction(clickActionFor(event), d);
                         return;
                     }
 
@@ -1489,6 +1497,88 @@
             }
 
             return { link, nodeSelection };
+        }
+
+        /* ---------- deep links ----------
+         *
+         * Every filter is already mirrored into the address bar by writeFiltersToURL, so the
+         * page has always been linkable; what was missing was a way to *make* a link without
+         * knowing that. Two halves: "Copy link" hands over the current URL, and the click
+         * action decides whether clicking a PR leaves the page for GitHub or focuses on it
+         * here -- focusing is what puts ?focus= in the URL, and is the interesting link to
+         * share. Shift always does the other one, so neither is more than a click away.
+         */
+        function clickActionFor(event) {
+            const mode = document.getElementById("clickAction").value;
+            const inverted = Boolean(event && event.shiftKey);
+            return (mode === "focus") !== inverted ? "focus" : "open";
+        }
+
+        function performNodeAction(action, d) {
+            if (action === "focus") {
+                closeTooltip();
+                currentFilter.focus = d.id;
+                applyFilters();
+                return;
+            }
+            window.open(d.url, "_blank", "noopener");
+        }
+
+        function flashButton(button, message) {
+            if (button.dataset.restoreText === undefined) {
+                button.dataset.restoreText = button.textContent;
+            }
+            button.textContent = message;
+            window.clearTimeout(Number(button.dataset.restoreTimer) || 0);
+            button.dataset.restoreTimer = String(window.setTimeout(() => {
+                button.textContent = button.dataset.restoreText;
+                delete button.dataset.restoreText;
+            }, 1800));
+        }
+
+        // The async clipboard is unavailable on an insecure origin and can be refused outright,
+        // so there is a selection-based fallback; if even that fails the URL is put in a prompt,
+        // which is ugly but always copyable.
+        function copyTextFallback(text) {
+            const holder = document.createElement("textarea");
+            holder.value = text;
+            holder.setAttribute("readonly", "");
+            holder.style.position = "fixed";
+            holder.style.top = "-1000px";
+            document.body.appendChild(holder);
+            holder.select();
+            let copied = false;
+            try {
+                copied = document.execCommand("copy");
+            } catch (error) {
+                copied = false;
+            }
+            holder.remove();
+            return copied;
+        }
+
+        async function copyDeepLink() {
+            const button = document.getElementById("copyLinkBtn");
+            // The address bar is kept current by applyFilters, but a view that has not been
+            // touched since load has never been through it.
+            writeFiltersToURL();
+            const url = window.location.href;
+
+            let copied = false;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                    copied = true;
+                }
+            } catch (error) {
+                copied = false;
+            }
+            if (!copied) copied = copyTextFallback(url);
+            if (!copied) {
+                window.prompt("Copy this link:", url);
+                copied = true;
+            }
+            flashButton(button, "Copied!");
         }
 
         function highlightRelated(node) {
@@ -1886,7 +1976,7 @@
             if (currentFilter.focus !== null) {
                 focusPart = filteredData.focusMissing
                     ? ` | <b>PR #${currentFilter.focus} is not in this snapshot</b> (merged or closed?), showing everything`
-                    : ` | Focused on PR #${currentFilter.focus}`;
+                    : ` | Focused on PR #${currentFilter.focus} (<a href="#" id="clearFocusLink">show everything</a>)`;
             }
 
             let statusPart = "";
@@ -1905,6 +1995,15 @@
                 ${metadata.dependency_links} dependency links${queuePart} |
                 Showing: ${plural(filteredData.nodes.length, "PR", "PRs")}, ${plural(filteredData.links.length, "dependency", "dependencies")}${statusPart}${focusPart}
             `;
+
+            const clearFocus = document.getElementById("clearFocusLink");
+            if (clearFocus) {
+                clearFocus.addEventListener("click", event => {
+                    event.preventDefault();
+                    currentFilter.focus = null;
+                    applyFilters();
+                });
+            }
         }
 
         function showTooltip(event, d) {
@@ -1942,9 +2041,12 @@
             const ciText = d.ci_status ? `<div class="pr-meta">CI: ${escapeHtml(d.ci_status)}</div>` : "";
             const matchText = d.isSearchMatch
                 ? `<div class="pr-meta"><b>Matches the current filter</b></div>` : '';
+            const focusMode = document.getElementById("clickAction").value === "focus";
+            const primary = focusMode ? "focus on this PR" : "open the PR";
+            const secondary = focusMode ? "open it on GitHub" : "focus on it here";
             const openHint = isCoarsePointerDevice()
-                ? `<div class="pr-meta">Tap same node again to open PR</div>`
-                : `<div class="pr-meta">Click to open PR</div>`;
+                ? `<div class="pr-meta">Tap same node again to ${primary}</div>`
+                : `<div class="pr-meta">Click to ${primary} &middot; shift-click to ${secondary}</div>`;
             const closeButton = isCoarsePointerDevice()
                 ? `<button class="tooltip-close" type="button" id="tooltipCloseBtn" aria-label="Close details">Close</button>`
                 : "";
@@ -2217,6 +2319,7 @@
         document.getElementById("showSingletons").addEventListener("change", () => updateFilters());
         document.getElementById("layoutMode").addEventListener("change", () => updateFilters());
         document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
+        document.getElementById("copyLinkBtn").addEventListener("click", copyDeepLink);
         document.getElementById("resetZoomBtn").addEventListener("click", resetZoom);
         document.getElementById("zoomInBtn").addEventListener("click", () => svg.transition().duration(250).call(zoom.scaleBy, 1.2));
         document.getElementById("zoomOutBtn").addEventListener("click", () => svg.transition().duration(250).call(zoom.scaleBy, 1 / 1.2));

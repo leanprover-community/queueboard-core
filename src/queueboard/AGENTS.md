@@ -38,6 +38,11 @@ step; editing the file is the whole change. Conventions it is easy to break:
   one of six buckets changes 3 components out of 209; the measurements are in
   `docs/design-decisions/056-dependency-graph-status-facet.md`. A new bucket in
   `NODE_CATEGORIES` gets a row, a count and a URL key for free.
+- **Every filter belongs in the URL, because the toolbar's "Copy link" hands that URL over.**
+  `writeFiltersToURL` is the single place state is serialised, and a filter that skips it is
+  silently unshareable. Clicking a PR opens it on GitHub or focuses on it here depending on the
+  "Clicking a PR" select, with shift inverting the choice; focusing is what puts `?focus=` in
+  the URL, so it is the half of the deep-link story a reader actually operates.
 - **A link stops short of its target node; the arrowhead is not pulled back by `refX`.** `refX`
   is measured in stroke widths, so anything positioned with it moves when the line thickens --
   the emphasised link is 2.2x thicker and its head used to retreat 2.2x further, reading as the
