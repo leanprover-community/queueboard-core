@@ -10,6 +10,7 @@ from analyzer.services.reviewer_assignment import (
     PRAssignmentPriority,
     ReviewerAssignmentBuilder,
     ReviewerProfile,
+    _excluded_label_logins_for_prs,
     _filter_assignment_forbidden_prs,
     add_pending_proposal_load,
     build_reviewer_assignment_trace,
@@ -938,6 +939,26 @@ class ReviewerAssignmentBuilderTests(TestCase):
         [profile] = build_reviewer_catalog(self.repo, now=self.now)
 
         self.assertEqual(profile.excluded_labels_lower, frozenset({"llm-generated", "wip"}))
+
+    def test_live_excluded_label_lookup(self):
+        # Matches case-insensitively, per reviewer, and ignores labels nobody excludes.
+        self._make_pr(31, labels=("LLM-Generated", "t-analysis"))
+        self._make_pr(32, labels=("t-analysis",))
+        self._make_pr(33, labels=("WIP",))
+        reviewers = [
+            _excluding_profile("Alice", ["t-analysis"], excluded=("llm-generated",)),
+            _excluding_profile("bob", ["t-analysis"], excluded=("wip", "llm-generated")),
+            _excluding_profile("carol", ["t-analysis"]),
+        ]
+
+        result = _excluded_label_logins_for_prs(self.repo, [31, 32, 33], reviewers)
+
+        self.assertEqual(result, {31: {"alice", "bob"}, 33: {"bob"}})
+
+    def test_live_excluded_label_lookup_skips_the_query_when_nobody_excludes(self):
+        self._make_pr(31, labels=("LLM-generated",))
+        with self.assertNumQueries(0):
+            self.assertEqual(_excluded_label_logins_for_prs(self.repo, [31], [_excluding_profile("carol", [])]), {})
 
     def test_catalog_reads_a_bare_string_as_one_excluded_label(self):
         # Iterating the string would exclude the one-letter labels "w", "i" and "p" instead.

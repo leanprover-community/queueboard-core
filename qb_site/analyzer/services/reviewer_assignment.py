@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Sequence, Set
 
 from django.conf import settings
+from django.db.models.functions import Lower
 from django.utils.dateparse import parse_datetime
 
 from analyzer.models import (
@@ -74,7 +75,9 @@ def _excluded_label_logins_for_prs(
     ``_opt_outs_for_prs`` for the apply/propose re-validation. The engine already dropped these
     reviewers against the snapshot's labels at compute time; this re-reads the live
     ``syncer.PRLabel`` rows because the snapshot can be ~a day old, and a label added since then
-    must still stop the assignment. No query at all when no reviewer excludes anything.
+    must still stop the assignment. On-demand suggestions (design doc 053) use it the same way,
+    for the requester alone. No query at all when no reviewer excludes anything, and the query
+    returns only label rows that some reviewer excludes, so the common case reads nothing.
     """
     excluded_by_login = {
         _normalize_login(reviewer.github_login): reviewer.excluded_labels_lower
@@ -83,13 +86,16 @@ def _excluded_label_logins_for_prs(
     }
     if not pr_numbers or not excluded_by_login:
         return {}
+    excluded_anywhere = set().union(*excluded_by_login.values())
     labels_by_pr: dict[int, set[str]] = {}
-    rows = PRLabel.objects.filter(
-        pull_request__repository=repository,
-        pull_request__number__in=pr_numbers,
-    ).values_list("pull_request__number", "label_def__name")
+    rows = (
+        PRLabel.objects.filter(pull_request__repository=repository, pull_request__number__in=pr_numbers)
+        .annotate(name_lower=Lower("label_def__name"))
+        .filter(name_lower__in=excluded_anywhere)
+        .values_list("pull_request__number", "name_lower")
+    )
     for pr_number, label_name in rows:
-        labels_by_pr.setdefault(int(pr_number), set()).add(str(label_name).strip().lower())
+        labels_by_pr.setdefault(int(pr_number), set()).add(label_name)
     result: dict[int, set[str]] = {}
     for pr_number, labels in labels_by_pr.items():
         logins = {login for login, excluded in excluded_by_login.items() if excluded & labels}
