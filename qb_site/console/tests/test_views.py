@@ -318,6 +318,8 @@ class ConsoleViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Assignment accepted")
         mock_assign.assert_called_once()
+        # An explicit click: a same-day skip by the automatic sweep must not block it.
+        self.assertIs(mock_assign.call_args.kwargs["take_over_skipped"], True)
         proposal.refresh_from_db()
         self.assertEqual(proposal.state, AssignmentProposal.STATE_ACCEPTED)
         self.assertEqual(proposal.decided_via, AssignmentProposal.DECIDED_VIA_CONSOLE)
@@ -517,6 +519,8 @@ class ConsoleViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Assignment accepted")
         mock_assign.assert_called_once()
+        # The sweep may already have skipped this pair as opted out today; the click still goes ahead.
+        self.assertIs(mock_assign.call_args.kwargs["take_over_skipped"], True)
         opt_out = ReviewerOptOut.objects.get(repository=self.repo, pr_number=101, reviewer_login="bob")
         self.assertFalse(opt_out.active)
         self.assertIsNotNone(opt_out.cleared_at)

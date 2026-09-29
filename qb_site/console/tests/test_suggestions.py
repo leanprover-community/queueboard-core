@@ -166,6 +166,7 @@ class SuggestionViewTests(TestCase):
         self.assertEqual(kwargs["pr_number"], 101)
         self.assertEqual(kwargs["login"], "bob")
         self.assertIsNone(kwargs["snapshot"])
+        self.assertIs(kwargs["take_over_skipped"], True)
 
     def test_claim_login_always_comes_from_the_session(self) -> None:
         # A posted login/reviewer field is ignored: the assigned login is the session reviewer's.
