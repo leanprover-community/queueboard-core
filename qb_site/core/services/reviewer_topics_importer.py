@@ -8,6 +8,7 @@ from typing import Any, Callable, IO, Iterable, List, Tuple
 from django.db import transaction
 
 from core.models import Repository, ReviewerPreference, User
+from core.models.reviewer_preference import clean_label_names
 from core.utils.db import update_if_changed
 
 DEFAULT_REPO = "leanprover-community/mathlib4"
@@ -237,8 +238,7 @@ def import_reviewer_topics(
                 pref.conflict_of_interest = conflicts
 
         if "excluded_labels" in entry:
-            raw_excluded = entry.get("excluded_labels") or []
-            excluded = _dedupe_case_insensitive_preserve_first(str(x) for x in raw_excluded)
+            excluded = _dedupe_case_insensitive_preserve_first(clean_label_names(entry.get("excluded_labels")))
             if pref.excluded_labels != excluded:
                 changes["excluded_labels"] = (pref.excluded_labels, excluded)
                 pref.excluded_labels = excluded

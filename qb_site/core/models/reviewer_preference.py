@@ -7,6 +7,22 @@ from .repository import Repository
 from .user import User
 
 
+def clean_label_names(value: object) -> list[str]:
+    """A stored label-list JSON value as label names: stripped, non-empty strings, in order.
+
+    The columns are free JSON, so an admin edit or an import can leave a bare string, ``null``
+    entries or numbers in them. A bare string is one label (iterating it would yield characters),
+    any other non-list is empty, and non-string entries are dropped. Every reader of
+    ``excluded_labels`` goes through this so the engine, the form and the importer agree on what
+    the reviewer excluded.
+    """
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
 class ReviewerPreference(TimestampedModel):
     """Repo‑scoped reviewer preferences.
 

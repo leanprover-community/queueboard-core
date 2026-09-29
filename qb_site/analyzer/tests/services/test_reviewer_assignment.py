@@ -932,12 +932,22 @@ class ReviewerAssignmentBuilderTests(TestCase):
             repository=self.repo,
             user=self.bob,
             preferred_labels=["t-analysis"],
-            excluded_labels=[" LLM-generated ", "WIP", ""],
+            excluded_labels=[" LLM-generated ", "WIP", "", None, 3],
         )
 
         [profile] = build_reviewer_catalog(self.repo, now=self.now)
 
         self.assertEqual(profile.excluded_labels_lower, frozenset({"llm-generated", "wip"}))
+
+    def test_catalog_reads_a_bare_string_as_one_excluded_label(self):
+        # Iterating the string would exclude the one-letter labels "w", "i" and "p" instead.
+        ReviewerPreference.objects.create(
+            repository=self.repo, user=self.bob, preferred_labels=["t-analysis"], excluded_labels="WIP"
+        )
+
+        [profile] = build_reviewer_catalog(self.repo, now=self.now)
+
+        self.assertEqual(profile.excluded_labels_lower, frozenset({"wip"}))
 
     def test_build_skips_pr_already_assigned_to_active_reviewer(self):
         pr = self._make_pr(16, labels=("t-analysis",))

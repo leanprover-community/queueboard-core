@@ -34,6 +34,7 @@ from analyzer.services.reviewer_assignment_engine import (
     suggest_reviewer_for_pr,
 )
 from core.models import Repository, ReviewerPreference
+from core.models.reviewer_preference import clean_label_names
 from core.services.topic_labels import TopicLabelMatcher, default_topic_label_matcher, topic_label_matcher_for_repo
 from queueboard.classify_pr_state import PRStatus
 from syncer.models import PRLabel
@@ -315,9 +316,7 @@ def build_reviewer_catalog(repository: Repository, *, now: datetime | None = Non
             # caller used, so an unnormalized lookup here would read 0 for every reviewer whose
             # GitHub login is capitalized and quietly disable their limit (design doc 054).
             recent_assignment_count=recent_counts.get(_normalize_login(login), 0),
-            excluded_labels_lower=frozenset(
-                str(lab).strip().lower() for lab in (pref.excluded_labels or []) if isinstance(lab, str) and lab.strip()
-            ),
+            excluded_labels_lower=frozenset(name.lower() for name in clean_label_names(pref.excluded_labels)),
         )
         profiles.append(profile)
     return profiles
