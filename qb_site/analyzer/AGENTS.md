@@ -52,8 +52,11 @@
     the engine as `ReviewerProfile.excluded_labels_lower` (via `build_reviewer_catalog`), and a PR
     carrying *any* of them — topic label or not — drops that reviewer before label matching, like a
     conflict of interest (never after the `max_score` contest, where an excluded reviewer could
-    outrank everyone left). Apply/propose re-check it against live `syncer.PRLabel` rows
-    (`_excluded_label_logins_for_prs`, status `skipped_excluded_label`). The trace records it under
+    outrank everyone left). Apply/propose and on-demand suggestions re-check it against live
+    `syncer.PRLabel` rows (`_excluded_label_logins_for_prs`; apply records status
+    `skipped_excluded_label`), because the snapshot the engine read can be stale. The engine,
+    both trace paths and the suggestions skip classifier share one pre-matching rule,
+    `reviewer_assignment_engine._prefilter_reason`. Public area stats ignore exclusions. The trace records it under
     `filtered["excluded_label"]`; traces name reviewers per rule, so like the preference itself they
     are private and must never reach a public API.
   - `ci_evaluation.py` — single-PR CI status evaluation against a ruleset's `required_ci_contexts`; use `ci_status_for_pr(pr, rules, repository)` instead of re-implementing context-matching logic.
