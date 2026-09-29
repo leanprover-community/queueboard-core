@@ -24,7 +24,7 @@ from analyzer.services.assignment_suggestions import (
 )
 from analyzer.services.reviewer_assignment_engine import ReviewerProfile, suggest_reviewer_for_pr_with_trace
 from core.models import Repository, ReviewerPreference, User
-from syncer.models import LabelDef
+from syncer.models import LabelDef, PRLabel, PullRequest, PullRequestState
 
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=dt_timezone.utc)
 
@@ -92,6 +92,29 @@ class SuggestionServiceTestCase(TestCase):
     def _suggest(self, login: str = "alice", **kwargs):
         kwargs.setdefault("now", NOW)
         return suggest_prs_for_reviewer(self.repo, login, **kwargs)
+
+    def _label_live(self, number: int, label_name: str) -> None:
+        """Give PR ``number`` a live ``PRLabel`` row the snapshot does not know about."""
+        pr, _ = PullRequest.objects.get_or_create(
+            repository=self.repo,
+            number=number,
+            defaults=dict(
+                state=PullRequestState.OPEN,
+                is_draft=False,
+                gh_created_at=NOW,
+                gh_updated_at=NOW,
+                base_ref_name="master",
+                head_ref_name=f"branch-{number}",
+                head_repo_owner_login="leanprover-community",
+                head_repo_name="mathlib4",
+                title=f"PR {number}",
+                body="b",
+                additions=1,
+                deletions=0,
+                changed_files_count=1,
+            ),
+        )
+        PRLabel.objects.create(pull_request=pr, label_def=LabelDef.objects.get(repository=self.repo, name__iexact=label_name))
 
 
 class TestStatuses(SuggestionServiceTestCase):
@@ -469,6 +492,31 @@ class TestOverridesAndCorrectnessRules(SuggestionServiceTestCase):
         result = self._suggest()
         self.assertEqual(result.status, STATUS_NONE_ELIGIBLE)
         self.assertEqual(result.skipped, {SKIP_EXCLUDED_LABEL: 1})
+
+    def test_excluded_label_added_after_the_snapshot_still_applies(self) -> None:
+        # The snapshot can be minutes (or, if refreshes stall, hours) old. A label added since then
+        # is only in the live PRLabel rows, and must still keep the PR from the requester.
+        self.alice_pref.excluded_labels = ["Easy"]
+        self.alice_pref.save(update_fields=["excluded_labels"])
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"]), "2": _pr(labels=["t-algebra"])})
+        self._label_live(1, "easy")
+        self._label_live(2, "t-algebra")
+
+        result = self._suggest()
+
+        self.assertEqual([s.pr_number for s in result.suggestions], [2])
+        self.assertEqual(result.skipped, {SKIP_EXCLUDED_LABEL: 1})
+
+    def test_live_label_check_only_reads_the_requesters_exclusions(self) -> None:
+        # bob's exclusion is not alice's business: the live check leaves her offer alone.
+        self.bob_pref.excluded_labels = ["easy"]
+        self.bob_pref.save(update_fields=["excluded_labels"])
+        self._seed_snapshot({"1": _pr(labels=["t-algebra"])})
+        self._label_live(1, "easy")
+
+        result = self._suggest()
+
+        self.assertEqual([s.pr_number for s in result.suggestions], [1])
 
     def test_label_override_does_not_lift_an_exclusion(self) -> None:
         # The override replaces preferred labels only; asking for the excluded label by name

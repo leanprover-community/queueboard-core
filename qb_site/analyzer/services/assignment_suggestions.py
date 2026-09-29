@@ -10,7 +10,8 @@ requester's ``ReviewerProfile`` is replaced in the shared candidate catalog with
 engine call then sees the override. Key invariants (numbered as in the design doc):
 
 1. Read-only and stateless: a suggestion is a pure function of (snapshot payload, live
-   preference/proposal/opt-out state), computed and discarded. Never builds a snapshot.
+   preference/proposal/opt-out state, and the live labels the requester excludes), computed and
+   discarded. Never builds a snapshot.
 2. Reproducible: only the trace's ``available`` membership is read — never the engine's weighted
    random ``picked`` — and the ranking's sort key is a total order, so identical requests against
    one snapshot generation return identical ordered results (and a smaller ``limit`` returns a
@@ -41,7 +42,11 @@ from django.db.models.functions import Lower
 
 from analyzer.models import QueueSnapshot
 from analyzer.services.queue_rules import default_rule_set_for_repo
-from analyzer.services.reviewer_assignment import _compute_weight, prepare_assignment_inputs
+from analyzer.services.reviewer_assignment import (
+    _compute_weight,
+    _excluded_label_logins_for_prs,
+    prepare_assignment_inputs,
+)
 from analyzer.services.reviewer_assignment_engine import (
     PREFILTER_CONFLICT_OF_INTEREST,
     PREFILTER_EXCLUDED_LABEL,
@@ -333,6 +338,13 @@ def suggest_prs_for_reviewer(
         topic_label_matcher=matcher,
     )
 
+    # The engine judged exclusions against the snapshot's labels, which can be minutes old (hours,
+    # if refreshes stall). A label added since must still keep the PR from the requester, so re-read
+    # the live labels, as apply/propose do (design doc 057). The claim re-check reruns this function,
+    # so it inherits the check. Only the requester's own exclusions matter here; no query when they
+    # have none.
+    live_excluded_prs = set(_excluded_label_logins_for_prs(repository, ranked_prs, [requester]))
+
     # A fixed local RNG: the engine's weighted draw ("picked") is computed but never read
     # (Invariant 2); seeding locally also keeps this read path from consuming global randomness.
     rng = random.Random(0)
@@ -369,6 +381,9 @@ def suggest_prs_for_reviewer(
                 matcher=matcher,
             )
             skipped[reason] = skipped.get(reason, 0) + 1
+            continue
+        if int(pr_number) in live_excluded_prs:
+            skipped[SKIP_EXCLUDED_LABEL] = skipped.get(SKIP_EXCLUDED_LABEL, 0) + 1
             continue
         if len(suggestions) >= effective_limit:
             continue
