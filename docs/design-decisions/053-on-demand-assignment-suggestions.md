@@ -336,16 +336,24 @@ suggest-prs [<owner/repo>] [<label> ...]
   how `assigned-prs` already behaves. With a repo argument: that repo only.
 - Remaining tokens are the label override set (capped by `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS`;
   unknown/non-topic labels are reported back rather than silently yielding nothing).
-- **Reply in place** (`CommandResult(content=...)`), not a DM. The content is not sensitive, and —
-  the deciding argument — the natural next step is `assign #12345`, which is itself an in-place
-  command. Splitting the two halves of one flow across a DM and a channel would be worse than
-  either. This follows `assign` / `console`, not `assigned-prs` / `prefs`.
+- **Reply by DM**, wherever the command was invoked (proactive `send_direct_message` +
+  `CommandResult(response_not_required=True)`, the `assigned-prs` pattern). *Changed 2026-09-29;
+  originally an in-place reply — see [Progress Notes](#progress-notes).* The reply carries the
+  requester's private preference signals: the skip tally counts conflict-of-interest exclusions,
+  and per-reviewer excluded labels (design doc 057) add their own count. Those should not land in a
+  stream. The production `ZULIP_COMMAND_POLICY` already restricts `suggest-prs` to DMs, so this is
+  defence in depth: it keeps the guarantee in code, whatever a deployment's policy allows. The
+  original argument for replying in place — keep the suggestions and the follow-up `assign #12345`
+  in one conversation — still holds, because `assign` works in the same DM (it has no stream
+  restriction of its own; a deployment's `ZULIP_COMMAND_POLICY` must allow `dm` for it). Short error replies that
+  reveal nothing about the reviewer (feature off, unlinked sender, unknown repo, and a failed DM
+  send) stay in place. This now follows `assigned-prs` / `prefs`, not `assign` / `console`.
 - Shows `ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT` (5), not the full service limit. Ten
-  multi-line blocks would dominate a shared channel; the console link below carries the rest.
+  multi-line blocks make an unwieldy chat message; the console link below carries the rest.
 - Reply shape: the load line, then **one line per PR** (linked number + title + topic labels — the
   richer card with queue age and scarcity is the console's job), then a footer with:
   - the follow-up command, `assign #12345`;
-  - `snapshot_generated_at`, because the reply is a permanent channel message that will still be
+  - `snapshot_generated_at`, because the reply is a permanent Zulip message that will still be
     sitting there tomorrow listing PRs that have since been claimed or merged, while the console
     page is always live;
   - a link to the console for more (see below).
@@ -543,7 +551,9 @@ Console view tests (existing `console/tests/test_views.py` patterns, session see
 - partial failure renders the assigned/failed split.
 
 Zulip tests: registry dispatch, the 5-item limit, footer contents (assign hint, snapshot timestamp,
-console link carrying the requested labels), and the empty-result tally rendering.
+console link carrying the requested labels), the empty-result tally rendering, and delivery — a
+stream invocation is answered only by DM to the sender (never the stream), every chunk of an
+oversized reply is DM'd, and a failed send is reported in place.
 
 Canonical full run stays `bash scripts/repo_check_compose.sh` (console is step `[12/13]`).
 
@@ -556,7 +566,7 @@ Settings (all `settings/base.py` + `.env.example`):
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED` | off | master switch for the read path on both surfaces |
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED` | off | the console's GitHub write |
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT` | 10 | service default; what the console renders |
-| `ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT` | 5 | surface override for the in-channel reply |
+| `ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT` | 5 | surface override for the Zulip (DM) reply |
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_LABELS` | 5 | cap on the label override set (form and query string alike); labels past it come back in `dropped_labels` |
 | `ANALYZER_ASSIGNMENT_SUGGESTIONS_MAX_SNAPSHOT_AGE_SECONDS` | 86400 | refuse to answer from a snapshot older than this (0 disables); guards the no-active-rule-set fallback |
 
@@ -664,7 +674,7 @@ re-run with `--size=standard-2x` — `tracemalloc` adds overhead at the moment t
   substitution achieves the same thing with no change to a module that the nightly builder, the
   trace, and area stats all depend on.
 - **One shared limit across both surfaces.** Ten one-line entries would still fit a Zulip message,
-  but ten multi-line blocks dominate a shared channel, and truncating to a terser render alone would
+  but ten multi-line blocks dominate a chat message, and truncating to a terser render alone would
   leave the Zulip user with no path to the remainder. Two limits plus a console link costs one extra
   setting and gives the reviewer somewhere to go.
 
@@ -736,6 +746,17 @@ re-run with `--size=standard-2x` — `tracemalloc` adds overhead at the moment t
   `suggest-prs` / `next-pr` in Zulip and `/console/suggestions/` are now live for reviewers; claiming
   from Zulip continues to reuse the existing `assign` command. The read-only status the earlier
   entries describe (all flags dark) is now historical.
+- **2026-09-29** — `suggest-prs` now replies **by DM only**, wherever it is invoked (previously an
+  in-place reply, so a stream invocation answered in the stream). Motivation: defence in depth. The
+  reply is not free of private signal after all: the skip tally reports the requester's
+  conflict-of-interest count, and per-reviewer excluded labels (design doc 057) add another
+  preference-derived count. The production `ZULIP_COMMAND_POLICY` already restricts `suggest-prs`
+  to DMs, so no stream reply was possible there. But a deployment whose policy allows stream
+  contexts would post those counts to the stream, and replying by DM makes the guarantee
+  independent of policy. The original
+  one-conversation argument is kept, not given up: `assign #12345` works in the DM too. Error
+  replies that reveal nothing about the reviewer stay in place, as in `assigned-prs`. Cost: a
+  stream invocation now shows nothing in the stream, the same as `assigned-prs` today.
 
 ## Related Decisions
 

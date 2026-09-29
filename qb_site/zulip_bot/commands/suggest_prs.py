@@ -1,9 +1,13 @@
 """``suggest-prs`` — reviewer-initiated "what should I review?" (design doc 053).
 
 Renders ``analyzer.services.assignment_suggestions`` output; eligibility is never re-derived here.
-Replies **in place** (like ``console``, unlike ``assigned-prs``): the content is not sensitive, and
-the natural next step — ``assign #12345`` — is itself an in-place command, so splitting one flow
-across a DM and a channel would be worse than either. The reply shows the shorter
+Replies **by DM** wherever it was invoked (like ``assigned-prs``, unlike ``console``): the reply
+carries the requester's private preference signals — the skip tally counts conflict-of-interest
+exclusions, for one — which should not land in a stream. ``ZULIP_COMMAND_POLICY`` can already scope
+the command to DMs (and production does); replying by DM keeps that guarantee in code rather than
+in configuration. The one-conversation argument that first made this an in-place reply still holds:
+the natural next step, ``assign #12345``, works in the same DM. Short error replies that reveal nothing about the reviewer (feature off, unlinked sender,
+unknown repo) stay in place, as in ``assigned-prs``. The reply shows the shorter
 ``ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT`` list; a token-less console link (with the request's
 repo and labels in the query string, so "more suggestions" means more of the *same* question)
 carries the rest. Claiming reuses the existing ``assign`` command — no new mutation surface.
@@ -71,18 +75,14 @@ def suggest_prs_command(context: CommandContext, args: str) -> CommandResult:
     ]
     content = "\n\n".join(sections)
 
-    # Belt-and-braces (the measured reply is far inside Zulip's cap): if the reply somehow exceeds
-    # one message, send the chunks proactively to the same conversation instead of truncating.
+    # Always a proactive DM: a webhook reply can only go back to the triggering conversation, which
+    # may be a stream (see CommandResult). Chunking is belt-and-braces — the measured reply is far
+    # inside Zulip's cap — so an oversized reply is split rather than truncated.
     chunks = split_message_chunks(content=content, max_chars=MAX_MESSAGE_CHARS)
-    if len(chunks) == 1:
-        return CommandResult(content=content)
     try:
         client = ZulipClient()
         for chunk in chunks:
-            if context.stream_id is not None and context.topic:
-                client.send_stream_message(stream=context.stream_id, topic=context.topic, content=chunk)
-            else:
-                client.send_direct_message(to=[context.sender_id], content=chunk)
+            client.send_direct_message(to=[context.sender_id], content=chunk)
     except ZulipApiError as exc:
         return CommandResult(content=f"Failed to send suggestions via Zulip API: {exc.message}")
     return CommandResult(response_not_required=True)

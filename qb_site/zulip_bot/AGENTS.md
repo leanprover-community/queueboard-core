@@ -30,12 +30,15 @@ cd qb_site/zulip_bot/frontend && npm test
   "what should I review?". Renders `analyzer.services.assignment_suggestions.suggest_prs_for_reviewer`
   (never re-derives eligibility): the honest load line, up to
   `ANALYZER_ASSIGNMENT_SUGGESTIONS_ZULIP_LIMIT` one-line PR entries, and a footer with the
-  `assign #NNN` hint, the snapshot timestamp (the reply is a permanent channel message; the console
+  `assign #NNN` hint, the snapshot timestamp (the reply is a permanent message; the console
   page is live), and a token-less console link carrying `?repo=&labels=` so "more suggestions" means
   more of the same question. Label tokens *replace* the sender's stored `preferred_labels` for the
   request; unknown/non-topic labels are reported back, as are labels refused by the `MAX_LABELS`
-  cap. **In-place reply by design** (like `console`):
-  nothing is sensitive and the follow-up `assign` is in-place too. Gated by
+  cap. **Proactive DM, wherever invoked** (like `assigned-prs`; changed 2026-09-29, design doc 053):
+  the skip tally carries private preference signals (conflict-of-interest and excluded-label
+  counts), and replying by DM keeps them private even where `ZULIP_COMMAND_POLICY` allows streams.
+  The follow-up `assign` works in the same DM. Non-revealing errors (feature off, unlinked sender,
+  unknown repo, failed send) stay in place. Gated by
   `ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED`; needs no mutation flag of its own (read-only — claiming
   reuses `assign`, which keeps its `ZULIP_ASSIGNMENT_MUTATIONS_ENABLED` + `ZULIP_COMMAND_POLICY`
   gating; scope `suggest-prs` itself via `ZULIP_COMMAND_POLICY` like any other command if desired).
@@ -61,7 +64,8 @@ This has a critical implication: **never return sensitive content (token links, 
 
 **Proactive DM** (commands that send private links): call `ZulipClient().send_direct_message()` directly and return `CommandResult(response_not_required=True)`. Zulip does not deliver the webhook response at all; the DM goes to the user regardless of where the command was invoked. Use this whenever the reply contains a private token link or other content that must not appear in a stream.
 
-Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register-test`, `assigned-prs`.
+Commands currently using the proactive DM pattern: `close-pr`, `label-pr`, `prefs`, `register-test`, `assigned-prs`,
+`suggest-prs`.
 `prefs` DMs the stable `/console/preferences/` URL. That URL is *not* secret (the page
 self-authenticates) — the reason it is a DM is noise: an accidental mention in a public stream must not
 post a reply there. `console` is the deliberate exception, an in-place reply by design (doc 050).
