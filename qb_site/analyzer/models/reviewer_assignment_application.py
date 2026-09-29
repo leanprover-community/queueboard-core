@@ -43,6 +43,20 @@ class ReviewerAssignmentApplication(TimestampedModel):
         (STATUS_SKIPPED_DISABLED, "Skipped (disabled)"),
         (STATUS_SKIPPED_DRY_RUN, "Skipped (dry run)"),
     ]
+    # The automatic sweep's decisions *not* to act: no GitHub call was made for these rows. An
+    # explicit human assignment the same day may take one over (``assign_reviewer_and_record``).
+    SKIPPED_STATUSES = frozenset(
+        {
+            STATUS_SKIPPED_ALREADY_ASSIGNED,
+            STATUS_SKIPPED_OPTED_OUT,
+            STATUS_SKIPPED_EXCLUDED_LABEL,
+            STATUS_SKIPPED_INELIGIBLE,
+            STATUS_SKIPPED_RECENTLY_APPLIED,
+            STATUS_SKIPPED_NO_TOKEN,
+            STATUS_SKIPPED_DISABLED,
+            STATUS_SKIPPED_DRY_RUN,
+        }
+    )
 
     run_date = models.DateField(db_index=True)
     repository = models.ForeignKey(

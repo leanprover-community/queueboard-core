@@ -12,7 +12,11 @@ from analyzer.models import (
     ReviewerAssignmentSnapshot,
     ReviewerOptOut,
 )
-from analyzer.services.reviewer_assignment_apply import apply_assignments_for_repo
+from analyzer.services.reviewer_assignment_apply import (
+    _take_over_skipped_record,
+    apply_assignments_for_repo,
+    assign_reviewer_and_record,
+)
 from core.models import Repository, ReviewerPreference, User
 from core.services.github_assignment import AssignmentMutationError
 from syncer.models import LabelDef, PRLabel, PullRequest
@@ -313,3 +317,96 @@ class ApplyAssignmentsForRepoTests(TestCase):
         client2.assign.assert_not_called()
         sync2.assert_not_called()
         self.assertEqual(ReviewerAssignmentApplication.objects.filter(repository=self.repo, pr_number=101).count(), 1)
+
+    # ---- explicit assignment over a same-day skipped row (design doc 057) ----
+
+    def _explicit_assign(self, number: int, login: str, *, take_over_skipped: bool):
+        client = MagicMock()
+        client.assign.side_effect = lambda **kwargs: (kwargs["github_login"],)
+        outcome, _client, record = assign_reviewer_and_record(
+            repository=self.repo,
+            pr_number=number,
+            login=login,
+            snapshot=None,
+            run_date=self.run_date,
+            token="tok",
+            assignment_client=client,
+            sync_enqueuer=MagicMock(),
+            take_over_skipped=take_over_skipped,
+        )
+        return outcome, client, record
+
+    def _sweep_skips_alice_for_an_excluded_label(self) -> None:
+        ReviewerPreference.objects.filter(repository=self.repo, user__github_login="alice").update(
+            excluded_labels=["LLM-generated"]
+        )
+        self._make_snapshot({101: "alice"})
+        label = LabelDef.objects.create(repository=self.repo, name="LLM-generated", color="ededed")
+        PRLabel.objects.create(pull_request=self._make_pr(101, assignees=[]), label_def=label)
+        result, client, _sync = self._apply()
+        self.assertEqual(result["stats"]["skipped_excluded_label"], 1)
+        client.assign.assert_not_called()
+
+    def test_explicit_assignment_takes_over_the_sweeps_skip(self) -> None:
+        # The morning sweep skipped alice on #101 for an excluded label; alice then claims it
+        # herself. Exclusions govern automatic assignment only, so her claim must reach GitHub.
+        self._sweep_skips_alice_for_an_excluded_label()
+
+        outcome, client, record = self._explicit_assign(101, "alice", take_over_skipped=True)
+
+        self.assertEqual(outcome, "applied")
+        client.assign.assert_called_once_with(owner="leanprover-community", repo="mathlib4", number=101, github_login="alice")
+        self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_APPLIED)
+        self.assertIsNone(record.snapshot)
+        rows = ReviewerAssignmentApplication.objects.filter(repository=self.repo, pr_number=101)
+        self.assertEqual([row.status for row in rows], [ReviewerAssignmentApplication.STATUS_APPLIED])
+
+    def test_explicit_assignment_takes_over_every_skip_reason(self) -> None:
+        for number, status in enumerate(sorted(ReviewerAssignmentApplication.SKIPPED_STATUSES), start=200):
+            with self.subTest(status=status):
+                ReviewerAssignmentApplication.objects.create(
+                    run_date=self.run_date, repository=self.repo, pr_number=number, reviewer_login="alice", status=status
+                )
+                outcome, client, _record = self._explicit_assign(number, "alice", take_over_skipped=True)
+                self.assertEqual(outcome, "applied")
+                client.assign.assert_called_once()
+
+    def test_automatic_callers_do_not_take_over_a_skip(self) -> None:
+        # Without the flag (the sweep and the propose step), a same-day skip still stands.
+        self._sweep_skips_alice_for_an_excluded_label()
+
+        outcome, client, record = self._explicit_assign(101, "alice", take_over_skipped=False)
+
+        self.assertEqual(outcome, "already_recorded")
+        client.assign.assert_not_called()
+        self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_SKIPPED_EXCLUDED_LABEL)
+
+    def test_takeover_leaves_attempted_rows_alone(self) -> None:
+        # FAILED and APPLIED rows record a GitHub call that was made; they keep their meaning.
+        for number, status in (
+            (301, ReviewerAssignmentApplication.STATUS_FAILED),
+            (302, ReviewerAssignmentApplication.STATUS_APPLIED),
+            (303, ReviewerAssignmentApplication.STATUS_PENDING),
+        ):
+            with self.subTest(status=status):
+                ReviewerAssignmentApplication.objects.create(
+                    run_date=self.run_date, repository=self.repo, pr_number=number, reviewer_login="alice", status=status
+                )
+                outcome, client, record = self._explicit_assign(number, "alice", take_over_skipped=True)
+                self.assertEqual(outcome, "already_recorded")
+                client.assign.assert_not_called()
+                self.assertEqual(record.status, status)
+
+    def test_takeover_loses_cleanly_to_a_concurrent_writer(self) -> None:
+        # Our copy still says skipped, but another click already reclaimed and applied the row.
+        record = ReviewerAssignmentApplication.objects.create(
+            run_date=self.run_date,
+            repository=self.repo,
+            pr_number=401,
+            reviewer_login="alice",
+            status=ReviewerAssignmentApplication.STATUS_SKIPPED_DRY_RUN,
+        )
+        ReviewerAssignmentApplication.objects.filter(pk=record.pk).update(status=ReviewerAssignmentApplication.STATUS_APPLIED)
+
+        self.assertFalse(_take_over_skipped_record(record, snapshot=None))
+        self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_APPLIED)

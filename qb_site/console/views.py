@@ -641,6 +641,8 @@ def _github_assign_self(request: HttpRequest, proposal: AssignmentProposal, *, n
         snapshot=proposal.snapshot,
         run_date=now.date(),
         token=token,
+        # The reviewer's own click: a same-day skip by the automatic sweep must not block it.
+        take_over_skipped=True,
     )
     # Only treat it as landed when the assignment actually took on GitHub. ``already_recorded`` means a
     # row for (today, repo, pr, reviewer) already existed — a success ONLY when that row is APPLIED.
@@ -1055,6 +1057,7 @@ def claim(request: HttpRequest) -> HttpResponse:
             snapshot=None,  # an on-demand claim is not anchored to a nightly assignment snapshot
             run_date=now.date(),
             token=token,
+            take_over_skipped=True,  # an explicit claim, like accept: see _github_assign_self
         )
         # Same "did it actually land?" semantics as the accept handler (see _github_assign_self).
         landed = outcome == "applied" or (

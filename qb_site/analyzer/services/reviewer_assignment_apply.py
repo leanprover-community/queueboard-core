@@ -95,6 +95,32 @@ def parse_snapshot_assignments(snapshot: ReviewerAssignmentSnapshot) -> list[tup
     return proposals
 
 
+def _take_over_skipped_record(record: ReviewerAssignmentApplication, *, snapshot: ReviewerAssignmentSnapshot | None) -> bool:
+    """Reclaim a same-day ``skipped_*`` row as PENDING for an explicit assignment; ``True`` if taken.
+
+    A conditional UPDATE, so of two concurrent clicks exactly one reclaims the row and the other
+    gets ``already_recorded``, as a double click on a fresh row would. ``record`` is updated in
+    place either way.
+    """
+    if record.status not in ReviewerAssignmentApplication.SKIPPED_STATUSES:
+        return False
+    skipped_status = record.status
+    now = dj_timezone.now()
+    taken = ReviewerAssignmentApplication.objects.filter(
+        pk=record.pk, status__in=ReviewerAssignmentApplication.SKIPPED_STATUSES
+    ).update(status=ReviewerAssignmentApplication.STATUS_PENDING, snapshot=snapshot, error="", updated_at=now)
+    record.refresh_from_db()
+    if taken:
+        log.info(
+            "assign_reviewer_and_record: explicit assignment took over %s row repo=%s pr=%s reviewer=%s",
+            skipped_status,
+            record.repository_id,
+            record.pr_number,
+            record.reviewer_login,
+        )
+    return bool(taken)
+
+
 def assign_reviewer_and_record(
     *,
     repository: Repository,
@@ -105,6 +131,7 @@ def assign_reviewer_and_record(
     token: str,
     assignment_client: GitHubAssignmentClient | None = None,
     sync_enqueuer: SyncEnqueuer = _default_sync_enqueuer,
+    take_over_skipped: bool = False,
 ) -> tuple[str, GitHubAssignmentClient | None, ReviewerAssignmentApplication | None]:
     """Execute the 046 direct-assign mutation for one already-validated ``(pr, login)``.
 
@@ -121,6 +148,14 @@ def assign_reviewer_and_record(
     Shared verbatim by the legacy apply sweep (doc 046), the acceptance-gate propose step's
     auto/fallback direct-assign path, and the console accept handler (doc 050) so the GitHub
     mutation and the ``ReviewerAssignmentApplication`` audit trail stay identical across all three.
+
+    ``take_over_skipped`` is for explicit human actions: the console accept, "assign anyway" and
+    suggestion claims. The row is keyed by day, so a ``skipped_*`` row the automatic sweep wrote
+    earlier (a decision *not* to act, with no GitHub call) would otherwise turn the reviewer's own
+    request into ``already_recorded`` for the rest of the day. With it set, such a row is reclaimed
+    as PENDING and the assignment goes ahead: exclusions and the other sweep rules govern automatic
+    assignment only (design doc 057). Automatic callers leave it unset, so a rerun of the sweep
+    never overrides its own earlier skip.
     """
     owner = repository.owner
     name = repository.name
@@ -134,7 +169,7 @@ def assign_reviewer_and_record(
             "status": ReviewerAssignmentApplication.STATUS_PENDING,
         },
     )
-    if not created:
+    if not created and not (take_over_skipped and _take_over_skipped_record(record, snapshot=snapshot)):
         return ("already_recorded", assignment_client, record)
 
     if assignment_client is None:
