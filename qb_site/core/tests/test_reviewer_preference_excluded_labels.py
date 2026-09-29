@@ -84,3 +84,18 @@ class ReviewerPreferenceAdminOverlapTests(TestCase):
         self.assertEqual(self._post('["WIP"]').status_code, 302)
         self.pref.refresh_from_db()
         self.assertEqual(self.pref.excluded_labels, ["WIP"])
+
+    def test_changelist_shows_and_filters_by_exclusions(self) -> None:
+        other = ReviewerPreference.objects.create(
+            repository=self.pref.repository,
+            user=User.objects.create(github_login="bob"),
+            excluded_labels=["WIP", "CI"],
+        )
+        url = reverse("admin:core_reviewerpreference_changelist")
+
+        response = self.client.get(url, {"has_excluded_labels": "yes"})
+        self.assertEqual(list(response.context["cl"].result_list), [other])
+        self.assertContains(response, "Excluded labels")
+
+        response = self.client.get(url, {"has_excluded_labels": "no"})
+        self.assertEqual(list(response.context["cl"].result_list), [self.pref])
