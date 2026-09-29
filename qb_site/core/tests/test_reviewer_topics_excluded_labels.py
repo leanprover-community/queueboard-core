@@ -27,6 +27,16 @@ class ReviewerTopicsExcludedLabelsTests(TestCase):
         self.pref.refresh_from_db()
         self.assertEqual(self.pref.excluded_labels, ["LLM-generated", "easy"])
 
+    def test_import_cleans_malformed_values(self) -> None:
+        # A bare string is one label, not its characters; `null` entries are dropped, not stored as "None".
+        self._import([{"github_handle": "alice", "excluded_labels": "LLM-generated"}])
+        self.pref.refresh_from_db()
+        self.assertEqual(self.pref.excluded_labels, ["LLM-generated"])
+
+        self._import([{"github_handle": "alice", "excluded_labels": [" easy ", None, 3]}])
+        self.pref.refresh_from_db()
+        self.assertEqual(self.pref.excluded_labels, ["easy"])
+
     def test_import_without_the_key_leaves_the_value_alone(self) -> None:
         # A file written before 057 must never silently clear a reviewer's exclusions.
         self._import([{"github_handle": "alice", "maximum_capacity": 4}])

@@ -20,6 +20,7 @@ from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 
 from core.models import ReviewerPreference
+from core.models.reviewer_preference import clean_label_names
 from core.services.reviewer_notification_settings import MAX_AUTO_UNASSIGN_DAYS, parse_notification_policy
 from core.services.topic_labels import make_topic_label_matcher
 
@@ -221,7 +222,10 @@ class ReviewerPreferenceForm(forms.ModelForm):
         # Excluded labels match against *every* label on a PR, so they validate against the whole
         # catalog, not the topic-filtered list above.
         self._label_catalog_by_casefold = {name.casefold(): name for name in catalog_labels}
-        saved_excluded = _dedupe_case_insensitive_preserve_first(self.instance.excluded_labels or [])
+        saved_excluded = _dedupe_case_insensitive_preserve_first(clean_label_names(self.instance.excluded_labels))
+        # Render the cleaned list, not the raw JSON: a stray `null` would otherwise come back on the next
+        # POST as the label "None" and fail validation.
+        self.initial["excluded_labels"] = saved_excluded
         self._saved_excluded_casefold = {name.casefold() for name in saved_excluded}
         self.legacy_excluded_labels = tuple(
             name for name in saved_excluded if name.casefold() not in self._label_catalog_by_casefold

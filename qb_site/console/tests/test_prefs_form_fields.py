@@ -395,6 +395,27 @@ class ConsolePrefsFormFieldTests(TestCase):
         self.assertEqual(self.pref1.maximum_capacity, 7)
         self.assertEqual(self.pref1.excluded_labels, ["gone-label", "CI"])
 
+    def test_malformed_stored_excluded_labels_render_and_save(self) -> None:
+        # The column is free JSON, so an admin edit can leave a `null` entry or a bare string in it.
+        # Neither may take the page down, and an unrelated edit must still save.
+        for stored in (["CI", None, 3], "CI"):
+            with self.subTest(stored=stored):
+                data, index_by_id = self._post_data()
+                self.pref1.excluded_labels = stored
+                self.pref1.save(update_fields=["excluded_labels"])
+
+                response = self.client.get(self.url)
+                self.assertEqual(response.status_code, 200)
+                # A bare string must not be flagged as the missing labels "C" and "I".
+                self.assertNotContains(response, "No longer labels in this repository")
+
+                idx = index_by_id[self.pref1.id]
+                data[f"form-{idx}-excluded_labels"] = "CI"
+                data[f"form-{idx}-maximum_capacity"] = "7"
+                self.assertEqual(self.client.post(self.url, data=data).status_code, 302)
+                self.pref1.refresh_from_db()
+                self.assertEqual(self.pref1.excluded_labels, ["CI"])
+
     def test_excluded_labels_help_says_private(self) -> None:
         # Its Interests-section neighbours are public; this one must say it is not.
         self.assertContains(self.client.get(self.url), "Private: not shown on the community team page.")
