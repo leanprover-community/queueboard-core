@@ -346,13 +346,8 @@ class ReviewerPreferenceForm(forms.ModelForm):
 
     def clean(self) -> dict[str, object]:
         cleaned_data = super().clean()
-
-        # A label cannot be both wanted and refused. The engine would let the exclusion win, but a
-        # silent tie-break is worse than asking the reviewer which one they meant.
-        preferred_casefold = {str(label).casefold() for label in cleaned_data.get("preferred_labels") or []}
-        overlap = [label for label in cleaned_data.get("excluded_labels") or [] if label.casefold() in preferred_casefold]
-        if overlap:
-            self.add_error("excluded_labels", f"Also selected as a preferred label: {', '.join(overlap)}.")
+        # A label both preferred and excluded is refused by `ReviewerPreference.clean`, which the
+        # ModelForm runs after this, so admin and import share the one rule (design doc 057).
 
         stale_raw = cleaned_data.get("stale_nudge_days")
         unassign_raw = cleaned_data.get("auto_unassign_days")

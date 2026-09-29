@@ -8,7 +8,7 @@ from typing import Any, Callable, IO, Iterable, List, Tuple
 from django.db import transaction
 
 from core.models import Repository, ReviewerPreference, User
-from core.models.reviewer_preference import clean_label_names
+from core.models.reviewer_preference import clean_label_names, overlapping_labels
 from core.utils.db import update_if_changed
 
 DEFAULT_REPO = "leanprover-community/mathlib4"
@@ -77,6 +77,8 @@ def _dedupe_case_insensitive_preserve_first(values: Iterable[str]) -> List[str]:
     return out
 
 
+# One transaction for the whole import, so a refused file (see `overlaps` below) writes nothing.
+@transaction.atomic
 def import_reviewer_topics(
     *,
     repo: str,
@@ -103,7 +105,9 @@ def import_reviewer_topics(
     - ``conflict_of_interest``: copied to ``conflict_of_interest`` (deduped, case-insensitive).
     - ``excluded_labels``: copied to ``excluded_labels`` (deduped, case-insensitive; design doc 057).
       Absent leaves the existing value alone. Not checked against the label catalog — this is an
-      operator path; the reviewer-facing form is what rejects unknown labels.
+      operator path; the reviewer-facing form is what rejects unknown labels. A label that would end
+      up both preferred and excluded *is* refused: the whole import fails and writes nothing, since
+      an imported overlap would otherwise block every later save of that reviewer's console form.
     - ``zulip_handle`` and any other extra fields are ignored (not stored).
     """
 
@@ -138,6 +142,8 @@ def import_reviewer_topics(
     updated_prefs = 0
     skipped_users = 0
     log_lines: list[str] = []
+    # "login: label, ..." for each reviewer whose labels would end up both preferred and excluded.
+    overlaps: list[str] = []
 
     def log(message: str) -> None:
         log_lines.append(message)
@@ -243,6 +249,12 @@ def import_reviewer_topics(
                 changes["excluded_labels"] = (pref.excluded_labels, excluded)
                 pref.excluded_labels = excluded
 
+        if "preferred_labels" in changes or "excluded_labels" in changes:
+            overlap = overlapping_labels(pref.preferred_labels, pref.excluded_labels)
+            if overlap:
+                overlaps.append(f"{gh_login}: {', '.join(overlap)}")
+                return
+
         if was_create:
             if dry_run:
                 created_prefs += 1
@@ -268,6 +280,13 @@ def import_reviewer_topics(
                 log("- Skipping non-object entry")
             continue
         apply_entry(entry)
+
+    if overlaps:
+        # Raised inside this function's transaction, so everything written above is rolled back.
+        raise ReviewerTopicsImportError(
+            "Import refused, nothing was imported: a label cannot be both preferred (top_level) and excluded "
+            f"(excluded_labels). {'; '.join(overlaps)}."
+        )
 
     result = ImportResult(
         owner=owner,
