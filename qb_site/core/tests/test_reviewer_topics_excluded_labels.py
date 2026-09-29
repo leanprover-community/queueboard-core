@@ -8,7 +8,11 @@ import json
 from django.test import TestCase
 
 from core.models import Repository, ReviewerPreference, User
-from core.services.reviewer_topics_importer import export_reviewer_topics, import_reviewer_topics
+from core.services.reviewer_topics_importer import (
+    ReviewerTopicsImportError,
+    export_reviewer_topics,
+    import_reviewer_topics,
+)
 
 REPO = "leanprover-community/mathlib4"
 
@@ -19,8 +23,8 @@ class ReviewerTopicsExcludedLabelsTests(TestCase):
         self.user = User.objects.create(github_login="alice")
         self.pref = ReviewerPreference.objects.create(repository=self.repo, user=self.user, excluded_labels=["WIP"])
 
-    def _import(self, entries: list[dict]) -> None:
-        import_reviewer_topics(repo=REPO, file_obj=io.StringIO(json.dumps(entries)))
+    def _import(self, entries: list[dict], **kwargs) -> None:
+        import_reviewer_topics(repo=REPO, file_obj=io.StringIO(json.dumps(entries)), **kwargs)
 
     def test_import_replaces_and_dedupes_case_insensitively(self) -> None:
         self._import([{"github_handle": "alice", "excluded_labels": ["LLM-generated", "llm-generated", "easy"]}])
@@ -42,6 +46,25 @@ class ReviewerTopicsExcludedLabelsTests(TestCase):
         self._import([{"github_handle": "alice", "maximum_capacity": 4}])
         self.pref.refresh_from_db()
         self.assertEqual(self.pref.excluded_labels, ["WIP"])
+
+    def test_import_refuses_a_label_both_preferred_and_excluded(self) -> None:
+        # Nothing is written, not even the valid entry before it: the operator fixes the file.
+        entries = [
+            {"github_handle": "carol", "top_level": ["t-order"]},
+            {"github_handle": "alice", "top_level": ["t-algebra"], "excluded_labels": ["T-Algebra"]},
+        ]
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                with self.assertRaisesMessage(ReviewerTopicsImportError, "alice: T-Algebra"):
+                    self._import(entries, dry_run=dry_run)
+                self.pref.refresh_from_db()
+                self.assertEqual(self.pref.excluded_labels, ["WIP"])
+                self.assertFalse(User.objects.filter(github_login="carol").exists())
+
+    def test_import_refuses_an_overlap_with_the_stored_other_half(self) -> None:
+        # The entry sets only preferred labels, but the stored exclusions already hold one of them.
+        with self.assertRaisesMessage(ReviewerTopicsImportError, "alice: WIP"):
+            self._import([{"github_handle": "alice", "top_level": ["wip", "t-algebra"]}])
 
     def test_export_round_trips(self) -> None:
         _owner, _name, entries = export_reviewer_topics(repo=REPO)

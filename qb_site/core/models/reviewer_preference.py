@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from .base import TimestampedModel
@@ -21,6 +22,18 @@ def clean_label_names(value: object) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def overlapping_labels(preferred: object, excluded: object) -> list[str]:
+    """The ``excluded`` labels that are also in ``preferred``, compared case-insensitively.
+
+    A label cannot be both wanted and refused. The engine would let the exclusion win, but a silent
+    tie-break is worse than asking which one was meant, so every write path refuses the overlap:
+    ``ReviewerPreference.clean`` (the console form and Django admin) and the reviewer-topics
+    importer (design doc 057).
+    """
+    preferred_keys = {name.casefold() for name in clean_label_names(preferred)}
+    return [name for name in clean_label_names(excluded) if name.casefold() in preferred_keys]
 
 
 class ReviewerPreference(TimestampedModel):
@@ -100,3 +113,9 @@ class ReviewerPreference(TimestampedModel):
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return f"{self.user} @ {self.repository}"
+
+    def clean(self) -> None:
+        super().clean()
+        overlap = overlapping_labels(self.preferred_labels, self.excluded_labels)
+        if overlap:
+            raise ValidationError({"excluded_labels": f"Also selected as a preferred label: {', '.join(overlap)}."})
