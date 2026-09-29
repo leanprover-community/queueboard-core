@@ -15,6 +15,7 @@ import json
 import ast
 
 from .models import Repository, ReviewerPreference, User
+from .models.reviewer_preference import clean_label_names
 from core.services.reviewer_topics_importer import (
     DEFAULT_REPO,
     ReviewerTopicsExportError,
@@ -837,6 +838,23 @@ class UserAdmin(admin.ModelAdmin):
         return TemplateResponse(request, "admin/core/user/import_zulip_users.html", context)
 
 
+class HasExcludedLabelsFilter(admin.SimpleListFilter):
+    """Reviewers with any excluded labels (design doc 057): the first thing to check when one goes quiet."""
+
+    title = "excluded labels"
+    parameter_name = "has_excluded_labels"
+
+    def lookups(self, request, model_admin):
+        return (("yes", "Has excluded labels"), ("no", "None"))
+
+    def queryset(self, request, queryset):
+        if self.value() == "yes":
+            return queryset.exclude(excluded_labels=[])
+        if self.value() == "no":
+            return queryset.filter(excluded_labels=[])
+        return queryset
+
+
 @admin.register(ReviewerPreference)
 class ReviewerPreferenceAdmin(admin.ModelAdmin):
     change_list_template = "admin/core/reviewerpreference/change_list.html"
@@ -849,10 +867,11 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
         "assignment_acceptance",
         "notifications_enabled",
         "away_until",
+        "excluded_label_count",
         "created_at",
         "updated_at",
     )
-    list_filter = ("auto_assign", "assignment_acceptance", "notifications_enabled", "repository")
+    list_filter = ("auto_assign", "assignment_acceptance", "notifications_enabled", HasExcludedLabelsFilter, "repository")
     search_fields = (
         "user__github_login",
         "repository__owner",
@@ -861,6 +880,10 @@ class ReviewerPreferenceAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("repository", "user")
     actions = ("set_acceptance_confirm", "set_acceptance_auto")
+
+    @admin.display(description="Excluded labels")
+    def excluded_label_count(self, obj: ReviewerPreference) -> int:
+        return len(clean_label_names(obj.excluded_labels))
 
     @admin.action(description="Set assignment acceptance to 'confirm' (require acceptance)")
     def set_acceptance_confirm(self, request, queryset):
