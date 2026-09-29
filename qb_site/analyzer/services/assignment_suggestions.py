@@ -43,9 +43,12 @@ from analyzer.models import QueueSnapshot
 from analyzer.services.queue_rules import default_rule_set_for_repo
 from analyzer.services.reviewer_assignment import _compute_weight, prepare_assignment_inputs
 from analyzer.services.reviewer_assignment_engine import (
+    PREFILTER_CONFLICT_OF_INTEREST,
+    PREFILTER_EXCLUDED_LABEL,
     ReviewerProfile,
     _all_labels_lower,
     _normalize_login,
+    _prefilter_reason,
     _reviewer_candidate_state,
     _topic_labels,
     rank_prs_for_assignment,
@@ -76,6 +79,13 @@ SKIP_EXCLUDED_LABEL = "excluded_label"
 SKIP_NO_AREA_MATCH = "no_area_match"
 SKIP_OUTRANKED = "outranked"
 SKIP_EXCLUDED = "excluded"
+
+# The engine's pre-matching rules (`_prefilter_reason`), as skip reasons. The requester's own
+# authorship is split out as SKIP_AUTHORED before this is consulted.
+_PREFILTER_SKIPS: dict[str, str] = {
+    PREFILTER_CONFLICT_OF_INTEREST: SKIP_CONFLICT_OF_INTEREST,
+    PREFILTER_EXCLUDED_LABEL: SKIP_EXCLUDED_LABEL,
+}
 
 
 # Human phrasing for the skip tally, in the engine's evaluation order (also the render order).
@@ -194,10 +204,9 @@ def _classify_skip(
     author_norm = _normalize_login(pr_entry.get("author"))
     if author_norm == requester_norm:
         return SKIP_AUTHORED
-    if author_norm in requester.conflict_of_interest_lower:
-        return SKIP_CONFLICT_OF_INTEREST
-    if requester.excluded_labels_lower & _all_labels_lower(pr_entry):
-        return SKIP_EXCLUDED_LABEL
+    prefilter = _prefilter_reason(requester, author_norm=author_norm, all_labels_lower=_all_labels_lower(pr_entry))
+    if prefilter is not None:
+        return _PREFILTER_SKIPS[prefilter]
     if not (topic_lower & requester.preferred_labels_lower):
         return SKIP_NO_AREA_MATCH
     potential_norm = {_normalize_login(login) for login in trace.get("potential", [])}

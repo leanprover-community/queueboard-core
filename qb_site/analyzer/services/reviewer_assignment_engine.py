@@ -98,14 +98,35 @@ def _all_labels_lower(pr_entry: dict) -> frozenset[str]:
     """Every label on the PR, normalized — not just topic labels (``_topic_labels``).
 
     Excluded labels (design doc 057) are matched against this: the labels reviewers most want to
-    avoid (e.g. ``LLM-generated``) are usually not topic labels. Normalized like
-    ``_filter_assignment_forbidden_prs``.
+    avoid (e.g. ``LLM-generated``) are usually not topic labels. Also what
+    ``_filter_assignment_forbidden_prs`` matches the repo-wide forbidden labels against.
     """
     return frozenset(
         str(label.get("name")).strip().lower()
         for label in (pr_entry.get("labels") or [])
         if isinstance(label, dict) and label.get("name")
     )
+
+
+# Why a reviewer is dropped before label matching, in evaluation order. The strings double as the
+# trace's ``filtered`` keys and as the design doc 053 skip reasons of the same name.
+PREFILTER_CONFLICT_OF_INTEREST = "conflict_of_interest"
+PREFILTER_EXCLUDED_LABEL = "excluded_label"
+
+
+def _prefilter_reason(reviewer: ReviewerProfile, *, author_norm: str, all_labels_lower: frozenset[str]) -> str | None:
+    """Why ``reviewer`` is dropped from this PR before label matching, or ``None`` if they are not.
+
+    The one definition of the pre-matching rules, shared by both candidate loops below and the 053
+    skip classifier so they cannot drift apart: the author themselves or a conflict of interest
+    with them, then an excluded label the PR carries (design doc 057). Both run *before* the
+    max_score contest, so a dropped reviewer can never outrank the reviewers who remain.
+    """
+    if author_norm in {reviewer.github_login.lower(), *reviewer.conflict_of_interest_lower}:
+        return PREFILTER_CONFLICT_OF_INTEREST
+    if reviewer.excluded_labels_lower & all_labels_lower:
+        return PREFILTER_EXCLUDED_LABEL
+    return None
 
 
 def _queue_age_seconds(pr_entry: dict) -> float | None:
@@ -187,17 +208,12 @@ def _reviewer_candidate_state(
     matching: list[tuple[ReviewerProfile, list[str]]] = []
     excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
     all_labels_lower = _all_labels_lower(pr_entry)
-    if labels_lower:
-        for reviewer in reviewers:
-            if author_norm in {reviewer.github_login.lower(), *reviewer.conflict_of_interest_lower}:
-                continue
-            if reviewer.excluded_labels_lower & all_labels_lower:
-                continue
-            match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
-            if match:
-                matching.append((reviewer, match))
-    else:
-        matching = [(rev, []) for rev in reviewers if _normalize_login(rev.github_login) != author_norm]
+    for reviewer in reviewers:
+        if _prefilter_reason(reviewer, author_norm=author_norm, all_labels_lower=all_labels_lower) is not None:
+            continue
+        match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
+        if match:
+            matching.append((reviewer, match))
 
     if not matching:
         return [], [], [], "no-match"
@@ -405,10 +421,10 @@ def suggest_reviewer_for_pr_with_trace(
     excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
     trace: dict = _pr_trace_base(pr_entry, excluded_logins=excluded_lower, topic_label_matcher=topic_label_matcher)
     filtered: dict[str, list[str]] = {
-        "conflict_of_interest": [],
-        # Design doc 057: the reviewer excludes a label this PR carries. Checked right after the
-        # conflict of interest and, like it, before label matching.
-        "excluded_label": [],
+        # The two `_prefilter_reason` outcomes: dropped before label matching. The second is design
+        # doc 057, a reviewer who excludes a label this PR carries.
+        PREFILTER_CONFLICT_OF_INTEREST: [],
+        PREFILTER_EXCLUDED_LABEL: [],
         "opt_out": [],
         "temporary_break": [],
         "auto_assign_disabled": [],
@@ -421,28 +437,14 @@ def suggest_reviewer_for_pr_with_trace(
 
     matching: list[tuple[ReviewerProfile, list[str]]] = []
     all_labels_lower = _all_labels_lower(pr_entry)
-    if labels_lower:
-        for reviewer in reviewers:
-            reviewer_login = reviewer.github_login
-            if author_norm in {reviewer_login.lower(), *reviewer.conflict_of_interest_lower}:
-                filtered["conflict_of_interest"].append(reviewer_login)
-                continue
-            if reviewer.excluded_labels_lower & all_labels_lower:
-                filtered["excluded_label"].append(reviewer_login)
-                continue
-            match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
-            if match:
-                matching.append((reviewer, match))
-    else:
-        for reviewer in reviewers:
-            reviewer_login = reviewer.github_login
-            if author_norm in {reviewer_login.lower(), *reviewer.conflict_of_interest_lower}:
-                filtered["conflict_of_interest"].append(reviewer_login)
-                continue
-            if reviewer.excluded_labels_lower & all_labels_lower:
-                filtered["excluded_label"].append(reviewer_login)
-                continue
-            matching.append((reviewer, []))
+    for reviewer in reviewers:
+        prefilter = _prefilter_reason(reviewer, author_norm=author_norm, all_labels_lower=all_labels_lower)
+        if prefilter is not None:
+            filtered[prefilter].append(reviewer.github_login)
+            continue
+        match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
+        if match:
+            matching.append((reviewer, match))
 
     if not matching:
         trace["candidate_counts"] = {"matching_label": 0, "after_exclusions": 0, "available_capacity": 0}

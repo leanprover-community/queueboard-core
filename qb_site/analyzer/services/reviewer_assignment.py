@@ -27,6 +27,7 @@ from analyzer.services.reviewer_assignment_engine import (
     ReviewerProfile,
     ReviewerSuggestionResult,
     SimulationInputs,
+    _all_labels_lower,
     _normalize_login,
     add_pending_proposal_load,
     rank_prs_for_assignment,
@@ -232,12 +233,7 @@ def _filter_assignment_forbidden_prs(
     kept: list[int] = []
     for pr_number in pr_numbers:
         pr_entry = all_prs.get(pr_number) or all_prs.get(str(pr_number)) or {}
-        label_names = {
-            str(label.get("name")).strip().lower()
-            for label in (pr_entry.get("labels") or [])
-            if isinstance(label, dict) and label.get("name")
-        }
-        if label_names & forbidden_labels:
+        if _all_labels_lower(pr_entry) & forbidden_labels:
             continue
         kept.append(int(pr_number))
     return kept
