@@ -36,6 +36,7 @@ from analyzer.services.reviewer_assignment_engine import (
 from core.models import Repository, ReviewerPreference
 from core.services.topic_labels import TopicLabelMatcher, default_topic_label_matcher, topic_label_matcher_for_repo
 from queueboard.classify_pr_state import PRStatus
+from syncer.models import PRLabel
 
 DataStatus = str  # "valid" | "incomplete" | "missing"
 
@@ -58,6 +59,41 @@ def _opt_outs_for_prs(repository: Repository, pr_numbers: Sequence[int]) -> dict
     for pr_number, reviewer_login in rows:
         opt_outs.setdefault(int(pr_number), set()).add(_normalize_login(reviewer_login))
     return opt_outs
+
+
+def _excluded_label_logins_for_prs(
+    repository: Repository,
+    pr_numbers: Sequence[int],
+    reviewers: Sequence[ReviewerProfile],
+) -> dict[int, set[str]]:
+    """``pr_number -> {normalized login}`` of reviewers who exclude a label the PR carries *now*.
+
+    The execution-time half of the excluded-labels rule (design doc 057), shaped like
+    ``_opt_outs_for_prs`` for the apply/propose re-validation. The engine already dropped these
+    reviewers against the snapshot's labels at compute time; this re-reads the live
+    ``syncer.PRLabel`` rows because the snapshot can be ~a day old, and a label added since then
+    must still stop the assignment. No query at all when no reviewer excludes anything.
+    """
+    excluded_by_login = {
+        _normalize_login(reviewer.github_login): reviewer.excluded_labels_lower
+        for reviewer in reviewers
+        if reviewer.excluded_labels_lower
+    }
+    if not pr_numbers or not excluded_by_login:
+        return {}
+    labels_by_pr: dict[int, set[str]] = {}
+    rows = PRLabel.objects.filter(
+        pull_request__repository=repository,
+        pull_request__number__in=pr_numbers,
+    ).values_list("pull_request__number", "label_def__name")
+    for pr_number, label_name in rows:
+        labels_by_pr.setdefault(int(pr_number), set()).add(str(label_name).strip().lower())
+    result: dict[int, set[str]] = {}
+    for pr_number, labels in labels_by_pr.items():
+        logins = {login for login, excluded in excluded_by_login.items() if excluded & labels}
+        if logins:
+            result[pr_number] = logins
+    return result
 
 
 def _active_proposal_rows(repository: Repository) -> list[tuple[int, str]]:
@@ -279,6 +315,9 @@ def build_reviewer_catalog(repository: Repository, *, now: datetime | None = Non
             # caller used, so an unnormalized lookup here would read 0 for every reviewer whose
             # GitHub login is capitalized and quietly disable their limit (design doc 054).
             recent_assignment_count=recent_counts.get(_normalize_login(login), 0),
+            excluded_labels_lower=frozenset(
+                str(lab).strip().lower() for lab in (pref.excluded_labels or []) if isinstance(lab, str) and lab.strip()
+            ),
         )
         profiles.append(profile)
     return profiles

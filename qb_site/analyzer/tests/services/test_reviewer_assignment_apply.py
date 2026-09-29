@@ -15,7 +15,7 @@ from analyzer.models import (
 from analyzer.services.reviewer_assignment_apply import apply_assignments_for_repo
 from core.models import Repository, ReviewerPreference, User
 from core.services.github_assignment import AssignmentMutationError
-from syncer.models import PullRequest
+from syncer.models import LabelDef, PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 
 
@@ -136,6 +136,25 @@ class ApplyAssignmentsForRepoTests(TestCase):
 
         self.assertEqual(result["stats"]["skipped_opted_out"], 1)
         client.assign.assert_not_called()
+
+    def test_skips_reviewer_who_excludes_a_label_the_pr_carries_now(self) -> None:
+        # Design doc 057. The label is live-only (the snapshot is ~a day old), so only the
+        # execution-time re-check can stop it. Both PRs carry it; only alice excludes it.
+        ReviewerPreference.objects.filter(repository=self.repo, user__github_login="alice").update(
+            excluded_labels=["LLM-generated"]
+        )
+        self._make_snapshot({101: "alice", 102: "bob"})
+        label = LabelDef.objects.create(repository=self.repo, name="llm-generated", color="ededed")
+        for number in (101, 102):
+            PRLabel.objects.create(pull_request=self._make_pr(number, assignees=[]), label_def=label)
+
+        result, client, _sync = self._apply()
+
+        self.assertEqual(result["stats"]["skipped_excluded_label"], 1)
+        self.assertEqual(result["stats"]["applied"], 1)
+        client.assign.assert_called_once_with(owner="leanprover-community", repo="mathlib4", number=102, github_login="bob")
+        record = ReviewerAssignmentApplication.objects.get(repository=self.repo, pr_number=101, reviewer_login="alice")
+        self.assertEqual(record.status, ReviewerAssignmentApplication.STATUS_SKIPPED_EXCLUDED_LABEL)
 
     def test_skips_ineligible_reviewer(self) -> None:
         self._make_snapshot({101: "carol"})  # carol has no ReviewerPreference

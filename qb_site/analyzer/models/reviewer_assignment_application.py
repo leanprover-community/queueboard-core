@@ -23,6 +23,8 @@ class ReviewerAssignmentApplication(TimestampedModel):
     STATUS_FAILED = "failed"
     STATUS_SKIPPED_ALREADY_ASSIGNED = "skipped_already_assigned"
     STATUS_SKIPPED_OPTED_OUT = "skipped_opted_out"
+    # The reviewer excludes a label the PR carries now (design doc 057) — re-checked live at apply time.
+    STATUS_SKIPPED_EXCLUDED_LABEL = "skipped_excluded_label"
     STATUS_SKIPPED_INELIGIBLE = "skipped_ineligible"
     STATUS_SKIPPED_RECENTLY_APPLIED = "skipped_recently_applied"
     STATUS_SKIPPED_NO_TOKEN = "skipped_no_token"
@@ -34,6 +36,7 @@ class ReviewerAssignmentApplication(TimestampedModel):
         (STATUS_FAILED, "Failed"),
         (STATUS_SKIPPED_ALREADY_ASSIGNED, "Skipped (already assigned)"),
         (STATUS_SKIPPED_OPTED_OUT, "Skipped (opted out)"),
+        (STATUS_SKIPPED_EXCLUDED_LABEL, "Skipped (excluded label)"),
         (STATUS_SKIPPED_INELIGIBLE, "Skipped (reviewer ineligible)"),
         (STATUS_SKIPPED_RECENTLY_APPLIED, "Skipped (recently applied)"),
         (STATUS_SKIPPED_NO_TOKEN, "Skipped (no token)"),

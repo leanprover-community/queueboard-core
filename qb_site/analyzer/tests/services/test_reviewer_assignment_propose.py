@@ -15,7 +15,7 @@ from analyzer.models import (
 )
 from analyzer.services.reviewer_assignment_propose import propose_assignments_for_repo
 from core.models import Repository, ReviewerPreference, User
-from syncer.models import PullRequest
+from syncer.models import LabelDef, PRLabel, PullRequest
 from syncer.models.pull_request import PullRequestState
 
 
@@ -269,6 +269,24 @@ class ProposeAssignmentsForRepoTests(TestCase):
             ).count(),
             1,
         )
+
+    def test_skips_reviewer_who_excludes_a_label_the_pr_carries_now(self) -> None:
+        # Design doc 057: re-checked against live labels, like opt-outs. Only alice excludes it.
+        alice = self._make_reviewer("alice")
+        self._make_reviewer("bob")
+        ReviewerPreference.objects.filter(repository=self.repo, user=alice).update(excluded_labels=["LLM-generated"])
+        self._make_snapshot({101: "alice", 102: "bob"})
+        label = LabelDef.objects.create(repository=self.repo, name="LLM-generated", color="ededed")
+        for number in (101, 102):
+            PRLabel.objects.create(pull_request=self._make_pr(number), label_def=label)
+
+        result, client, _sync = self._propose()
+
+        self.assertEqual(result["stats"]["skipped_excluded_label"], 1)
+        self.assertEqual(result["stats"]["proposed"], 1)
+        self.assertFalse(AssignmentProposal.objects.filter(repository=self.repo, pr_number=101).exists())
+        self.assertTrue(AssignmentProposal.objects.filter(repository=self.repo, pr_number=102, reviewer_login="bob").exists())
+        client.assign.assert_not_called()
 
     def test_skips_already_assigned_and_opted_out_and_ineligible(self) -> None:
         self._make_reviewer("alice", acceptance=ReviewerPreference.ACCEPTANCE_AUTO, reachable=False)

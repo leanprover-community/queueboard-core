@@ -11,6 +11,7 @@ from analyzer.services.assignment_suggestions import (
     SKIP_AUTHORED,
     SKIP_CONFLICT_OF_INTEREST,
     SKIP_EXCLUDED,
+    SKIP_EXCLUDED_LABEL,
     SKIP_NO_AREA_MATCH,
     SKIP_NO_TOPIC_LABEL,
     SKIP_OUTRANKED,
@@ -459,6 +460,37 @@ class TestOverridesAndCorrectnessRules(SuggestionServiceTestCase):
         result = self._suggest()
         self.assertEqual(result.status, STATUS_NONE_ELIGIBLE)
         self.assertEqual(result.skipped, {SKIP_CONFLICT_OF_INTEREST: 1})
+
+    def test_excluded_label_is_not_overridden(self) -> None:
+        # Design doc 057: a "never give me these" preference holds for requested work too.
+        self.alice_pref.excluded_labels = ["easy"]
+        self.alice_pref.save(update_fields=["excluded_labels"])
+        self._seed_snapshot({"1": _pr(labels=["t-algebra", "Easy"])})
+        result = self._suggest()
+        self.assertEqual(result.status, STATUS_NONE_ELIGIBLE)
+        self.assertEqual(result.skipped, {SKIP_EXCLUDED_LABEL: 1})
+
+    def test_label_override_does_not_lift_an_exclusion(self) -> None:
+        # The override replaces preferred labels only; asking for the excluded label by name
+        # still yields nothing for it.
+        self.alice_pref.excluded_labels = ["t-topology"]
+        self.alice_pref.save(update_fields=["excluded_labels"])
+        self._seed_snapshot({"1": _pr(labels=["t-topology"])})
+        result = self._suggest(labels=["t-topology"])
+        self.assertEqual(result.suggestions, [])
+        self.assertEqual(result.skipped, {SKIP_EXCLUDED_LABEL: 1})
+
+    def test_another_reviewers_exclusion_does_not_outrank_the_requester(self) -> None:
+        # bob matches both topic labels and would outrank alice, but he excludes a label the PR
+        # carries, so he is out of the contest entirely and alice is offered the PR.
+        self.bob_pref.excluded_labels = ["easy"]
+        self.bob_pref.save(update_fields=["excluded_labels"])
+        self._seed_snapshot({"1": _pr(labels=["t-algebra", "t-topology", "easy"])})
+        result = self._suggest()
+        self.assertEqual([s.pr_number for s in result.suggestions], [1])
+        self.assertNotIn(SKIP_OUTRANKED, result.skipped)
+        # Scarcity reflects it too: bob is not supply for this PR.
+        self.assertEqual(result.suggestions[0].available_reviewer_count, 1)
 
     def test_opt_out_is_not_overridden(self) -> None:
         self._seed_snapshot({"1": _pr(labels=["t-algebra"])})

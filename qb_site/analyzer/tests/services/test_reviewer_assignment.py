@@ -13,12 +13,14 @@ from analyzer.services.reviewer_assignment import (
     _filter_assignment_forbidden_prs,
     add_pending_proposal_load,
     build_reviewer_assignment_trace,
+    build_reviewer_catalog,
     collect_assignment_statistics,
     compute_area_stats,
     rank_prs_for_assignment,
     suggest_reviewer_for_pr,
     suggest_reviewers_many,
 )
+from analyzer.services.reviewer_assignment_engine import suggest_reviewer_for_pr_with_trace
 from core.models import Repository, ReviewerPreference, User
 from core.services.topic_labels import make_topic_label_matcher
 from analyzer.models import AssignmentProposal, QueueRuleSet, ReviewerOptOut
@@ -900,6 +902,43 @@ class ReviewerAssignmentBuilderTests(TestCase):
         self.assertIn(20, payload["automatic_assignments"])
         self.assertNotIn(21, payload["automatic_assignments"])
 
+    def test_build_skips_reviewer_who_excludes_a_label_on_the_pr(self):
+        # Design doc 057. PR 22 carries a non-topic label bob excludes (saved in another case);
+        # PR 23 does not. PRs are authored by alice, so bob is the only candidate for either.
+        self._make_pr(22, labels=("t-analysis", "LLM-generated"))
+        self._make_pr(23, labels=("t-analysis",))
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            maximum_capacity=3,
+            auto_assign=True,
+            excluded_labels=["llm-generated"],
+        )
+
+        queue_snapshot = ReviewerAssignmentBuilder().queue_snapshot_builder.build_and_store(self.repo, cache_key="default")
+        payload = ReviewerAssignmentBuilder(rng=random.Random(0)).build(self.repo, queue_snapshot=queue_snapshot)
+
+        self.assertIn(22, queue_snapshot.payload["lists"]["dashboards"]["Queue"])
+        self.assertIn(23, payload["automatic_assignments"])
+        self.assertNotIn(22, payload["automatic_assignments"])
+
+        trace = build_reviewer_assignment_trace(self.repo, queue_snapshot=queue_snapshot, rng=random.Random(0))
+        self.assertEqual(trace["per_pr"]["22"]["filtered"]["excluded_label"], ["bob"])
+        self.assertEqual(trace["per_pr"]["22"]["reason"], "no-match")
+
+    def test_catalog_normalizes_excluded_labels(self):
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.bob,
+            preferred_labels=["t-analysis"],
+            excluded_labels=[" LLM-generated ", "WIP", ""],
+        )
+
+        [profile] = build_reviewer_catalog(self.repo, now=self.now)
+
+        self.assertEqual(profile.excluded_labels_lower, frozenset({"llm-generated", "wip"}))
+
     def test_build_skips_pr_already_assigned_to_active_reviewer(self):
         pr = self._make_pr(16, labels=("t-analysis",))
         pr.assignees = ["alice"]
@@ -1482,3 +1521,98 @@ class AreaStatsBuilderTests(TestCase):
         )
         after = builder.build_and_store(self.repo)
         self.assertTrue(after.payload["area_stats"]["t-analysis"]["at_max_capacity"])
+
+
+def _excluding_profile(login: str, labels: list[str], *, excluded: tuple[str, ...] = ()) -> ReviewerProfile:
+    return ReviewerProfile(
+        github_login=login,
+        maximum_capacity=5,
+        auto_assign=True,
+        temporary_break=False,
+        preferred_labels=labels,
+        preferred_labels_lower={lab.lower() for lab in labels},
+        free_form="",
+        conflict_of_interest=[],
+        conflict_of_interest_lower=set(),
+        excluded_labels_lower=frozenset(lab.lower() for lab in excluded),
+    )
+
+
+def _labelled_pr(*labels: str) -> dict:
+    return {
+        "author": "zed",
+        "assignees": [],
+        "pr_status": "AwaitingReview",
+        "labels": [{"name": name} for name in labels],
+        "total_queue_time": {"status": "valid", "value_td": 10},
+    }
+
+
+class ReviewerExcludedLabelsEngineTests(SimpleTestCase):
+    """Design doc 057: an excluded label drops the reviewer *before* label matching."""
+
+    def _suggest(self, pr_entry: dict, reviewers: list[ReviewerProfile]):
+        return suggest_reviewer_for_pr(
+            pr_number=1, pr_entry=pr_entry, reviewers=reviewers, assignment_stats={}, rng=random.Random(0)
+        )
+
+    def test_excluded_reviewer_cannot_outrank_the_remaining_reviewers(self):
+        # alice matches both topic labels, bob one, so alice alone survives the max_score contest.
+        # Were the exclusion applied after the contest (as opt-outs are), nobody would get the PR.
+        pr = _labelled_pr("t-algebra", "t-number-theory", "LLM-generated")
+        bob = _excluding_profile("bob", ["t-algebra"])
+
+        control = self._suggest(pr, [_excluding_profile("alice", ["t-algebra", "t-number-theory"]), bob])
+        self.assertEqual(control.all_potential_reviewers, ["alice"])
+
+        result = self._suggest(
+            pr, [_excluding_profile("alice", ["t-algebra", "t-number-theory"], excluded=("LLM-generated",)), bob]
+        )
+        self.assertEqual(result.all_potential_reviewers, ["bob"])
+        self.assertEqual(result.suggested, "bob")
+
+    def test_non_topic_label_is_matched_case_insensitively(self):
+        pr = _labelled_pr("t-algebra", "LLM-Generated")
+        result = self._suggest(pr, [_excluding_profile("alice", ["t-algebra"], excluded=("llm-generated",))])
+        self.assertIsNone(result.suggested)
+        self.assertEqual(result.reason, "no-match")
+
+    def test_topic_label_can_be_excluded(self):
+        # Any label counts, including a topic label the reviewer does not otherwise prefer.
+        pr = _labelled_pr("t-algebra", "t-meta")
+        result = self._suggest(pr, [_excluding_profile("alice", ["t-algebra"], excluded=("t-meta",))])
+        self.assertIsNone(result.suggested)
+
+    def test_unrelated_exclusion_leaves_the_reviewer_available(self):
+        pr = _labelled_pr("t-algebra")
+        result = self._suggest(pr, [_excluding_profile("alice", ["t-algebra"], excluded=("LLM-generated",))])
+        self.assertEqual(result.suggested, "alice")
+
+    def test_trace_records_the_excluded_reviewer(self):
+        pr = _labelled_pr("t-algebra", "LLM-generated")
+        _result, trace = suggest_reviewer_for_pr_with_trace(
+            pr_entry=pr,
+            reviewers=[
+                _excluding_profile("alice", ["t-algebra"], excluded=("LLM-generated",)),
+                _excluding_profile("bob", ["t-algebra"]),
+            ],
+            assignment_stats={},
+            rng=random.Random(0),
+        )
+        self.assertEqual(trace["filtered"]["excluded_label"], ["alice"])
+        self.assertEqual(trace["potential"], ["bob"])
+        self.assertEqual(trace["picked"], "bob")
+
+    def test_ranking_does_not_count_an_excluded_reviewer_as_supply(self):
+        all_prs = {1: _labelled_pr("t-algebra", "LLM-generated"), 2: _labelled_pr("t-algebra")}
+        _ordered, trace = rank_prs_for_assignment(
+            prs_to_assign=[1, 2],
+            all_prs=all_prs,
+            reviewers=[
+                _excluding_profile("alice", ["t-algebra"], excluded=("LLM-generated",)),
+                _excluding_profile("bob", ["t-algebra"]),
+            ],
+            assignment_stats={},
+        )
+        self.assertEqual(trace["1"]["details"]["available_reviewer_count"], 1)
+        self.assertEqual(trace["2"]["details"]["available_reviewer_count"], 2)

@@ -304,6 +304,7 @@ pair is counted once against the *first* rule that excluded it:
 | `no_topic_label` | the PR carries no topic label at all (engine reason `missing-topic-label`) |
 | `authored` | the requester is the PR author |
 | `conflict_of_interest` | the requester lists the author as a conflict |
+| `excluded_label` | the PR carries a label the requester excludes (added by design doc 057) |
 | `no_area_match` | none of the effective labels intersect the PR's topic labels |
 | `outranked` | the requester matched, but another reviewer matched *more* labels, so the engine's `max_score` contest dropped them |
 | `excluded` | active per-PR `ReviewerOptOut`, or expired-proposal cooldown |
@@ -435,11 +436,11 @@ No new mutation surface, flag, or permission path is introduced on the Zulip sid
    cannot use this to change anyone else's state, or to reduce their own obligations.
 4. **Push-throttle preferences are overridable; correctness rules are not.** Overridable, because
    all three configure how much the *scheduled* pipeline sends: `away_until`, `auto_assign`,
-   `maximum_capacity`. Never overridden: conflict-of-interest, per-PR `ReviewerOptOut`,
-   expired-proposal cooldown, authorship, assignment-forbidden labels, PRs that already carry an
-   assignee, and PRs held by an active `AssignmentProposal`. The first two are the reviewer's own
-   standing decisions about *specific* people and PRs, not a statement about when or how much they
-   are free.
+   `maximum_capacity`. Never overridden: conflict-of-interest, excluded labels (design doc 057),
+   per-PR `ReviewerOptOut`, expired-proposal cooldown, authorship, assignment-forbidden labels, PRs
+   that already carry an assignee, and PRs held by an active `AssignmentProposal`. The first three
+   are the reviewer's own standing decisions about *specific* people, labels and PRs, not a
+   statement about when or how much they are free.
 5. **One candidate pool.** Suggestions must go through `prepare_assignment_inputs`. A second,
    hand-rolled filter chain here would drift from the builder and start offering PRs the nightly run
    refuses. New exclusion rules belong there, not at a call site.

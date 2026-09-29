@@ -28,6 +28,12 @@ All endpoints accept `GET` only. Most require a `?repo=owner/name` query paramet
 ## Authentication
 - `authentication_classes = []`, `permission_classes = []` on all views — no auth required.
 
+## Privacy
+- Everything served here is public. Never expose private reviewer preferences —
+  `ReviewerPreference.conflict_of_interest` and `excluded_labels` (design doc 057) — or anything
+  derived per reviewer from them (e.g. assignment-engine traces, which name the reviewers each rule
+  filtered). `test_reviewer_interests.py` pins the interests endpoint's field set.
+
 ## Testing
 ```bash
 uv run python qb_site/manage.py test api

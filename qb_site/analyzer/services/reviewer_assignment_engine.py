@@ -13,10 +13,10 @@ from core.services.topic_labels import TopicLabelMatcher, default_topic_label_ma
 class ReviewerProfile:
     """One reviewer's assignability inputs, as plain data (no ORM) — see design doc 037.
 
-    The last three fields carry the rolling-window rate limit (design doc 054) and all default to a
-    no-op, deliberately: ``_reviewer_candidate_state`` is shared code, called by the nightly builder
-    *and* by on-demand suggestions, so every construction site that predates 054 (tests included)
-    must keep today's behavior without naming them.
+    The fields after ``conflict_of_interest_lower`` (the 054 rate limit, the 057 excluded labels)
+    all default to a no-op, deliberately: ``_reviewer_candidate_state`` is shared code, called by the
+    nightly builder *and* by on-demand suggestions, so every construction site that predates them
+    (tests included) must keep today's behavior without naming them.
     """
 
     github_login: str
@@ -37,6 +37,10 @@ class ReviewerProfile:
     # window count yet. Without it a single nightly run could overrun the weekly cap. Maintained by
     # ``run_assignment_simulation``; a correctness guard, not an intra-week pacing knob.
     simulated_this_run: int = 0
+    # ``ReviewerPreference.excluded_labels``, normalized (design doc 057). A PR carrying *any* of
+    # these labels — topic or not — drops the reviewer before label matching, like a conflict of
+    # interest, so an excluded reviewer can never outrank the reviewers who remain eligible.
+    excluded_labels_lower: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -88,6 +92,20 @@ def _topic_labels(pr_entry: dict, matcher: TopicLabelMatcher = default_topic_lab
         if matcher(name):
             names.append(name)
     return names
+
+
+def _all_labels_lower(pr_entry: dict) -> frozenset[str]:
+    """Every label on the PR, normalized — not just topic labels (``_topic_labels``).
+
+    Excluded labels (design doc 057) are matched against this: the labels reviewers most want to
+    avoid (e.g. ``LLM-generated``) are usually not topic labels. Normalized like
+    ``_filter_assignment_forbidden_prs``.
+    """
+    return frozenset(
+        str(label.get("name")).strip().lower()
+        for label in (pr_entry.get("labels") or [])
+        if isinstance(label, dict) and label.get("name")
+    )
 
 
 def _queue_age_seconds(pr_entry: dict) -> float | None:
@@ -168,9 +186,12 @@ def _reviewer_candidate_state(
 
     matching: list[tuple[ReviewerProfile, list[str]]] = []
     excluded_lower = {_normalize_login(login) for login in (excluded_logins or set()) if login}
+    all_labels_lower = _all_labels_lower(pr_entry)
     if labels_lower:
         for reviewer in reviewers:
             if author_norm in {reviewer.github_login.lower(), *reviewer.conflict_of_interest_lower}:
+                continue
+            if reviewer.excluded_labels_lower & all_labels_lower:
                 continue
             match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
             if match:
@@ -385,6 +406,9 @@ def suggest_reviewer_for_pr_with_trace(
     trace: dict = _pr_trace_base(pr_entry, excluded_logins=excluded_lower, topic_label_matcher=topic_label_matcher)
     filtered: dict[str, list[str]] = {
         "conflict_of_interest": [],
+        # Design doc 057: the reviewer excludes a label this PR carries. Checked right after the
+        # conflict of interest and, like it, before label matching.
+        "excluded_label": [],
         "opt_out": [],
         "temporary_break": [],
         "auto_assign_disabled": [],
@@ -396,11 +420,15 @@ def suggest_reviewer_for_pr_with_trace(
     }
 
     matching: list[tuple[ReviewerProfile, list[str]]] = []
+    all_labels_lower = _all_labels_lower(pr_entry)
     if labels_lower:
         for reviewer in reviewers:
             reviewer_login = reviewer.github_login
             if author_norm in {reviewer_login.lower(), *reviewer.conflict_of_interest_lower}:
                 filtered["conflict_of_interest"].append(reviewer_login)
+                continue
+            if reviewer.excluded_labels_lower & all_labels_lower:
+                filtered["excluded_label"].append(reviewer_login)
                 continue
             match = [lab for lab in labels_lower if lab in reviewer.preferred_labels_lower]
             if match:
@@ -410,6 +438,9 @@ def suggest_reviewer_for_pr_with_trace(
             reviewer_login = reviewer.github_login
             if author_norm in {reviewer_login.lower(), *reviewer.conflict_of_interest_lower}:
                 filtered["conflict_of_interest"].append(reviewer_login)
+                continue
+            if reviewer.excluded_labels_lower & all_labels_lower:
+                filtered["excluded_label"].append(reviewer_login)
                 continue
             matching.append((reviewer, []))
 

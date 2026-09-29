@@ -66,6 +66,7 @@ except ImportError:  # deployed revision predates the 053 rename
         _prepare_assignment_inputs as prepare_assignment_inputs,
     )
 from analyzer.services.reviewer_assignment_engine import (  # noqa: E402
+    _all_labels_lower,
     _normalize_login,
     _topic_labels,
     rank_prs_for_assignment,
@@ -174,16 +175,21 @@ def classify(
         return "authored"
     if author_norm in me.conflict_of_interest_lower:
         return "conflict_of_interest"
+    all_labels_lower = _all_labels_lower(pr_entry)
+    if me.excluded_labels_lower & all_labels_lower:
+        return "excluded_label"
 
     my_match = [lab for lab in labels_lower if lab in me.preferred_labels_lower]
     if not my_match:
         return "no_area_match"
 
     # max_score contest, over every reviewer the engine would consider "matching" for this PR
-    # (conflict-of-interest filtered, availability NOT filtered — same as the engine).
+    # (conflict-of-interest and excluded-label filtered, availability NOT filtered — same as the engine).
     max_score = len(my_match)
     for rev in others:
         if author_norm in {rev.github_login.lower(), *rev.conflict_of_interest_lower}:
+            continue
+        if rev.excluded_labels_lower & all_labels_lower:
             continue
         score = sum(1 for lab in labels_lower if lab in rev.preferred_labels_lower)
         if score > max_score:
@@ -369,6 +375,7 @@ def probe_repo(repository: Repository, *, anon: Anonymizer, limit_probe: int, no
         "unavailable_either_way": sum(1 for r in reviewers if not r.auto_assign or r.temporary_break),
         "no_preferred_labels": sum(1 for r in reviewers if not r.preferred_labels_lower),
         "with_conflicts": sum(1 for r in reviewers if r.conflict_of_interest_lower),
+        "with_excluded_labels": sum(1 for r in reviewers if r.excluded_labels_lower),
         "acceptance_mode": hist(p.assignment_acceptance for p in prefs),
         "zulip_linked": sum(1 for p in prefs if getattr(p.user, "zulip_user_id", None) is not None),
         "preferred_label_count": quantiles([len(r.preferred_labels_lower) for r in reviewers]),
