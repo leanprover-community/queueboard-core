@@ -66,7 +66,6 @@ except ImportError:  # deployed revision predates the 053 rename
         _prepare_assignment_inputs as prepare_assignment_inputs,
     )
 from analyzer.services.reviewer_assignment_engine import (  # noqa: E402
-    _all_labels_lower,
     _normalize_login,
     _topic_labels,
     rank_prs_for_assignment,
@@ -75,6 +74,24 @@ from analyzer.services.reviewer_assignment_engine import (  # noqa: E402
 from analyzer.services.reviewer_load import build_reviewer_loads  # noqa: E402
 from core.models import Repository, ReviewerPreference  # noqa: E402
 from core.services.topic_labels import topic_label_matcher_for_repo  # noqa: E402
+
+# Excluded labels (design doc 057) postdate the baseline revisions this probe must also run on, so
+# both the helper and the profile field are optional: on an older revision nobody excludes anything.
+try:
+    from analyzer.services.reviewer_assignment_engine import _all_labels_lower  # noqa: E402
+except ImportError:  # deployed revision predates 057
+
+    def _all_labels_lower(pr_entry: dict) -> frozenset[str]:
+        return frozenset(
+            str(label.get("name")).strip().lower()
+            for label in (pr_entry.get("labels") or [])
+            if isinstance(label, dict) and label.get("name")
+        )
+
+
+def _excluded_labels_lower(reviewer) -> frozenset[str]:
+    return getattr(reviewer, "excluded_labels_lower", frozenset())
+
 
 MARK_BEGIN = "===QB-PROBE-053-JSON-BEGIN==="
 MARK_END = "===QB-PROBE-053-JSON-END==="
@@ -176,7 +193,7 @@ def classify(
     if author_norm in me.conflict_of_interest_lower:
         return "conflict_of_interest"
     all_labels_lower = _all_labels_lower(pr_entry)
-    if me.excluded_labels_lower & all_labels_lower:
+    if _excluded_labels_lower(me) & all_labels_lower:
         return "excluded_label"
 
     my_match = [lab for lab in labels_lower if lab in me.preferred_labels_lower]
@@ -189,7 +206,7 @@ def classify(
     for rev in others:
         if author_norm in {rev.github_login.lower(), *rev.conflict_of_interest_lower}:
             continue
-        if rev.excluded_labels_lower & all_labels_lower:
+        if _excluded_labels_lower(rev) & all_labels_lower:
             continue
         score = sum(1 for lab in labels_lower if lab in rev.preferred_labels_lower)
         if score > max_score:
@@ -375,7 +392,7 @@ def probe_repo(repository: Repository, *, anon: Anonymizer, limit_probe: int, no
         "unavailable_either_way": sum(1 for r in reviewers if not r.auto_assign or r.temporary_break),
         "no_preferred_labels": sum(1 for r in reviewers if not r.preferred_labels_lower),
         "with_conflicts": sum(1 for r in reviewers if r.conflict_of_interest_lower),
-        "with_excluded_labels": sum(1 for r in reviewers if r.excluded_labels_lower),
+        "with_excluded_labels": sum(1 for r in reviewers if _excluded_labels_lower(r)),
         "acceptance_mode": hist(p.assignment_acceptance for p in prefs),
         "zulip_linked": sum(1 for p in prefs if getattr(p.user, "zulip_user_id", None) is not None),
         "preferred_label_count": quantiles([len(r.preferred_labels_lower) for r in reviewers]),
