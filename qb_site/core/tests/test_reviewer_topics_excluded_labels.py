@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import json
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.urls import reverse
 
 from core.models import Repository, ReviewerPreference, User
 from core.services.reviewer_topics_importer import (
@@ -74,3 +76,14 @@ class ReviewerTopicsExcludedLabelsTests(TestCase):
         self.pref.save(update_fields=["excluded_labels"])
         _owner, _name, entries = export_reviewer_topics(repo=REPO)
         self.assertNotIn("excluded_labels", entries[0])
+
+
+class ReviewerTopicsExportPageTests(TestCase):
+    def test_export_page_warns_that_the_file_is_private(self) -> None:
+        # The format is the one published on a public branch; the page an operator uses must say
+        # that this export is not safe to publish as is.
+        admin_user = get_user_model().objects.create_superuser(username="admin", email="a@example.com", password="pw")
+        self.client.force_login(admin_user)
+        response = self.client.get(reverse("admin:core_reviewerpreference_export_topics"))
+        self.assertContains(response, "This file contains private reviewer preferences")
+        self.assertContains(response, "excluded_labels")

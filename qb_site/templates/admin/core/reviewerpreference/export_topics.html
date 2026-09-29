@@ -6,6 +6,16 @@
 {% block content %}
 <h1>{% trans "Export reviewer-topics.json" %}</h1>
 
+{% comment %}
+Design doc 057. This is the file format published on mathlib4's public reviewer-topics branch, so an
+operator exporting "as before" could publish private preferences. Say so above the form.
+{% endcomment %}
+<ul class="messagelist">
+  <li class="warning">
+    {% trans "This file contains private reviewer preferences: conflict_of_interest and excluded_labels. Excluded labels are not shown anywhere public, not even on the community team page. Do not publish the file (for example to the public reviewer-topics branch) without removing both fields." %}
+  </li>
+</ul>
+
 <p>
   <strong>{% trans "Field mapping notes" %}:</strong>
   <ul>
@@ -13,6 +23,7 @@
     <li>{% trans "top_level comes from preferred_labels." %}</li>
     <li>{% trans "free_form and auto_assign are emitted directly." %}</li>
     <li>{% trans "maximum_capacity is emitted only when it differs from the model default." %}</li>
+    <li>{% trans "max_new_assignments_per_week, conflict_of_interest and excluded_labels are emitted only when set." %}</li>
     <li>{% trans "temporary_break and zulip_handle are not included (no corresponding DB fields)." %}</li>
   </ul>
 </p>
