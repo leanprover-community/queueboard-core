@@ -452,7 +452,7 @@ ANALYZER_ASSIGNMENT_PROPOSALS_CONSOLE_UNASSIGN_ENABLED = env_bool(
 #   ENABLED               master switch for the read path on both surfaces.
 #   CONSOLE_CLAIM_ENABLED the console claim endpoint's GitHub write (assign via the 046 path).
 #   LIMIT                 service default suggestion count; what the console renders.
-#   ZULIP_LIMIT           surface override for the in-channel reply (console link carries the rest).
+#   ZULIP_LIMIT           surface override for the Zulip DM reply (console link carries the rest).
 #   MAX_LABELS            cap on the per-request label override set (form and query string alike).
 ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED = env_bool(os.getenv("ANALYZER_ASSIGNMENT_SUGGESTIONS_ENABLED"), False)
 ANALYZER_ASSIGNMENT_SUGGESTIONS_CONSOLE_CLAIM_ENABLED = env_bool(
