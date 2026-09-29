@@ -1613,6 +1613,18 @@ class ReviewerExcludedLabelsEngineTests(SimpleTestCase):
         self.assertEqual(trace["potential"], ["bob"])
         self.assertEqual(trace["picked"], "bob")
 
+    def test_public_area_stats_ignore_exclusions(self):
+        # Area stats are public and exclusions private: the only on-rotation t-meta reviewer
+        # excluding t-meta must not flip the area to "at max capacity" and so reveal it.
+        area_stats = compute_area_stats(
+            existing_assignments={},
+            reviewers=[_excluding_profile("alice", ["t-meta"], excluded=("t-meta",))],
+            queue_pr_numbers=[1],
+            all_prs={1: _labelled_pr("t-meta")},
+            rng=random.Random(0),
+        )
+        self.assertFalse(area_stats["t-meta"]["at_max_capacity"])
+
     def test_ranking_does_not_count_an_excluded_reviewer_as_supply(self):
         all_prs = {1: _labelled_pr("t-algebra", "LLM-generated"), 2: _labelled_pr("t-algebra")}
         _ordered, trace = rank_prs_for_assignment(

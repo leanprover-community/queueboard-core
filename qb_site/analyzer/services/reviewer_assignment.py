@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Sequence, Set
 
@@ -626,11 +626,15 @@ def compute_area_stats(
             if reviewer.auto_assign and not reviewer.temporary_break:
                 data["num_reviewers_on_rotation"] = data.get("num_reviewers_on_rotation", 0) + 1
 
+    # Area stats are public, and excluded labels are private (design doc 057). The probe PR below
+    # carries only the area label, so a reviewer who excludes that label would otherwise drop out
+    # and could flip `at_max_capacity`, revealing the exclusion. Capacity is judged without them.
+    capacity_reviewers = [replace(r, excluded_labels_lower=frozenset()) if r.excluded_labels_lower else r for r in reviewers]
     for label_name, data in area_data.items():
         availability = suggest_reviewer_for_pr(
             pr_number=-1,
             pr_entry={"labels": [{"name": label_name}], "author": ""},
-            reviewers=reviewers,
+            reviewers=capacity_reviewers,
             assignment_stats=existing_assignments,
             rng=rng,
             topic_label_matcher=topic_label_matcher,
