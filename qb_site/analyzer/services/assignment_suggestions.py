@@ -17,10 +17,10 @@ engine call then sees the override. Key invariants (numbered as in the design do
    strict prefix of a larger one).
 4. Push-throttle preferences (``away_until``, ``auto_assign``, ``maximum_capacity``, and the
    rolling-window ``max_new_assignments_per_week`` of design doc 054) are overridden by the
-   explicit request; correctness rules (authorship, conflict-of-interest, opt-outs, cooldowns,
-   assignment-forbidden labels, active assignees/proposals) never are. The rate limit in
-   particular *depends* on this: it is a deliberately un-saveable weekly trickle, and this pull
-   path is where a reviewer with spare capacity right now catches up.
+   explicit request; correctness rules (authorship, conflict-of-interest, excluded labels (design
+   doc 057), opt-outs, cooldowns, assignment-forbidden labels, active assignees/proposals) never
+   are. The rate limit in particular *depends* on this: it is a deliberately un-saveable weekly
+   trickle, and this pull path is where a reviewer with spare capacity right now catches up.
 5. One candidate pool: the assignable set comes from ``prepare_assignment_inputs``, shared with
    the nightly builder, so a suggestion can never offer what the scheduled run would refuse.
 7. Capacity is reported, never enforced: ``load`` comes from the reviewer's *real*
@@ -44,6 +44,7 @@ from analyzer.services.queue_rules import default_rule_set_for_repo
 from analyzer.services.reviewer_assignment import _compute_weight, prepare_assignment_inputs
 from analyzer.services.reviewer_assignment_engine import (
     ReviewerProfile,
+    _all_labels_lower,
     _normalize_login,
     _reviewer_candidate_state,
     _topic_labels,
@@ -71,6 +72,7 @@ SKIP_ALREADY_ASSIGNED = "already_assigned"
 SKIP_NO_TOPIC_LABEL = "no_topic_label"
 SKIP_AUTHORED = "authored"
 SKIP_CONFLICT_OF_INTEREST = "conflict_of_interest"
+SKIP_EXCLUDED_LABEL = "excluded_label"
 SKIP_NO_AREA_MATCH = "no_area_match"
 SKIP_OUTRANKED = "outranked"
 SKIP_EXCLUDED = "excluded"
@@ -83,6 +85,7 @@ _SKIP_PHRASES: dict[str, str] = {
     SKIP_NO_TOPIC_LABEL: "with no topic label",
     SKIP_AUTHORED: "authored by you",
     SKIP_CONFLICT_OF_INTEREST: "conflict of interest",
+    SKIP_EXCLUDED_LABEL: "with a label you excluded",
     SKIP_NO_AREA_MATCH: "not matching your labels",
     SKIP_OUTRANKED: "outranked (another reviewer matches more of the PR's labels)",
     SKIP_EXCLUDED: "opted out or on cooldown",
@@ -193,6 +196,8 @@ def _classify_skip(
         return SKIP_AUTHORED
     if author_norm in requester.conflict_of_interest_lower:
         return SKIP_CONFLICT_OF_INTEREST
+    if requester.excluded_labels_lower & _all_labels_lower(pr_entry):
+        return SKIP_EXCLUDED_LABEL
     if not (topic_lower & requester.preferred_labels_lower):
         return SKIP_NO_AREA_MATCH
     potential_norm = {_normalize_login(login) for login in trace.get("potential", [])}
@@ -220,8 +225,8 @@ def suggest_prs_for_reviewer(
     never builds one — and persists nothing. ``labels`` *replaces* the reviewer's stored
     ``preferred_labels`` for this request; the request also overrides ``away_until``,
     ``auto_assign``, ``maximum_capacity`` and ``max_new_assignments_per_week`` (push throttles,
-    Invariant 4), while authorship, conflict-of-interest, opt-outs, cooldowns and the pool filters
-    stay in force.
+    Invariant 4), while authorship, conflict-of-interest, excluded labels, opt-outs, cooldowns and
+    the pool filters stay in force.
     """
     current_time = now or datetime.now(timezone.utc)
     effective_limit = int(settings.ANALYZER_ASSIGNMENT_SUGGESTIONS_LIMIT) if limit is None else int(limit)
@@ -402,6 +407,7 @@ __all__ = [
     "SKIP_AUTHORED",
     "SKIP_CONFLICT_OF_INTEREST",
     "SKIP_EXCLUDED",
+    "SKIP_EXCLUDED_LABEL",
     "SKIP_NO_AREA_MATCH",
     "SKIP_NO_TOPIC_LABEL",
     "SKIP_OUTRANKED",

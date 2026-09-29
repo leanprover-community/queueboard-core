@@ -91,6 +91,7 @@ class ConsolePrefsTests(TestCase):
             data[f"form-{idx}-away_until"] = ""
             data[f"form-{idx}-preferred_labels"] = list(pref.preferred_labels or [])
             data[f"form-{idx}-conflict_of_interest"] = "\n".join(pref.conflict_of_interest or [])
+            data[f"form-{idx}-excluded_labels"] = "\n".join(pref.excluded_labels or [])
             data[f"form-{idx}-free_form"] = pref.free_form or ""
         return data, index_by_pref_id
 

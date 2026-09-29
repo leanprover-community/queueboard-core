@@ -100,6 +100,9 @@ def import_reviewer_topics(
       limit. Absent leaves the existing value alone, so a file written before 054 never silently
       un-limits a reviewer.
     - ``conflict_of_interest``: copied to ``conflict_of_interest`` (deduped, case-insensitive).
+    - ``excluded_labels``: copied to ``excluded_labels`` (deduped, case-insensitive; design doc 057).
+      Absent leaves the existing value alone. Not checked against the label catalog — this is an
+      operator path; the reviewer-facing form is what rejects unknown labels.
     - ``zulip_handle`` and any other extra fields are ignored (not stored).
     """
 
@@ -233,6 +236,13 @@ def import_reviewer_topics(
                 changes["conflict_of_interest"] = (pref.conflict_of_interest, conflicts)
                 pref.conflict_of_interest = conflicts
 
+        if "excluded_labels" in entry:
+            raw_excluded = entry.get("excluded_labels") or []
+            excluded = _dedupe_case_insensitive_preserve_first(str(x) for x in raw_excluded)
+            if pref.excluded_labels != excluded:
+                changes["excluded_labels"] = (pref.excluded_labels, excluded)
+                pref.excluded_labels = excluded
+
         if was_create:
             if dry_run:
                 created_prefs += 1
@@ -290,6 +300,8 @@ def export_reviewer_topics(
     - Emits ``max_new_assignments_per_week`` only when a limit is set (``None`` is the default and
       means unlimited, so omitting it round-trips as "no limit").
     - Emits ``conflict_of_interest`` when present.
+    - Emits ``excluded_labels`` when present. Like ``conflict_of_interest`` it is private, so treat
+      the exported file as private (the export is admin-only).
     - Does not emit ``zulip_handle`` or other non-model fields.
     """
 
@@ -315,6 +327,8 @@ def export_reviewer_topics(
             entry["max_new_assignments_per_week"] = pref.max_new_assignments_per_week
         if pref.conflict_of_interest:
             entry["conflict_of_interest"] = list(pref.conflict_of_interest)
+        if pref.excluded_labels:
+            entry["excluded_labels"] = list(pref.excluded_labels)
         entries.append(entry)
 
     return owner, name, entries

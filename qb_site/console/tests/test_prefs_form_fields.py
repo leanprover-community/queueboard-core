@@ -90,6 +90,7 @@ class ConsolePrefsFormFieldTests(TestCase):
             data[f"form-{idx}-away_until"] = ""
             data[f"form-{idx}-preferred_labels"] = list(pref.preferred_labels or [])
             data[f"form-{idx}-conflict_of_interest"] = "\n".join(pref.conflict_of_interest or [])
+            data[f"form-{idx}-excluded_labels"] = "\n".join(pref.excluded_labels or [])
             data[f"form-{idx}-free_form"] = pref.free_form or ""
         return data, index_by_pref_id
 
@@ -116,9 +117,11 @@ class ConsolePrefsFormFieldTests(TestCase):
             "preferred_labels",
             "free_form",
             "conflict_of_interest",
+            "excluded_labels",
         ):
             self.assertIn(f'name="form-0-{field}"', body)
         self.assertLess(body.index("Free form"), body.index("Conflict of interest"))
+        self.assertLess(body.index("Conflict of interest"), body.index("Excluded labels"))
 
     def test_escalation_thresholds_render_in_one_section(self) -> None:
         """`stale_nudge_days` and `auto_unassign_days` are one ladder with a cross-field rule.
@@ -341,6 +344,60 @@ class ConsolePrefsFormFieldTests(TestCase):
         self.assertContains(response, "Select a valid choice")
         self.pref1.refresh_from_db()
         self.assertEqual(self.pref1.preferred_labels, ["t-algebra"])
+
+    # ---- excluded labels (design doc 057) -------------------------------
+
+    def test_post_saves_excluded_labels_in_catalog_spelling(self) -> None:
+        # Any catalog label counts, not only topic labels; the saved spelling is the catalog's.
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-excluded_labels"] = "ci, Maintainer-Merge\nci"
+
+        response = self.client.post(self.url, data=data)
+
+        self.assertEqual(response.status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.excluded_labels, ["CI", "maintainer-merge"])
+
+    def test_post_rejects_unknown_excluded_label(self) -> None:
+        # A typo would silently void a "never" preference, so it is refused, not stored.
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-excluded_labels"] = "CI\nnot-a-real-label"
+
+        response = self.client.post(self.url, data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Not a label in this repository: not-a-real-label.")
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.excluded_labels, [])
+
+    def test_post_rejects_label_both_preferred_and_excluded(self) -> None:
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-excluded_labels"] = "T-Algebra"
+
+        response = self.client.post(self.url, data=data)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Also selected as a preferred label: t-algebra.")
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.excluded_labels, [])
+
+    def test_saved_excluded_label_gone_from_catalog_is_kept_and_flagged(self) -> None:
+        # Renamed/deleted on GitHub after it was saved: an unrelated edit must still save.
+        self.pref1.excluded_labels = ["gone-label", "CI"]
+        self.pref1.save(update_fields=["excluded_labels"])
+
+        self.assertContains(self.client.get(self.url), "No longer labels in this repository (they match nothing): gone-label.")
+
+        data, index_by_id = self._post_data()
+        data[f"form-{index_by_id[self.pref1.id]}-maximum_capacity"] = "7"
+        self.assertEqual(self.client.post(self.url, data=data).status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.maximum_capacity, 7)
+        self.assertEqual(self.pref1.excluded_labels, ["gone-label", "CI"])
+
+    def test_excluded_labels_help_says_private(self) -> None:
+        # Its Interests-section neighbours are public; this one must say it is not.
+        self.assertContains(self.client.get(self.url), "Private: not shown on the community team page.")
 
     def test_post_can_be_submitted_repeatedly(self) -> None:
         data, index_by_id = self._post_data()

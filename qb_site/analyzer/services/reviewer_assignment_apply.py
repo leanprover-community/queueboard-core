@@ -22,7 +22,12 @@ from django.utils import timezone as dj_timezone
 
 from analyzer.models import ReviewerAssignmentApplication, ReviewerAssignmentSnapshot
 from analyzer.services.queue_rules import default_rule_set_for_repo
-from analyzer.services.reviewer_assignment import _active_reviewer_logins, _opt_outs_for_prs, build_reviewer_catalog
+from analyzer.services.reviewer_assignment import (
+    _active_reviewer_logins,
+    _excluded_label_logins_for_prs,
+    _opt_outs_for_prs,
+    build_reviewer_catalog,
+)
 from analyzer.services.reviewer_assignment_engine import _normalize_login
 from core.models import Repository
 from core.services.github_assignment import AssignmentMutationError, GitHubAssignmentClient
@@ -171,6 +176,7 @@ def _empty_stats() -> dict[str, Any]:
         "failed": 0,
         "skipped_already_assigned": 0,
         "skipped_opted_out": 0,
+        "skipped_excluded_label": 0,
         "skipped_ineligible": 0,
         "skipped_recently_applied": 0,
         "skipped_no_token": 0,
@@ -236,8 +242,10 @@ def apply_assignments_for_repo(
         return result
 
     pr_numbers = [pr_number for pr_number, _ in proposals]
-    eligible_logins = _active_reviewer_logins(build_reviewer_catalog(repository, now=now))
+    catalog = build_reviewer_catalog(repository, now=now)
+    eligible_logins = _active_reviewer_logins(catalog)
     opt_outs = _opt_outs_for_prs(repository, pr_numbers)
+    excluded_label_logins = _excluded_label_logins_for_prs(repository, pr_numbers, catalog)
     # We deliberately trust the last-synced PR rows here rather than forcing a fresh
     # per-PR sync before mutating. The lag window is small and self-healing: opt-outs
     # are recomputed on every pr_sync, an assign/unassign bumps the PR's updatedAt so
@@ -301,6 +309,10 @@ def apply_assignments_for_repo(
         if login_norm in opt_outs.get(pr_number, set()):
             if _record(pr_number, login, ReviewerAssignmentApplication.STATUS_SKIPPED_OPTED_OUT):
                 stats["skipped_opted_out"] += 1
+            continue
+        if login_norm in excluded_label_logins.get(pr_number, set()):
+            if _record(pr_number, login, ReviewerAssignmentApplication.STATUS_SKIPPED_EXCLUDED_LABEL):
+                stats["skipped_excluded_label"] += 1
             continue
         not_open = live_pr is not None and str(live_pr.state).strip().lower() != "open"
         current_assignees = _current_assignee_logins(live_pr)

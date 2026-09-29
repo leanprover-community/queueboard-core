@@ -23,6 +23,9 @@ class ReviewerPreference(TimestampedModel):
     - ``preferred_labels``: list of GitHub label names the reviewer prefers (e.g., ["t-analysis", "t-algebra"]).
     - ``free_form``: optional free‑text notes from reviewer‑topics.json for context.
     - ``conflict_of_interest``: list of GitHub handles this reviewer should not be auto-assigned to.
+    - ``excluded_labels``: list of GitHub label names; a PR carrying any of them is never
+      auto-assigned (or proposed, or suggested) to this reviewer (design doc 057). Any label counts,
+      not only topic labels. Private, like ``conflict_of_interest``: never served by a public API.
     - ``notifications_enabled``: whether reviewer receives queue nudge notifications.
     - ``notification_settings``: extensible JSON settings for notification policy (for example X/Y thresholds).
     - ``assignment_acceptance``: ``auto`` (direct-assign like today) or ``confirm`` (propose and require
@@ -63,6 +66,10 @@ class ReviewerPreference(TimestampedModel):
     free_form = models.TextField(null=True, blank=True)
     # GitHub handles that should not be auto-assigned to this reviewer (legacy: conflict_of_interest list).
     conflict_of_interest = models.JSONField(default=list, blank=True)
+    # Label names whose PRs should never be auto-assigned to this reviewer (design doc 057). Stored like
+    # ``preferred_labels`` (JSON names, no FK; design doc 003) and matched case-insensitively against
+    # *every* label on the PR. Private: keep it off public surfaces such as the reviewer-interests API.
+    excluded_labels = models.JSONField(default=list, blank=True)
     notifications_enabled = models.BooleanField(default=False)
     # Extensible settings for queue nudge policy.
     # Initial keys are expected to include:

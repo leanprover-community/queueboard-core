@@ -64,3 +64,24 @@ class ReviewerInterestsViewTests(TestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["reviewers"], [{"github_login": "alice", "preferred_labels": [], "free_form": None}])
+
+    def test_never_exposes_private_preferences(self):
+        # This endpoint is public (it feeds the community team page). Conflicts of interest and
+        # excluded labels (design doc 057) are private and must never appear in it, not even
+        # indirectly as label text.
+        ReviewerPreference.objects.create(
+            repository=self.repo,
+            user=self.alice,
+            preferred_labels=["t-analysis"],
+            free_form=None,
+            conflict_of_interest=["mallory"],
+            excluded_labels=["tech debt"],
+        )
+
+        resp = self.client.get("/api/v1/reviewer-interests", {"repo": "leanprover-community/mathlib4"})
+
+        self.assertEqual(resp.status_code, 200)
+        [reviewer] = resp.json()["reviewers"]
+        self.assertEqual(set(reviewer), {"github_login", "preferred_labels", "free_form"})
+        self.assertNotIn("mallory", resp.content.decode())
+        self.assertNotIn("tech debt", resp.content.decode())

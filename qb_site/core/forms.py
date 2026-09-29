@@ -33,6 +33,7 @@ REVIEWER_PREFERENCE_EDITABLE_FIELDS: tuple[str, ...] = (
     "preferred_labels",
     "free_form",
     "conflict_of_interest",
+    "excluded_labels",
 )
 
 REVIEWER_PREFERENCE_NON_FORM_FIELDS: tuple[str, ...] = (
@@ -144,6 +145,12 @@ class ReviewerPreferenceForm(forms.ModelForm):
         widget=forms.Textarea(attrs={"rows": 3}),
         help_text="GitHub handles of users whose PRs should not be assigned to you (comma or newline separated).",
     )
+    # Design doc 057. Free text rather than a checkbox grid: any label counts, not only topic labels,
+    # and the full catalog is too long to tick through. Validated against it in `clean_excluded_labels`.
+    excluded_labels = DelimitedListField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
     stale_nudge_days = forms.IntegerField(
         required=False,
         min_value=1,
@@ -183,6 +190,7 @@ class ReviewerPreferenceForm(forms.ModelForm):
             self.fields.pop("assignment_acceptance", None)
         self._user_timezone = user_timezone or timezone.get_current_timezone()
         self.legacy_preferred_labels: tuple[str, ...] = ()
+        self.legacy_excluded_labels: tuple[str, ...] = ()
 
         repo_id = getattr(self.instance, "repository_id", None)
         catalog_labels = list((label_catalog_by_repo or {}).get(int(repo_id), [])) if repo_id is not None else []
@@ -210,6 +218,15 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.fields["preferred_labels"].choices = choices
         self.initial["preferred_labels"] = selected_values
 
+        # Excluded labels match against *every* label on a PR, so they validate against the whole
+        # catalog, not the topic-filtered list above.
+        self._label_catalog_by_casefold = {name.casefold(): name for name in catalog_labels}
+        saved_excluded = _dedupe_case_insensitive_preserve_first(self.instance.excluded_labels or [])
+        self._saved_excluded_casefold = {name.casefold() for name in saved_excluded}
+        self.legacy_excluded_labels = tuple(
+            name for name in saved_excluded if name.casefold() not in self._label_catalog_by_casefold
+        )
+
         tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
         community_team_page_warning = mark_safe(
             "<b>Publicly visible on <a href='https://leanprover-community.github.io/teams/reviewers.html'>the community team page</a>.</b>"
@@ -232,6 +249,12 @@ class ReviewerPreferenceForm(forms.ModelForm):
             recent_intake=(recent_intake_by_repo or {}).get(int(repo_id)) if repo_id is not None else None
         )
         self.fields["notifications_enabled"].help_text = "Enable daily queue nudge notifications for this repository."
+        # Says "private" outright: its neighbours in the Interests section are public, and a reviewer
+        # listing labels they avoid should not have to guess which kind this is.
+        self.fields["excluded_labels"].help_text = (
+            "Labels whose PRs should never be assigned to you (comma or newline separated). Any label in this "
+            "repository counts, not only topic labels. Private: not shown on the community team page."
+        )
         self.fields["free_form"].help_text = format_html(
             "A free form description of your reviewing interests. {}", community_team_page_warning
         )
@@ -293,8 +316,39 @@ class ReviewerPreferenceForm(forms.ModelForm):
         labels = self.cleaned_data.get("preferred_labels") or []
         return _dedupe_case_insensitive_preserve_first(str(label) for label in labels)
 
+    def clean_excluded_labels(self) -> list[str]:
+        """Canonicalize to the catalog's spelling and reject labels the repository lacks (design doc 057).
+
+        Rejected rather than stored, because a typo would silently void a "never assign me these"
+        preference. A label that is *already saved* but has since left the catalog (renamed or
+        deleted on GitHub) is kept, so an unrelated edit still saves; it matches nothing and the
+        page flags it via ``legacy_excluded_labels``.
+        """
+        labels = self.cleaned_data.get("excluded_labels") or []
+        kept: list[str] = []
+        unknown: list[str] = []
+        for name in labels:
+            key = name.casefold()
+            canonical = self._label_catalog_by_casefold.get(key)
+            if canonical is not None:
+                kept.append(canonical)
+            elif key in self._saved_excluded_casefold:
+                kept.append(name)
+            else:
+                unknown.append(name)
+        if unknown:
+            raise forms.ValidationError(f"Not a label in this repository: {', '.join(unknown)}.")
+        return _dedupe_case_insensitive_preserve_first(kept)
+
     def clean(self) -> dict[str, object]:
         cleaned_data = super().clean()
+
+        # A label cannot be both wanted and refused. The engine would let the exclusion win, but a
+        # silent tie-break is worse than asking the reviewer which one they meant.
+        preferred_casefold = {str(label).casefold() for label in cleaned_data.get("preferred_labels") or []}
+        overlap = [label for label in cleaned_data.get("excluded_labels") or [] if label.casefold() in preferred_casefold]
+        if overlap:
+            self.add_error("excluded_labels", f"Also selected as a preferred label: {', '.join(overlap)}.")
 
         stale_raw = cleaned_data.get("stale_nudge_days")
         unassign_raw = cleaned_data.get("auto_unassign_days")
