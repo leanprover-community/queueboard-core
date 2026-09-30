@@ -68,17 +68,30 @@ def _dedupe_case_insensitive_preserve_first(values: Iterable[str]) -> list[str]:
 class DelimitedListField(forms.CharField):
     """Accept comma/newline separated text and persist as list[str]."""
 
+    split_pattern = r"[,\n]"
+
     def clean(self, value: object) -> list[str]:
         text = super().clean(value)
         if not text:
             return []
-        parts = [chunk.strip() for chunk in re.split(r"[,\n]", text)]
+        parts = [chunk.strip() for chunk in re.split(self.split_pattern, text)]
         return _dedupe_case_insensitive_preserve_first(part for part in parts if part)
 
     def prepare_value(self, value: object) -> str:
         if isinstance(value, list):
             return "\n".join(str(item) for item in value)
         return str(value or "")
+
+
+class LabelLinesField(DelimitedListField):
+    """One entry per line, with commas kept: a GitHub label name may contain a comma.
+
+    Whether a line is one label or a comma-separated list is decided by the owning form, which
+    knows the label catalog (``ReviewerPreferenceForm.clean_excluded_labels``). Renders one entry
+    per line, which is also what the console's label picker writes back (design doc 057).
+    """
+
+    split_pattern = r"\n"
 
 
 def _rate_limit_window_days() -> int:
@@ -146,9 +159,10 @@ class ReviewerPreferenceForm(forms.ModelForm):
         widget=forms.Textarea(attrs={"rows": 3}),
         help_text="GitHub handles of users whose PRs should not be assigned to you (comma or newline separated).",
     )
-    # Design doc 057. Free text rather than a checkbox grid: any label counts, not only topic labels,
-    # and the full catalog is too long to tick through. Validated against it in `clean_excluded_labels`.
-    excluded_labels = DelimitedListField(
+    # Design doc 057. A textarea rather than a checkbox grid: any label counts, not only topic labels,
+    # and the full catalog is too long to tick through. The console enhances it into a type-to-filter
+    # label picker; without JS it stays a textarea. Validated in `clean_excluded_labels`.
+    excluded_labels = LabelLinesField(
         required=False,
         widget=forms.Textarea(attrs={"rows": 3}),
     )
@@ -230,6 +244,8 @@ class ReviewerPreferenceForm(forms.ModelForm):
         self.legacy_excluded_labels = tuple(
             name for name in saved_excluded if name.casefold() not in self._label_catalog_by_casefold
         )
+        # The picker's list: the whole catalog, sorted the way the topic checkboxes are.
+        self.excluded_label_options = sorted(self._label_catalog_by_casefold.values(), key=str.casefold)
 
         tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
         community_team_page_warning = mark_safe(
@@ -256,8 +272,8 @@ class ReviewerPreferenceForm(forms.ModelForm):
         # Says "private" outright: its neighbours in the Interests section are public, and a reviewer
         # listing labels they avoid should not have to guess which kind this is.
         self.fields["excluded_labels"].help_text = (
-            "Labels whose PRs should never be assigned to you (comma or newline separated). Any label in this "
-            "repository counts, not only topic labels. Private: not shown on the community team page."
+            "Labels whose PRs should never be assigned to you. Any label in this repository counts, not only "
+            "topic labels. Private: not shown on the community team page."
         )
         self.fields["free_form"].help_text = format_html(
             "A free form description of your reviewing interests. {}", community_team_page_warning
@@ -328,18 +344,31 @@ class ReviewerPreferenceForm(forms.ModelForm):
         deleted on GitHub) is kept, so an unrelated edit still saves; it matches nothing and the
         page flags it via ``legacy_excluded_labels``.
         """
-        labels = self.cleaned_data.get("excluded_labels") or []
-        kept: list[str] = []
-        unknown: list[str] = []
-        for name in labels:
+
+        def resolve(name: str) -> str | None:
             key = name.casefold()
             canonical = self._label_catalog_by_casefold.get(key)
             if canonical is not None:
-                kept.append(canonical)
-            elif key in self._saved_excluded_casefold:
-                kept.append(name)
-            else:
-                unknown.append(name)
+                return canonical
+            return name if key in self._saved_excluded_casefold else None
+
+        kept: list[str] = []
+        unknown: list[str] = []
+        for line in self.cleaned_data.get("excluded_labels") or []:
+            # A whole line naming a label wins, so a label with a comma in its name survives.
+            whole = resolve(line)
+            if whole is not None:
+                kept.append(whole)
+                continue
+            # Otherwise read the line as a comma-separated list, the natural way to type several.
+            for part in (chunk.strip() for chunk in line.split(",")):
+                if not part:
+                    continue
+                resolved = resolve(part)
+                if resolved is None:
+                    unknown.append(part)
+                else:
+                    kept.append(resolved)
         if unknown:
             raise forms.ValidationError(f"Not a label in this repository: {', '.join(unknown)}.")
         return _dedupe_case_insensitive_preserve_first(kept)

@@ -161,7 +161,18 @@ Zulip token page) used to include it too.
 
             <div class="field field-wide">
               <label for="{{ form.excluded_labels.id_for_label }}">{{ form.excluded_labels.label }}</label>
-              {{ form.excluded_labels }}
+              {% comment %}
+              `prefs_form.js` turns this into a filterable checkbox list of the repository's labels, read
+              from the JSON below (design doc 057). The textarea stays the submitted field, one label
+              per line, and is the no-JS fallback.
+              {% endcomment %}
+              {% with options_id=form.excluded_labels.id_for_label|add:"-options" %}
+              <div class="label-picker js-label-picker" data-options="{{ options_id }}">
+                {{ form.excluded_labels }}
+                {{ form.excluded_label_options|json_script:options_id }}
+                <span class="help js-label-picker-fallback">One label per line, or several separated by commas.</span>
+              </div>
+              {% endwith %}
               {% if form.legacy_excluded_labels %}
                 <span class="help warning">
                   No longer labels in this repository (they match nothing): {{ form.legacy_excluded_labels|join:", " }}.

@@ -173,9 +173,10 @@ class ConsolePrefsTests(TestCase):
         self.assertIn('name="form-0-maximum_capacity"', body)
         self.assertIn('name="form-1-maximum_capacity"', body)
         self.assertIn('name="form-0-preferred_labels"', body)
-        # Topic labels only; non-topic labels stay out of the selector.
-        self.assertContains(resp, "t-number-theory")
-        self.assertNotContains(resp, "maintainer-merge")
+        # Topic labels only; non-topic labels stay out of the selector. (The excluded-labels picker
+        # does offer them, so check the checkboxes themselves.)
+        self.assertRegex(body, r'name="form-\d+-preferred_labels" value="t-number-theory"')
+        self.assertNotRegex(body, r'name="form-\d+-preferred_labels" value="maintainer-merge"')
         # No countdown on this page — the session bounds it, not a token.
         self.assertNotContains(resp, "countdown-text")
         # Django only strips `{#  #}` comments on a single line, so a multi-line one leaks as page
