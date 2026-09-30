@@ -95,10 +95,12 @@
   no countdown: the session bounds it, and `SESSION_SAVE_EVERY_REQUEST` slides that window.
 - Styling/JS: `templates/console/prefs.html` extends `console/base.html` and uses its `extra_css` /
   `extra_js` blocks to load `console/prefs_form.css|js`, both console-owned. The JS is progressive
-  enhancement only (unsaved-changes guard, "clear away time" buttons) with **no countdown** — the
-  session bounds this page, not a link TTL — which is why the expiry helpers stayed behind in
-  `zulip_bot/static/zulip_bot/expiry.js` for the close-pr / label-pr token pages. Its vitest spec lives
-  with those, in `qb_site/zulip_bot/frontend/tests/`.
+  enhancement only (unsaved-changes guard, "clear away time" buttons, and the excluded-labels picker:
+  a filterable checkbox list over the label catalog the template emits with `json_script`, writing
+  one label per line into the hidden textarea that is still the submitted field; design doc 057)
+  with **no countdown** — the session bounds this page, not a link TTL — which is why the expiry
+  helpers stayed behind in `zulip_bot/static/zulip_bot/expiry.js` for the close-pr / label-pr token
+  pages. Its vitest spec lives with those, in `qb_site/zulip_bot/frontend/tests/`.
 
 ## Accept / decline / assign-anyway / unassign (the load-bearing handlers)
 - All `POST`. Accept and decline re-validate live state via the single

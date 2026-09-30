@@ -8,6 +8,7 @@ through the surface that now owns it — `/console/preferences/`.
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from django.test import TestCase, override_settings
@@ -170,8 +171,9 @@ class ConsolePrefsFormFieldTests(TestCase):
         self.repo1.save(update_fields=["assignment_topic_label_pattern"])
 
         body = self.client.get(self.url).content.decode("utf-8")
-        self.assertIn('value="maintainer-merge"', body)
-        self.assertNotIn('value="CI"', body)  # no longer matches this repo's pattern
+        # Checked on the preferred-label checkboxes: the excluded-labels picker offers every label.
+        self.assertRegex(body, r'name="form-\d+-preferred_labels" value="maintainer-merge"')
+        self.assertNotRegex(body, r'name="form-\d+-preferred_labels" value="CI"')  # no longer matches the pattern
 
         data, index_by_id = self._post_data()
         data[f"form-{index_by_id[self.pref1.id]}-preferred_labels"] = ["t-algebra", "maintainer-merge"]
@@ -357,6 +359,44 @@ class ConsolePrefsFormFieldTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.pref1.refresh_from_db()
         self.assertEqual(self.pref1.excluded_labels, ["CI", "maintainer-merge"])
+
+    def test_label_with_a_comma_survives_the_round_trip(self) -> None:
+        # GitHub allows commas in label names. A whole line naming a label is one label; the rendered
+        # textarea (one per line) posts back unchanged.
+        LabelDef.objects.create(repository=self.repo1, name="needs-review, blocked", color="888888")
+        data, index_by_id = self._post_data()
+        field = f"form-{index_by_id[self.pref1.id]}-excluded_labels"
+        data[field] = "Needs-Review, Blocked\nci, maintainer-merge"
+
+        self.assertEqual(self.client.post(self.url, data=data).status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.excluded_labels, ["needs-review, blocked", "CI", "maintainer-merge"])
+
+        data, _ = self._post_data()
+        self.assertEqual(data[field], "needs-review, blocked\nCI\nmaintainer-merge")
+        self.assertEqual(self.client.post(self.url, data=data).status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.excluded_labels, ["needs-review, blocked", "CI", "maintainer-merge"])
+
+    def test_excluded_label_picker_offers_the_whole_catalog(self) -> None:
+        # Any label counts, not only topic labels, so the picker's list is the whole catalog, sorted.
+        LabelDef.objects.create(repository=self.repo1, name="needs-review, blocked", color="888888")
+        _data, index_by_id = self._post_data()
+        options_id = f"id_form-{index_by_id[self.pref1.id]}-excluded_labels-options"
+        body = self.client.get(self.url).content.decode("utf-8")
+        self.assertIn(f'data-options="{options_id}"', body)
+        start = body.index(f'<script id="{options_id}" type="application/json">')
+        payload = body[body.index(">", start) + 1 : body.index("</script>", start)]
+        self.assertEqual(json.loads(payload), ["CI", "maintainer-merge", "needs-review, blocked", "t-algebra", "t-number-theory"])
+
+    def test_list_fields_render_one_entry_per_line(self) -> None:
+        # What the page renders is what it posts back, so a list must not render as its Python repr.
+        self.pref1.excluded_labels = ["CI", "maintainer-merge"]
+        self.pref1.save(update_fields=["excluded_labels"])
+        body = self.client.get(self.url).content.decode("utf-8")
+        self.assertIn(">\nalice</textarea>", body)
+        self.assertIn(">\nCI\nmaintainer-merge</textarea>", body)
+        self.assertNotIn("[&#x27;", body)
 
     def test_post_rejects_unknown_excluded_label(self) -> None:
         # A typo would silently void a "never" preference, so it is refused, not stored.

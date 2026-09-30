@@ -43,8 +43,18 @@
   `conflict_of_interest`. A `--labels` override replaces preferred labels only and cannot lift an
   exclusion.
 - **Form** (`core/forms.py`, console `/console/preferences/`):
-  - A comma/newline textarea, validated against the repo's whole `LabelDef` catalog. A checkbox grid
-    was ruled out because the full catalog is too long to tick through.
+  - A filterable checkbox list over the repo's whole `LabelDef` catalog: a filter box above a short
+    scrolling list with one checkbox per label (matched by substring, ignoring case), plus a
+    removable chip per chosen label (`console/static/console/prefs_form.js`). A plain checkbox grid,
+    like the preferred labels, would be too long to tick through; the filter box is what makes the
+    whole catalog usable. The catalog is reconciled hourly and PR syncs add new labels as they
+    appear, so the list is at most about an hour behind.
+  - It is built for phones too: autocorrect and auto-capitalisation are off in the filter box, rows
+    and remove buttons are 44px on small screens, and tapping a chip's remove button does not move
+    focus (so the keyboard does not pop up).
+  - The picker enhances a textarea, which stays the submitted field and is the no-JS fallback. It
+    holds one label per line. A line that names a label is kept whole, since GitHub allows commas in
+    label names; any other line is split on commas.
   - Labels are saved in the catalog's spelling.
   - Unknown labels are **rejected**, because a typo would silently void the preference.
   - A label that is also a preferred label is rejected, rather than letting either silently win.
@@ -101,3 +111,9 @@
   it leaves behind is silent.
 - **Respect the exclusion only in the nightly push, not in suggestions.** The reviewer would then
   be offered, on request, the very PRs they said they never want.
+- **The browser's own suggestion list** (a text input bound to a `<datalist>`). Tried first and
+  dropped after testing on an iPhone: iOS shows only three suggestions at a time, above the
+  keyboard, and Firefox for Android has no `<datalist>` support at all.
+- **A custom pop-up dropdown (an ARIA combobox).** Consistent across browsers, but on a phone the
+  pop-up competes with the on-screen keyboard for space, and it needs its own keyboard handling and
+  accessibility markup. An inline list of real checkboxes gets both for free.
