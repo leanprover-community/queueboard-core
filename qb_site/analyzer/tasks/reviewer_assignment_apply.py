@@ -54,11 +54,23 @@ def apply_reviewer_assignments_task(
     # The acceptance-gate propose task supersedes this one. If both pipelines are enabled, this
     # proposal-unaware task would direct-assign confirm-mode reviewers at the same 00:45 slot,
     # bypassing the gate — so yield to the gate rather than trusting the docs alone.
-    if enabled and bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED", False)):
-        log.error(
-            "analyzer.apply_reviewer_assignments: skipping — ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED is also set and "
-            "analyzer.propose_reviewer_assignments supersedes this task. Enable one pipeline or the other, not both."
-        )
+    #
+    # A dry run must yield too. It still writes a ReviewerAssignmentApplication row for every
+    # (day, repo, PR, reviewer) it considers, and the propose step's direct-assign treats an
+    # existing row for that key as already handled. So a preview here, winning the race at the
+    # shared slot, would silently stop propose's auto-mode assignments for the rest of the day.
+    if bool(getattr(settings, "ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED", False)):
+        if enabled:
+            log.error(
+                "analyzer.apply_reviewer_assignments: skipping — ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED is also set and "
+                "analyzer.propose_reviewer_assignments supersedes this task. Enable one pipeline or the other, not both."
+            )
+        else:
+            log.warning(
+                "analyzer.apply_reviewer_assignments: skipping the dry run — ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED is set, "
+                "and the rows a dry run records would block propose_reviewer_assignments' direct assignments today. "
+                "Use ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN to preview the pipeline that is actually running."
+            )
         return {"skipped": True, "reason": "superseded_by_proposals_pipeline", "enabled": enabled, "dry_run": dry_run}
 
     dedupe_days = int(getattr(settings, "ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DEDUPE_DAYS", 7))
