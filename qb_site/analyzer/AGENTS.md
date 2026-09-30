@@ -52,13 +52,17 @@
     the engine as `ReviewerProfile.excluded_labels_lower` (via `build_reviewer_catalog`), and a PR
     carrying *any* of them — topic label or not — drops that reviewer before label matching, like a
     conflict of interest (never after the `max_score` contest, where an excluded reviewer could
-    outrank everyone left). Apply/propose and on-demand suggestions re-check it against live
-    `syncer.PRLabel` rows (`_excluded_label_logins_for_prs`; apply records status
-    `skipped_excluded_label`), because the snapshot the engine read can be stale. The engine,
-    both trace paths and the suggestions skip classifier share one pre-matching rule,
-    `reviewer_assignment_engine._prefilter_reason`. Public area stats ignore exclusions. The trace records it under
+    outrank everyone left). Both engine copies and the suggestions skip classifier share that
+    pre-matching rule, `reviewer_assignment_engine._prefilter_reason`. Apply/propose and on-demand
+    suggestions re-check it against live `syncer.PRLabel` rows (`_excluded_label_logins_for_prs`;
+    apply records status `skipped_excluded_label`), because the snapshot the engine read can be
+    stale. Public area stats ignore exclusions. The trace records it under
     `filtered["excluded_label"]`; traces name reviewers per rule, so like the preference itself they
     are private and must never reach a public API.
+  - `reviewer_assignment_apply.assign_reviewer_and_record(..., take_over_skipped=True)` is for
+    explicit human assignments only (console accept, "assign anyway", suggestion claims): it
+    reclaims a same-day `skipped_*` `ReviewerAssignmentApplication` row instead of reporting
+    `already_recorded`. Automatic callers must leave it unset.
   - `ci_evaluation.py` — single-PR CI status evaluation against a ruleset's `required_ci_contexts`; use `ci_status_for_pr(pr, rules, repository)` instead of re-implementing context-matching logic.
 
 ## High-Value Commands
