@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from analyzer.models import QueueRuleSet, ReviewerAssignmentApplication, ReviewerAssignmentSnapshot
+from analyzer.services.reviewer_assignment_propose import propose_assignments_for_repo
 from analyzer.tasks.reviewer_assignment_apply import apply_reviewer_assignments_task
 from core.models import Repository, ReviewerPreference, User
 from syncer.models import PullRequest
@@ -93,6 +94,57 @@ class ApplyReviewerAssignmentsTaskTests(TestCase):
         self.assertTrue(res["skipped"])
         self.assertEqual(res["reason"], "superseded_by_proposals_pipeline")
         self.assertFalse(ReviewerAssignmentApplication.objects.exists())
+
+    @override_settings(
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED=False,
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=True,
+        ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True,
+    )
+    def test_dry_run_also_yields_to_proposals_pipeline(self) -> None:
+        # A dry run records a row per (day, repo, PR, reviewer). The propose step's direct-assign
+        # reads an existing row as already handled, so recording one would silently cancel that
+        # day's real auto-mode assignment. The preview must yield like a real run.
+        self._seed_repo_with_proposal()
+
+        res = apply_reviewer_assignments_task.apply().get()
+
+        self.assertTrue(res["skipped"])
+        self.assertEqual(res["reason"], "superseded_by_proposals_pipeline")
+        self.assertTrue(res["dry_run"])
+        self.assertFalse(ReviewerAssignmentApplication.objects.exists())
+
+    @override_settings(
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_ENABLED=False,
+        ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=True,
+        ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED=True,
+    )
+    def test_dry_run_first_does_not_cancel_proposes_direct_assignment(self) -> None:
+        # The bug end to end: both tasks fire at 00:45 UTC. When the legacy dry run won the race it
+        # recorded a skipped_dry_run row, and propose's direct-assign then saw `already_recorded`
+        # and never called GitHub. alice has no Zulip link, so propose direct-assigns her.
+        self._seed_repo_with_proposal()
+        apply_reviewer_assignments_task.apply().get()
+
+        client = MagicMock()
+        client.assign.side_effect = lambda **kwargs: (kwargs["github_login"],)
+        now = timezone.now()
+        result = propose_assignments_for_repo(
+            self.repo,
+            run_date=now.date(),
+            now=now,
+            enabled=True,
+            dry_run=False,
+            window_days=3,
+            dedupe_days=7,
+            max_age_hours=48,
+            max_per_repo=0,
+            token_resolver=lambda **kwargs: "tok",
+            assignment_client=client,
+            sync_enqueuer=MagicMock(),
+        )
+
+        client.assign.assert_called_once_with(owner="leanprover-community", repo="mathlib4", number=101, github_login="alice")
+        self.assertEqual(result["stats"]["skipped_already_recorded"], 0)
 
     @override_settings(ANALYZER_REVIEWER_ASSIGNMENT_APPLY_DRY_RUN=True)
     def test_repo_filter_miss_returns_not_found(self) -> None:

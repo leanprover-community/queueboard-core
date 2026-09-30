@@ -50,7 +50,11 @@ The legacy `analyzer.apply_reviewer_assignments` is retained for `auto`-only ope
 **superseded** by propose. Mutual exclusion is enforced in code, not just documented: when
 `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` is set, the apply task skips itself (reason
 `superseded_by_proposals_pipeline`, error log), so the proposal-unaware path can never bypass the
-gate; propose logs a warning about the misconfiguration.
+gate; propose logs a warning about the misconfiguration. The apply task skips in dry-run mode too
+(with a warning). A dry run still records a `ReviewerAssignmentApplication` row for each
+(day, repo, PR, reviewer), and propose's direct-assign treats an existing row as already handled,
+so a legacy preview that ran first at the shared 00:45 slot used to cancel that day's auto-mode
+assignments. Preview the propose pipeline with `ANALYZER_ASSIGNMENT_PROPOSALS_DRY_RUN` instead.
 
 ### PR assignment state model
 

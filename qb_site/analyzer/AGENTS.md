@@ -114,7 +114,8 @@ Celery task names (as registered via `@shared_task(name=…)`):
   with a Zulip link get an `AssignmentProposal` awaiting console acceptance. Gated by
   `ANALYZER_ASSIGNMENT_PROPOSALS_ENABLED` (+ dry-run). **Supersedes**
   `analyzer.apply_reviewer_assignments` — enable one or the other, not both (enforced:
-  the apply task skips itself when the proposals flag is also set). Command:
+  the apply task skips itself when the proposals flag is also set, even in dry-run mode,
+  because the rows a dry run records would block propose's direct-assign that day). Command:
   `manage.py propose_reviewer_assignments [--repo o/n] [--dry-run] [--enable]`.
 - `analyzer.expire_assignment_proposals` — essential-maintenance sweep (design doc 050)
   that expires timed-out proposals and supersedes those whose PR closed/merged, gained a
