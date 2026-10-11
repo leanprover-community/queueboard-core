@@ -43,3 +43,6 @@ CELERY_RESULT_BACKEND = _with_redis_db_index(CELERY_RESULT_BACKEND, CI_REDIS_DB_
 SYNCER_CI_FILTER_MODE = "all"
 SYNCER_CI_ALLOW_CHECKRUN_NAMES = ""
 SYNCER_CI_ALLOW_STATUS_NAMES = ""
+
+# No legacy-host redirect unless a test turns it on, whatever a developer's .env says.
+QUEUEBOARD_LEGACY_HOSTS = []
