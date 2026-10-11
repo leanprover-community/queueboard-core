@@ -32,16 +32,22 @@
   `upload_backup.yaml`. Unset (or `heroku`) means Heroku PGBackups, as originally designed. `s3` means
   the newest dump in an S3-compatible bucket, keyed `<prefix>-YYYYMMDDTHHMMSSZ.dump`, whose
   `pg_restore --list` shows TABLE DATA entries: a dump of a database with no tables yet is skipped
-  (`scripts/download_s3_dump.py`).
+  (`scripts/download_s3_dump.py`). An empty table still has such an entry, so a dump of a freshly
+  migrated database would be taken: the restore step fails when the restored database holds no pull
+  requests, whatever the source, so no empty snapshot is published.
   - The bucket's connection comes from the secrets `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`,
     `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY`, with read-only credentials. Optional
     variables: `BACKUP_S3_KEY_PREFIX` (default `queueboard`) and `BACKUP_S3_REGION` (default
     `us-east-1`).
   - A manual run takes `backup_id` for the Heroku source and `dump_key` for the S3 one, and refuses
-    the other source's input.
+    the other source's input. With the S3 source, a missing secret fails the run's first step.
   - Switching sources means setting the secrets, then the variable; unsetting the variable switches
     back. `scripts/test_download_s3_dump.sh` (CI job `backup-download`) tests the S3 path against a
-    local S3 server.
+    local S3 server, with the runner's pg_restore as the workflow sets it up.
 - The workflow restores with Postgres 18 (service and client). pg_restore reads its own major version
-  and older ones, so it takes both Postgres 17 and 18 dumps. The sanitized dump it publishes now comes
-  from pg_dump 18 and needs pg_restore 18 or newer.
+  and older ones, so it takes both Postgres 17 and 18 dumps. The sanitized dump it publishes is now
+  made by pg_dump 18; restore it with pg_restore 18.
+- The runner image has its own, older Postgres. Debian's pg_wrapper, behind `/usr/bin/pg_restore`,
+  picks that cluster's version for a command that names no host, such as `pg_restore --list`, and it
+  refuses newer dumps. `scripts/install_postgres_client.sh` installs the client and puts its own
+  binaries first on `PATH`, for the workflow and the CI job alike.
