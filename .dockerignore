@@ -1,5 +1,5 @@
-__pycache__/
-*.py[cod]
+**/__pycache__/
+**/*.py[cod]
 *.pyo
 *.pyd
 *.so
@@ -19,5 +19,17 @@ ruff.toml
 build/
 dist/
 *.egg-info/
-node_modules/
+**/node_modules/
 .DS_Store
+
+# Local files that never belong in an image
+.venv
+.ruff_cache
+scratch/
+artifacts/
+celerybeat-schedule*
+zuliprc
+.zulip-policy.local.json
+.github-app-config.local.json
+.docker-env
+.docker-nocreds/
