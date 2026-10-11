@@ -7,11 +7,12 @@
 
 ## Endpoints
 
-All endpoints accept `GET` only. Most require a `?repo=owner/name` query parameter.
+All endpoints accept `GET` only (`/api/health` also `HEAD`). Most require a `?repo=owner/name` query parameter.
 
 | URL | View | Description |
 |-----|------|-------------|
-| `/api/` | `index` | Plain-text health/index response. No `repo` param needed. |
+| `/api/` | `index` | Plain-text index response. No `repo` param needed. Touches nothing, so it cannot tell a broken database from a working one. |
+| `/api/health` | `health` | Health check of the database and the Celery broker: 200 or 503, per-check status. No `repo` param needed. See below. |
 | `/api/v1/queueboard/snapshot` | `QueueboardSnapshotView` | Cached queue snapshot for a repo. Supports `cache_key`, `rule_set_id`, `refresh`. |
 | `/api/v1/queueboard/dependency-graph` | `QueueboardDependencyGraphView` | PR dependency graph derived from a cached snapshot. |
 | `/api/v1/queueboard/automatic-assignments` | `ReviewerAssignmentsView` | Automatic reviewer assignments derived from a cached snapshot. Supports `cache_key`, `rule_set_id`, `refresh`. |
@@ -25,8 +26,29 @@ All endpoints accept `GET` only. Most require a `?repo=owner/name` query paramet
 - `X-Queueboard-Stale: 1` is set when a snapshot is stale but still returned; a background refresh is enqueued.
 - `X-Queueboard-Refresh-Task` carries the Celery task ID when a refresh is enqueued.
 
+## Health check
+`/api/health` is for container health checks and external uptime monitors.
+
+- Runs `SELECT 1` on the default database connection and a Redis `PING` on `CELERY_BROKER_URL`
+  (through `syncer.services.rate_budget._get_redis_client`).
+- 200 `{"status": "ok", "checks": {"database": "ok", "broker": "ok"}}` when both pass; otherwise 503
+  with `"status": "error"` and each failed check as `"error"`. `Cache-Control: no-store`.
+- Each check gives up after about 2 s (`CHECK_TIMEOUT_SECONDS`): a statement timeout on the query,
+  and connect/socket timeouts on the Redis client. Opening the database connection is not covered.
+  Django opens one per request, and with no `connect_timeout` in the database settings psycopg
+  waits up to 130 s for a server that accepts the connection but never answers, unless the web
+  server's worker timeout ends the request first. A refused connection fails at once.
+- The response never carries exception text, hostnames or connection details: failures are logged
+  at WARNING by `api.views.health`, with the traceback.
+- A plain Django view, not DRF: no content negotiation (the browsable API page would set a CSRF
+  cookie), no throttling, and it never reads the session, so it sets no session or CSRF cookie.
+  It is still subject to `ALLOWED_HOSTS`, so a probe from inside a container needs `localhost` in
+  `DJANGO_ALLOWED_HOSTS`.
+- Site analytics only counts what the static sites POST to `/api/v1/analytics/collect`, so probes
+  never show up there.
+
 ## Authentication
-- `authentication_classes = []`, `permission_classes = []` on all views — no auth required.
+- `authentication_classes = []`, `permission_classes = []` on all DRF views — no auth required.
 
 ## Privacy
 - Everything served here is public. Never expose private reviewer preferences —
