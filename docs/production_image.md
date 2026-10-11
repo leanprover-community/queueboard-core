@@ -82,9 +82,11 @@ One image runs every process; only the command differs.
 - Mount a volume at `/data` for beat, so its schedule survives a restart. A new named volume takes
   its owner from the image; a host directory needs `chown 10001:10001` first.
 - `/api/health` checks the database and the broker and answers 200 or 503, for a health check or
-  an uptime monitor (`/api/` touches neither). Against a database that doesn't answer, it takes up
-  to `DJANGO_DB_CONNECT_TIMEOUT` to fail. A probe from inside the container needs `localhost`
-  in `DJANGO_ALLOWED_HOSTS`; the image has no `curl`, so use Python, with a timeout:
+  an uptime monitor (`/api/` touches neither). Against a database that doesn't answer, the 503
+  comes after about `DJANGO_DB_CONNECT_TIMEOUT` (per address the host resolves to), so a probe with
+  a shorter timeout times out instead; either way the probe fails. A probe from inside the
+  container needs `localhost` in `DJANGO_ALLOWED_HOSTS`; the image has no `curl`, so use Python,
+  with a timeout:
   `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=10)"`.
 - Docker gives a stopping container 10 s before killing it. Allow web more than gunicorn's 120 s
   graceful timeout, and the worker long enough for running tasks (`stop_grace_period` in Compose).

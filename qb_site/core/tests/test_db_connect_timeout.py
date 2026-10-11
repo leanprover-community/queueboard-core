@@ -66,7 +66,9 @@ class ConnectTimeoutBehaviourTests(SimpleTestCase):
         port = listener.getsockname()[1]
 
         default = connections["default"]
-        # The configured OPTIONS, with the shortest timeout psycopg allows, so the test stays quick.
+        # Django hands the configured value to psycopg...
+        self.assertEqual(default.get_connection_params()["connect_timeout"], settings.DJANGO_DB_CONNECT_TIMEOUT)
+        # ...and psycopg keeps to it. The shortest timeout psycopg allows keeps the test quick.
         options = {**default.settings_dict["OPTIONS"], "connect_timeout": 2}
         silent = default.__class__(
             {**default.settings_dict, "HOST": "127.0.0.1", "PORT": str(port), "OPTIONS": options}, alias="silent"
