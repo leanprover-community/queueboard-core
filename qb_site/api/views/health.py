@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from django.db import connection, transaction
 from django.http import HttpRequest, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_safe
 
 from syncer.services.rate_budget import _get_redis_client
@@ -48,12 +49,16 @@ def _check_broker() -> None:
 def _run_check(name: str, check: Callable[[], None]) -> str:
     try:
         check()
-    except Exception:
-        log.warning("health: %s check failed", name, exc_info=True)
+    except Exception as exc:
+        # One line, no traceback: a monitor probing an outage would otherwise log a traceback per check per probe.
+        log.warning("health: %s check failed: %s: %s", name, type(exc).__name__, exc)
         return "error"
     return "ok"
 
 
+# Exempt because the view takes no unsafe method: without it, the CSRF middleware answers a POST with
+# 403 (and logs it) before require_safe can answer 405.
+@csrf_exempt
 @require_safe
 def health(_request: HttpRequest) -> JsonResponse:
     checks = {

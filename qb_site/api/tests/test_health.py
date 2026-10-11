@@ -8,8 +8,7 @@ from unittest import mock
 from django.conf import settings
 from django.contrib.sessions.models import Session
 from django.db import OperationalError, connection
-from django.test import TestCase
-from django.test.utils import CaptureQueriesContext
+from django.test import Client, TestCase
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 
@@ -33,13 +32,20 @@ class HealthViewTests(TestCase):
         self.redis_client.close.assert_called_once_with()
 
     def test_database_query_runs_under_a_statement_timeout(self):
-        with CaptureQueriesContext(connection) as ctx:
+        # SET LOCAL lasts until the transaction ends, and outside one it does nothing. TestCase already
+        # runs each test in a transaction, so look for an atomic block the view itself opened.
+        outer_depth = len(connection.atomic_blocks)
+        queries: list[tuple[str, bool]] = []
+
+        def record(execute, sql, params, many, context):
+            queries.append((sql, len(connection.atomic_blocks) > outer_depth))
+            return execute(sql, params, many, context)
+
+        with connection.execute_wrapper(record):
             self.client.get("/api/health")
 
-        sql = [q["sql"] for q in ctx.captured_queries]
-        self.assertIn("SET LOCAL statement_timeout = 2000", sql)
-        self.assertIn("SELECT 1", sql)
-        self.assertLess(sql.index("SET LOCAL statement_timeout = 2000"), sql.index("SELECT 1"))
+        checked = [q for q in queries if q[0] in ("SET LOCAL statement_timeout = 2000", "SELECT 1")]
+        self.assertEqual(checked, [("SET LOCAL statement_timeout = 2000", True), ("SELECT 1", True)])
 
     def test_database_failure_returns_503_naming_it(self):
         failing = mock.Mock()
@@ -85,7 +91,10 @@ class HealthViewTests(TestCase):
         self.redis_client.ping.assert_called_once_with()
 
     def test_other_methods_are_refused(self):
-        self.assertEqual(self.client.post("/api/health").status_code, 405)
+        # With CSRF enforced, as in production, a POST still gets 405, not the CSRF middleware's 403.
+        client = Client(enforce_csrf_checks=True)
+        self.assertEqual(client.post("/api/health").status_code, 405)
+        self.assertEqual(client.put("/api/health").status_code, 405)
 
     def test_sets_no_session_or_csrf_cookie(self):
         resp = self.client.get("/api/health")
