@@ -85,6 +85,24 @@ jobs:
             test/newtest/api
             test/newtest/gh-pages
 
+  backup-download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Setup Python"
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install boto3 (the analytics workflow's pin)
+        run: python -m pip install "$(grep '^boto3==' scripts/requirements-analytics.txt)"
+
+      # Against a local S3 server and Postgres 18 and 17 containers; no credentials.
+      - name: Test downloading dumps from an S3-compatible bucket
+        run: bash scripts/test_download_s3_dump.sh
+
   docker:
     runs-on: ubuntu-latest
     steps:

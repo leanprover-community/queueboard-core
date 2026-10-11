@@ -1,0 +1,6 @@
+# Python packages for the sanitized analytics snapshot (.github/workflows/upload_backup.yaml).
+# CI's test of scripts/download_s3_dump.py installs the boto3 pin from here too.
+psycopg[binary]==3.2.1
+pandas==2.2.3
+pyarrow==17.0.0
+boto3==1.43.111

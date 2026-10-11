@@ -1,10 +1,22 @@
 name: Build sanitized analytics snapshot
 
+# Where the dump comes from is the repository variable BACKUP_SOURCE:
+# - unset or "heroku": the Heroku app's newest PGBackups backup (secrets HEROKU_API_KEY, HEROKU_APP_NAME);
+# - "s3": the newest dump holding table data in an S3-compatible bucket (scripts/download_s3_dump.py),
+#   keyed <prefix>-YYYYMMDDTHHMMSSZ.dump. Secrets BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET,
+#   BACKUP_S3_ACCESS_KEY_ID and BACKUP_S3_SECRET_ACCESS_KEY (read-only credentials suffice); optional
+#   variables BACKUP_S3_KEY_PREFIX (default queueboard) and BACKUP_S3_REGION (default us-east-1).
+# Either way the dump is a pg_dump custom-format archive from Postgres 18 or older.
+
 on:
   workflow_dispatch:  # manual trigger
     inputs:
       backup_id:
-        description: "Optional Heroku PGBackups ID (e.g., b123); defaults to latest"
+        description: "Heroku source: optional PGBackups ID (e.g., b123); defaults to latest"
+        required: false
+        type: string
+      dump_key:
+        description: "S3 source: optional object key (e.g., queueboard-20260101T001500Z.dump); defaults to the newest holding table data"
         required: false
         type: string
   schedule:
@@ -16,7 +28,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: analytics_source
           POSTGRES_USER: postgres
@@ -32,8 +44,31 @@ jobs:
     env:
       # Used by psql / export scripts
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/analytics_source
+      BACKUP_SOURCE: ${{ vars.BACKUP_SOURCE || 'heroku' }}
 
     steps:
+      - name: Check the backup source
+        env:
+          BACKUP_ID: ${{ inputs.backup_id }}
+          DUMP_KEY: ${{ inputs.dump_key }}
+        run: |
+          case "$BACKUP_SOURCE" in
+            heroku)
+              if [ -n "$DUMP_KEY" ]; then
+                echo "::error::dump_key applies to the s3 source only; this run's source is heroku"
+                exit 1
+              fi ;;
+            s3)
+              if [ -n "$BACKUP_ID" ]; then
+                echo "::error::backup_id applies to the heroku source only; for the s3 source, give dump_key"
+                exit 1
+              fi ;;
+            *)
+              echo "::error::The BACKUP_SOURCE variable must be unset, heroku or s3, not '$BACKUP_SOURCE'"
+              exit 1 ;;
+          esac
+          echo "Backup source: $BACKUP_SOURCE"
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -45,14 +80,15 @@ jobs:
       # - name: "Setup uv"
       #   uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
 
-      - name: Install system dependencies (Postgres 17 client)
+      # pg_restore reads dumps from its own major version and older ones.
+      - name: Install system dependencies (Postgres 18 client)
         run: |
           sudo apt-get update
           sudo apt-get install -y curl ca-certificates gnupg
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg
           echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
-          sudo apt-get install -y postgresql-client-17
+          sudo apt-get install -y postgresql-client-18
 
       - name: Prepare artifact directories
         run: mkdir -p artifacts/data
@@ -60,14 +96,16 @@ jobs:
       - name: Install Python dependencies for scripts
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "psycopg[binary]==3.2.1" "pandas==2.2.3" "pyarrow==17.0.0"
+          python -m pip install -r scripts/requirements-analytics.txt
 
       - name: Install Heroku CLI
+        if: env.BACKUP_SOURCE == 'heroku'
         run: |
           curl https://cli-assets.heroku.com/install.sh | sh
 
-      # 1. Download latest Heroku PG backup (inline)
+      # 1. Download the dump: Heroku's latest backup, or the bucket's newest dump holding table data
       - name: Download Heroku PG backup
+        if: env.BACKUP_SOURCE == 'heroku'
         env:
           HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
           HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
@@ -75,6 +113,22 @@ jobs:
         run: |
           bash scripts/download_backup.sh \
             ${BACKUP_ID:+-b "$BACKUP_ID"} \
+            -o backup.dump \
+            -i artifacts/backup-info.txt
+
+      - name: Download dump from the S3-compatible bucket
+        if: env.BACKUP_SOURCE == 's3'
+        env:
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+          BACKUP_S3_REGION: ${{ vars.BACKUP_S3_REGION }}
+          BACKUP_S3_KEY_PREFIX: ${{ vars.BACKUP_S3_KEY_PREFIX }}
+          DUMP_KEY: ${{ inputs.dump_key }}
+        run: |
+          python scripts/download_s3_dump.py \
+            ${DUMP_KEY:+--key "$DUMP_KEY"} \
             -o backup.dump \
             -i artifacts/backup-info.txt
 
@@ -93,7 +147,7 @@ jobs:
             sleep 3
           done
 
-          # Restore the Heroku custom-format dump into analytics_source
+          # Restore the custom-format dump into analytics_source
           pg_restore --verbose --clean --no-acl --no-owner \
             --if-exists \
             -h localhost -p 5432 -U postgres \
