@@ -9,6 +9,12 @@ from pathlib import Path
 
 from celery.schedules import crontab
 
+from .env_files import resolve_env_files
+
+# Let allowlisted secrets and JSON settings come from files (`<NAME>_FILE`, design doc 058). Must run
+# before anything reads the environment, so it comes first.
+resolve_env_files()
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 APPS_DIR = Path(__file__).resolve().parent.parent
 
