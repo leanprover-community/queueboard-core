@@ -141,6 +141,7 @@ DEFAULT_DB_ENGINE = os.getenv("DJANGO_DB_ENGINE", "django.db.backends.postgresql
 # Seconds to wait while opening a database connection (libpq's connect_timeout), per address the host
 # resolves to. Without it, psycopg waits 130 s for a server that accepts the connection and never
 # answers, longer than gunicorn's 120 s worker timeout. psycopg's floor is 2 s; unset or blank: 10.
+# Always passed, so libpq's own PGCONNECT_TIMEOUT has no effect.
 DJANGO_DB_CONNECT_TIMEOUT = env_optional_bounded_int("DJANGO_DB_CONNECT_TIMEOUT", minimum=2, maximum=600) or 10
 
 DATABASES = {
