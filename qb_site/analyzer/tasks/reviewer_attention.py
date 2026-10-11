@@ -205,15 +205,19 @@ def _mark_notification_records_failed(
 
 
 def _derive_new_assignment_ping_window_seconds() -> tuple[int, str]:
-    """Derive 'new assignment' window from reviewer-attention sweep schedule."""
+    """Derive 'new assignment' window from reviewer-attention sweep schedule.
+
+    Mirrors ``daily_beat_schedule`` in settings: a one-day period also runs at a fixed clock time.
+    """
+    period_seconds = int(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS", 86400))
     has_fixed_utc_clock = (
         getattr(settings, "ANALYZER_REVIEWER_ATTENTION_UTC_HOUR", None) is not None
         or getattr(settings, "ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE", None) is not None
+        or period_seconds == 24 * 60 * 60
     )
     if has_fixed_utc_clock:
         return (24 * 60 * 60, "fixed_utc_clock")
 
-    period_seconds = int(getattr(settings, "ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS", 86400))
     if period_seconds > 0:
         return (period_seconds, "period_seconds")
     return (24 * 60 * 60, "fallback_24h")

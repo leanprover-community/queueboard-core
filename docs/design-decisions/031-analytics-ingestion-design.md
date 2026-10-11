@@ -52,8 +52,8 @@
 
 ### Aggregation
 - `site_analytics.aggregate_daily_metrics` (default: hourly) — upserts `AnalyticsDailyMetric` for a rolling `days_back=2` window so events near UTC midnight are never missed. Fully idempotent.
-- `site_analytics.aggregate_monthly_metrics` (default: daily) — upserts `AnalyticsMonthlyMetric` for a rolling `months_back=2` window.
-- `site_analytics.prune_old_pageviews` (default: daily) — deletes `AnalyticsPageView` rows older than the retention cutoff. Aggregate tables are never pruned.
+- `site_analytics.aggregate_monthly_metrics` (default: daily at 01:50 UTC, doc 059) — upserts `AnalyticsMonthlyMetric` for a rolling `months_back=2` window.
+- `site_analytics.prune_old_pageviews` (default: daily at 01:55 UTC, doc 059) — deletes `AnalyticsPageView` rows older than the retention cutoff. Aggregate tables are never pruned.
 - `site_analytics.rotate_salt` (monthly, midnight UTC on the 1st) — generates a new random salt, saves it to `SiteAnalyticsSalt`, and deletes the previous row atomically.
 - All three tasks preserve existing aggregate rows when the corresponding raw rows have been pruned, to avoid silently zeroing out reporting data after the retention window.
 
@@ -81,8 +81,10 @@
 | `SITE_ANALYTICS_RETENTION_DAYS` | `540` | ~18 months of raw row retention |
 | `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` | `1` | Proxy hops in front of the app; trusts that many `X-Forwarded-For` entries from the right. `0` ignores the header |
 | `SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS` | `3600` | Set to `0` to disable |
-| `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` | `86400` | Set to `0` to disable |
-| `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` | `86400` | Set to `0` to disable |
+| `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` | `86400` | Set to `0` to disable; `86400` runs daily at the clock time (doc 059) |
+| `SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_HOUR` / `_UTC_MINUTE` | `1` / `50` | Clock time; setting either overrides the period |
+| `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` | `86400` | Set to `0` to disable; `86400` runs daily at the clock time (doc 059) |
+| `SITE_ANALYTICS_PRUNE_UTC_HOUR` / `_UTC_MINUTE` | `1` / `55` | Clock time; setting either overrides the period |
 | `SITE_ANALYTICS_REJECT_EMPTY_UA` | `0` | Set to `1` for stricter bot hardening |
 
 ### Onboarding a new site
