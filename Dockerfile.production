@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+
+# Production image: the packages uv.lock pins, static files collected at build time, and an
+# unprivileged user. Commands, settings and volumes: docs/production_image.md.
+# Local development uses ./Dockerfile and docker-compose.yml instead.
+
+FROM python:3.12.14-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS build
+
+COPY --from=ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 /uv /bin/uv
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+WORKDIR /app
+
+# Dependencies only. The app's own code goes on PYTHONPATH in the final stage instead of being
+# built as a package, so nothing outside uv.lock (such as the build backend) is downloaded.
+# --locked fails the build if uv.lock is out of date with pyproject.toml.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    uv sync --locked --no-dev --no-install-project
+
+FROM python:3.12.14-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+
+# Fixed IDs, so a volume mounted at /data keeps a matching owner across rebuilds.
+RUN groupadd --gid 10001 queueboard \
+    && useradd --uid 10001 --gid 10001 --no-log-init --no-create-home \
+        --home-dir /nonexistent --shell /usr/sbin/nologin queueboard \
+    && install -d -o 10001 -g 10001 /data
+
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONPATH=/app/qb_site:/app:/app/src \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DJANGO_SETTINGS_MODULE=qb_site.settings.production \
+    DJANGO_STATIC_ROOT=/app/staticfiles
+
+WORKDIR /app
+
+COPY --from=build /opt/venv /opt/venv
+COPY src ./src
+COPY qb_site ./qb_site
+COPY scripts ./scripts
+
+# Production settings refuse to load without a secret key and allowed hosts; these placeholders
+# exist only for this step and are not kept in the image.
+RUN DJANGO_SECRET_KEY=collectstatic-placeholder DJANGO_ALLOWED_HOSTS=localhost \
+    python qb_site/manage.py collectstatic --noinput
+
+USER 10001:10001
+
+EXPOSE 8000
+
+CMD ["gunicorn", "--config", "qb_site/gunicorn.conf.py", "qb_site.wsgi:application"]
+
+# Last, so a new revision does not invalidate the cached layers above.
+ARG REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/leanprover-community/queueboard-core" \
+      org.opencontainers.image.revision="$REVISION" \
+      org.opencontainers.image.title="queueboard-core" \
+      org.opencontainers.image.licenses="Apache-2.0"
