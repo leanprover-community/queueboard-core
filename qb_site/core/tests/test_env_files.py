@@ -108,7 +108,19 @@ class ResolveEnvFilesTests(TempFilesTestCase):
                 message = str(cm.exception)
                 self.assertIn(f"ZULIP_LINK_TOKEN_SECRET_FILE: {path} {reason}", message)
                 self.assertNotIn(MARKER, message)
-                self.assertNotIn(MARKER, repr(cm.exception.__cause__))
+                # A chained decode error would hold the file's bytes, even when not displayed.
+                self.assertIsNone(cm.exception.__cause__)
+                self.assertIsNone(cm.exception.__context__)
+
+    def test_empty_file_is_an_error(self) -> None:
+        for content in ("", "\n", "\r\n"):
+            with self.subTest(content=content):
+                path = self.write("empty", content)
+                env = {"DJANGO_SECRET_KEY_FILE": path}
+
+                with self.assertRaisesMessage(RuntimeError, f"DJANGO_SECRET_KEY_FILE: {path} is empty"):
+                    resolve_env_files(env)
+                self.assertNotIn("DJANGO_SECRET_KEY", env)
 
     def test_names_outside_the_allowlist_are_ignored(self) -> None:
         env = {"DJANGO_DB_HOST_FILE": self.write("host", "db\n"), "SSL_CERT_FILE": "/etc/ssl/cert.pem"}

@@ -16,7 +16,9 @@ environment (the ``runserver`` autoreloader) from seeing both variables and fail
 Rules:
 - ``<NAME>`` and ``<NAME>_FILE`` both set is an error. An empty value counts as unset, for either
   variable, so a template line ``NAME=`` left blank does not conflict with ``NAME_FILE``.
-- A file that is missing, unreadable, not UTF-8, or holds a NUL byte is an error.
+- A file that is missing, unreadable, not UTF-8, or holds a NUL byte is an error. So is a file
+  that is empty, or holds only a newline: that is a secret that failed to render, and starting
+  with a blank value would only fail later, on first use.
 - One trailing newline is stripped, and nothing else: the value is otherwise exactly what the
   variable would have held, so readers that strip (the JSON settings, the token lists) still do.
 - Error messages name variables and paths, never values.
@@ -73,19 +75,30 @@ def resolve_env_files(environ: MutableMapping[str, str] | None = None) -> list[s
 
 def _read_env_file(file_var: str, path: str) -> str:
     """Return the file's contents minus one trailing newline; errors name ``file_var`` and ``path``."""
+    value, problem = _read_text(file_var, path)
+    # Raised here, not in `_read_text`: no exception is being handled, so the error has no
+    # `__context__` (a decode error holds the whole file), and no frame left on the traceback holds
+    # the contents.
+    if value is None:
+        raise RuntimeError(f"{file_var}: {path} {problem}")
+    if value.endswith("\r\n"):
+        value = value[:-2]
+    elif value.endswith("\n"):
+        value = value[:-1]
+    if not value:
+        raise RuntimeError(f"{file_var}: {path} is empty")
+    return value
+
+
+def _read_text(file_var: str, path: str) -> tuple[str | None, str]:
+    """Return ``(contents, "")``, or ``(None, problem)`` when the contents can't be a value."""
     try:
         raw = Path(path).read_bytes()
     except OSError as exc:
         raise RuntimeError(f"{file_var}: cannot read {path}: {exc.strerror or type(exc).__name__}") from exc
+    if b"\x00" in raw:
+        return None, "contains a NUL byte, which an environment variable cannot hold"
     try:
-        value = raw.decode("utf-8")
+        return raw.decode("utf-8"), ""
     except UnicodeDecodeError:
-        # `from None`: the decode error's message quotes the offending byte.
-        raise RuntimeError(f"{file_var}: {path} is not valid UTF-8") from None
-    if "\x00" in value:
-        raise RuntimeError(f"{file_var}: {path} contains a NUL byte, which an environment variable cannot hold")
-    if value.endswith("\r\n"):
-        return value[:-2]
-    if value.endswith("\n"):
-        return value[:-1]
-    return value
+        return None, "is not valid UTF-8"

@@ -43,10 +43,13 @@
     `NAME_FILE`.
   - A file that is missing, unreadable, not UTF-8, or contains a NUL byte → `RuntimeError` naming
     the variable and the path.
+  - A file that is empty, or holds only a newline → `RuntimeError`. An empty file is a secret that
+    failed to render; with a blank value the process would start and fail later, on first use (a
+    blank `DJANGO_SECRET_KEY` passes the production check and fails on the first signed request).
   - One trailing newline (`\n` or `\r\n`) is stripped. Nothing else is: leading and trailing
     whitespace stays.
-  - Error messages never include a value. The UTF-8 error drops its cause, because a decode error
-    quotes the offending byte.
+  - Error messages never include a value. The UTF-8 and NUL errors are raised with no exception
+    chained to them, because a decode error holds the file's bytes.
 
 ## Consequences
 - Plain environment variables behave exactly as before. Nothing changes unless a `<NAME>_FILE` is
