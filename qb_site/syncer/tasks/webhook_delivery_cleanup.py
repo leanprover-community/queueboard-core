@@ -28,7 +28,7 @@ def expire_old_webhook_deliveries_task(  # type: ignore[no-redef]
     Deletes oldest-first in id-cursor batches, each its own short statement,
     so a large backlog never becomes one long transaction. A run stops after
     max_rows rows (SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS; <= 0 means no
-    cap) and leaves the rest for the next run; ``capped`` says it stopped there.
+    cap) and leaves the rest for the next run; ``capped`` says it stopped there with rows left.
     """
     if retention_days is None:
         retention_days = int(getattr(settings, "SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS", 7))
@@ -44,7 +44,8 @@ def expire_old_webhook_deliveries_task(  # type: ignore[no-redef]
     last_id = 0
     while True:
         if 0 < max_rows_int <= deleted:
-            capped = True
+            # Stopped at the cap: capped only if matching rows are left for the next run.
+            capped = qs.filter(id__gt=last_id).exists()
             break
         limit = _DELETE_BATCH_SIZE if max_rows_int <= 0 else min(_DELETE_BATCH_SIZE, max_rows_int - deleted)
         batch_ids = list(qs.filter(id__gt=last_id).order_by("id").values_list("id", flat=True)[:limit])

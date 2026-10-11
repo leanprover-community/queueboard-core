@@ -54,8 +54,8 @@
   all of it at once. It now deletes oldest-first in id-cursor batches of 5000, each its own
   statement (as `_expire_ci_rows_in_batches` does for CI rows), and stops after
   `SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS` rows (default 1,000,000; `<= 0` removes the cap). The
-  result reports `capped` when a run stopped at the cap; the next run carries on. Retention is
-  unchanged.
+  result reports `capped` when a run stopped at the cap with rows left; the next run carries on.
+  Retention is unchanged.
 
 ## First-Run Cost of the Other Tasks
 - **CI expiry** is already batched (5000-row id cursor) under a per-statement timeout
@@ -81,6 +81,11 @@
 - A non-daily period at least as long as the time between beat restarts still never fires. That
   is the operator's explicit choice; set a clock time instead.
 - A new daily entry should be built with `daily_beat_schedule`.
+- Where beat's schedule file is kept, the first start after this change may run each of the five
+  entries once, at startup: beat keeps the stored last-run time and swaps in the crontab, so an
+  entry last run before today's clock time is due at once. The cleanups are idempotent and
+  reviewer-attention notifications are de-duplicated per run date (doc 028). Without the file,
+  nothing runs until its clock time.
 
 ## Operational Notes
 - New, all optional: `<PREFIX>_UTC_HOUR` / `<PREFIX>_UTC_MINUTE` for the four prefixes above other
