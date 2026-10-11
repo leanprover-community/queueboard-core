@@ -68,7 +68,8 @@ SCHEDULE_KEY_PREFIX = "gh:rate:continue:repo:"
 THROTTLE_SLOT_KEY = "gh:throttle:slot"
 
 
-def _get_redis_client():  # pragma: no cover - exercised via higher-level tests
+def _get_redis_client(**kwargs: Any):  # pragma: no cover - exercised via higher-level tests
+    """Return a client for the broker's Redis, or None. `kwargs` go to `redis.Redis.from_url`."""
     if redis is None:
         return None
     url = getattr(settings, "CELERY_BROKER_URL", None)
@@ -79,8 +80,8 @@ def _get_redis_client():  # pragma: no cover - exercised via higher-level tests
         if str(url).startswith(("redis://", "rediss://")):
             if str(url).startswith("rediss://"):
                 # Some deployed redis-py versions reject `ssl=...`; this variant is broadly compatible.
-                return redis.Redis.from_url(url, ssl_cert_reqs=None)
-            return redis.Redis.from_url(url)
+                return redis.Redis.from_url(url, ssl_cert_reqs=None, **kwargs)
+            return redis.Redis.from_url(url, **kwargs)
         return None
     except Exception:
         return None

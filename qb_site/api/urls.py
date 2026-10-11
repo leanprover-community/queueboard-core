@@ -3,6 +3,7 @@
 from django.urls import path
 from api.views import index
 from api.views.analytics_collect import AnalyticsCollectView
+from api.views.health import health
 from api.views.queueboard_dependency_graph import QueueboardDependencyGraphView
 from api.views.queueboard_snapshot import QueueboardSnapshotView
 from api.views.reviewer_assignment import AreaStatsView, ReviewerAssignmentsView
@@ -10,6 +11,7 @@ from api.views.reviewer_interests import ReviewerInterestsView
 
 urlpatterns: list = [
     path("", index, name="index"),
+    path("health", health, name="health"),
     path("v1/analytics/collect", AnalyticsCollectView.as_view(), name="analytics-collect"),
     path("v1/queueboard/snapshot", QueueboardSnapshotView.as_view(), name="queueboard-snapshot"),
     path(
