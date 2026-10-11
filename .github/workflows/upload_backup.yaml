@@ -16,7 +16,7 @@ on:
         required: false
         type: string
       dump_key:
-        description: "S3 source: optional object key (e.g., queueboard-20260101T001500Z.dump); defaults to the newest holding table data"
+        description: "S3 source: optional object key (e.g., queueboard-20260101T000000Z.dump); defaults to the newest holding table data"
         required: false
         type: string
   schedule:
@@ -51,6 +51,11 @@ jobs:
         env:
           BACKUP_ID: ${{ inputs.backup_id }}
           DUMP_KEY: ${{ inputs.dump_key }}
+          # Only tested for emptiness here, so a missing one fails the run at once.
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
         run: |
           case "$BACKUP_SOURCE" in
             heroku)
@@ -61,6 +66,16 @@ jobs:
             s3)
               if [ -n "$BACKUP_ID" ]; then
                 echo "::error::backup_id applies to the heroku source only; for the s3 source, give dump_key"
+                exit 1
+              fi
+              missing=""
+              for name in BACKUP_S3_ENDPOINT BACKUP_S3_BUCKET BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY; do
+                if [ -z "${!name}" ]; then
+                  missing="$missing $name"
+                fi
+              done
+              if [ -n "$missing" ]; then
+                echo "::error::The s3 source needs these repository secrets:$missing"
                 exit 1
               fi ;;
             *)
@@ -80,15 +95,11 @@ jobs:
       # - name: "Setup uv"
       #   uses: astral-sh/setup-uv@ed21f2f24f8dd64503750218de024bcf64c7250a # v7.1.5
 
-      # pg_restore reads dumps from its own major version and older ones.
+      # pg_restore reads dumps from its own major version and older ones. The script puts this
+      # version's tools first on PATH: the runner's own, older Postgres would otherwise win whenever a
+      # command names no host, as `pg_restore --list` doesn't.
       - name: Install system dependencies (Postgres 18 client)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y curl ca-certificates gnupg
-          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg
-          echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client-18
+        run: bash scripts/install_postgres_client.sh 18
 
       - name: Prepare artifact directories
         run: mkdir -p artifacts/data
@@ -153,6 +164,14 @@ jobs:
             -h localhost -p 5432 -U postgres \
             -d analytics_source \
             backup.dump
+
+          # A dump of a freshly migrated database has every table but no rows: publish no snapshot of that.
+          prs="$(psql -h localhost -p 5432 -U postgres -d analytics_source -tAc 'SELECT count(*) FROM syncer_pullrequest')"
+          echo "Pull requests restored: $prs"
+          if [ "$prs" -eq 0 ]; then
+            echo "::error::The restored database holds no pull requests: the dump is of an empty database"
+            exit 1
+          fi
 
       # 3. Sanitize the database (per docs/design-decisions/016-sanitized-backups.md)
       - name: Sanitize database
