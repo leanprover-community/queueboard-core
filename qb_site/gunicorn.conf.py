@@ -18,6 +18,10 @@ workers = int(os.environ.get("WEB_CONCURRENCY", "3"))
 # that has already changed something on GitHub.
 timeout = 120
 
+# On shutdown (a deploy, a restart), a worker gets as long to finish its request as a request may
+# take, for the same reason. Gunicorn's default is 30 s.
+graceful_timeout = timeout
+
 # Worker heartbeats on tmpfs rather than the container's overlay filesystem, which can stall them.
 worker_tmp_dir = "/dev/shm"
 

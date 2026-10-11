@@ -32,11 +32,17 @@ Settings come from environment variables, as listed in `.env.example`. Productio
 to start without `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS`; the database is `DJANGO_DB_*`
 and the broker `CELERY_BROKER_URL`. No secret is built into the image.
 
+`.env.example` is written for local development: it sets `DJANGO_SETTINGS_MODULE=qb_site.settings.local`
+and `DJANGO_DEBUG=1`. Leave both out of a production env file. A `DJANGO_SETTINGS_MODULE` there
+overrides the image's, and the local settings show Django's debug pages.
+
 The web server is gunicorn, with defaults in `qb_site/gunicorn.conf.py`: port 8000, 3 sync
-workers, a 120 s worker timeout (Zulip commands call GitHub and Zulip inside the request), and
-access and error logs on stdout/stderr. Set the worker count with `WEB_CONCURRENCY` and anything
-else with `GUNICORN_CMD_ARGS`, e.g. `GUNICORN_CMD_ARGS="--timeout 60"`. The settings trust
-`X-Forwarded-Proto`, so run it behind a reverse proxy that sets that header.
+workers, a 120 s worker timeout and the same graceful timeout on shutdown (Zulip commands call
+GitHub and Zulip inside the request), and access and error logs on stdout/stderr. Set the worker
+count with `WEB_CONCURRENCY` and anything else with `GUNICORN_CMD_ARGS`, e.g.
+`GUNICORN_CMD_ARGS="--timeout 60"`. The settings trust `X-Forwarded-Proto`, so run it behind a
+reverse proxy that sets that header. A sync worker serves one request at a time, so gunicorn
+recommends a proxy that buffers slow clients.
 
 ## Processes
 
@@ -53,12 +59,15 @@ One image runs every process; only the command differs.
 - Run exactly one beat at a time. A second one sends every periodic task twice.
 - Mount a volume at `/data` for beat, so its schedule survives a restart. A new named volume takes
   its owner from the image; a host directory needs `chown 10001:10001` first.
-- `/api/` answers without touching the database, so it can serve as the web health check. A
-  probe from inside the container needs `localhost` in `DJANGO_ALLOWED_HOSTS`; the image has no
-  `curl`, so use Python:
-  `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')"`.
-- Docker gives a stopping container 10 s before killing it. Allow web more than gunicorn's 30 s
+- `/api/health` checks the database and the broker and answers 200 or 503, for a health check or
+  an uptime monitor (`/api/` touches neither). A probe from inside the container needs `localhost`
+  in `DJANGO_ALLOWED_HOSTS`; the image has no `curl`, so use Python, with a timeout:
+  `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=10)"`.
+- Docker gives a stopping container 10 s before killing it. Allow web more than gunicorn's 120 s
   graceful timeout, and the worker long enough for running tasks (`stop_grace_period` in Compose).
+- For a one-off Django command, use `manage.py` (e.g. `python qb_site/manage.py shell`). A bare
+  `python -c` started in `/app` finds the project directory `/app/qb_site` before the settings
+  package, and cannot import `qb_site.settings`.
 
 A minimal Compose file, for illustration:
 
@@ -74,7 +83,7 @@ services:
   web:
     <<: *app
     ports: ["127.0.0.1:8000:8000"]
-    stop_grace_period: 40s
+    stop_grace_period: 130s
     depends_on:
       migrate:
         condition: service_completed_successfully
