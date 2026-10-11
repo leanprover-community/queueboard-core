@@ -64,6 +64,14 @@ class ExpireOldWebhookDeliveriesTaskTests(TestCase):
             self.assertFalse(second["capped"])
             self.assertEqual(self._remaining_ids(), {"new-0", "new-1"})
 
+    def test_cap_reached_with_nothing_left_is_not_capped(self) -> None:
+        with patch("syncer.tasks.webhook_delivery_cleanup._DELETE_BATCH_SIZE", 2):
+            result = expire_old_webhook_deliveries_task(retention_days=7, max_rows=5)
+
+        self.assertEqual(result["deleted"], 5)
+        self.assertFalse(result["capped"])
+        self.assertEqual(self._remaining_ids(), {"new-0", "new-1"})
+
     @override_settings(SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS=4, SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS=7)
     def test_reads_cap_and_retention_from_settings(self) -> None:
         result = expire_old_webhook_deliveries_task()

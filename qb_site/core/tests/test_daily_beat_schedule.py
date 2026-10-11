@@ -30,7 +30,8 @@ def _load_settings(**env: str) -> dict:
     environ = {k: v for k, v in os.environ.items() if not k.startswith(_DAILY_ENV_PREFIXES)}
     environ.update(env)
     with mock.patch.dict(os.environ, environ, clear=True):
-        return runpy.run_path(str(Path(base_settings.__file__)))
+        # A dotted run_name gives the module a package, so base.py's relative imports resolve.
+        return runpy.run_path(str(Path(base_settings.__file__)), run_name="qb_site.settings._base_under_test")
 
 
 def _beat_schedule(**env: str) -> dict:
