@@ -92,7 +92,7 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertTrue(res["dry_run"])
         self.assertFalse(res["delivery_enabled"])
         self.assertEqual(res["new_assignment_ping_window_seconds"], 86400)
-        self.assertEqual(res["new_assignment_ping_window_source"], "period_seconds")
+        self.assertEqual(res["new_assignment_ping_window_source"], "fixed_utc_clock")
         self.assertEqual(res["repos"], 1)
         self.assertEqual(res["totals"]["would_nudge"], 1)
         self.assertEqual(res["totals"]["would_auto_unassign"], 1)
@@ -130,6 +130,39 @@ class ReviewerAttentionDailyTaskTests(TestCase):
         self.assertEqual(res["new_assignment_ping_window_seconds"], 24 * 60 * 60)
         self.assertEqual(res["new_assignment_ping_window_source"], "fixed_utc_clock")
         mock_build_reports.assert_called_once()
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS=86400,
+        ANALYZER_REVIEWER_ATTENTION_UTC_HOUR=None,
+        ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE=None,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    def test_one_day_period_counts_as_fixed_utc_clock(self, mock_build_reports) -> None:
+        # A one-day period runs at a fixed clock time (daily_beat_schedule, design doc 059).
+        mock_build_reports.return_value = []
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["new_assignment_ping_window_seconds"], 24 * 60 * 60)
+        self.assertEqual(res["new_assignment_ping_window_source"], "fixed_utc_clock")
+
+    @override_settings(
+        ANALYZER_REVIEWER_ATTENTION_ENABLED=True,
+        ANALYZER_REVIEWER_ATTENTION_ENFORCEMENT_ENABLED=False,
+        ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS=3600,
+        ANALYZER_REVIEWER_ATTENTION_UTC_HOUR=None,
+        ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE=None,
+    )
+    @patch("analyzer.tasks.reviewer_attention.build_reviewer_attention_reports")
+    def test_other_period_sizes_new_assignment_window(self, mock_build_reports) -> None:
+        mock_build_reports.return_value = []
+
+        res = reviewer_attention_daily_task.apply().get()
+
+        self.assertEqual(res["new_assignment_ping_window_seconds"], 3600)
+        self.assertEqual(res["new_assignment_ping_window_source"], "period_seconds")
 
     @override_settings(
         ANALYZER_REVIEWER_ATTENTION_ENABLED=True,

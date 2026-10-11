@@ -126,7 +126,7 @@ Celery task names (as registered via `@shared_task(name=…)`):
 - `analyzer.build_area_stats` / `analyzer.refresh_area_stats`
 
 **Reviewer attention tasks**
-- `analyzer.reviewer_attention_daily` — daily sweep that computes reviewer-attention signals
+- `analyzer.reviewer_attention_daily` — daily sweep (01:35 UTC by default, design doc 059) that computes reviewer-attention signals
   and delivers the per-reviewer DM. The DM also carries the acceptance-gate "Proposed to you"
   section (design doc 050): pending `AssignmentProposal` rows render distinct from assigned
   PRs, and an un-notified proposal triggers a send even for reviewers with

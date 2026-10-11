@@ -80,8 +80,9 @@
 - The initial run against the existing backlog (~93 stale phantom rows on mathlib4) is the main
   motivation; subsequent runs will be low-volume.
 - Beat schedule: `syncer.expire_stale_ci_for_active_repos` is gated on
-  `SYNCER_CI_EXPIRY_PERIOD_SECONDS > 0` and runs at that interval (default daily). Set to `0`
-  to disable entirely.
+  `SYNCER_CI_EXPIRY_PERIOD_SECONDS > 0`. Set to `0` to disable entirely. Since doc 059 the
+  default `86400` runs daily at 02:35 UTC (`SYNCER_CI_EXPIRY_UTC_HOUR` / `_UTC_MINUTE`); any
+  other period runs at that interval.
 - No migration needed; the task operates on existing tables.
 - The `CIShaFetchState` ledger is not cleaned up by this task. Stale ledger rows for deleted
   SHAs are harmless (they simply gate re-enqueue attempts that no longer apply) and can be

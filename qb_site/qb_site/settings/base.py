@@ -39,6 +39,36 @@ def env_optional_bounded_int(name: str, *, minimum: int, maximum: int) -> int | 
     return parsed
 
 
+def daily_beat_schedule(
+    period_seconds: int,
+    utc_hour: int | None,
+    utc_minute: int | None,
+    *,
+    default_utc_hour: int,
+    default_utc_minute: int,
+) -> crontab | int | None:
+    """Beat schedule for a task meant to run about once a day (design doc 059).
+
+    Beat's file scheduler forgets last-run times when its schedule file is lost, and an interval
+    entry first fires one full interval after beat starts, so a daily interval may never fire where
+    beat restarts more often than that. A crontab fires at its clock time regardless.
+
+    A set hour or minute always means that clock time (the other part from the default). Otherwise
+    a period <= 0 disables the entry (None), a one-day period (the shipped default) runs at the
+    default time, and any other period keeps running on that interval.
+    """
+    if utc_hour is not None or utc_minute is not None:
+        return crontab(
+            hour=utc_hour if utc_hour is not None else default_utc_hour,
+            minute=utc_minute if utc_minute is not None else default_utc_minute,
+        )
+    if period_seconds <= 0:
+        return None
+    if period_seconds == 24 * 60 * 60:
+        return crontab(hour=default_utc_hour, minute=default_utc_minute)
+    return period_seconds
+
+
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "django-insecure-change-me")
 DEBUG = env_bool(os.getenv("DJANGO_DEBUG"), False)
 
@@ -335,16 +365,38 @@ SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS = int(os.getenv("SYNCER_PENDING_CI_REFR
 SYNCER_PENDING_CI_REFRESH_MAX_PRS = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_PRS", 5))
 SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR = int(os.getenv("SYNCER_PENDING_CI_REFRESH_MAX_SHAS_PER_PR", 5))
 
-# CI row expiry / superseded-row cleanup
+# CI row expiry / superseded-row cleanup. Daily at SYNCER_CI_EXPIRY_UTC_HOUR:MINUTE (default 02:35
+# UTC); see daily_beat_schedule for how PERIOD_SECONDS and the clock time combine. <= 0 disables.
 SYNCER_CI_EXPIRY_PERIOD_SECONDS = int(os.getenv("SYNCER_CI_EXPIRY_PERIOD_SECONDS", 86400))
+SYNCER_CI_EXPIRY_UTC_HOUR = env_optional_bounded_int(
+    "SYNCER_CI_EXPIRY_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+SYNCER_CI_EXPIRY_UTC_MINUTE = env_optional_bounded_int(
+    "SYNCER_CI_EXPIRY_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
 SYNCER_CI_STALE_PENDING_DAYS = int(os.getenv("SYNCER_CI_STALE_PENDING_DAYS", 30))
 # Per-statement Postgres timeout inside the expiry task; a runaway plan once ran for
 # days and blocked vacuum database-wide. 0 disables the guard.
 SYNCER_CI_EXPIRY_STATEMENT_TIMEOUT_SECONDS = int(os.getenv("SYNCER_CI_EXPIRY_STATEMENT_TIMEOUT_SECONDS", 300))
 
-# Webhook delivery log cleanup
+# Webhook delivery log cleanup. Daily at SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_HOUR:MINUTE (default
+# 03:35 UTC); see daily_beat_schedule for how PERIOD_SECONDS and the clock time combine. <= 0 disables.
 SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS", 7))
 SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS", 86400))
+SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_HOUR = env_optional_bounded_int(
+    "SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_MINUTE = env_optional_bounded_int(
+    "SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
 # Most rows one cleanup run deletes (in short batches); the rest wait for the next run, so a
 # large backlog drains over several days instead of in one long run. <= 0 removes the cap.
 SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS", 1_000_000))
@@ -511,6 +563,9 @@ ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED = env_bool(
     os.getenv("ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED"),
     False,
 )
+# Daily sweep, at ANALYZER_REVIEWER_ATTENTION_UTC_HOUR:MINUTE (default 01:35 UTC, after the 00:45
+# propose run so its proposals make the same day's DM); see daily_beat_schedule for how
+# PERIOD_SECONDS and the clock time combine. <= 0 with no clock time set disables it.
 ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS = int(os.getenv("ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS", 86400))
 ANALYZER_REVIEWER_ATTENTION_UTC_HOUR = env_optional_bounded_int(
     "ANALYZER_REVIEWER_ATTENTION_UTC_HOUR",
@@ -577,8 +632,30 @@ SITE_ANALYTICS_RETENTION_DAYS = int(os.getenv("SITE_ANALYTICS_RETENTION_DAYS", 5
 # appends one). Set to 0 when the app is exposed directly, to ignore the header entirely.
 SITE_ANALYTICS_TRUSTED_PROXY_COUNT = int(os.getenv("SITE_ANALYTICS_TRUSTED_PROXY_COUNT", 1))
 SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS", 3600))
+# The monthly aggregate and the prune run daily at their UTC_HOUR:MINUTE (defaults 01:50 and 01:55
+# UTC); see daily_beat_schedule for how PERIOD_SECONDS and the clock time combine. <= 0 disables.
 SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS", 86400))
+SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_HOUR = env_optional_bounded_int(
+    "SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_MINUTE = env_optional_bounded_int(
+    "SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
 SITE_ANALYTICS_PRUNE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_PRUNE_PERIOD_SECONDS", 86400))
+SITE_ANALYTICS_PRUNE_UTC_HOUR = env_optional_bounded_int(
+    "SITE_ANALYTICS_PRUNE_UTC_HOUR",
+    minimum=0,
+    maximum=23,
+)
+SITE_ANALYTICS_PRUNE_UTC_MINUTE = env_optional_bounded_int(
+    "SITE_ANALYTICS_PRUNE_UTC_MINUTE",
+    minimum=0,
+    maximum=59,
+)
 # Reject requests with an empty User-Agent header (stricter bot hardening).
 SITE_ANALYTICS_REJECT_EMPTY_UA = env_bool(os.getenv("SITE_ANALYTICS_REJECT_EMPTY_UA"), False)
 
@@ -625,18 +702,36 @@ if SYNCER_PENDING_CI_REFRESH_PERIOD_SECONDS > 0:
             "max_pending_hours": SYNCER_PENDING_CI_MAX_AGE_HOURS,
         },
     }
-if SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS > 0:
+# Entries built with daily_beat_schedule run at fixed UTC clock times by default (design doc 059).
+# Their defaults (01:35, 01:50, 01:55, 02:35, 03:35) keep clear of each other, of the 00:30/00:45
+# assignment runs, of the Sunday 03:00 reviewer-attention cleanup and of Celery's 04:00
+# backend_cleanup.
+webhook_delivery_cleanup_schedule = daily_beat_schedule(
+    SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS,
+    SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_HOUR,
+    SYNCER_WEBHOOK_DELIVERY_CLEANUP_UTC_MINUTE,
+    default_utc_hour=3,
+    default_utc_minute=35,
+)
+if webhook_delivery_cleanup_schedule is not None:
     CELERY_BEAT_SCHEDULE["expire_old_webhook_deliveries"] = {
         "task": "syncer.expire_old_webhook_deliveries",
-        "schedule": SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS,
+        "schedule": webhook_delivery_cleanup_schedule,
         "kwargs": {
             "retention_days": SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS,
         },
     }
-if SYNCER_CI_EXPIRY_PERIOD_SECONDS > 0:
+ci_expiry_schedule = daily_beat_schedule(
+    SYNCER_CI_EXPIRY_PERIOD_SECONDS,
+    SYNCER_CI_EXPIRY_UTC_HOUR,
+    SYNCER_CI_EXPIRY_UTC_MINUTE,
+    default_utc_hour=2,
+    default_utc_minute=35,
+)
+if ci_expiry_schedule is not None:
     CELERY_BEAT_SCHEDULE["expire_stale_ci_for_active_repos"] = {
         "task": "syncer.expire_stale_ci_for_active_repos",
-        "schedule": SYNCER_CI_EXPIRY_PERIOD_SECONDS,
+        "schedule": ci_expiry_schedule,
         "kwargs": {
             "stale_pending_days": SYNCER_CI_STALE_PENDING_DAYS,
         },
@@ -786,15 +881,13 @@ if ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS > 0:
         "task": "analyzer.expire_assignment_proposals",
         "schedule": ANALYZER_ASSIGNMENT_PROPOSAL_EXPIRY_PERIOD_SECONDS,
     }
-reviewer_attention_schedule = None
-if (ANALYZER_REVIEWER_ATTENTION_UTC_HOUR is not None) or (ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE is not None):
-    reviewer_attention_schedule = crontab(
-        hour=ANALYZER_REVIEWER_ATTENTION_UTC_HOUR or 0,
-        minute=ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE or 0,
-    )
-elif ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS > 0:
-    reviewer_attention_schedule = ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS
-
+reviewer_attention_schedule = daily_beat_schedule(
+    ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS,
+    ANALYZER_REVIEWER_ATTENTION_UTC_HOUR,
+    ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE,
+    default_utc_hour=1,
+    default_utc_minute=35,
+)
 if reviewer_attention_schedule is not None:
     CELERY_BEAT_SCHEDULE["reviewer_attention_daily"] = {
         "task": "analyzer.reviewer_attention_daily",
@@ -822,15 +915,29 @@ if SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS > 0:
         "task": "site_analytics.aggregate_daily_metrics",
         "schedule": SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS,
     }
-if SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS > 0:
+site_analytics_monthly_schedule = daily_beat_schedule(
+    SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS,
+    SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_HOUR,
+    SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_MINUTE,
+    default_utc_hour=1,
+    default_utc_minute=50,
+)
+if site_analytics_monthly_schedule is not None:
     CELERY_BEAT_SCHEDULE["site_analytics_aggregate_monthly"] = {
         "task": "site_analytics.aggregate_monthly_metrics",
-        "schedule": SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS,
+        "schedule": site_analytics_monthly_schedule,
     }
-if SITE_ANALYTICS_PRUNE_PERIOD_SECONDS > 0:
+site_analytics_prune_schedule = daily_beat_schedule(
+    SITE_ANALYTICS_PRUNE_PERIOD_SECONDS,
+    SITE_ANALYTICS_PRUNE_UTC_HOUR,
+    SITE_ANALYTICS_PRUNE_UTC_MINUTE,
+    default_utc_hour=1,
+    default_utc_minute=55,
+)
+if site_analytics_prune_schedule is not None:
     CELERY_BEAT_SCHEDULE["site_analytics_prune_pageviews"] = {
         "task": "site_analytics.prune_old_pageviews",
-        "schedule": SITE_ANALYTICS_PRUNE_PERIOD_SECONDS,
+        "schedule": site_analytics_prune_schedule,
         "kwargs": {"retention_days": SITE_ANALYTICS_RETENTION_DAYS},
     }
 # Rotate the visitor-hash salt at midnight UTC on the 1st of each month.

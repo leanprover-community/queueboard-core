@@ -26,8 +26,10 @@
 - `SITE_ANALYTICS_RETENTION_DAYS` — raw pageview retention window (default 540 days / ~18 months).
 - `SITE_ANALYTICS_TRUSTED_PROXY_COUNT` — reverse-proxy hops in front of the app (default 1, matching Heroku's router). Controls how many `X-Forwarded-For` entries from the right are trusted; 0 ignores the header entirely.
 - `SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS` — beat period for daily aggregation task (default 3600).
-- `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` — beat period for monthly aggregation task (default 86400).
-- `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` — beat period for retention pruning task (default 86400).
+- `SITE_ANALYTICS_MONTHLY_AGGREGATE_PERIOD_SECONDS` — monthly aggregation schedule (default 86400, i.e. daily at
+  `SITE_ANALYTICS_MONTHLY_AGGREGATE_UTC_HOUR`:`_UTC_MINUTE`, default 01:50 UTC; design doc 059). 0 disables.
+- `SITE_ANALYTICS_PRUNE_PERIOD_SECONDS` — retention pruning schedule (default 86400, i.e. daily at
+  `SITE_ANALYTICS_PRUNE_UTC_HOUR`:`_UTC_MINUTE`, default 01:55 UTC; design doc 059). 0 disables.
 
 ## Task Surface
 Celery task names (as registered via `@shared_task(name=…)`):

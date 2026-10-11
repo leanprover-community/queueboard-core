@@ -118,9 +118,11 @@
 - `ANALYZER_REVIEWER_ATTENTION_DELIVERY_ENABLED`
 
 ### Daily Sweep Schedule
+- Built by `daily_beat_schedule` (doc 059); by default daily at 01:35 UTC.
 - Interval mode:
-  - `ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`
-- UTC clock mode (overrides interval when present):
+  - `ANALYZER_REVIEWER_ATTENTION_PERIOD_SECONDS`, when set to anything other than `86400`
+    (`86400`, the default, means clock mode at the default time; `<= 0` disables).
+- UTC clock mode (overrides interval when present; an unset half takes the default):
   - `ANALYZER_REVIEWER_ATTENTION_UTC_HOUR`
   - `ANALYZER_REVIEWER_ATTENTION_UTC_MINUTE`
 
