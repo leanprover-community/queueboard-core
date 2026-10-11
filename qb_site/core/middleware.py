@@ -49,7 +49,16 @@ def _redirect_origin(base_url: str, legacy_hosts: frozenset[str]) -> str | None:
 
 
 def _legacy_host_names(hosts: Iterable[str]) -> frozenset[str]:
-    return frozenset(name for name in (_host_name(host) for host in hosts) if name)
+    """The host names listed, each warned about and left out if it isn't one (a URL, a wildcard)."""
+    names = set()
+    for host in hosts:
+        name = _host_name(host)
+        # A leading dot passes Django's host syntax, but no request's Host can match it here.
+        if not name or name.startswith("."):
+            log.warning("QUEUEBOARD_LEGACY_HOSTS: %r is not a host name; ignoring it", host)
+            continue
+        names.add(name)
+    return frozenset(names)
 
 
 class LegacyHostRedirectMiddleware:

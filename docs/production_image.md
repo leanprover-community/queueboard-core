@@ -45,13 +45,20 @@ reverse proxy that sets that header. A sync worker serves one request at a time,
 recommends a proxy that buffers slow clients.
 
 To move the site to a new host name while the old one still reaches it, set `QUEUEBOARD_BASE_URL`
-to the new name, list the old ones in `QUEUEBOARD_LEGACY_HOSTS`, and keep them in
+to the new name, list the old ones as bare host names in `QUEUEBOARD_LEGACY_HOSTS`, and keep them in
 `DJANGO_ALLOWED_HOSTS`. GET and HEAD requests for an old name are then redirected with a 302 to the
-same path and query on the new one. Other methods are served where they arrive, since webhook
-senders don't follow redirects and a redirected POST loses its body. Move API clients that send
-credentials to the new name first, as a client may drop an `Authorization` header on a redirect to
-another host. Once the redirect has worked for a while, `QUEUEBOARD_LEGACY_HOST_REDIRECT_PERMANENT=1`
-makes it a 301, which browsers remember.
+same path and query on the new one.
+
+- Other methods are served where they arrive, since webhook senders don't follow redirects and a
+  redirected POST loses its body. So move webhook senders, uptime monitors and anything else that
+  posts to the site to the new name themselves, before the old one stops reaching this deployment.
+- Move API clients that send credentials first, as a client may drop an `Authorization` header on a
+  redirect to another host.
+- The proxy in front must pass each request's own `Host` through. One that sends the new name's
+  requests on with an old name as their `Host` would redirect them to themselves, so check that the
+  new name still answers once this is set.
+- Once the redirect has worked for a while, `QUEUEBOARD_LEGACY_HOST_REDIRECT_PERMANENT=1` makes it a
+  301, which browsers remember.
 
 ## Processes
 

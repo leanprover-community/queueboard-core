@@ -111,10 +111,21 @@ class LegacyHostRedirectMiddlewareTests(SimpleTestCase):
         with self.assertRaises(MiddlewareNotUsed), self.assertNoLogs("core.middleware"):
             self._middleware()
 
-    @override_settings(QUEUEBOARD_LEGACY_HOSTS=[" ", "bad host"])
-    def test_no_valid_legacy_host_disables_it(self) -> None:
-        with self.assertRaises(MiddlewareNotUsed):
+    @override_settings(QUEUEBOARD_LEGACY_HOSTS=[f"https://{LEGACY}", f"{LEGACY}/", "*", ".example.org", "bad host"])
+    def test_entries_that_are_not_host_names_are_ignored_with_a_warning(self) -> None:
+        with self.assertRaises(MiddlewareNotUsed), self.assertLogs("core.middleware", "WARNING") as logs:
             self._middleware()
+
+        self.assertEqual(len(logs.output), 5)
+        self.assertIn(f"'https://{LEGACY}' is not a host name", logs.output[0])
+
+    @override_settings(QUEUEBOARD_LEGACY_HOSTS=["*", LEGACY])
+    def test_valid_entries_still_redirect_beside_invalid_ones(self) -> None:
+        with self.assertLogs("core.middleware", "WARNING"):
+            middleware = self._middleware()
+
+        resp = middleware(self.factory.get("/api/", HTTP_HOST=LEGACY))
+        self.assertEqual(resp.status_code, 302)
 
     def test_unusable_base_url_disables_it_with_a_warning(self) -> None:
         for base_url in ("", "new.example.org", "ftp://new.example.org", "https://user@new.example.org"):
@@ -133,7 +144,10 @@ class LegacyHostRedirectMiddlewareTests(SimpleTestCase):
 
 @override_settings(QUEUEBOARD_LEGACY_HOSTS=[LEGACY], QUEUEBOARD_BASE_URL=CANONICAL)
 class LegacyHostRedirectStackTests(SimpleTestCase):
-    """Through the whole middleware stack. SimpleTestCase fails any database query."""
+    """What a redirect looks like through the whole stack (MiddlewareOrderTests pins the position).
+
+    SimpleTestCase fails any database query.
+    """
 
     def test_redirect_sets_no_cookie(self) -> None:
         resp = self.client.get("/api/?x=1", HTTP_HOST=LEGACY)
