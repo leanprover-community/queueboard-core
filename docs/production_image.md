@@ -44,6 +44,15 @@ count with `WEB_CONCURRENCY` and anything else with `GUNICORN_CMD_ARGS`, e.g.
 reverse proxy that sets that header. A sync worker serves one request at a time, so gunicorn
 recommends a proxy that buffers slow clients.
 
+To move the site to a new host name while the old one still reaches it, set `QUEUEBOARD_BASE_URL`
+to the new name, list the old ones in `QUEUEBOARD_LEGACY_HOSTS`, and keep them in
+`DJANGO_ALLOWED_HOSTS`. GET and HEAD requests for an old name are then redirected with a 302 to the
+same path and query on the new one. Other methods are served where they arrive, since webhook
+senders don't follow redirects and a redirected POST loses its body. Move API clients that send
+credentials to the new name first, as a client may drop an `Authorization` header on a redirect to
+another host. Once the redirect has worked for a while, `QUEUEBOARD_LEGACY_HOST_REDIRECT_PERMANENT=1`
+makes it a 301, which browsers remember.
+
 ## Processes
 
 One image runs every process; only the command differs.
