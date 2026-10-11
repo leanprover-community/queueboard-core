@@ -345,6 +345,9 @@ SYNCER_CI_EXPIRY_STATEMENT_TIMEOUT_SECONDS = int(os.getenv("SYNCER_CI_EXPIRY_STA
 # Webhook delivery log cleanup
 SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_RETENTION_DAYS", 7))
 SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_CLEANUP_PERIOD_SECONDS", 86400))
+# Most rows one cleanup run deletes (in short batches); the rest wait for the next run, so a
+# large backlog drains over several days instead of in one long run. <= 0 removes the cap.
+SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS = int(os.getenv("SYNCER_WEBHOOK_DELIVERY_CLEANUP_MAX_ROWS", 1_000_000))
 
 # Repo label-catalog refresh: how often to reconcile LabelDef against GitHub for active repos.
 # Labels change infrequently, so an hourly cadence is plenty. Set to 0 to disable.
