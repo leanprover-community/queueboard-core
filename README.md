@@ -72,8 +72,9 @@ Compose checks
 
 ### Production image
 
-`Dockerfile.production` builds an image for running the app in containers. See
-`docs/production_image.md` for its commands, settings and volumes.
+`Dockerfile.production` builds an image for running the app in containers, which CI publishes to
+`ghcr.io/leanprover-community/queueboard-core` from `master`. See `docs/production_image.md` for
+its commands, settings and volumes.
 
 ### Syncer (developer workflow)
 - Ingestion plan and services are documented in `docs/syncer_ingestion_plan.md`.

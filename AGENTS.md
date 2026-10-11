@@ -107,7 +107,7 @@ Notes
 - Generate migrations on the host (e.g., `uv run python qb_site/manage.py makemigrations`) and commit them, rather than creating files from inside containers.
 - `Dockerfile.production` is the production image, separate from the dev `Dockerfile`/Compose setup: packages from
   `uv.lock` (`uv sync --locked`), static files collected at build, an unprivileged user (UID 10001), gunicorn defaults in
-  `qb_site/gunicorn.conf.py`.
+  `qb_site/gunicorn.conf.py`. `.github/workflows/production-image.yml` builds it on PRs and publishes it from `master`.
   It copies only `src/`, `qb_site/` and `scripts/`; anything else needed at runtime must be added to its `COPY` lines.
   See `docs/production_image.md`.
 
