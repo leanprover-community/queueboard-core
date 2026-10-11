@@ -14,7 +14,9 @@ if SECRET_KEY == "django-insecure-change-me":
 if not ALLOWED_HOSTS:
     raise RuntimeError("DJANGO_ALLOWED_HOSTS must be configured for production")
 
-MIDDLEWARE = MIDDLEWARE[:1] + ["whitenoise.middleware.WhiteNoiseMiddleware"] + MIDDLEWARE[1:]
+# WhiteNoise goes directly after SecurityMiddleware, as its docs ask.
+_AFTER_SECURITY = MIDDLEWARE.index("django.middleware.security.SecurityMiddleware") + 1
+MIDDLEWARE = MIDDLEWARE[:_AFTER_SECURITY] + ["whitenoise.middleware.WhiteNoiseMiddleware"] + MIDDLEWARE[_AFTER_SECURITY:]
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

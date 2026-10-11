@@ -106,6 +106,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First, so a request for a legacy host name is redirected before anything else can redirect it,
+    # set a cookie, or touch the database. Removes itself unless QUEUEBOARD_LEGACY_HOSTS is set.
+    "core.middleware.LegacyHostRedirectMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -201,6 +204,14 @@ LOGGING = {
 # Zulip chat server (ZULIP_BASE_URL). Leave empty only in local dev. Resolve via
 # core.services.site_urls.resolve_site_base_url() rather than reading this setting directly.
 QUEUEBOARD_BASE_URL = os.getenv("QUEUEBOARD_BASE_URL", "").strip().rstrip("/")
+# Former host names of this site, comma-separated (e.g. the name it had before a move). GET and HEAD
+# requests whose Host is one of them are redirected to the same path and query on
+# QUEUEBOARD_BASE_URL's scheme and host; other methods are served as before. Empty: no redirect.
+# See core.middleware.LegacyHostRedirectMiddleware.
+QUEUEBOARD_LEGACY_HOSTS = [host.strip() for host in os.getenv("QUEUEBOARD_LEGACY_HOSTS", "").split(",") if host.strip()]
+# That redirect is a 302 unless this is true, then a 301, which browsers remember: switch it on only
+# once the redirect has worked for a while.
+QUEUEBOARD_LEGACY_HOST_REDIRECT_PERMANENT = env_bool(os.getenv("QUEUEBOARD_LEGACY_HOST_REDIRECT_PERMANENT"), False)
 
 ZULIP_WEBHOOK_TOKEN = os.getenv("ZULIP_WEBHOOK_TOKEN")
 ZULIP_BASE_URL = os.getenv("ZULIP_BASE_URL", "")

@@ -189,6 +189,9 @@ Additional expectations:
 - Compose mounts repository code read-only into containers (`.:/app:ro`) and writes runtime artifacts under `/data` volume.
 - Prefer settings/env-driven behavior changes over hardcoded constants in tasks/services.
 - Celery worker/beat run in Compose and rely on `PYTHONPATH=/app/qb_site:/app`.
+- `core.middleware.LegacyHostRedirectMiddleware` is first in `MIDDLEWARE` (base and production): GET/HEAD
+  requests for a host in `QUEUEBOARD_LEGACY_HOSTS` are redirected to `QUEUEBOARD_BASE_URL`'s host before
+  any other middleware runs. Keep it first; it removes itself when the setting is empty.
 
 ## Agent Notes
 - Do not hand-write migration files.
