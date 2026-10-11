@@ -7,6 +7,7 @@
 
 ## Decision
 - Continue using the standard library (`os.environ`) without adding a third-party dotenv/settings library.
+  Allowlisted secrets and JSON settings may instead be read from a file named by `<NAME>_FILE` (design doc 058).
 - Treat Docker Compose as the supported workflow for local development; `.env` is not auto-loaded by the Django settings module.
 - Require PostgreSQL in all environments and drop the SQLite fallback messaging.
 

@@ -7,7 +7,8 @@ This guide covers how to create and configure GitHub Apps for Queueboard's opera
 - Close-PR command (`close_pr`) requires a GitHub App installation token with `Pull requests: Read and write` and `Members: Read` (org-level).
 - Label-PR command (`label_pr`) reuses the same `queueboard-assignment` app; `Issues: Read and write` is already required and covers label mutations.
 - Syncer operations (`syncer_repo_discovery`, `syncer_pr_read`, `syncer_ci_read`) try GitHub App tokens first and fall back to `GH_TOKEN`/`GITHUB_TOKEN` when no app token is available.
-- Runtime config is loaded from `GITHUB_APP_TOKEN_CONFIG` (JSON object).
+- Runtime config is loaded from `GITHUB_APP_TOKEN_CONFIG` (JSON object), or from the JSON file that
+  `GITHUB_APP_TOKEN_CONFIG_FILE` names.
 
 ## Recommended App Layout
 - Use three apps (recommended):
@@ -79,7 +80,12 @@ Assignment commands will fail for repos where the assignment app is not installe
 
 Set these values in `.env` or your deployment secret manager:
 - `GITHUB_API_URL=https://api.github.com`
-- `GITHUB_APP_TOKEN_CONFIG=<json object>`
+- `GITHUB_APP_TOKEN_CONFIG=<json object>`, or
+  `GITHUB_APP_TOKEN_CONFIG_FILE=<path to a file holding the JSON object>` (not both).
+
+The file form (design doc 058) is useful when the JSON is awkward to fit in an env file, e.g. with
+inline private keys. The file may be pretty-printed, so the file you `validate` below can be used
+as is, without `to-env`. An inline `private_key` still needs `\n` escapes, because the file is JSON.
 
 `GITHUB_APP_TOKEN_CONFIG` schema used by the code:
 - top-level:
@@ -161,7 +167,9 @@ uv run python qb_site/manage.py github_app_config to-env .github-app-config.loca
 
 Notes:
 - `inline-keys` reads each app `private_key_path` PEM and writes it into `private_key` with JSON-safe newline escaping.
-- Relative `private_key_path` values are resolved relative to the JSON config file location.
+- This helper resolves relative `private_key_path` values against the JSON config file's
+  location. The app resolves them against its working directory, even when the config comes from
+  `GITHUB_APP_TOKEN_CONFIG_FILE`, so use absolute paths in a config the app loads.
 
 ## 5) Quick Verification
 1. Restart services after updating env secrets.
@@ -173,6 +181,7 @@ Notes:
 
 ## References
 - `docs/design-decisions/026-zulip-assign-unassign-and-github-app-tokens.md`
+- `docs/design-decisions/058-settings-from-files.md`
 - `qb_site/core/services/github_app_tokens.py`
 - `qb_site/core/services/github_operation_tokens.py`
 - `qb_site/zulip_bot/services/assignment_execution.py`

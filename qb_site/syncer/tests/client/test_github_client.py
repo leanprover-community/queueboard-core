@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from django.test import SimpleTestCase
 
+from qb_site.settings.env_files import resolve_env_files
 from syncer.services.github_client import GitHubClient
 
 
@@ -55,6 +58,20 @@ class TestGitHubClient(SimpleTestCase):
 
         self.assertEqual(client.token, "b")
         mchoose.assert_called_once_with(["a", "b", "c"])
+
+    def test_init_reads_token_supplied_as_a_file(self) -> None:
+        # GITHUB_TOKEN_FILE is resolved into os.environ at settings import (design doc 058), so the
+        # client's direct environment read sees the file's value.
+        with TemporaryDirectory() as tmp:
+            token_path = Path(tmp) / "token"
+            token_path.write_text("file-token\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_TOKEN_FILE": str(token_path), "GH_TOKEN": "", "GITHUB_TOKEN": ""}):
+                resolve_env_files()
+                with mock.patch("syncer.services.github_client.choose_token", side_effect=lambda tokens: tokens[0]) as mchoose:
+                    client = GitHubClient()
+
+        self.assertEqual(client.token, "file-token")
+        mchoose.assert_called_once_with(["file-token"])
 
     def test_init_uses_operation_token_when_operation_and_repo_provided(self) -> None:
         with mock.patch("syncer.services.github_client.resolve_github_app_operation_token", return_value="op-token") as mresolve:

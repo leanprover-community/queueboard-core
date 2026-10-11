@@ -97,6 +97,9 @@ Notes
   - **Antipattern that silently breaks this:** reading `getattr(settings, "FOO", default)` in code *without* a matching `os.getenv` line in `base.py`. That "phantom" setting can never be configured — it is always the hardcoded default — and is invisible to `.env.example`. If a value is meant to be tunable, wire it through `base.py`; if it is a true constant, make it a module-level constant, not a `getattr(settings, ...)`.
   - Consequence of skipping either step: the setting has no effect in production (missing from `base.py`) or is undiscoverable for new deployments (missing from `.env.example`).
   - When a setting also requires a live-deployment change (base URL, OAuth callback, secrets), surface it in the relevant runbook under `docs/` too (e.g. `docs/zulip_github_oauth_setup.md`).
+  - A new setting that holds a secret or JSON also goes in `FILE_BACKED_ENV_VARS`
+    (`qb_site/qb_site/settings/env_files.py`), so a deployment can supply it as a file via `<NAME>_FILE`
+    (design doc 058), and in the list of those names at the top of `.env.example`.
 
 ## Containers & Volumes
 - Code is bind-mounted read-only into containers (`.:/app:ro`) to avoid writes into the repo from inside Docker.

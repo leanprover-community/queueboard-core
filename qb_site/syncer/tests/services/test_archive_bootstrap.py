@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import mock
+
 from django.test import SimpleTestCase
 
+from qb_site.settings.env_files import resolve_env_files
 from syncer.services.archive_bootstrap import (
     ArchivePREntry,
+    default_tree_fetcher,
     enumerate_archive_pr_entries,
 )
 
@@ -94,3 +101,18 @@ class TestEnumerateArchivePREntries(SimpleTestCase):
         )
         entries = enumerate_archive_pr_entries(owner="o", archive="r", fetcher=fetcher)
         self.assertEqual([e.pr_number for e in entries], [1])
+
+
+class TestDefaultTreeFetcher(SimpleTestCase):
+    def test_sends_token_supplied_as_a_file(self) -> None:
+        # GH_TOKEN_FILE is resolved into os.environ at settings import (design doc 058).
+        with TemporaryDirectory() as tmp:
+            token_path = Path(tmp) / "token"
+            token_path.write_text("file-token,second-token\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GH_TOKEN_FILE": str(token_path), "GH_TOKEN": "", "GITHUB_TOKEN": ""}):
+                resolve_env_files()
+                with mock.patch("syncer.services.archive_bootstrap.requests.get") as mget:
+                    mget.return_value.json.return_value = {"tree": []}
+                    default_tree_fetcher("o", "r", "master")
+
+        self.assertEqual(mget.call_args.kwargs["headers"]["Authorization"], "Bearer file-token")

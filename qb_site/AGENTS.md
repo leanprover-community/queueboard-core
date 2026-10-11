@@ -162,6 +162,10 @@ Additional expectations:
   `.env.example`. Wire tunables through `base.py`; make true constants module-level constants.
 - If a setting needs a live-deployment change (base URL, OAuth callback, secret), also surface it
   in the relevant `docs/` runbook. See the root `AGENTS.md` "Configuration & Environment" rule.
+- A setting that holds a secret or JSON also goes in `FILE_BACKED_ENV_VARS`
+  (`qb_site/qb_site/settings/env_files.py`) and the matching list at the top of `.env.example`. `base.py`
+  starts by resolving those names' `<NAME>_FILE` variables into `os.environ` (design doc 058), so
+  every reader, settings or not, sees the file's value.
 
 ## Keeping Django Admin in Sync With Models
 - Each app registers its models in `qb_site/<app>/admin.py` (currently `core`,
