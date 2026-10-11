@@ -7,7 +7,8 @@
 
 ## Endpoints
 
-All endpoints accept `GET` only (`/api/health` also `HEAD`). Most require a `?repo=owner/name` query parameter.
+Endpoints are read-only (`GET`, and `HEAD`), except `/api/v1/analytics/collect`, which takes `POST` only. Most
+require a `?repo=owner/name` query parameter.
 
 | URL | View | Description |
 |-----|------|-------------|
@@ -38,11 +39,16 @@ All endpoints accept `GET` only (`/api/health` also `HEAD`). Most require a `?re
   Django opens one per request, and with no `connect_timeout` in the database settings psycopg
   waits up to 130 s for a server that accepts the connection but never answers, unless the web
   server's worker timeout ends the request first. A refused connection fails at once.
-- The response never carries exception text, hostnames or connection details: failures are logged
-  at WARNING by `api.views.health`, with the traceback.
+- The response never carries exception text, hostnames or connection details: each failed check is
+  logged at WARNING by `api.views.health`, as one line with the exception's type and message (no
+  traceback, since a monitor probes an outage repeatedly).
 - A plain Django view, not DRF: no content negotiation (the browsable API page would set a CSRF
-  cookie), no throttling, and it never reads the session, so it sets no session or CSRF cookie.
-  It is still subject to `ALLOWED_HOSTS`, so a probe from inside a container needs `localhost` in
+  cookie), and it never reads the session, so a probe, which sends no cookies, gets no session or
+  CSRF cookie back. (A browser that sends a session cookie has its session saved, as on every path,
+  because of `SESSION_SAVE_EVERY_REQUEST`.)
+- `GET` and `HEAD` only; anything else gets 405. The view is CSRF-exempt, since it takes no unsafe
+  method; otherwise the CSRF middleware would answer a `POST` with 403 first.
+- It is still subject to `ALLOWED_HOSTS`, so a probe from inside a container needs `localhost` in
   `DJANGO_ALLOWED_HOSTS`.
 - Site analytics only counts what the static sites POST to `/api/v1/analytics/collect`, so probes
   never show up there.
