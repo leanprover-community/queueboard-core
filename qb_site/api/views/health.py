@@ -23,8 +23,8 @@ from syncer.services.rate_budget import _get_redis_client
 log = logging.getLogger(__name__)
 
 # Each check gives up after about this long, so a hung dependency fails the probe instead of
-# hanging it. Opening a database connection is not covered: that is bounded by the connection
-# settings, not by this view.
+# hanging it. Opening a database connection is not covered: DJANGO_DB_CONNECT_TIMEOUT bounds that,
+# not this view.
 CHECK_TIMEOUT_SECONDS = 2
 
 

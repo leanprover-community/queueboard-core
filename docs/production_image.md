@@ -32,6 +32,12 @@ Settings come from environment variables, as listed in `.env.example`. Productio
 to start without `DJANGO_SECRET_KEY` and `DJANGO_ALLOWED_HOSTS`; the database is `DJANGO_DB_*`
 and the broker `CELERY_BROKER_URL`. No secret is built into the image.
 
+Opening a database connection gives up after `DJANGO_DB_CONNECT_TIMEOUT` seconds (default 10, at
+least 2), for each address the database's host name resolves to. Without that limit, a database
+that accepts connections and never answers would hold each request for over two minutes, past
+gunicorn's 120 s worker timeout, and the request would end with the worker killed rather than an
+error. Keep it well under that timeout.
+
 `.env.example` is written for local development: it sets `DJANGO_SETTINGS_MODULE=qb_site.settings.local`
 and `DJANGO_DEBUG=1`. Leave both out of a production env file. A `DJANGO_SETTINGS_MODULE` there
 overrides the image's, and the local settings show Django's debug pages.
@@ -76,7 +82,8 @@ One image runs every process; only the command differs.
 - Mount a volume at `/data` for beat, so its schedule survives a restart. A new named volume takes
   its owner from the image; a host directory needs `chown 10001:10001` first.
 - `/api/health` checks the database and the broker and answers 200 or 503, for a health check or
-  an uptime monitor (`/api/` touches neither). A probe from inside the container needs `localhost`
+  an uptime monitor (`/api/` touches neither). Against a database that doesn't answer, it takes up
+  to `DJANGO_DB_CONNECT_TIMEOUT` to fail. A probe from inside the container needs `localhost`
   in `DJANGO_ALLOWED_HOSTS`; the image has no `curl`, so use Python, with a timeout:
   `python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=10)"`.
 - Docker gives a stopping container 10 s before killing it. Allow web more than gunicorn's 120 s

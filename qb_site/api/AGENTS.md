@@ -35,10 +35,10 @@ require a `?repo=owner/name` query parameter.
 - 200 `{"status": "ok", "checks": {"database": "ok", "broker": "ok"}}` when both pass; otherwise 503
   with `"status": "error"` and each failed check as `"error"`. `Cache-Control: no-store`.
 - Each check gives up after about 2 s (`CHECK_TIMEOUT_SECONDS`): a statement timeout on the query,
-  and connect/socket timeouts on the Redis client. Opening the database connection is not covered.
-  Django opens one per request, and with no `connect_timeout` in the database settings psycopg
-  waits up to 130 s for a server that accepts the connection but never answers, unless the web
-  server's worker timeout ends the request first. A refused connection fails at once.
+  and connect/socket timeouts on the Redis client. Opening the database connection is not covered
+  by that: Django opens one per request, bounded by `DJANGO_DB_CONNECT_TIMEOUT` (libpq's
+  `connect_timeout`, default 10 s, per address the host resolves to). Without it psycopg would wait
+  130 s for a server that accepts the connection but never answers. A refused connection fails at once.
 - The response never carries exception text, hostnames or connection details: each failed check is
   logged at WARNING by `api.views.health`, as one line with the exception's type and message (no
   traceback, since a monitor probes an outage repeatedly).
