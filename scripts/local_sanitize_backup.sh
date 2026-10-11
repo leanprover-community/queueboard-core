@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local helper: restore a Heroku PGBackups dump into a temporary Postgres
+# Local helper: restore a pg_dump custom-format dump (a Heroku PGBackups backup, or
+# a dump from scripts/download_s3_dump.py) into a temporary Postgres
 # container, sanitize it, export Parquet/CSV datasets, and emit a sanitized dump.
 #
 # Requires:
@@ -11,13 +12,14 @@ set -euo pipefail
 #
 # Usage:
 #   scripts/local_sanitize_backup.sh -f /path/to/backup.dump \
-#     [-o artifacts/local-sanitize] [-p 55432] [-t postgres:17-alpine]
+#     [-o artifacts/local-sanitize] [-p 55432] [-t postgres:18-alpine]
 
 PORT=55432
 OUTDIR="artifacts/local-sanitize"
 DUMP_PATH=""
 CONTAINER_STARTED=0
-PG_IMAGE="postgres:17-alpine"
+# pg_restore reads dumps from its own major version and older ones.
+PG_IMAGE="postgres:18-alpine"
 
 usage() {
   echo "Usage: $0 -f /path/to/backup.dump [-o output_dir] [-p host_port] [-t postgres_image]" >&2
@@ -84,7 +86,7 @@ trap cleanup EXIT
 echo "Starting Postgres container ${CONTAINER} on port ${PORT} with image ${PG_IMAGE}..."
 if ! docker run --rm -d --name "$CONTAINER" -e POSTGRES_PASSWORD=postgres -p "${PORT}:5432" "$PG_IMAGE" >/dev/null; then
   echo "Failed to start Postgres container. Is port ${PORT} free and docker available?" >&2
-  echo "If you see pg_restore format errors, try a matching Postgres image via -t (e.g., postgres:17-alpine)." >&2
+  echo "If you see pg_restore format errors, try a Postgres image at least as new as the dump via -t (e.g., postgres:18-alpine)." >&2
   exit 1
 fi
 CONTAINER_STARTED=1

@@ -28,3 +28,20 @@
 - Use `TRUNCATE ... RESTART IDENTITY CASCADE` to clear tables while keeping schema intact; ensure no remaining FK dependencies on dropped metadata tables.
 - Emit a manifest/log of truncate/scrub actions and row counts before/after for auditability.
 - Export a sanitized pg dump plus optional CSV/Parquet datasets derived from the cleaned database.
+- Where the source dump comes from is the repository variable `BACKUP_SOURCE`, read by
+  `upload_backup.yaml`. Unset (or `heroku`) means Heroku PGBackups, as originally designed. `s3` means
+  the newest dump in an S3-compatible bucket, keyed `<prefix>-YYYYMMDDTHHMMSSZ.dump`, whose
+  `pg_restore --list` shows TABLE DATA entries: a dump of a database with no tables yet is skipped
+  (`scripts/download_s3_dump.py`).
+  - The bucket's connection comes from the secrets `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`,
+    `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY`, with read-only credentials. Optional
+    variables: `BACKUP_S3_KEY_PREFIX` (default `queueboard`) and `BACKUP_S3_REGION` (default
+    `us-east-1`).
+  - A manual run takes `backup_id` for the Heroku source and `dump_key` for the S3 one, and refuses
+    the other source's input.
+  - Switching sources means setting the secrets, then the variable; unsetting the variable switches
+    back. `scripts/test_download_s3_dump.sh` (CI job `backup-download`) tests the S3 path against a
+    local S3 server.
+- The workflow restores with Postgres 18 (service and client). pg_restore reads its own major version
+  and older ones, so it takes both Postgres 17 and 18 dumps. The sanitized dump it publishes now comes
+  from pg_dump 18 and needs pg_restore 18 or newer.
