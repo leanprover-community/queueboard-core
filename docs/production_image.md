@@ -3,6 +3,11 @@
 `Dockerfile.production` builds an image for running the app in containers. Local development
 still uses `Dockerfile` and `docker-compose.yml`, which this image does not touch.
 
+The `Production image` workflow builds it on every pull request. Each push to `master` also
+publishes it as `ghcr.io/leanprover-community/queueboard-core`, tagged `sha-<short commit hash>`
+and `latest`; the run's summary gives the digest, so a deployment can pin the exact build
+(`ghcr.io/leanprover-community/queueboard-core@sha256:…`) rather than a tag that moves.
+
 To build it locally:
 
 ```bash
