@@ -50,8 +50,8 @@ which it treats as fatal. It dies before doing any credential work, and BuildKit
 generic "error getting credentials".
 
 The helper runs only because `~/.docker/config.json` sets `"credsStore": "desktop"`. Every image
-this stack pulls is public — `python:3.12-slim`, `postgres:16-alpine`, `redis:7-alpine` — so
-nothing here needs a credential helper.
+this stack pulls is public — `python:3.12.14-slim-trixie`, `ghcr.io/astral-sh/uv`,
+`postgres:16-alpine`, `redis:7-alpine` — so nothing here needs a credential helper.
 
 **Read-only access to those paths does not help.** The failure is a write.
 
