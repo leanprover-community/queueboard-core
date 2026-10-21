@@ -25,7 +25,8 @@ LARGE_DUMP_BYTES=$((9 * 1024 * 1024))
 run="qb-s3-dump-test-$$"
 work="$(mktemp -d)"
 cleanup() {
-  docker rm -f "$run-s3" "$run-pg18" "$run-pg17" >/dev/null 2>&1 || true
+  # -v: with their anonymous volumes, such as each Postgres's data directory.
+  docker rm -f -v "$run-s3" "$run-pg18" "$run-pg17" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
