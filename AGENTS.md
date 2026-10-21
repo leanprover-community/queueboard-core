@@ -103,6 +103,8 @@ Notes
 
 ## Containers & Volumes
 - Code is bind-mounted read-only into containers (`.:/app:ro`) to avoid writes into the repo from inside Docker.
+- The dev `Dockerfile` installs the packages `uv.lock` pins into `/opt/venv` before it copies the code, so a code
+  change doesn't reinstall them. A dependency change in `pyproject.toml` needs `uv lock` before the image builds.
 - Runtime artifacts (Django `STATIC_ROOT`, `MEDIA_ROOT`, Celery beat schedule) write under `/data` backed by the `appdata` named volume.
 - Generate migrations on the host (e.g., `uv run python qb_site/manage.py makemigrations`) and commit them, rather than creating files from inside containers.
 - `Dockerfile.production` is the production image, separate from the dev `Dockerfile`/Compose setup: packages from
