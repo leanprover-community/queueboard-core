@@ -78,7 +78,9 @@ DB_URL="postgres://postgres:postgres@localhost:${PORT}/${DB_NAME}"
 cleanup() {
   if [[ $CONTAINER_STARTED -eq 1 ]]; then
     echo "Stopping container ${CONTAINER}..."
-    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    # -v: --rm deletes the data volume only when the container stops on its own, and removing
+    # it here would otherwise leave a copy of the restored database behind.
+    docker rm -f -v "$CONTAINER" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT

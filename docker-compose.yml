@@ -107,6 +107,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    # In memory. The image declares a volume at /data, so without a mount there each new
+    # container got a new anonymous volume, which `docker compose down` left behind. Redis holds
+    # only the broker's queue and the app's short-lived keys, which it can lose.
+    tmpfs:
+      - /data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
