@@ -56,7 +56,7 @@ def build_preferences_formset(
     """Build the formset over ``preferences`` (already authorized by the caller).
 
     ``data`` bound → a POST; ``None`` → a fresh render. ``user_timezone`` is what naive
-    ``away_until`` input is interpreted in (see ``zulip_bot.services.user_timezone``).
+    ``away_until`` input is interpreted in: the zone the page was shown in (see ``console.views.prefs``).
 
     ``recent_intake_by_repo`` (``repository_id -> new PRs in the rolling window``) is displayed
     beside the rate-limit field so a reviewer can pick a number against their own history rather

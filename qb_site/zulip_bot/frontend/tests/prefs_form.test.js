@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { mountLabelPicker, mountPrefsForm } from "../../../console/static/console/prefs_form.js";
+import { mountLabelPicker, mountPrefsForm, toDatetimeLocalValue } from "../../../console/static/console/prefs_form.js";
 
 describe("mountPrefsForm", () => {
   it("wires the clear-away buttons and leaves submit enabled", () => {
@@ -64,6 +64,68 @@ describe("mountPrefsForm", () => {
   it("is a no-op without the form container", () => {
     document.body.innerHTML = "<main></main>";
     expect(mountPrefsForm(document)()).toBeUndefined();
+  });
+});
+
+// Times in the browser's zone (design doc 022). The markup mirrors `prefs.html` and the `away_until`
+// widget from `ReviewerPreferenceForm`.
+describe("browser timezone", () => {
+  const renderPage = ({ zone, away, utc }) => {
+    document.body.innerHTML = `
+      <main id="prefs-root">
+        <p>Times are entered and shown in <strong class="js-timezone-name">${zone}</strong></p>
+        <form id="prefs-form">
+          <input type="hidden" id="prefs-timezone" name="timezone" value="${zone}" />
+          <input type="datetime-local" id="away" name="form-0-away_until" value="${away}" data-utc="${utc}" />
+          <button id="submit-button" type="submit">Save</button>
+        </form>
+      </main>
+    `;
+  };
+  const shown = () => ({
+    away: document.getElementById("away").value,
+    zone: document.getElementById("prefs-timezone").value,
+    label: document.querySelector(".js-timezone-name").textContent,
+  });
+
+  it("formats an instant on another zone's wall clock", () => {
+    const instant = new Date("2027-07-01T10:00:00+00:00");
+    expect(toDatetimeLocalValue(instant, "Europe/Berlin")).toBe("2027-07-01T12:00");
+    expect(toDatetimeLocalValue(instant, "America/New_York")).toBe("2027-07-01T06:00");
+    expect(toDatetimeLocalValue(new Date("2027-01-01T23:30:00+00:00"), "Europe/Berlin")).toBe("2027-01-02T00:30");
+  });
+
+  it("rewrites the server's times into the browser's zone and posts that zone back", () => {
+    renderPage({ zone: "UTC", away: "2027-07-01T10:00", utc: "2027-07-01T10:00:00+00:00" });
+    const unmount = mountPrefsForm(document, "Europe/Berlin");
+
+    expect(shown()).toEqual({ away: "2027-07-01T12:00", zone: "Europe/Berlin", label: "Europe/Berlin" });
+    // The rewrite is not an unsaved change.
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    unmount();
+  });
+
+  it("keeps what was typed on a page already in the browser's zone", () => {
+    // A re-render after a failed save shows the posted value, in the zone it was posted in.
+    renderPage({ zone: "Europe/Berlin", away: "2027-07-02T08:00", utc: "2027-07-01T10:00:00+00:00" });
+    const unmount = mountPrefsForm(document, "Europe/Berlin");
+
+    expect(shown()).toEqual({ away: "2027-07-02T08:00", zone: "Europe/Berlin", label: "Europe/Berlin" });
+    unmount();
+  });
+
+  it("stays in the server's zone when the browser gives none or a time cannot be read", () => {
+    renderPage({ zone: "UTC", away: "2027-07-01T10:00", utc: "2027-07-01T10:00:00+00:00" });
+    let unmount = mountPrefsForm(document, "");
+    expect(shown()).toEqual({ away: "2027-07-01T10:00", zone: "UTC", label: "UTC" });
+    unmount();
+
+    renderPage({ zone: "UTC", away: "2027-07-01T10:00", utc: "not a time" });
+    unmount = mountPrefsForm(document, "Europe/Berlin");
+    expect(shown()).toEqual({ away: "2027-07-01T10:00", zone: "UTC", label: "UTC" });
+    unmount();
   });
 });
 

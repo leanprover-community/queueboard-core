@@ -19,7 +19,13 @@ The form's own stylesheet must load after console.css so its form-control rules 
 
   {% if saved %}
     <div class="status status-ok" role="status">
-      Preferences saved{% if saved_at %} at {{ saved_at|date:"Y-m-d H:i" }} ({{ user_timezone_name }}){% endif %}.
+      Preferences saved{% if saved_at %} at <time datetime="{{ saved_at.isoformat }}">{{ saved_at|date:"Y-m-d H:i" }} {{ timezone_name }}</time>{% endif %}.
+    </div>
+  {% endif %}
+  {% if timezone_unknown %}
+    <div class="status status-error" role="alert">
+      Nothing was saved: your browser gave its timezone as “{{ timezone_name }}”, which this server does not
+      recognise, so the times on this page could not be read.
     </div>
   {% endif %}
 
@@ -32,14 +38,20 @@ The form's own stylesheet must load after console.css so its form-control rules 
     `prefs-root` and `prefs-form` are the ids console/prefs_form.js mounts on. No countdown: the
     session bounds this page, not a link TTL. Note Django only strips {# #} comments on a single line
     — anything multi-line must use {% comment %} or it renders as page text.
+
+    Times render in `timezone_name`, which the hidden `prefs-timezone` field posts back. prefs_form.js
+    rewrites the times into the browser's zone and sets that field (and each `js-timezone-name`) to
+    it, so the server always reads a time in the zone it was shown in. `autocomplete="off"` keeps a
+    reload from restoring the browser's zone over a page rendered in the server's.
     {% endcomment %}
     <div id="prefs-root">
       {# `.meta` is hero-only (pale text for the dark gradient); this strip is the light-background idiom. #}
       <section class="form-context">
-        <span>Times are entered and shown in <strong>{{ user_timezone_name }}</strong></span>
+        <span>Times are entered and shown in <strong class="js-timezone-name">{{ timezone_name }}</strong></span>
       </section>
       <form method="post" id="prefs-form">
         {% csrf_token %}
+        <input type="hidden" name="timezone" id="prefs-timezone" value="{{ timezone_name }}" autocomplete="off">
         {% include "shared/_reviewer_prefs_fields.html" %}
 
         <div class="btn-row">

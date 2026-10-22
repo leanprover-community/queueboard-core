@@ -1,7 +1,7 @@
 // Reviewer preferences form behavior for /console/preferences/ (design doc 022).
 //
-// Progressive enhancement only: an unsaved-changes guard, the per-row "clear away time" buttons and
-// the excluded-labels picker. There is deliberately no countdown — the console session bounds this
+// Progressive enhancement only: showing times in the browser's zone, an unsaved-changes guard, the
+// per-row "clear away time" buttons and the excluded-labels picker. There is deliberately no countdown — the console session bounds this
 // page, not a link TTL — which is why the expiry helpers stayed behind in
 // `zulip_bot/static/zulip_bot/expiry.js` with the close-pr / label-pr token pages.
 
@@ -10,6 +10,64 @@ function serializeForm(form) {
 }
 
 const fold = (name) => name.toLowerCase();
+
+// The browser's IANA zone, or "" when it will not say.
+function browserTimeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch {
+    return "";
+  }
+}
+
+// `date` as a `datetime-local` value ("YYYY-MM-DDTHH:MM") on the wall clock of `timeZone`.
+export function toDatetimeLocalValue(date, timeZone) {
+  const format = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23", // midnight is 00, never 24
+  });
+  const parts = {};
+  for (const { type, value } of format.formatToParts(date)) {
+    parts[type] = value;
+  }
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+// The page's times are in the zone its `timezone` field names: the server's default, as rendered.
+// Rewrite each `away_until` from the stored instant in its `data-utc` into the browser's zone, and
+// post that zone back, so the server reads the times in the zone they were shown in (design doc
+// 022). A page already in the browser's zone (a re-render after a failed save) keeps what was typed.
+// All or nothing: if any time cannot be converted, the page stays in the server's zone, which still
+// agrees with every time on it.
+export function localizeTimes(root = document, browserZone = browserTimeZone()) {
+  const field = root.getElementById("prefs-timezone");
+  if (!(field instanceof HTMLInputElement) || !browserZone) {
+    return;
+  }
+  if (field.value !== browserZone) {
+    let rewrites;
+    try {
+      rewrites = [...root.querySelectorAll("input[data-utc]")].map((input) => [
+        input,
+        toDatetimeLocalValue(new Date(input.dataset.utc), browserZone),
+      ]);
+    } catch {
+      return;
+    }
+    for (const [input, value] of rewrites) {
+      input.value = value;
+    }
+    field.value = browserZone;
+  }
+  for (const name of root.querySelectorAll(".js-timezone-name")) {
+    name.textContent = browserZone;
+  }
+}
 
 // Excluded-labels picker (design doc 057): a filter box over a short scrolling list of checkboxes,
 // one per repository label (the JSON block the template renders), plus a removable chip per chosen
@@ -215,7 +273,7 @@ export function mountLabelPicker(container, root = document) {
   };
 }
 
-export function mountPrefsForm(root = document) {
+export function mountPrefsForm(root = document, browserZone = browserTimeZone()) {
   const container = root.getElementById("prefs-root");
   if (!container) {
     return () => undefined;
@@ -226,7 +284,9 @@ export function mountPrefsForm(root = document) {
     return () => undefined;
   }
 
-  // Before the snapshot below. Mounting never rewrites the textarea, so the page starts clean.
+  // Both before the snapshot below, so neither counts as an unsaved change. Mounting never rewrites
+  // the textarea, so the page starts clean.
+  localizeTimes(root, browserZone);
   const unmountPickers = [...root.querySelectorAll(".js-label-picker")].map((picker) => mountLabelPicker(picker, root));
 
   let dirty = false;

@@ -44,14 +44,12 @@ Admission to being a reviewer is unchanged; only authentication moved.
 | Editable field set + validation | `core.forms.ReviewerPreferenceForm` |
 | Formset assembly, ownership scoping, label catalog | `core.services.reviewer_prefs` |
 | Field markup | `templates/shared/_reviewer_prefs_fields.html` |
-| Timezone for local times | `zulip_bot.services.user_timezone` |
+| Timezone for local times | The browser, via `prefs_form.js` and the posted `timezone` field |
 | The page itself | `console.views.prefs` + `templates/console/prefs.html` |
 
 `core.services.reviewer_prefs` reads `syncer.models.LabelDef` at module scope, matching the existing
-`core/admin.py` precedent. Timezone resolution lives in `zulip_bot` because its authoritative source
-is Zulip's own user record and `core/services` otherwise carries no app dependencies; console access
-stays independent of Zulip *reachability* — an unlinked or unreachable Zulip falls through to
-`core.User.timezone`, then the Django default.
+`core/admin.py` precedent. The page needs nothing from Zulip: times are shown and read in the
+browser's zone (see "Times are in the browser's zone" below).
 
 ### Invariants
 
@@ -99,10 +97,30 @@ Nothing about the page expires. The Django session bounds an editing window inst
 `SESSION_SAVE_EVERY_REQUEST = True` slides the two-week `SESSION_COOKIE_AGE` on activity so a long
 edit cannot POST into a lapsed cookie; the `beforeunload` dirty guard is the backstop.
 
+### Times are in the browser's zone
+
+- The server renders every time in its default zone (`TIME_ZONE`), and the form posts back, in a
+  hidden `timezone` field, the zone its times are in. `prefs_form.js` rewrites each `away_until` from
+  the stored instant in its `data-utc` into the browser's zone
+  (`Intl.DateTimeFormat().resolvedOptions().timeZone`), and that field with it. So the server reads a
+  naive `away_until` in exactly the zone it was shown in, whichever that was.
+- The "saved at" time is a `<time datetime>`, localized by `console/base.html` like every other
+  console timestamp. Zulip messages already show times in each reader's zone (`<time:…>` tags), so
+  no reviewer-facing surface picks a zone on the server.
+- A posted zone this server cannot load saves nothing, with a banner saying why, rather than reading
+  the times in some other zone.
+- Without JS the page stays in the server's zone and names it.
+- This replaced a server-side resolver, `zulip_bot.services.user_timezone` (Zulip's zone →
+  `core.User.timezone` → the default). It cost a Zulip API call per render and fell back to UTC for
+  anyone without a Zulip zone. It also rendered the page outside the zone it validated in, so times
+  showed in UTC under the reviewer's zone name, and every save moved `away_until` by that zone's UTC
+  offset (#219).
+
 ### Front-end assets
 
 `console/static/console/prefs_form.{css,js}` are console-owned. The JS is progressive enhancement
-only — an unsaved-changes guard and the per-row "clear away time" buttons — with **no countdown**,
+only — showing times in the browser's zone, an unsaved-changes guard and the per-row "clear away
+time" buttons — with **no countdown**,
 which is what let the expiry helpers stay behind in `zulip_bot/static/zulip_bot/expiry.js` for the
 close-pr / label-pr token pages that still need them. (Those pages import them as a *sibling* module,
 and a relative ES import must resolve both as a served path in the browser and an on-disk path under
@@ -120,8 +138,8 @@ and cover both apps' modules; CI runs them (`.github/workflows/ci.yml`).
   reviewers". Intended (invariant 2), but user-visible.
 - Editing scope widened from a token snapshot to all current rows, which is why ownership filtering
   must be applied on POST as well as GET.
-- `core.User.timezone` is still only ever set by hand in the Django admin, so in practice the
-  timezone comes from Zulip's user record per render, or the project default. See Follow-Ups.
+- `core.User.timezone` is read by nothing since the browser supplies the zone; it was only ever set
+  by hand in the Django admin. See Follow-Ups.
 
 ## Operational Notes
 
@@ -136,20 +154,20 @@ and cover both apps' modules; CI runs them (`.github/workflows/ci.yml`).
   `templates/zulip_bot/prefs_form.html`, `templates/zulip_bot/prefs_invalid.html`, and the token test
   module (its form-behavior coverage moved to `console/tests/test_prefs_form_fields.py`, its
   field-accounting guard to `core/tests/test_reviewer_preference_form.py`, and its timezone-chain
-  coverage to `zulip_bot/tests/test_user_timezone.py`).
+  coverage to `zulip_bot/tests/test_user_timezone.py`, since removed with that chain).
 - **Pre-flight for the retirement:** every `ReviewerPreference` row's user must have a usable
   `github_login` — under GitHub OAuth that, not `zulip_user_id`, is what would lock someone out.
   Registration always sets it (it goes through GitHub OAuth), as does `import_reviewer_topics`.
 - **Tests.** `console/tests/test_prefs.py` (auth, admission gate, no-row-creation, cross-reviewer POST,
-  timezone), `console/tests/test_prefs_form_fields.py` (fields, validation, label catalog),
-  `zulip_bot/tests/test_user_timezone.py`, `core/tests/test_reviewer_preference_form.py`, and the
-  vitest specs above.
+  posted-timezone handling), `console/tests/test_prefs_form_fields.py` (fields, validation, label
+  catalog), `core/tests/test_reviewer_preference_form.py`, and the vitest specs above (which cover
+  the browser's half of the timezone round trip).
 
 ## Follow-Ups
 
-- **Persist a browser-reported timezone.** `core.User.timezone` is admin-only today; storing
-  `Intl.DateTimeFormat().resolvedOptions().timeZone` on first visit would make the fallback real and
-  let us drop the per-render Zulip API round-trip.
+- **Drop `core.User.timezone`.** Nothing reads it now that the page uses the browser's zone (which
+  closed the earlier follow-up, "persist a browser-reported timezone"). Removing the column needs a
+  migration and a `scripts/backup_policy.py` check.
 - Optional confirmation DM after a successful preferences change (stage C3 of the original plan).
 - Structured logging for saves/rejections (stage C1) — never token or form contents.
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import secrets
 from typing import Iterable, Sequence
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.db import transaction
@@ -71,12 +71,6 @@ from core.services.signed_payloads import SignedPayloadError
 from core.services.reviewer_prefs import build_preferences_formset, preferences_for_user
 from core.services.site_urls import build_site_url
 from syncer.models import PRLabel, PullRequest
-
-# The reviewer's timezone comes from Zulip's own user record, so the resolver lives in `zulip_bot`
-# (see `zulip_bot.services.user_timezone`). Console access itself stays independent of Zulip
-# reachability — an unlinked or unreachable Zulip only falls through to `core.User.timezone`, then the
-# project default.
-from zulip_bot.services.user_timezone import resolve_user_timezone_name
 
 log = logging.getLogger(__name__)
 
@@ -406,6 +400,19 @@ def _recent_intake_by_repo(preferences: Sequence[ReviewerPreference]) -> dict[in
     return intake
 
 
+def _zone_or_none(name: str) -> ZoneInfo | None:
+    """The zone named ``name``, or ``None`` when this server cannot load it.
+
+    ``name`` is posted by the browser, so every way ``ZoneInfo`` refuses a key counts as unknown: no
+    such zone, a malformed key (``ValueError``), or one that trips over the filesystem, such as the
+    directory ``Europe`` or an over-long name (``OSError``).
+    """
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
 @require_http_methods(["GET", "POST"])
 def prefs(request: HttpRequest) -> HttpResponse:
     """Reviewer preferences at a stable, token-less URL (design doc 022).
@@ -423,38 +430,45 @@ def prefs(request: HttpRequest) -> HttpResponse:
         return redirect(_login_url(reverse("console:prefs")))
 
     preferences = preferences_for_user(reviewer)
-    user_timezone_name = resolve_user_timezone_name(user=reviewer)
-    user_timezone = ZoneInfo(user_timezone_name)
+    # The page's times are in the zone its form posts back as `timezone`: the server default as
+    # rendered, which prefs_form.js swaps for the browser's zone as it rewrites the times. Reading a
+    # POST in the zone it names stores the time the reviewer saw. A zone this server cannot load would
+    # misread every typed time, so then nothing is saved.
+    timezone_name = timezone.get_default_timezone_name()
+    if request.method == "POST":
+        timezone_name = str(request.POST.get("timezone") or "").strip() or timezone_name
+    page_timezone = _zone_or_none(timezone_name)
+    active_timezone = page_timezone or timezone.get_default_timezone()
 
     saved = request.method == "GET" and request.GET.get("saved") == "1"
-    saved_at = None
     formset = None
-    with timezone.override(user_timezone):
+    # Render inside the override too, not just validate: the `date` filter and the `away_until` widget
+    # convert aware datetimes to the zone active *at render time*.
+    with timezone.override(active_timezone):
         if preferences:
             formset = build_preferences_formset(
                 preferences=preferences,
-                user_timezone=user_timezone,
+                user_timezone=active_timezone,
                 data=request.POST if request.method == "POST" else None,
                 recent_intake_by_repo=_recent_intake_by_repo(preferences),
             )
-            if request.method == "POST" and formset.is_valid():
+            if request.method == "POST" and page_timezone is not None and formset.is_valid():
                 formset.save()
                 return redirect(f"{reverse('console:prefs')}?saved=1")
-        if saved:
-            saved_at = timezone.localtime(timezone.now(), user_timezone)
 
-    response = render(
-        request,
-        "console/prefs.html",
-        {
-            "reviewer": reviewer,
-            "formset": formset,
-            "saved": saved,
-            "saved_at": saved_at,
-            "user_timezone_name": user_timezone_name,
-            "logout_url": reverse("console:logout"),
-        },
-    )
+        response = render(
+            request,
+            "console/prefs.html",
+            {
+                "reviewer": reviewer,
+                "formset": formset,
+                "saved": saved,
+                "saved_at": timezone.now().replace(microsecond=0) if saved else None,
+                "timezone_name": timezone_name,
+                "timezone_unknown": page_timezone is None,
+                "logout_url": reverse("console:logout"),
+            },
+        )
     response["Cache-Control"] = "no-store"
     return response
 

@@ -7,10 +7,11 @@ ownership scoping holds on POST as well as GET.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -234,27 +235,100 @@ class ConsolePrefsTests(TestCase):
         self.assertEqual(other_pref.maximum_capacity, 3)
         self.assertEqual(other_pref.free_form, "carol's note")
 
-    def test_away_until_is_interpreted_in_the_resolved_timezone(self) -> None:
+    # ---- timezone ------------------------------------------------------
+    # The page renders times in the server's default zone and posts back, as `timezone`, the zone its
+    # times are in; prefs_form.js swaps both to the browser's zone. These pin the server's half.
+
+    def test_away_until_is_read_in_the_posted_timezone(self) -> None:
+        self._login_session()
+        data, index_by_id = self._post_data()
+        i1 = index_by_id[self.pref1.id]
+        data["timezone"] = "Europe/Berlin"
+        data[f"form-{i1}-away_until"] = "2026-03-01T09:00"
+
+        resp = self.client.post(self.url, data=data)
+
+        self.assertEqual(resp.status_code, 302)
+        self.pref1.refresh_from_db()
+        self.assertEqual(self.pref1.away_until, datetime(2026, 3, 1, 8, 0, tzinfo=dt_timezone.utc))
+
+    @override_settings(TIME_ZONE="UTC")
+    def test_away_until_without_a_posted_timezone_is_read_in_the_server_zone(self) -> None:
+        # A page rendered before this field existed, or a hand-rolled POST.
         self._login_session()
         data, index_by_id = self._post_data()
         i1 = index_by_id[self.pref1.id]
         data[f"form-{i1}-away_until"] = "2026-03-01T09:00"
 
-        with patch("console.views.resolve_user_timezone_name", return_value="Europe/Berlin"):
-            resp = self.client.post(self.url, data=data)
+        resp = self.client.post(self.url, data=data)
 
         self.assertEqual(resp.status_code, 302)
         self.pref1.refresh_from_db()
-        self.assertEqual(
-            self.pref1.away_until.astimezone(dt_timezone.utc),
-            datetime(2026, 3, 1, 8, 0, tzinfo=dt_timezone.utc),
-        )
+        self.assertEqual(self.pref1.away_until, datetime(2026, 3, 1, 9, 0, tzinfo=dt_timezone.utc))
 
-    def test_timezone_resolution_uses_the_reviewers_zulip_link(self) -> None:
+    def test_an_unknown_posted_timezone_saves_nothing(self) -> None:
+        # Every typed time would be misread, so the save is refused, not read in some other zone. The
+        # names cover each way ZoneInfo refuses a key: unknown, malformed, a directory, too long.
         self._login_session()
-        with patch("console.views.resolve_user_timezone_name", return_value="UTC") as resolver:
+        for name in ("Mars/Olympus_Mons", "../etc/passwd", "Europe", "x" * 300):
+            with self.subTest(name=name[:20]):
+                data, index_by_id = self._post_data()
+                data["timezone"] = name
+                data[f"form-{index_by_id[self.pref1.id]}-maximum_capacity"] = "3"
+
+                resp = self.client.post(self.url, data=data)
+
+                self.assertContains(resp, "Nothing was saved", status_code=200)
+                self.pref1.refresh_from_db()
+                self.assertEqual(self.pref1.maximum_capacity, 10)
+
+    @override_settings(TIME_ZONE="UTC")
+    def test_away_until_round_trips_as_rendered_and_as_the_browser_rewrites_it(self) -> None:
+        # Posting the time back unchanged must leave it where it was, whichever zone it was shown in.
+        stored = datetime(2027, 7, 1, 10, 0, tzinfo=dt_timezone.utc)
+        ReviewerPreference.objects.filter(pk=self.pref1.pk).update(away_until=stored)
+        self._login_session()
+        data, index_by_id = self._post_data()
+        i1 = index_by_id[self.pref1.id]
+
+        page = self.client.get(self.url)
+        self.assertContains(page, 'name="timezone" id="prefs-timezone" value="UTC"')
+        self.assertContains(page, 'data-utc="2027-07-01T10:00:00+00:00"')
+        match = re.search(rf'name="form-{i1}-away_until" value="([^"]*)"', page.content.decode())
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1), "2027-07-01T10:00")
+
+        for zone, shown in (("UTC", match.group(1)), ("Europe/Berlin", "2027-07-01T12:00")):
+            with self.subTest(zone=zone):
+                data["timezone"] = zone
+                data[f"form-{i1}-away_until"] = shown
+                # A change elsewhere in the row, so the row is saved and `away_until` rewritten.
+                data[f"form-{i1}-free_form"] = f"shown in {zone}"
+
+                resp = self.client.post(self.url, data=data)
+
+                self.assertEqual(resp.status_code, 302)
+                self.pref1.refresh_from_db()
+                self.assertEqual(self.pref1.away_until, stored)
+
+    @override_settings(TIME_ZONE="UTC")
+    def test_saved_time_is_a_time_element_for_the_browser_to_localize(self) -> None:
+        self._login_session()
+        # In the past on purpose: the session was issued against the real clock, so a frozen "now"
+        # after its expiry would bounce the request to sign-in.
+        frozen_now = datetime(2026, 7, 1, 10, 0, 30, 123456, tzinfo=dt_timezone.utc)
+
+        with patch("django.utils.timezone.now", return_value=frozen_now):
+            resp = self.client.get(f"{self.url}?saved=1")
+
+        self.assertContains(resp, 'Preferences saved at <time datetime="2026-07-01T10:00:30+00:00">2026-07-01 10:00 UTC</time>.')
+
+    def test_the_page_makes_no_zulip_call(self) -> None:
+        # The zone comes from the browser; the page used to ask Zulip for it on every render.
+        self._login_session()
+        with patch("zulip_bot.services.zulip_client.ZulipClient.get_user_by_id") as get_user:
             self.client.get(self.url)
-        resolver.assert_called_once_with(user=self.reviewer)
+        get_user.assert_not_called()
 
     def test_home_links_to_the_prefs_page(self) -> None:
         self._login_session()
