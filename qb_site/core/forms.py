@@ -247,11 +247,16 @@ class ReviewerPreferenceForm(forms.ModelForm):
         # The picker's list: the whole catalog, sorted the way the topic checkboxes are.
         self.excluded_label_options = sorted(self._label_catalog_by_casefold.values(), key=str.casefold)
 
-        tz_label = getattr(self._user_timezone, "key", str(self._user_timezone))
         community_team_page_warning = mark_safe(
             "<b>Publicly visible on <a href='https://leanprover-community.github.io/teams/reviewers.html'>the community team page</a>.</b>"
         )
-        self.fields["away_until"].help_text = f"Temporary break end time. Leave blank if active. Interpreted in {tz_label}."
+        self.fields[
+            "away_until"
+        ].help_text = "Temporary break end time, in the timezone named above the form. Leave blank if active."
+        # The stored instant, from which the console's prefs_form.js shows this time in the browser's zone
+        # (design doc 022). Per form: Django deep-copies each field's widget for every form instance.
+        if self.instance.away_until is not None:
+            self.fields["away_until"].widget.attrs["data-utc"] = self.instance.away_until.isoformat(timespec="seconds")
         self.fields["auto_assign"].help_text = "Turn this off to opt out of automatic reviewer assignment for this repository."
         # The two capacity gates sit side by side in the grid and are easy to confuse, so each says
         # which kind of limit it is: this one bounds the PRs held at once (stock), the next bounds

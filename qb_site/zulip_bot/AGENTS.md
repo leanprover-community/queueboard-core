@@ -98,16 +98,11 @@ post a reply there. `console` is the deliberate exception, an in-place reply by 
     differ per action, and they stay per-action so a `label-pr` token can never validate as a
     `close-pr` one. Commands read the DM's quoted expiry from its `ttl_seconds()` rather than
     re-reading the setting, so the promise and the real `exp` cannot drift),
-  - `user_timezone.py` (the timezone a reviewer's local times are interpreted in: Zulip's reported
-    zone → `core.User.timezone` → Django default). Shared with the console prefs page so a naive
-    `away_until` means the same thing on both; it lives here because the authoritative source is
-    Zulip's user record, and `core` carries no app dependencies.
 - **This app does not own the preferences form.** It lives in the reviewer console
   (`/console/preferences/`, design doc 022): `core.forms.ReviewerPreferenceForm` owns the editable
   fields and validation, `core.services.reviewer_prefs` the formset assembly, and
   `templates/shared/_reviewer_prefs_fields.html` the markup. The expiring `prefs` token page here was
-  retired; this app's remaining role is the `prefs` command (which DMs the console URL) and the
-  timezone resolver above.
+  retired; this app's remaining role is the `prefs` command (which DMs the console URL).
 - `views.register_github_callback` **opens the console session** (`console.session.set_reviewer`) when
   the new reviewer has rows to edit, so the "Edit Preferences Now" link lands signed in instead of
   bouncing through OAuth again. That promotion is strictly stronger than a console sign-in:

@@ -90,17 +90,24 @@
 - Ownership scoping lives in the shared builder: the queryset is narrowed to the supplied rows *and*
   their owner on GET and POST alike, so a posted `form-<n>-id` naming someone else's row fails
   validation. Never widen that queryset at a call site.
-- Timezone comes from `zulip_bot.services.user_timezone.resolve_user_timezone_name` (Zulip's zone →
-  `core.User.timezone` → Django default) and is what naive `away_until` input means. The page renders
-  no countdown: the session bounds it, and `SESSION_SAVE_EVERY_REQUEST` slides that window.
+- Times are in the browser's zone (design doc 022). The server renders them in its default zone and
+  the form posts back, in the hidden `timezone` field, the zone they are in; `prefs_form.js` rewrites
+  each `away_until` (from the stored instant in its `data-utc`) and that field into the browser's
+  zone. A POST's naive `away_until` is read in the posted zone, so it is always the zone it was shown
+  in. A posted zone the server cannot load (`_zone_or_none`) saves nothing rather than misreading the
+  times. Rendering stays inside `timezone.override`: the `date` filter and the widget convert at
+  render time. There is no Zulip lookup.
+- The page renders no countdown: the session bounds it, and `SESSION_SAVE_EVERY_REQUEST` slides that
+  window.
 - Styling/JS: `templates/console/prefs.html` extends `console/base.html` and uses its `extra_css` /
   `extra_js` blocks to load `console/prefs_form.css|js`, both console-owned. The JS is progressive
-  enhancement only (unsaved-changes guard, "clear away time" buttons, and the excluded-labels picker:
-  a filterable checkbox list over the label catalog the template emits with `json_script`, writing
-  one label per line into the hidden textarea that is still the submitted field; design doc 057)
-  with **no countdown** — the session bounds this page, not a link TTL — which is why the expiry
-  helpers stayed behind in `zulip_bot/static/zulip_bot/expiry.js` for the close-pr / label-pr token
-  pages. Its vitest spec lives with those, in `qb_site/zulip_bot/frontend/tests/`.
+  enhancement only (times in the browser's zone, unsaved-changes guard, "clear away time" buttons,
+  and the excluded-labels picker: a filterable checkbox list over the label catalog the template
+  emits with `json_script`, writing one label per line into the hidden textarea that is still the
+  submitted field; design doc 057) with **no countdown** — the session bounds this page, not a link
+  TTL — which is why the expiry helpers stayed behind in `zulip_bot/static/zulip_bot/expiry.js` for
+  the close-pr / label-pr token pages. Its vitest spec lives with those, in
+  `qb_site/zulip_bot/frontend/tests/`.
 
 ## Accept / decline / assign-anyway / unassign (the load-bearing handlers)
 - All `POST`. Accept and decline re-validate live state via the single
@@ -169,9 +176,8 @@
 - This app is step `[12/13]` of `scripts/repo_check_compose.sh`. It was missing from that script until
   the prefs work added it, so console tests had never run in CI — if you add an app, add its step.
 - View tests mock `console.views.GitHubOAuthClient`, `console.views.assign_reviewer_and_record`,
-  `console.views.GitHubAssignmentClient` (unassign), `console.views._enqueue_pr_sync`, and
-  `console.views.resolve_user_timezone_name` (prefs), and seed the session directly; no real GitHub
-  or Zulip calls. `tests/test_prefs.py` pins the prefs invariants (no row creation, admission gate at
-  sign-in *and* per view, cross-reviewer POST rejection, timezone interpretation) and
-  `tests/test_prefs_form_fields.py` covers fields, validation and the label catalog. Canonical full run
-  stays `bash scripts/repo_check_compose.sh`.
+  `console.views.GitHubAssignmentClient` (unassign) and `console.views._enqueue_pr_sync`, and seed
+  the session directly; no real GitHub or Zulip calls. `tests/test_prefs.py` pins the prefs invariants
+  (no row creation, admission gate at sign-in *and* per view, cross-reviewer POST rejection, reading
+  times in the posted zone) and `tests/test_prefs_form_fields.py` covers fields, validation and the
+  label catalog. Canonical full run stays `bash scripts/repo_check_compose.sh`.
