@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local helper: restore a pg_dump custom-format dump (a Heroku PGBackups backup, or
-# a dump from scripts/download_s3_dump.py) into a temporary Postgres
+# Local helper: restore a pg_dump custom-format dump (such as one from
+# scripts/download_s3_dump.py) into a temporary Postgres
 # container, sanitize it, export Parquet/CSV datasets, and emit a sanitized dump.
 #
 # Requires:

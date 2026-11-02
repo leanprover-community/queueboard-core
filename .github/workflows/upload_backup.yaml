@@ -1,22 +1,16 @@
 name: Build sanitized analytics snapshot
 
-# Where the dump comes from is the repository variable BACKUP_SOURCE:
-# - unset or "heroku": the Heroku app's newest PGBackups backup (secrets HEROKU_API_KEY, HEROKU_APP_NAME);
-# - "s3": the newest dump holding table data in an S3-compatible bucket (scripts/download_s3_dump.py),
-#   keyed <prefix>-YYYYMMDDTHHMMSSZ.dump. Secrets BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET,
-#   BACKUP_S3_ACCESS_KEY_ID and BACKUP_S3_SECRET_ACCESS_KEY (read-only credentials suffice); optional
-#   variables BACKUP_S3_KEY_PREFIX (default queueboard) and BACKUP_S3_REGION (default us-east-1).
-# Either way the dump is a pg_dump custom-format archive from Postgres 18 or older.
+# The dump is the newest one holding table data in an S3-compatible bucket (scripts/download_s3_dump.py),
+# keyed <prefix>-YYYYMMDDTHHMMSSZ.dump. Secrets BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET,
+# BACKUP_S3_ACCESS_KEY_ID and BACKUP_S3_SECRET_ACCESS_KEY (read-only credentials suffice); optional
+# variables BACKUP_S3_KEY_PREFIX (default queueboard) and BACKUP_S3_REGION (default us-east-1).
+# The dump is a pg_dump custom-format archive from Postgres 18 or older.
 
 on:
   workflow_dispatch:  # manual trigger
     inputs:
-      backup_id:
-        description: "Heroku source: optional PGBackups ID (e.g., b123); defaults to latest"
-        required: false
-        type: string
       dump_key:
-        description: "S3 source: optional object key (e.g., queueboard-20260101T000000Z.dump); defaults to the newest holding table data"
+        description: "Optional object key (e.g., queueboard-20260101T000000Z.dump); defaults to the newest holding table data"
         required: false
         type: string
   schedule:
@@ -44,45 +38,26 @@ jobs:
     env:
       # Used by psql / export scripts
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/analytics_source
-      BACKUP_SOURCE: ${{ vars.BACKUP_SOURCE || 'heroku' }}
 
     steps:
-      - name: Check the backup source
+      - name: Check the bucket's secrets
         env:
-          BACKUP_ID: ${{ inputs.backup_id }}
-          DUMP_KEY: ${{ inputs.dump_key }}
           # Only tested for emptiness here, so a missing one fails the run at once.
           BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
           BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
           BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
         run: |
-          case "$BACKUP_SOURCE" in
-            heroku)
-              if [ -n "$DUMP_KEY" ]; then
-                echo "::error::dump_key applies to the s3 source only; this run's source is heroku"
-                exit 1
-              fi ;;
-            s3)
-              if [ -n "$BACKUP_ID" ]; then
-                echo "::error::backup_id applies to the heroku source only; for the s3 source, give dump_key"
-                exit 1
-              fi
-              missing=""
-              for name in BACKUP_S3_ENDPOINT BACKUP_S3_BUCKET BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY; do
-                if [ -z "${!name}" ]; then
-                  missing="$missing $name"
-                fi
-              done
-              if [ -n "$missing" ]; then
-                echo "::error::The s3 source needs these repository secrets:$missing"
-                exit 1
-              fi ;;
-            *)
-              echo "::error::The BACKUP_SOURCE variable must be unset, heroku or s3, not '$BACKUP_SOURCE'"
-              exit 1 ;;
-          esac
-          echo "Backup source: $BACKUP_SOURCE"
+          missing=""
+          for name in BACKUP_S3_ENDPOINT BACKUP_S3_BUCKET BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::The bucket needs these repository secrets:$missing"
+            exit 1
+          fi
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -109,26 +84,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r scripts/requirements-analytics.txt
 
-      - name: Install Heroku CLI
-        if: env.BACKUP_SOURCE == 'heroku'
-        run: |
-          curl https://cli-assets.heroku.com/install.sh | sh
-
-      # 1. Download the dump: Heroku's latest backup, or the bucket's newest dump holding table data
-      - name: Download Heroku PG backup
-        if: env.BACKUP_SOURCE == 'heroku'
-        env:
-          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
-          HEROKU_APP_NAME: ${{ secrets.HEROKU_APP_NAME }}
-          BACKUP_ID: ${{ inputs.backup_id }}
-        run: |
-          bash scripts/download_backup.sh \
-            ${BACKUP_ID:+-b "$BACKUP_ID"} \
-            -o backup.dump \
-            -i artifacts/backup-info.txt
-
+      # 1. Download the dump: the one dump_key names, or the bucket's newest holding table data
       - name: Download dump from the S3-compatible bucket
-        if: env.BACKUP_SOURCE == 's3'
         env:
           BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}

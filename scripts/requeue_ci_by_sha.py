@@ -29,13 +29,13 @@ already has the job is a harmless no-op):
 Modes
 -----
 - DRY RUN (default): print candidate count + sample, enqueue nothing.
-- ENQUEUE (REQUEUE_DRY_RUN=0): fan the SHAs out to worker dynos via ``.delay()``
+- ENQUEUE (REQUEUE_DRY_RUN=0): fan the SHAs out to the workers via ``.delay()``
   -- scalable and rate-safe. The per-result tally lands in each task's return
   value (django_celery_results / admin), not inline here.
 - SYNC (REQUEUE_SYNC=1): run the fetch *inline in this process* via ``.apply()``,
   aggregate the per-SHA result tally, and print a before/after check-name count.
   Best for the smoke test on a modest window, since GitHub calls run from this
-  one-off dyno rather than the workers.
+  one-off process rather than the workers.
 
 Two diagnostics are produced when enabled:
 - A per-SHA result tally (ok / noop / filtered / empty / not_found). A high
@@ -44,22 +44,22 @@ Two diagnostics are produced when enabled:
 - A before/after count of ``CommitCheckRun`` rows whose name matches
   ``REQUEUE_CHECK_NAME`` -- the definitive proof the new job landed.
 
-Usage (Heroku)
---------------
+Usage
+-----
+Run it where the app's settings and database are, such as a one-off container
+of the app's image:
+
   # Dry run -- just the counts:
-  heroku run -a YOUR_APP -- bash -c \
-    'REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=1 \
-     python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py'
+  REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=1 \
+    python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py
 
   # Smoke test inline (prints tally + before/after), good for a 1-2 day window:
-  heroku run -a YOUR_APP -- bash -c \
-    'REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=0 REQUEUE_SYNC=1 \
-     python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py'
+  REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=0 REQUEUE_SYNC=1 \
+    python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py
 
   # Distribute across workers (large window):
-  heroku run -a YOUR_APP -- bash -c \
-    'REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=0 \
-     python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py'
+  REQUEUE_CHECK_NAME=your-new-job REQUEUE_DRY_RUN=0 \
+    python qb_site/manage.py shell < scripts/requeue_ci_by_sha.py
 
 Environment knobs
 -----------------
@@ -218,7 +218,7 @@ elif SYNC:
     if deferred_batches:
         print(
             f"WARNING: {deferred_batches} batch(es) hit the GitHub rate budget and deferred their remaining "
-            "SHAs to worker dynos (they will continue at resetAt). Re-run to confirm completion."
+            "SHAs to the workers (they will continue at resetAt). Re-run to confirm completion."
         )
     after_count = check_name_count()
     if before_count is not None and after_count is not None:

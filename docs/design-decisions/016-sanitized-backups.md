@@ -1,7 +1,7 @@
 # Sanitized backups for public artifacts
 
 ## Context
-- We want a GitHub Action that downloads a Heroku PGBackups dump, sanitizes it, and publishes artifacts for analysis.
+- We want a GitHub Action that downloads a production Postgres dump, sanitizes it, and publishes artifacts for analysis.
 - Public data (cloneable repo content or GitHub API responses for the repo) can remain; private/operational tables must be removed.
 - Django admin/session/task history and reviewer preferences can contain non-public or stale information and should not ship.
 - Cached snapshots are likely stale and may embed reviewer info; they are not needed for downstream analysis.
@@ -28,22 +28,21 @@
 - Use `TRUNCATE ... RESTART IDENTITY CASCADE` to clear tables while keeping schema intact; ensure no remaining FK dependencies on dropped metadata tables.
 - Emit a manifest/log of truncate/scrub actions and row counts before/after for auditability.
 - Export a sanitized pg dump plus optional CSV/Parquet datasets derived from the cleaned database.
-- Where the source dump comes from is the repository variable `BACKUP_SOURCE`, read by
-  `upload_backup.yaml`. Unset (or `heroku`) means Heroku PGBackups, as originally designed. `s3` means
-  the newest dump in an S3-compatible bucket, keyed `<prefix>-YYYYMMDDTHHMMSSZ.dump`, whose
-  `pg_restore --list` shows TABLE DATA entries: a dump of a database with no tables yet is skipped
-  (`scripts/download_s3_dump.py`). An empty table still has such an entry, so a dump of a freshly
-  migrated database would be taken: the restore step fails when the restored database holds no pull
-  requests, whatever the source, so no empty snapshot is published.
+- The source dump is the newest dump in an S3-compatible bucket, keyed
+  `<prefix>-YYYYMMDDTHHMMSSZ.dump`, whose `pg_restore --list` shows TABLE DATA entries: a dump of a
+  database with no tables yet is skipped (`scripts/download_s3_dump.py`). An empty table still has
+  such an entry, so a dump of a freshly migrated database would be taken: the restore step fails when
+  the restored database holds no pull requests, so no empty snapshot is published. The first source,
+  Heroku PGBackups, has been removed, with the repository variable `BACKUP_SOURCE` that chose between
+  the two.
   - The bucket's connection comes from the secrets `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`,
     `BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY`, with read-only credentials. Optional
     variables: `BACKUP_S3_KEY_PREFIX` (default `queueboard`) and `BACKUP_S3_REGION` (default
     `us-east-1`).
-  - A manual run takes `backup_id` for the Heroku source and `dump_key` for the S3 one, and refuses
-    the other source's input. With the S3 source, a missing secret fails the run's first step.
-  - Switching sources means setting the secrets, then the variable; unsetting the variable switches
-    back. `scripts/test_download_s3_dump.sh` (CI job `backup-download`) tests the S3 path against a
-    local S3 server, with the runner's pg_restore as the workflow sets it up.
+  - A manual run may name the dump to use with `dump_key`. A missing secret fails the run's first
+    step.
+  - `scripts/test_download_s3_dump.sh` (CI job `backup-download`) tests the download against a local
+    S3 server, with the runner's pg_restore as the workflow sets it up.
 - The workflow restores with Postgres 18 (service and client). pg_restore reads its own major version
   and older ones, so it takes both Postgres 17 and 18 dumps. The sanitized dump it publishes is now
   made by pg_dump 18; restore it with pg_restore 18.

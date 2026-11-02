@@ -652,7 +652,7 @@ SITE_ANALYTICS_ALLOWED_SITES: list[str] = [
 ]
 SITE_ANALYTICS_RETENTION_DAYS = int(os.getenv("SITE_ANALYTICS_RETENTION_DAYS", 540))
 # Number of reverse proxies in front of this app. X-Forwarded-For is client-controlled,
-# so only this many entries from the right of the chain are trustworthy (Heroku's router
+# so only this many entries from the right of the chain are trustworthy (each proxy
 # appends one). Set to 0 when the app is exposed directly, to ignore the header entirely.
 SITE_ANALYTICS_TRUSTED_PROXY_COUNT = int(os.getenv("SITE_ANALYTICS_TRUSTED_PROXY_COUNT", 1))
 SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS = int(os.getenv("SITE_ANALYTICS_DAILY_AGGREGATE_PERIOD_SECONDS", 3600))

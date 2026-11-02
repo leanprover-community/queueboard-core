@@ -11,7 +11,7 @@ from django.http import HttpRequest
 from site_analytics.models.salt import SiteAnalyticsSalt
 
 # Simple in-process cache so we don't hit the DB on every request.
-# Each dyno/worker caches independently; a 60-second TTL means the new salt
+# Each process caches independently; a 60-second TTL means the new salt
 # is picked up within a minute of rotation, which is acceptable.
 _cached_salt: str = ""
 _cache_expires: float = 0.0
@@ -58,7 +58,7 @@ def get_client_ip(request: HttpRequest) -> str:
     """Return the client IP address, trusting only the proxy hops we run behind.
 
     X-Forwarded-For is client-controlled: a caller may send any value it likes, and
-    each proxy *appends* the address it received the connection from.  Heroku's router
+    each proxy *appends* the address it received the connection from.  A reverse proxy
     appends the connecting IP, so with one proxy hop the rightmost entry is the only
     one we can trust; the leftmost is whatever the client chose to claim.  Reading the
     leftmost entry would let a visitor mint a fresh ``visitor_month_hash`` per request

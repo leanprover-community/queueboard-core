@@ -436,7 +436,7 @@ class Command(BaseCommand):
         dead = named_missing_ids(graphql_error, node_ids)
         if dead:
             # One log line per batch, not per id: a dense run of deleted
-            # comments would otherwise bury everything else in the dyno log.
+            # comments would otherwise bury everything else in the log.
             logger.warning(
                 "backfill_actor_types.unresolvable_node_ids count=%s of=%s ids=%s",
                 len(dead),

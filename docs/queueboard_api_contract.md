@@ -173,7 +173,7 @@ Notes:
   - GraphQL bundle expanded to include files/assignees/reviews/comments/reviewThreads totals; comments/review bodies are not fetched.
   - Backfilling rows that have never been fully synced is handled by `syncer.backfill_repo_incomplete_prs[_active]` and the `sync_schema_version` upgrader wave (`syncer.upgrade_schema_versions[_active]`); the legacy engagement-specific backfill task has been retired.
   - Body dependency edges: Analyzer `PRDependency` rows parse ``- [ ] depends on: #<n>`` lines from PR bodies; rebuild tasks (`analyzer.rebuild_pr_dependencies`, `analyzer.rebuild_dependencies_sweep`) keep dependencies for existing PRs up to date.
-  - Dependency sweep runner: `analyzer.rebuild_dependencies_sweep` walks active repos in least-recently-checked order (tracked in `PRDependencyState`) so periodic runs eventually cover all PRs even after downtime; supports fan-out mode to limit memory on small dynos and uses a builder_version flag for safe re-parses.
+  - Dependency sweep runner: `analyzer.rebuild_dependencies_sweep` walks active repos in least-recently-checked order (tracked in `PRDependencyState`) so periodic runs eventually cover all PRs even after downtime; supports fan-out mode to limit memory on small workers and uses a builder_version flag for safe re-parses.
 - Source of truth for classification remains the existing Python logic (`classify_pr_state`, `ci_status`, `state_evolution`); port into Analyzer services and add parity tests using the fixtures in `test/`.
 - Expose the snapshot via DRF; add Celery to precompute and cache the artifacts (`QueueSnapshot` table or cached blob).
 - Add an `--source api` mode to `src/queueboard/dashboard_data.py` to fetch the snapshot and emit the same files for the renderer; run dual pipelines in CI to diff outputs before flipping the default.
@@ -221,7 +221,7 @@ Future cleanup
 - Snapshot currently includes `direct_dependencies` per PR, and the dependency graph endpoint reuses that payload. Once clients no longer rely on `direct_dependencies` inside `snapshot.json`, we can drop it from the snapshot contract and have the dependency graph read directly from `PRDependency` (filtered to open PRs in the requested repo) to decouple snapshot shape from dependency edges.
 
 ## Server-side snapshot computation (memory-aware)
-- Constraints: Heroku worker dyno with limited RAM; target ~2k open PRs without loading all rows into memory at once.
+- Constraints: a worker with limited RAM; target ~2k open PRs without loading all rows into memory at once.
 - Builder: a `QueueboardSnapshotBuilder` that chunk-iterates open PRs (e.g., 200–500 via `values()`/`iterator`) and assembles `prs`/`lists` in one pass, backed by keyed maps loaded up front:
   - Labels: `pr_id -> [(name, color, url)]`
   - Dependencies: `pr_id -> [dep_number]`
