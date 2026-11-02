@@ -19,7 +19,7 @@ Strictly read-only: SELECTs only, no writes, no GitHub calls, no snapshot builds
 
 Emits one JSON object on stdout between BEGIN/END markers.
 
-Usage on the dyno:
+Usage, where the app runs:
     PYTHONPATH=$PWD/qb_site:$PWD python probe_053_payload_cost.py [--repeats 5] [--repo owner/name]
 """
 

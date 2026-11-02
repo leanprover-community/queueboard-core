@@ -102,7 +102,7 @@ as is, without `to-env`. An inline `private_key` still needs `\n` escapes, becau
     - `installation_owner_type`: `org` (default) or `user` (used when `installation_lookup=owner`)
     - `installation_owner`: fixed org/user name for owner lookup (optional; defaults to the repo owner from operation context)
   - one of:
-    - `private_key` (PEM string; use `\\n` escapes in env JSON; preferred for current Heroku deployment), or
+    - `private_key` (PEM string; use `\\n` escapes in env JSON), or
     - `private_key_path` (path to PEM file visible to the process)
 
 Example (three-app config):

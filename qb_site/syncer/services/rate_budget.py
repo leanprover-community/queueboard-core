@@ -76,7 +76,7 @@ def _get_redis_client(**kwargs: Any):  # pragma: no cover - exercised via higher
     if not url:
         return None
     try:
-        # Support both redis:// and rediss:// so TLS brokers (e.g., Heroku) work.
+        # Support both redis:// and rediss:// so TLS brokers work.
         if str(url).startswith(("redis://", "rediss://")):
             if str(url).startswith("rediss://"):
                 # Some deployed redis-py versions reject `ssl=...`; this variant is broadly compatible.

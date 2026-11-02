@@ -7,13 +7,12 @@
 --   4. How many assignments would candidate limits have blocked historically?
 --   5. Do the sharp edges the doc flags actually bite (login case, distinct-vs-rows, provenance)?
 --
--- Read-only: SELECTs only, no dyno needed.
+-- Read-only: SELECTs only.
 --
---   heroku pg:psql -a queueboard-backend -f scripts/probe_054_rate_limit.sql
+--   psql "$DATABASE_URL" -f scripts/probe_054_rate_limit.sql
 --
 -- Reviewer logins are pseudonymised (first 8 hex of md5) so the output can be pasted into the
--- design doc. To see real logins, change `\set show_logins 0` below to 1 -- `heroku pg:psql`
--- does not forward psql flags like `-v`, so the toggle has to be edited in the file.
+-- design doc. To see real logins, change `\set show_logins 0` below to 1.
 
 \pset pager off
 \set show_logins 0

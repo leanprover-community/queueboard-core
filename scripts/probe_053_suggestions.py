@@ -15,7 +15,7 @@ label names are public and are kept as-is. Author logins are never emitted.
 
 Emits one JSON object on stdout between BEGIN/END markers.
 
-Usage on the dyno:
+Usage, where the app runs:
     PYTHONPATH=$PWD/qb_site:$PWD python probe_053_suggestions.py [--no-anon] [--repo owner/name]
 """
 

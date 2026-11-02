@@ -1,5 +1,5 @@
 -- Design doc 053 pre-check: is there anything to suggest, and is push-based assignment landing?
--- Read-only. Run with:  heroku pg:psql -a <APP> -f scripts/probe_053_precheck.sql
+-- Read-only. Run with:  psql "$DATABASE_URL" -f scripts/probe_053_precheck.sql
 \pset pager off
 \echo '=== 1. queue size / snapshot freshness ==='
 SELECT r.owner || '/' || r.name AS repo,
