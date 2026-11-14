@@ -28,3 +28,8 @@ worker_tmp_dir = "/dev/shm"
 # Access and error logs to stdout/stderr, for the container runtime to collect.
 accesslog = "-"
 errorlog = "-"
+
+# No control socket for gunicornc (gunicorn 25.1+). Its default path is under $HOME, which the
+# image's user doesn't have (/nonexistent), so gunicorn would log an error at every start, and
+# nothing here uses it.
+control_socket_disable = True

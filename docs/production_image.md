@@ -44,11 +44,11 @@ overrides the image's, and the local settings show Django's debug pages.
 
 The web server is gunicorn, with defaults in `qb_site/gunicorn.conf.py`: port 8000, 3 sync
 workers, a 120 s worker timeout and the same graceful timeout on shutdown (Zulip commands call
-GitHub and Zulip inside the request), and access and error logs on stdout/stderr. Set the worker
-count with `WEB_CONCURRENCY` and anything else with `GUNICORN_CMD_ARGS`, e.g.
-`GUNICORN_CMD_ARGS="--timeout 60"`. The settings trust `X-Forwarded-Proto`, so run it behind a
-reverse proxy that sets that header. A sync worker serves one request at a time, so gunicorn
-recommends a proxy that buffers slow clients.
+GitHub and Zulip inside the request), access and error logs on stdout/stderr, and no control
+socket for `gunicornc`. Set the worker count with `WEB_CONCURRENCY` and anything else with
+`GUNICORN_CMD_ARGS`, e.g. `GUNICORN_CMD_ARGS="--timeout 60"`. The settings trust
+`X-Forwarded-Proto`, so run it behind a reverse proxy that sets that header. A sync worker serves
+one request at a time, so gunicorn recommends a proxy that buffers slow clients.
 
 To move the site to a new host name while the old one still reaches it, set `QUEUEBOARD_BASE_URL`
 to the new name, list the old ones as bare host names in `QUEUEBOARD_LEGACY_HOSTS`, and keep them in
