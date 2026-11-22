@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import runpy
 from pathlib import Path
 from unittest import mock
@@ -173,12 +172,9 @@ class MiddlewareOrderTests(SimpleTestCase):
 
     def test_production_keeps_it_first_and_whitenoise_after_security(self) -> None:
         # production.py refuses to load without a secret key and allowed hosts; it reads both from base.
-        # Its own settings come from the environment, which here may be .env.example's blanks.
-        environ = {k: v for k, v in os.environ.items() if not k.startswith("DJANGO_SECURE_")}
         with (
             mock.patch.object(base_settings, "SECRET_KEY", "test-secret"),
             mock.patch.object(base_settings, "ALLOWED_HOSTS", ["example.org"]),
-            mock.patch.dict(os.environ, environ, clear=True),
         ):
             production = runpy.run_path(
                 str(Path(base_settings.__file__).with_name("production.py")),
