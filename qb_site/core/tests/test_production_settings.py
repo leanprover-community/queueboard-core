@@ -1,13 +1,17 @@
-"""The production settings load with .env.example's blank HSTS toggles."""
+"""The production settings: .env.example's blank HSTS toggles, and WhiteNoise's static files storage."""
 
 from __future__ import annotations
 
 import os
+import re
 import runpy
+import tempfile
 from pathlib import Path
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.core.management import call_command
+from django.templatetags.static import static
+from django.test import SimpleTestCase, override_settings
 
 from qb_site.settings import base as base_settings
 
@@ -54,3 +58,46 @@ class HstsSettingTests(SimpleTestCase):
         for value in ("ten", "1.5"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 _load_production(DJANGO_SECURE_HSTS_SECONDS=value)
+
+
+STATIC_TAG = re.compile(r"""{%\s*static\s+['"]([^'"]+)['"]""")
+
+
+class StaticFilesStorageTests(SimpleTestCase):
+    def test_whitenoise_is_named_in_storages(self) -> None:
+        production = _load_production()
+        self.assertEqual(
+            production["STORAGES"],
+            {
+                "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+                "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+            },
+        )
+        # Django 5.1 removed STATICFILES_STORAGE: it would be ignored.
+        self.assertNotIn("STATICFILES_STORAGE", production)
+
+    def test_collected_files_are_hashed_and_compressed(self) -> None:
+        # The manifest makes {% static %} raise for a name that wasn't collected, so each one in the
+        # templates must be.
+        names = sorted(
+            {
+                name
+                for path in (base_settings.BASE_DIR / "templates").rglob("*.html")
+                for name in STATIC_TAG.findall(path.read_text())
+            }
+        )
+        self.assertIn("shared/shared_pages.css", names)
+        with (
+            tempfile.TemporaryDirectory() as root,
+            override_settings(STORAGES=_load_production()["STORAGES"], STATIC_ROOT=root),
+        ):
+            call_command("collectstatic", interactive=False, verbosity=0)
+            for name in [*names, "admin/css/base.css"]:
+                with self.subTest(name=name):
+                    stem, ext = os.path.splitext(name)
+                    url = static(name)
+                    self.assertRegex(url, rf"^/static/{re.escape(stem)}\.[0-9a-f]{{12}}{re.escape(ext)}$")
+                    self.assertTrue(Path(root, name).is_file())
+            # The plain names stay, as the forms' modules import each other by them.
+            self.assertTrue(Path(root, "zulip_bot/expiry.js").is_file())
+            self.assertTrue(Path(root, static("admin/css/base.css").removeprefix("/static/") + ".gz").is_file())
