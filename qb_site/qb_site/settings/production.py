@@ -17,7 +17,12 @@ if not ALLOWED_HOSTS:
 # WhiteNoise goes directly after SecurityMiddleware, as its docs ask.
 _AFTER_SECURITY = MIDDLEWARE.index("django.middleware.security.SecurityMiddleware") + 1
 MIDDLEWARE = MIDDLEWARE[:_AFTER_SECURITY] + ["whitenoise.middleware.WhiteNoiseMiddleware"] + MIDDLEWARE[_AFTER_SECURITY:]
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+# collectstatic writes hashed and compressed copies beside each file, and {% static %} names the
+# hashed one, which WhiteNoise serves with a far-future cache. The plain names are still served.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = True

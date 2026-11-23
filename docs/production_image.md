@@ -22,7 +22,10 @@ docker build -f Dockerfile.production -t queueboard-core .
   `/app` and found through `PYTHONPATH=/app/qb_site:/app:/app/src`.
 - `DJANGO_SETTINGS_MODULE=qb_site.settings.production`.
 - Static files, collected at build time into `/app/staticfiles` (`DJANGO_STATIC_ROOT`) and served
-  by WhiteNoise. Leave `DJANGO_STATIC_ROOT` unset at runtime, or set it to that path.
+  by WhiteNoise. Leave `DJANGO_STATIC_ROOT` unset at runtime, or set it to that path. Each file
+  has a copy with a content hash in its name, which `{% static %}` links to and WhiteNoise serves
+  with a far-future cache; text files also have gzipped copies, for clients that accept gzip. The
+  plain names are served too, with a 60-second cache.
 - An unprivileged user, `queueboard`, UID and GID 10001. Everything under `/app` belongs to root
   and is read-only to it. The only directory it can write is `/data`, meant for a volume.
 
